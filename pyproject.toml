@@ -1,0 +1,46 @@
+[project]
+name = "berlin-lst-downscaling"
+version = "0.1.0"
+description = "Reproducible deep-learning pipeline that downscales Landsat LST from ~100 m to 10 m for Berlin"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dvc[gs]>=3.67.1",
+    "earthengine-api>=1.7.31",
+    "hydra-core>=1.3.3",
+    "lightning>=2.6.5",
+    "pydantic-settings>=2.14.1",
+    "torch<2.3",
+    "torchgeo>=0.9.0",
+    "wandb>=0.27.2",
+    "zarr>=3.2.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "S108", "S113"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "nox>=2026.4.10",
+    "pyright>=1.1.410",
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
+]
