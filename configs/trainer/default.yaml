@@ -1,0 +1,12 @@
+_target_: lightning.Trainer
+
+default_root_dir: ${paths.output_dir}
+
+accelerator: auto
+devices: 1
+precision: 16-mixed
+
+min_epochs: 1
+max_epochs: 100
+
+gradient_clip_val: 1.0

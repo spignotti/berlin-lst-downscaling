@@ -1,0 +1,4 @@
+[core]
+    remote = gcs-store
+['remote "gcs-store"']
+    url = gs://berlin-lst-data/dvc

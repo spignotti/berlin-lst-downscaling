@@ -23,3 +23,7 @@ package-lock.json
 
 # code-review-graph
 .code-review-graph/
+
+# W&B run artifacts (local cache)
+wandb/
+data/logs/

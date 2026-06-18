@@ -1,0 +1,6 @@
+_target_: lightning.pytorch.loggers.WandbLogger
+
+project: "berlin-lst-downscaling"
+name: ${task_name}
+save_dir: ${paths.log_dir}
+tags: ${tags}

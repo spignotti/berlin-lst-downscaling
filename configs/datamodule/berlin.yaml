@@ -1,0 +1,25 @@
+_target_: berlin_lst_downscaling.datamodules.BerlinDataModule
+
+data_dir: ${paths.data_dir}
+
+# Patch size in pixels at target resolution (10 m)
+patch_size: 256
+
+# Batch size
+batch_size: 32
+
+# Number of workers for data loading
+num_workers: 4
+
+# Feature set — overridden by experiment configs during ablation
+feature_set:
+  - lst
+  - ndvi
+  - ndbi
+  - ndwi
+  - mndwi
+
+# Train/val/test split
+train_ratio: 0.7
+val_ratio: 0.15
+test_ratio: 0.15

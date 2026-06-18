@@ -1,0 +1,17 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - trainer: default
+  - datamodule: berlin
+  - module: unet_2d
+  - callbacks: default
+  - logger: wandb
+  - paths: default
+  - hydra: default
+  - experiment: null
+
+# Global settings
+task_name: "train"
+tags: ["dev"]
+seed: 42

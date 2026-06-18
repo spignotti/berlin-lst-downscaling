@@ -1,0 +1,33 @@
+# @package _global_
+
+# Stage 4: Spectral + morphology + shadow/solar + meteorology
+# Adds: air temperature, humidity, wind speed
+
+defaults:
+  - override /datamodule: berlin
+
+tags: ["stage_4", "meteorology"]
+
+module:
+  network:
+    model:
+      in_channels: 16
+
+datamodule:
+  feature_set:
+    - lst
+    - ndvi
+    - ndbi
+    - ndwi
+    - mndwi
+    - dem
+    - slope
+    - aspect
+    - building_height
+    - hillshade
+    - sky_view_factor
+    - solar_azimuth
+    - solar_elevation
+    - air_temperature
+    - humidity
+    - wind_speed
