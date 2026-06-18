@@ -59,7 +59,7 @@ Context7 MCP is available in this project. When working with any external librar
 
 ## Known Constraints
 
-- Storage: COG per scene, assembled into a multi-date Zarr; no pre-baked patches; pseudo-pairs on the fly. GCSFuse mount (HNS bucket, metadata-cache-ttl-secs=-1, generous stat-cache).
+- Storage: COG per scene, assembled into a multi-date Zarr; no pre-baked patches; pseudo-pairs on the fly. Bucket mounted locally via rclone (not gcsfuse — x86_64 macOS limitation) at `~/.mnt/berlin-lst/`. See `.opencode/skills/google-access/` for mount/access commands.
 - Reproducibility: Hydra configs (nothing hardcoded), seed management, env lock (uv) plus Docker for Vertex AI, Git commit hash logged per W&B run.
 - Secrets via ENV, never committed.
 - GEE experiments stay manual (Silas). Data cleaning and repetitive engineering may be delegated.

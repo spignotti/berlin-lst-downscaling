@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "dvc[gs]>=3.67.1",
     "earthengine-api>=1.7.31",
+    "google-cloud-storage>=3.12.0",
     "hydra-core>=1.3.3",
     "lightning>=2.6.5",
     "pydantic-settings>=2.14.1",

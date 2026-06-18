@@ -270,6 +270,7 @@ source = { editable = "." }
 dependencies = [
     { name = "dvc", extra = ["gs"] },
     { name = "earthengine-api" },
+    { name = "google-cloud-storage" },
     { name = "hydra-core" },
     { name = "lightning" },
     { name = "pydantic-settings" },
@@ -291,6 +292,7 @@ dev = [
 requires-dist = [
     { name = "dvc", extras = ["gs"], specifier = ">=3.67.1" },
     { name = "earthengine-api", specifier = ">=1.7.31" },
+    { name = "google-cloud-storage", specifier = ">=3.12.0" },
     { name = "hydra-core", specifier = ">=1.3.3" },
     { name = "lightning", specifier = ">=2.6.5" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
