@@ -41,10 +41,10 @@ def main(cfg: DictConfig) -> None:
 
             n = col.size().getInfo()
             # Also compute the cloud-free count for reference
-            cloud_band = (
+            cloud_property = (
                 "CLOUD_COVER" if src == "landsat" else "CLOUDY_PIXEL_PERCENTAGE"
             )
-            cloud_free = col.filterMetadata(cloud_band, "less_than", 20).size().getInfo()
+            cloud_free = col.filterMetadata(cloud_property, "less_than", 20).size().getInfo()
 
             print(f"{src}: {year:4d} → {n:5d} total,  {cloud_free:5d} <20% cloud")
 

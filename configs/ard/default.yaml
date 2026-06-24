@@ -24,15 +24,15 @@ ard:
 
   output:
     bucket: "berlin-lst-data"
-    raw_prefix: "raw"           # GEE exports (temporary)
-    ard_prefix: "ard"           # Final ARD COGs
-    cog:
+    raw_prefix: "raw"           # Phase 1: GEE exports (temporary)
+    ard_prefix: "ard"           # Phase 1: Final ARD COGs
+    cog:                        # Phase 1: COG write parameters
       tile_size: 512
       overview_levels: [2, 4, 8, 16, 32]
       nodata: "nan"
       dtype: "float32"
       compression: "LZW"
-    stac:
+    stac:                        # Phase 3: STAC metadata
       processing_version: "0.1.0"
 
   gee:

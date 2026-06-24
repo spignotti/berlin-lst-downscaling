@@ -34,7 +34,7 @@ landsat:
     st_mult: 0.00341802
     st_add: 149.0
     reflectance_clip: [0.0, 1.0]
-    lst_plausible_kelvin: [250.0, 350.0]
+    lst_plausible_kelvin: [250.0, 350.0]  # Phase 1: downstream QA filter
 
   export:
     # Two-task split: SR at 30 m, LST at 100 m (preserves native LST resolution)

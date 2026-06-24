@@ -1,54 +1,17 @@
-"""Cloud and shadow masking functions for Landsat and Sentinel-2.
+"""Cloud and shadow masking for Landsat and Sentinel-2 GEE exports.
 
-All functions operate on ``ee.Image`` objects (server-side GEE operations).
-Masks are stored as a ``cloud_mask`` flag band (1 = clear, 0 = cloud/shadow),
+* Landsat: QA_PIXEL-based masking is inlined in
+  ``gee_scenes.prepare_landsat_collection`` (to extract config values
+  before ``.map()``). See that function for the canonical implementation.
+* Sentinel-2: ``prepare_sentinel2_collection`` joins S2_SR with
+  S2_CLOUD_PROBABILITY and applies s2cloudless + SCL class masking.
+
+All masks are stored as a ``cloud_mask`` flag band (1 = clear, 0 = cloud/shadow),
 never applied destructively.
 """
 
 import ee
 from omegaconf import DictConfig
-
-
-def mask_landsat(image: ee.Image, cfg: DictConfig) -> ee.Image:
-    """Generate a cloud/shadow mask for Landsat Collection 2 using QA_PIXEL.
-
-    Bits used:
-        * 3: cloud
-        * 1: dilated cloud
-        * 4: cloud shadow
-        * 2: cirrus
-    Also flags saturated pixels via QA_RADSAT.
-
-    Args:
-        image: Input Landsat image with QA_PIXEL and QA_RADSAT bands.
-        cfg: Pipeline config containing ``landsat.cloud`` sub-config.
-
-    Returns:
-        Image with an added ``cloud_mask`` band (1 = clear, 0 = bad).
-        The mask is dilated by ``dilation_pixels`` pixels (square kernel).
-    """
-    qa = image.select("QA_PIXEL")
-    radsat = image.select("QA_RADSAT")
-    bits = cfg.landsat.cloud.bits
-    dilation = cfg.landsat.cloud.dilation_pixels
-
-    # Unpack individual mask components (bit = 0 means clear)
-    cloud = qa.bitwiseAnd(1 << bits.cloud).eq(0)
-    dilated_cloud = qa.bitwiseAnd(1 << bits.dilated_cloud).eq(0)
-    shadow = qa.bitwiseAnd(1 << bits.shadow).eq(0)
-    cirrus = qa.bitwiseAnd(1 << bits.cirrus).eq(0)
-
-    # Saturated: any band with saturation flagged (bit value > 0)
-    saturated = radsat.gt(0)
-
-    # Composite clear mask
-    clear = cloud.And(dilated_cloud).And(shadow).And(cirrus).And(saturated.Not())
-
-    # Dilate bad pixels: focal_min shrinks clear areas → grows bad areas
-    if dilation > 0:
-        clear = clear.focal_min(dilation, kernelType="square")
-
-    return image.addBands(clear.rename("cloud_mask"))
 
 
 def prepare_sentinel2_collection(

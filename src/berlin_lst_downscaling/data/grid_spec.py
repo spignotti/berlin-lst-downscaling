@@ -1,11 +1,14 @@
 """Authoritative target grid specification for the Berlin LST downscaling project.
 
 The grid is a nested 10m / 100m system with a shared origin in EPSG:25833.
-The 100m grid is an exact 10×10 aggregate of the 10m grid (same origin,
+The 100m grid is an exact 10Ã—10 aggregate of the 10m grid (same origin,
 aligned boundaries). This module is the single source of truth for ALL
 spatial operations in the pipeline.
 """
 
+from __future__ import annotations
+
+import functools
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -28,7 +31,7 @@ class GridSpec:
     width_10m: int
     height_10m: int
 
-    # 100m grid — exact 10×10 aggregate of 10m grid
+    # 100m grid â€” exact 10Ã—10 aggregate of 10m grid
     width_100m: int
     height_100m: int
 
@@ -95,7 +98,7 @@ def make_grid_spec(
     w10 = int(ceil((axmax - origin_x) / res_10m))
     h10 = int(ceil((origin_y - aymin) / res_10m))
 
-    # Align width/height to next multiple of 10 (for exact 10×10 nesting)
+    # Align width/height to next multiple of 10 (for exact 10Ã—10 nesting)
     w10_aligned = ((w10 + 9) // 10) * 10
     h10_aligned = ((h10 + 9) // 10) * 10
 
@@ -117,13 +120,16 @@ def make_grid_spec(
     )
 
 
-def load_aoi_geojson() -> GridSpec:
-    """Load the AOI GeoJSON and return a GridSpec.
+@functools.cache
+def get_spec() -> GridSpec:
+    """Load the AOI GeoJSON and return a cached GridSpec singleton.
 
     The GeoJSON must have been created by ``scripts/fetch_berlin_boundary.py``.
-    Falls back to config defaults if the file does not exist (raises).
+    Raises ``FileNotFoundError`` with a helpful message if the file doesn't exist.
     """
     import json
+
+    import geopandas as gpd  # type: ignore[import-untyped]
 
     if not AOI_FILE.exists():
         raise FileNotFoundError(
@@ -145,8 +151,6 @@ def load_aoi_geojson() -> GridSpec:
     origin_y = 5839000.0
 
     # For WGS84 bbox, transform back
-    import geopandas as gpd
-
     gdf = gpd.read_file(AOI_FILE)
     gdf_wgs84 = gdf.to_crs("EPSG:4326")
     wgs = gdf_wgs84.total_bounds
@@ -158,7 +162,3 @@ def load_aoi_geojson() -> GridSpec:
         aoi_25833=aoi_25833,
         wgs84_bbox=wgs84_bbox,
     )
-
-
-# Build the singleton instance at import time
-spec: GridSpec = load_aoi_geojson()
