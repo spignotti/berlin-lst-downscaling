@@ -27,3 +27,32 @@ def get_aoi_geometry(
 def get_aoi_from_cfg(cfg: DictConfig) -> Any:
     """Convenience: read the WGS84 bbox from the Hydra config."""
     return get_aoi_geometry(cfg.ard.aoi.wgs84_bbox)
+
+
+def get_aoi_geojson_from_cfg(cfg: DictConfig) -> dict:
+    """Return the AOI as a GeoJSON FeatureCollection dict (EPSG:4326).
+
+    Used for AppEEARS area task submission (not GEE).
+    """
+    west, south, east, north = cfg.ard.aoi.wgs84_bbox
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [west, south],
+                            [east, south],
+                            [east, north],
+                            [west, north],
+                            [west, south],
+                        ]
+                    ],
+                },
+                "properties": {},
+            }
+        ],
+    }

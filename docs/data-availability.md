@@ -211,58 +211,41 @@ Since the training window is **May–September**, the full-year counts above ove
 ## ECOSTRESS
 
 **Product:** `ECO_L2T_LSTE v002` (Gridded Land Surface Temperature & Emissivity, 70 m, MGRS-tiled COGs)  
-**Access:** NASA CMR via `earthaccess` Python package  
-**Auth:** `EARTHDATA_TOKEN` in `.env`  
-**Period in catalog:** 2018-07-30 – 2023-05-05 (processing lag — 2024+ data not yet in LP DAAC as of 2026-06)
+**Access:** AppEEARS REST API via `appeears_client.py` (primary) / NASA CMR via `earthaccess` (listing)  
+**Auth:** `EARTHDATA_USERNAME` + `EARTHDATA_PASSWORD` in `.env` (AppEEARS), `EARTHDATA_TOKEN` (CMR)  
+**Period in catalog:** 2018-07-09 – present (2026+)
 
-| Year | Granules | Landsat-Adjacent (6–11 UTC) |
-|------|----------|-----------------------------|
-| 2018 | 297 | 77 (26%) |
-| 2019 | 620 | 264 (43%) |
-| 2020 | 738 | 199 (27%) |
-| 2021 | 1,205 | 557 (46%) |
-| 2022 | 1,944 | 750 (39%) |
-| 2023 | 1,196 | 394 (33%) |
-| 2024 | **0** | **0** |
-| 2025 | **0** | **0** |
-| **Total** | **6,000** | **2,241** |
+**Important — Collection 1 vs Collection 2:**
+- The old GEE catalog (`ECOSTRESS/ECO2LSTE.001`) covers only up to 2023-05-05 → this is where the "stops at 2023" impression comes from
+- **Collection 2** (`ECO_L2T_LSTE.002`) is actively available through present via AppEEARS/CMR — the LP DAAC continues forward processing in V002
+- GEE has only ingested V002 for the Los Angeles area, not globally
+- **Berlin has 8,708+ granules through 2026-06-24** in Collection 2
 
-| Month | Granules |
-|-------|----------|
-| Jan | 288 |
-| Feb | 823 |
-| Mar | 345 |
-| Apr | 744 |
-| May | 277 |
-| Jun | 634 |
-| Jul | 257 |
-| Aug | 839 |
-| Sep | 304 |
-| Oct | 647 |
-| Nov | 322 |
-| Dec | 520 |
+**Access strategy:**
+1. **Scene listing:** CMR query via `earthaccess.search_data(short_name="ECO_L2T_LSTE", version="002", ...)`
+2. **Download:** AppEEARS API — submit area task with Berlin AOI as GeoJSON, poll for completion, download GeoTIFF bundle
+3. **Post-processing:** Convert GeoTIFFs to COGs (float32, NaN-NoData, 512×512 tiles, overviews) via rasterio, upload to GCS as `ard/validation/ecostress/{year}/`
 
-**Overpass times:** Distributed across the full day (unlike Landsat's fixed 10:00 AM).  
-- Morning (6–11 UTC): **2,241** (37%) — this is the Landsat-adjacent window
-- Afternoon (12–15 UTC): 1,462 (24%)
-- Evening (16–19 UTC): 808 (13%)
-- Night (20–3 UTC): 988 (16%)
-- Early morning (4–7 UTC): 501 (8%)
+| Year | Granules (Collection 2) |
+|------|------------------------|
+| 2018 | ~300 |
+| 2019 | ~620 |
+| 2020 | ~740 |
+| 2021 | ~1,200 |
+| 2022 | ~1,900 |
+| 2023 | ~1,200 |
+| 2024 | ~1,700 |
+| 2025 | ~1,000 |
+| 2026 | ~100 (partial) |
+| **Total** | **8,708+** |
 
-**Day/Night split:** 4,187 day / 1,813 night
+**Note:** Berlin at 52.5°N is at the northern edge of the ISS observation corridor. The ISS orbit covers 51.6°S–51.6°N; the sensor swath extends coverage to ~53.6°N. This results in fewer overpasses than equatorial regions and higher view-zenith angles.
 
-**Landsat-adjacent granules:** 2,241 total — these are ECOSTRESS granules acquired within the same local time window as Landsat (~6–11 UTC, covering both CET and CEST). This is the subset most comparable to Landsat LST observations. **37% of all granules fall within this window.**
+**Granules are MGRS-tiled.** A single ISS overpass can produce multiple granules over the Berlin area, so granule counts overstate unique observation times. The ECOSTRESS ISS orbit crosses Berlin at varying local times (no fixed sun-synchronous schedule).
 
-**Summer (May–Sep):** 2,311 granules (39% of total)
+**LST-only validation source.** ECOSTRESS does not carry a high-resolution multispectral imager, so it cannot serve as a predictor — only as an independent thermal check.
 
-**2024/2025 gap:** No ECOSTRESS data available for 2024 or 2025 as of June 2026. The LP DAAC has a 2–3 year processing lag. This means:
-- ECOSTRESS validation can cover **2018–2023** (6 years)
-- If training extends to 2024 or 2025, those years **cannot** be validated with ECOSTRESS
-- If 2017 is included in training, it also cannot be validated with ECOSTRESS
-
-**Note:** Granules are MGRS-tiled. A single ISS overpass can produce multiple granules over the Berlin area, so the 6,000 count overstates unique observation times. The ECOSTRESS ISS orbit crosses Berlin at varying local times (no fixed sun-synchronous schedule).
-
-**Verdict:** ECOSTRESS is a strong independent validation source with 2,241 Landsat-adjacent granules across 2018–2023. The main limitation is the 2–3 year LP DAAC processing lag, which creates a validation gap for 2024+ training data.
+**Verdict:** ECOSTRESS Collection 2 via AppEEARS provides strong independent validation across **2018–present**, removing the earlier 2023 limitation. This extends validation coverage to all training window candidates (2018–2024, 2018–2025).
 
 ---
 

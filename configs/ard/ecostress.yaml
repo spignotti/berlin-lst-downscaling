@@ -2,19 +2,39 @@
 
 # ECOSTRESS configuration — independent thermal validation source.
 # Product: ECO_L2T_LSTE v002 (70 m LST, MGRS-tiled COGs)
-# Access: NASA CMR via earthaccess (not GEE)
+# Access: AppEEARS REST API (primary) / NASA CMR via earthaccess (listing)
 # Reference: docs/data-availability.md
 ecostress:
   product: "ECO_L2T_LSTE"
+  version: "002"
+
+  # AppEEARS API configuration
+  appeears:
+    base_url: "https://appeears.earthdatacloud.nasa.gov/api"
+    poll_interval_sec: 60
+    timeout_hours: 24
+    layers: ["LST", "cloud", "QC"]
+    output_format: "geotiff"
+    output_projection: "native"        # Keep native ~70m; reproject to EPSG:25833 in Phase 1
+    filename_date: "calendar"          # Calendar date in filenames (vs. DOY)
 
   # Orbit info
   overpass_window_utc: [6, 11]    # Landsat-adjacent window
 
   time:
-    start_year: 2018
-    end_year: 2023                  # No data for 2024/2025 (LP DAAC lag)
+    start_year: 2018                   # Instrument launched 2018-06-29
+    end_year: 2025                     # Collection 2 available through present via AppEEARS
     months: [5, 6, 7, 8, 9]
 
   export:
-    scale: 70                       # Native resolution, kept
+    scale: 70                          # Native resolution, kept on reprojection
     prefix: "ard/validation/ecostress"
+    temp_dir: "data/tmp/ecostress"     # Temporary download directory (gitignored)
+
+  # COG settings (applied post-download before GCS upload)
+  cog:
+    dtype: "float32"
+    nodata: "nan"
+    tile_size: 512
+    overview_levels: [2, 4, 8, 16]
+    compress: "DEFLATE"
