@@ -1,0 +1,42 @@
+# @package _global_
+# Shared ARD pipeline configuration.
+# Used by gee_export.yaml and individual source configs.
+
+ard:
+  crs: "EPSG:25833"
+
+  # Berlin + 2 km buffer, fetched from Geoportal Berlin WFS.
+  aoi:
+    wgs84_bbox: [13.0471, 52.3122, 13.7937, 52.6970]
+    aoi_25833: [368002.320, 5797523.137, 417784.933, 5839258.933]
+
+  # Target grid: 10 m with nested 100 m (exact 10×10 aggregate, same origin).
+  grid:
+    origin_x: 368000
+    origin_y: 5839000
+    resolution_10m: 10.0
+    resolution_100m: 100.0
+
+  time:
+    start_year: 2017
+    end_year: 2025
+    months: [5, 6, 7, 8, 9]
+
+  output:
+    bucket: "berlin-lst-data"
+    raw_prefix: "raw"           # GEE exports (temporary)
+    ard_prefix: "ard"           # Final ARD COGs
+    cog:
+      tile_size: 512
+      overview_levels: [2, 4, 8, 16, 32]
+      nodata: "nan"
+      dtype: "float32"
+      compression: "LZW"
+    stac:
+      processing_version: "0.1.0"
+
+  gee:
+    project: "masterarbeit-berlin-lst"
+    max_pixels: 10000000000000  # 1e13
+    task_poll_interval_sec: 30
+    logging_tag: "ard-pipeline"

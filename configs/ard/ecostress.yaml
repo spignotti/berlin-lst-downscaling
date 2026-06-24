@@ -1,0 +1,20 @@
+# @package _global_
+
+# ECOSTRESS configuration — independent thermal validation source.
+# Product: ECO_L2T_LSTE v002 (70 m LST, MGRS-tiled COGs)
+# Access: NASA CMR via earthaccess (not GEE)
+# Reference: docs/data-availability.md
+ecostress:
+  product: "ECO_L2T_LSTE"
+
+  # Orbit info
+  overpass_window_utc: [6, 11]    # Landsat-adjacent window
+
+  time:
+    start_year: 2018
+    end_year: 2023                  # No data for 2024/2025 (LP DAAC lag)
+    months: [5, 6, 7, 8, 9]
+
+  export:
+    scale: 70                       # Native resolution, kept
+    prefix: "ard/validation/ecostress"

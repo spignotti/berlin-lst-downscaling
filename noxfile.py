@@ -1,29 +1,31 @@
+"""Validation sessions for the berlin-lst-downscaling project."""
+
 import nox
 
 nox.options.sessions = ["lint", "typecheck", "test"]
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def lint(session: nox.Session) -> None:
-    session.run("uv", "run", "ruff", "check", ".")
+    session.run("uv", "run", "ruff", "check", ".", external=True)
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def format(session: nox.Session) -> None:
-    session.run("uv", "run", "ruff", "format", ".")
+    session.run("uv", "run", "ruff", "format", ".", external=True)
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def fix(session: nox.Session) -> None:
-    session.run("uv", "run", "ruff", "check", "--fix", ".")
-    session.run("uv", "run", "ruff", "format", ".")
+    session.run("uv", "run", "ruff", "check", "--fix", ".", external=True)
+    session.run("uv", "run", "ruff", "format", ".", external=True)
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def typecheck(session: nox.Session) -> None:
-    session.run("uv", "run", "pyright")
+    session.run("uv", "run", "pyright", external=True)
 
 
-@nox.session
+@nox.session(venv_backend="none")
 def test(session: nox.Session) -> None:
-    session.run("uv", "run", "pytest", "-v")
+    session.run("uv", "run", "pytest", "-v", external=True)

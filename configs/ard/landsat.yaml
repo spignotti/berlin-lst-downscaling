@@ -1,0 +1,43 @@
+# @package _global_
+
+# Landsat 8/9 Collection 2 Level-2 configuration.
+# Reference: docs/data-availability.md
+landsat:
+  collections:
+    - "LANDSAT/LC08/C02/T1_L2"
+    - "LANDSAT/LC09/C02/T1_L2"
+
+  # Surface reflectance bands (30 m)
+  bands_sr: ["SR_B2", "SR_B3", "SR_B4", "SR_B5", "SR_B6", "SR_B7"]
+
+  # Surface temperature band (100 m) — the downscaling target
+  band_lst: "ST_B10"
+
+  # Quality bands
+  band_qa: "QA_PIXEL"
+  band_radsat: "QA_RADSAT"
+
+  cloud:
+    # QA_PIXEL bit positions (Collection 2)
+    bits:
+      cloud: 3
+      dilated_cloud: 1
+      shadow: 4
+      cirrus: 2
+    dilation_pixels: 2
+
+  radiometry:
+    # C2 scaling: DN * scale + add
+    # See https://www.usgs.gov/landsat-missions/landsat-collection-2-surface-temperature
+    sr_mult: 2.75e-05
+    sr_add: -0.2
+    st_mult: 0.00341802
+    st_add: 149.0
+    reflectance_clip: [0.0, 1.0]
+    lst_plausible_kelvin: [250.0, 350.0]
+
+  export:
+    # Two-task split: SR at 30 m, LST at 100 m (preserves native LST resolution)
+    scale_sr: 30
+    scale_lst: 100
+    prefix: "ard/dynamic/landsat"

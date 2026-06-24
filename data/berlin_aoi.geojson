@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "berlin_aoi",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::25833" } },
+"features": [
+{ "type": "Feature", "properties": { "name": "berlin_aoi_2km_buffer" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 368002.320391279063188, 5797523.137414421886206 ], [ 417784.933108442404773, 5797523.137414421886206 ], [ 417784.933108442404773, 5839258.933439641259611 ], [ 368002.320391279063188, 5839258.933439641259611 ], [ 368002.320391279063188, 5797523.137414421886206 ] ] ] } }
+]
+}

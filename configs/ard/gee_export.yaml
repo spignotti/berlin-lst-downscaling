@@ -1,0 +1,24 @@
+# @package _global_
+
+# Main ARD GEE export configuration.
+# Compose with: python scripts/ard_export.py
+# Dry run:     python scripts/ard_export.py --dry-run=true
+# Single year: python scripts/ard_export.py year=2023
+
+defaults:
+  - default
+  - landsat
+  - sentinel2
+  - ecostress
+  - _self_
+
+# Composable overrides
+year: null                 # null = all years in range, or set e.g. year=2023
+dry_run: true              # --dry-run is the default for safety
+source: null               # null = all sources, or "landsat" / "sentinel2"
+
+# ── Hydra overrides to keep scripts in-place ─────────────────────────────
+hydra:
+  run:
+    dir: .
+  output_subdir: null

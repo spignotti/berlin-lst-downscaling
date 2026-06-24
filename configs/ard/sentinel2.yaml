@@ -1,0 +1,34 @@
+# @package _global_
+
+# Sentinel-2 Level-2A configuration (surface reflectance).
+# Collection: COPERNICUS/S2_SR_HARMONIZED
+# Reference: docs/data-availability.md
+sentinel2:
+  collection: "COPERNICUS/S2_SR_HARMONIZED"
+
+  # Predictor bands
+  bands_10m: ["B2", "B3", "B4", "B8"]
+  bands_20m: ["B5", "B6", "B7", "B8A", "B11", "B12"]
+
+  # Scene classification band
+  band_scl: "SCL"
+
+  cloud:
+    # Use s2cloudless probability + SCL class filter
+    s2cloudless_collection: "COPERNICUS/S2_CLOUD_PROBABILITY"
+    threshold: 40          # Start value, tuned in Phase 2
+    shadow_projection: true
+    # SCL classes to mask (L2A only)
+    scl_mask: [3, 8, 9, 10, 11]   # shadow, medium/high cloud, cirrus, snow
+
+  radiometry:
+    # Baseline 04.00 offset: subtract 1000 from bands for scenes >= 2022-01-25
+    baseline_offset_date: "2022-01-25"
+    baseline_offset_value: 1000
+    # Divide by 10000 to get reflectance 0-1
+    reflectance_scale: 0.0001
+    reflectance_clip: [0.0, 1.0]
+
+  export:
+    scale: 10
+    prefix: "ard/dynamic/sentinel2"
