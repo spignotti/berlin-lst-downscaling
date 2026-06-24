@@ -8,9 +8,22 @@ Usage:
 """
 
 import os
-import earthaccess
+import socket
 from collections import Counter
 from datetime import datetime
+
+# ── IPv4 workaround ────────────────────────────────────────────────────
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+    results = _orig_getaddrinfo(host, port, family, type, proto, flags)
+    return [r for r in results if r[0] == socket.AF_INET]
+
+
+socket.getaddrinfo = _ipv4_only
+
+import earthaccess
 
 # ── Auth ───────────────────────────────────────────────────────────────
 # Strategy: environment (EARTHDATA_TOKEN) → netrc → interactive
@@ -31,7 +44,10 @@ if not auth or not auth.authenticated:
 # ── Parameters ─────────────────────────────────────────────────────────
 BERLIN_BBOX = (13.08, 52.34, 13.76, 52.68)  # WGS84
 START = '2018-01-01'
-END = '2026-06-30'
+END = '2025-12-31'
+# Landsat overpass Berlin is ~10:00 local time (UTC+1 in winter, UTC+2 in summer)
+# Landsat-adjacent window: 8:00-12:00 local → 6:00-11:00 UTC depending on DST
+LANDSAT_WINDOW = (6, 11)  # UTC hours — conservative window covering both winter/summer
 
 # ── Query CMR ──────────────────────────────────────────────────────────
 print("Searching CMR for ECO_L2T_LSTE v002 over Berlin...")
@@ -60,9 +76,11 @@ if len(results) == 0:
 granules_by_year = Counter()
 granules_by_month = Counter()
 day_night = Counter()
+landsat_adjacent_by_year = Counter()  # granules near Landsat overpass
 tiles = Counter()
 first_dates = []
-overpass_times = []  # hours of day
+overpass_times = []  # hours of day (UTC)
+LANDSAT_WINDOW = (6, 11)  # UTC hours — covers ~8-12 local time in both CET/CEST
 
 for g in results:
     meta = g.get('meta', {})
@@ -81,19 +99,22 @@ for g in results:
     except (ValueError, TypeError):
         continue
 
+    hour_utc = dt.hour
+    overpass_times.append(hour_utc)
     granules_by_year[dt.year] += 1
     granules_by_month[dt.month] += 1
-    overpass_times.append(dt.hour)
 
-    # Day/night (ECOSTRESS has a Day/Night flag in metadata)
-    data_quality = umm.get('DataQuality', {})
-    day_night_flag = data_quality.get('Description', '') if data_quality else ''
-    if 'NIGHT' in str(g).upper():
-        day_night['Night'] += 1
-    elif 'DAY' in str(g).upper():
+    # Landsat-adjacent: ECOSTRESS near Landsat overpass (~10:00 local)
+    # Landsat window UTC: 6-11 covers ~8:00-12:00 local in both CET (UTC+1) and CEST (UTC+2)
+    near_landsat = LANDSAT_WINDOW[0] <= hour_utc <= LANDSAT_WINDOW[1]
+    if near_landsat:
+        landsat_adjacent_by_year[dt.year] += 1
+
+    # Day/night: day = 6-18 UTC, night = 18-6 UTC
+    if 6 <= hour_utc < 18:
         day_night['Day'] += 1
     else:
-        day_night['Unknown'] += 1
+        day_night['Night'] += 1
 
     # Track first/last
     first_dates.append(dt)
@@ -109,6 +130,9 @@ for g in results:
 first_dates.sort()
 
 # ── Print results ──────────────────────────────────────────────────────
+months = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',
+          7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'}
+
 print(f"\n{'='*65}")
 print(f"  ECOSTRESS Availability — Berlin")
 print(f"  {START} – {END}")
@@ -116,14 +140,14 @@ print(f"{'='*65}")
 
 # Yearly
 print(f"\n  Per Year:")
-print(f"  {'Year':>6s} | {'Granules':>9s}")
-print(f"  {'-'*6} | {'-'*9}")
+print(f"  {'Year':>6s} | {'Granules':>9s} | {'Landsat-adj.':>12s}")
+print(f"  {'-'*6} | {'-'*9} | {'-'*12}")
 for yr in sorted(granules_by_year):
-    print(f"  {yr:>6d} | {granules_by_year[yr]:>9d}")
+    la = landsat_adjacent_by_year.get(yr, 0)
+    pct = la / granules_by_year[yr] * 100 if granules_by_year[yr] > 0 else 0
+    print(f"  {yr:>6d} | {granules_by_year[yr]:>9d} | {la:>5d} ({pct:>4.0f}%)")
 
 # Monthly
-months = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',
-          7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'}
 print(f"\n  Per Month (all years):")
 print(f"  {'Month':>6s} | {'Granules':>9s}")
 print(f"  {'-'*6} | {'-'*9}")
@@ -131,7 +155,7 @@ for mi in sorted(granules_by_month):
     print(f"  {months[mi]:>6s} | {granules_by_month[mi]:>9d}")
 
 # Overpass times
-print(f"\n  Overpass Times (hour of day):")
+print(f"\n  Overpass Times (hour of day, UTC):")
 time_bins = Counter()
 for h in overpass_times:
     if h < 4:
@@ -148,6 +172,13 @@ for h in overpass_times:
         time_bins['20–23 (night)'] += 1
 for label, count in sorted(time_bins.items(), key=lambda x: int(x[0].strip().split('–')[0])):
     print(f"    {label}: {count}")
+print(f"    ─────────────────────────────────────")
+print(f"    Landsat window (6–11 UTC): {landsat_adjacent_by_year.total()} total")
+
+# Day/night
+print(f"\n  Day/Night split:")
+for label in ['Day', 'Night']:
+    print(f"    {label}: {day_night.get(label, 0)}")
 
 # MGRS tiles
 print(f"\n  MGRS Tiles (top 5):")
@@ -161,9 +192,17 @@ if first_dates:
 
 # Summer focus
 summer_months = [5, 6, 7, 8, 9]  # May–Sep
-summer_count = sum(granules_by_month[m] for m in summer_months)
 total_count = sum(granules_by_month.values())
+summer_count = sum(granules_by_month[m] for m in summer_months)
 print(f"\n  Summer (May–Sep) granules: {summer_count} ({summer_count/total_count*100:.0f}% of total)")
 print(f"  Other months: {total_count - summer_count}")
+
+# 2024/2025 specific
+print(f"\n  ── Focus: 2024 & 2025 ──")
+for yr in [2024, 2025]:
+    cnt = granules_by_year.get(yr, 0)
+    la = landsat_adjacent_by_year.get(yr, 0)
+    pct = la / cnt * 100 if cnt > 0 else 0
+    print(f"  {yr}: {cnt} total, {la} Landsat-adjacent ({pct:.0f}%)")
 
 print(f"\nDone.\n")

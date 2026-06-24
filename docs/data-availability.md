@@ -96,7 +96,7 @@ WGS84 rectangle, covers Berlin + ~5 km buffer. Landsat WRS-2 paths covered: **19
 
 ### Landsat 8+9 Combined
 
-- **Total:** 1,373
+- **Total:** 1,375
 - **Cloud-free:** 362 (26%)
 - **Effect of L9 join (2022–):** 2× scenes per year vs. L8 alone (~80 → ~160/year after 2021)
 
@@ -115,7 +115,49 @@ WGS84 rectangle, covers Berlin + ~5 km buffer. Landsat WRS-2 paths covered: **19
 | 2023 | 145 | 35 | 110 |
 | 2024 | 139 | 32 | 107 |
 | 2025 | 164 | 46 | 118 |
-| 2026 | 74 | 36 | 38 |
+| 2026 | 76 | 36 | 40 |
+
+### Landsat 8+9 — May–Sep Only (<20% Cloud)
+
+Since the training window is **May–September**, the full-year counts above overstate usable scenes for the target period. Below are Landsat scenes within the seasonal window only.
+
+| Year | Total (May–Sep) | <20% Cloud | Usable |
+|------|----------------|------------|--------|
+| 2013 | 33 | 9 | 27% |
+| 2014 | 37 | 4 | 11% |
+| 2015 | 47 | 9 | 19% |
+| 2016 | 43 | 15 | 35% |
+| 2017 | 41 | 8 | 20% |
+| 2018 | 46 | 19 | 41% |
+| 2019 | 42 | 8 | 19% |
+| 2020 | 44 | 12 | 27% |
+| 2021 | 38 | 6 | 16% |
+| 2022 | 83 | 22 | 27% |
+| 2023 | 88 | 31 | 35% |
+| 2024 | 78 | 20 | 26% |
+| 2025 | 82 | 21 | 26% |
+| 2026 | 27 | 11 | 41% |
+
+**May–Sep cloud-free scenes per year × month** (Landsat 8+9 combined):
+
+| Year | May | Jun | Jul | Aug | Sep | Sum |
+|------|-----|-----|-----|-----|-----|-----|
+| 2017 | 2 | 3 | 0 | 3 | 0 | 8 |
+| 2018 | 7 | 1 | 5 | 4 | 2 | **19** |
+| 2019 | 0 | 4 | 2 | 1 | 1 | 8 |
+| 2020 | 1 | 4 | 0 | 3 | 4 | 12 |
+| 2021 | 0 | 0 | 2 | 0 | 4 | 6 |
+| 2022 | 4 | 4 | 3 | 8 | 3 | **22** |
+| 2023 | 7 | 9 | 1 | 4 | 10 | **31** |
+| 2024 | 5 | 2 | 4 | 4 | 5 | **20** |
+| 2025 | 1 | 2 | 4 | 8 | 6 | 21 |
+
+**Window totals (May–Sep, <20% cloud):**
+
+| Window | Total scenes | Cloud-free | Usable |
+|--------|-------------|------------|--------|
+| 2017–2024 | 460 | 126 | 27% |
+| 2018–2024 | 419 | 118 | 28% |
 
 ---
 
@@ -171,17 +213,19 @@ WGS84 rectangle, covers Berlin + ~5 km buffer. Landsat WRS-2 paths covered: **19
 **Product:** `ECO_L2T_LSTE v002` (Gridded Land Surface Temperature & Emissivity, 70 m, MGRS-tiled COGs)  
 **Access:** NASA CMR via `earthaccess` Python package  
 **Auth:** `EARTHDATA_TOKEN` in `.env`  
-**Period in catalog:** 2018-07-30 – 2023-05-05 (processing lag — newer data exists but not yet in LP DAAC)
+**Period in catalog:** 2018-07-30 – 2023-05-05 (processing lag — 2024+ data not yet in LP DAAC as of 2026-06)
 
-| Year | Granules |
-|------|----------|
-| 2018 | 297 |
-| 2019 | 620 |
-| 2020 | 738 |
-| 2021 | 1,205 |
-| 2022 | 1,944 |
-| 2023 | 1,196 |
-| **Total** | **6,000** |
+| Year | Granules | Landsat-Adjacent (6–11 UTC) |
+|------|----------|-----------------------------|
+| 2018 | 297 | 77 (26%) |
+| 2019 | 620 | 264 (43%) |
+| 2020 | 738 | 199 (27%) |
+| 2021 | 1,205 | 557 (46%) |
+| 2022 | 1,944 | 750 (39%) |
+| 2023 | 1,196 | 394 (33%) |
+| 2024 | **0** | **0** |
+| 2025 | **0** | **0** |
+| **Total** | **6,000** | **2,241** |
 
 | Month | Granules |
 |-------|----------|
@@ -199,13 +243,26 @@ WGS84 rectangle, covers Berlin + ~5 km buffer. Landsat WRS-2 paths covered: **19
 | Dec | 520 |
 
 **Overpass times:** Distributed across the full day (unlike Landsat's fixed 10:00 AM).  
-- Morning: 1,565 (8–11h), Afternoon: 1,462 (12–15h), Evening: 808 (16–19h), Night: 988 (20–3h)
+- Morning (6–11 UTC): **2,241** (37%) — this is the Landsat-adjacent window
+- Afternoon (12–15 UTC): 1,462 (24%)
+- Evening (16–19 UTC): 808 (13%)
+- Night (20–3 UTC): 988 (16%)
+- Early morning (4–7 UTC): 501 (8%)
+
+**Day/Night split:** 4,187 day / 1,813 night
+
+**Landsat-adjacent granules:** 2,241 total — these are ECOSTRESS granules acquired within the same local time window as Landsat (~6–11 UTC, covering both CET and CEST). This is the subset most comparable to Landsat LST observations. **37% of all granules fall within this window.**
 
 **Summer (May–Sep):** 2,311 granules (39% of total)
 
+**2024/2025 gap:** No ECOSTRESS data available for 2024 or 2025 as of June 2026. The LP DAAC has a 2–3 year processing lag. This means:
+- ECOSTRESS validation can cover **2018–2023** (6 years)
+- If training extends to 2024 or 2025, those years **cannot** be validated with ECOSTRESS
+- If 2017 is included in training, it also cannot be validated with ECOSTRESS
+
 **Note:** Granules are MGRS-tiled. A single ISS overpass can produce multiple granules over the Berlin area, so the 6,000 count overstates unique observation times. The ECOSTRESS ISS orbit crosses Berlin at varying local times (no fixed sun-synchronous schedule).
 
-**Verdict:** ECOSTRESS is accessible and covers Berlin. With ~2,300 granules in the summer months across 6 years, it is a viable independent validation source (70 m LST vs. our 10 m downscaled product). The main limitation is the ISS overpass timing (not fixed, varies across day/night) and the 2–3 year processing lag in LP DAAC.
+**Verdict:** ECOSTRESS is a strong independent validation source with 2,241 Landsat-adjacent granules across 2018–2023. The main limitation is the 2–3 year LP DAAC processing lag, which creates a validation gap for 2024+ training data.
 
 ---
 
@@ -234,10 +291,20 @@ If we use **monthly composites** (one LST map per month):
 
 | Parameter | Recommendation | Rationale |
 |-----------|---------------|-----------|
-| Start year | **2018** | First full year of S2 operations + stable L8 data. 2017 also viable but margins are thinner. |
-| End year | **2024** | Full calendar year with both L8+L9. Extend to 2025 if more data needed. |
+| Start year | **2018** | First full year of S2 operations + stable L8 data. 2017 is viable for Landsat-only training (41 May–Sep scenes, 8 cloud-free) but ECOSTRESS validation only starts 2018 — including 2017 means no ECOSTRESS validation for that year. |
+| End year | **2024** | Full calendar year with L8+L9 at full capacity. 2025 data exists (82 May–Sep scenes, 21 cloud-free) and can be added, but ECOSTRESS validation data stops at 2023 — adding 2024/2025 for training means no ECOSTRESS validation for those years. |
 | Seasonal window | **May–September** | Core LST season for urban heat analysis. 5 months × 7 years = 35 monthly composites. |
 | Compositing | Monthly median | One composite per site per month. Fill gaps with per-pixel medians from available scenes. |
+
+**Year-window tradeoff summary:**
+
+| Start | End | Landsat scenes | ECOSTRESS validation | Landsat-only years |
+|-------|-----|---------------|---------------------|-------------------|
+| 2018 | 2024 | 118 cloud-free (7 yrs) | ✅ 2018–2023 (6 yrs) | 0 |
+| 2017 | 2024 | 126 (+8 more) | ⚠️ 2018–2023 (no ECOSTRESS for 2017) | 1 |
+| 2018 | 2025 | 139 (+21 more) | ⚠️ 2018–2023 (no ECOSTRESS for 2024–2025) | 2 |
+
+**Verdict:** **2018–2024** is the safest default — it maximizes ECOSTRESS validation coverage (6 of 7 years validated). Extending to 2017 (+6%) or 2025 (+18%) adds marginal training data but at the cost of unvalidated years. If more training data is needed (low-shot scenario), include 2025 first (better cloud-free count), then 2017. 2025 also has the benefit of Sentinel-2C joining the constellation, increasing scene density.
 
 ### Open decisions
 

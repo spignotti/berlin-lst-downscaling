@@ -5,8 +5,23 @@ Checks Landsat 8/9 TIRS and Sentinel-2 L2A scene counts per year/month.
 Usage: uv run python notebooks/data_availability.py
 """
 
-import ee
+import socket
 import pandas as pd
+
+# ── IPv4 workaround ────────────────────────────────────────────────────
+# macOS prefers IPv6 DNS results, but IPv6 routing to api.notion.com,
+# earthengine.googleapis.com, etc. hangs. Force IPv4 for all HTTP libs.
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+    results = _orig_getaddrinfo(host, port, family, type, proto, flags)
+    return [r for r in results if r[0] == socket.AF_INET]
+
+
+socket.getaddrinfo = _ipv4_only
+
+import ee
 
 # ── Auth ───────────────────────────────────────────────────────────────
 ee.Initialize(project='masterarbeit-berlin-lst')
@@ -16,6 +31,8 @@ BERLIN_BBOX = ee.Geometry.Rectangle([13.08, 52.34, 13.76, 52.68])
 START = '2013-01-01'
 END = '2026-06-30'
 CLOUD_THRESHOLD = 20  # percent
+SEASON_START = 5  # May
+SEASON_END = 9  # Sep
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -60,7 +77,7 @@ def pull_scene_metadata(collection_id, cloud_prop, sat_prop, extra_props=None):
     return df.drop(columns=['date_str'])
 
 
-def summarize(df, label, cloud_threshold=CLOUD_THRESHOLD):
+def summarize(df, label, cloud_threshold=CLOUD_THRESHOLD, season=(SEASON_START, SEASON_END)):
     """Print per-year and per-month summaries with/without cloud filter."""
     cloud_free = df[df['cloud_cover'] < cloud_threshold]
 
@@ -76,6 +93,25 @@ def summarize(df, label, cloud_threshold=CLOUD_THRESHOLD):
     monthly['filtered_out'] = monthly['total'] - monthly['cloud_free']
     monthly = monthly.fillna(0).astype(int)
 
+    # Seasonal filter (May-Sep by default)
+    smin, smax = season
+    in_season = df['month'].between(smin, smax)
+    seasonal = df[in_season]
+    seasonal_cloud_free = seasonal[seasonal['cloud_cover'] < cloud_threshold]
+
+    # Per-year seasonal summary
+    seasonal_yearly = seasonal.groupby('year').size().to_frame('seasonal_total')
+    seasonal_yearly['seasonal_cloud_free'] = seasonal_cloud_free.groupby('year').size()
+    seasonal_yearly = seasonal_yearly.fillna(0).astype(int)
+
+    # Per-year × month pivot table for seasonal months
+    pivot = df.pivot_table(
+        index='year', columns='month', values='cloud_cover', aggfunc='count', fill_value=0
+    ).astype(int)
+    cf_pivot = cloud_free.pivot_table(
+        index='year', columns='month', values='cloud_cover', aggfunc='count', fill_value=0
+    ).astype(int)
+
     # Count by satellite (if multiple)
     if 'satellite' in df.columns:
         sat_counts = df['satellite'].value_counts()
@@ -88,12 +124,20 @@ def summarize(df, label, cloud_threshold=CLOUD_THRESHOLD):
         'cloud_free_scenes': len(cloud_free),
         'yearly': yearly,
         'monthly': monthly,
+        'seasonal_yearly': seasonal_yearly,
+        'pivot': pivot,
+        'cf_pivot': cf_pivot,
         'satellite_counts': sat_counts,
     }
 
 
 def print_summary(result):
     """Pretty-print a summary dict."""
+    smin, smax = SEASON_START, SEASON_END
+    months = {1:'Jan',2:'Feb',3:'Mar',4:'Apr',5:'May',6:'Jun',
+              7:'Jul',8:'Aug',9:'Sep',10:'Oct',11:'Nov',12:'Dec'}
+    season_labels = [months[m] for m in range(smin, smax+1)]
+
     print(f"\n{'='*70}")
     print(f"  {result['label']}")
     print(f"  Total scenes: {result['total_scenes']}  "
@@ -108,8 +152,6 @@ def print_summary(result):
         row = y.loc[yr]
         print(f"    {yr}: {row['total']:4d} | {row['cloud_free']:4d} | {row['filtered_out']:4d}")
 
-    months = {1:'Jan', 2:'Feb', 3:'Mar', 4:'Apr', 5:'May', 6:'Jun',
-              7:'Jul', 8:'Aug', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dec'}
     print(f"\n  Per Month (all years, total | <{CLOUD_THRESHOLD}% cloud):")
     m = result['monthly']
     for mi in sorted(m.index):
@@ -117,6 +159,28 @@ def print_summary(result):
         pct = (row['cloud_free'] / row['total'] * 100) if row['total'] > 0 else 0
         print(f"    {months[mi]:>3s}: {row['total']:4d} | {row['cloud_free']:4d} "
               f"({pct:.0f}% usable)")
+
+    # Seasonal (May-Sep) per-year table
+    sy = result['seasonal_yearly']
+    print(f"\n  May-Sep Only (total | <{CLOUD_THRESHOLD}% cloud):")
+    print(f"    {'Year':>6s} | {'Total':>5s} | {'<20%':>5s}")
+    print(f"    {'-'*6} | {'-'*5} | {'-'*5}")
+    for yr in sorted(sy.index):
+        row = sy.loc[yr]
+        print(f"    {yr:>6d} | {row['seasonal_total']:>5d} | {row['seasonal_cloud_free']:>5d}")
+
+    # Per-year × month table for seasonal months
+    cf = result['cf_pivot']
+    seasonal_months = [c for c in cf.columns if smin <= c <= smax]
+    if seasonal_months:
+        print(f"\n  May-Sep Cloud-Free per Year × Month:")
+        header = f"    {'Year':>6s} |" + "".join(f" {months[m]:>4s}" for m in seasonal_months) + " | {'Sum':>4s}"
+        print(header)
+        print(f"    {'-'*6} |" + "".join(f" {'-'*4}" for _ in seasonal_months) + " | {'-'*4}")
+        for yr in sorted(cf.index):
+            vals = [cf.loc[yr, m] if m in cf.columns else 0 for m in seasonal_months]
+            vals_str = "".join(f" {v:>4d}" for v in vals)
+            print(f"    {yr:>6d} |{vals_str} | {sum(vals):>4d}")
 
 
 # ── LANDSAT 8/9 TIRS ───────────────────────────────────────────────────
@@ -211,6 +275,34 @@ for name, col_id in ecos.items():
             print(f"  {name}: 0 scenes — Berlin not covered")
     except Exception as e:
         print(f"  {name}: ERROR — {e}")
+
+
+# ── FINAL CONDENSED TABLES ──────────────────────────────────────────────
+print(f"\n\n{'='*70}")
+print("  CONDENSED: Landsat 8+9 — May-Sep per Year (< 20% Cloud)")
+print(f"{'='*70}")
+print(f"  {'Year':>6s} | {'Total':>6s} | {'<20%':>5s}")
+print(f"  {'-'*6} | {'-'*6} | {'-'*5}")
+sm_y = r_landsat['seasonal_yearly']
+for yr in sorted(sm_y.index):
+    if yr < 2017 or yr > 2025:
+        continue
+    row = sm_y.loc[yr]
+    print(f"  {yr:>6d} | {row['seasonal_total']:>6d} | {row['seasonal_cloud_free']:>5d}")
+
+# Window: 2017-2024
+w1 = sm_y.loc[2017:2024]
+print(f"\n  Window 2017–2024: "
+      f"{w1['seasonal_total'].sum()} total, "
+      f"{w1['seasonal_cloud_free'].sum()} cloud-free "
+      f"({w1['seasonal_cloud_free'].sum()/w1['seasonal_total'].sum()*100:.0f}% usable)")
+
+# Window: 2018-2024
+w2 = sm_y.loc[2018:2024]
+print(f"  Window 2018–2024: "
+      f"{w2['seasonal_total'].sum()} total, "
+      f"{w2['seasonal_cloud_free'].sum()} cloud-free "
+      f"({w2['seasonal_cloud_free'].sum()/w2['seasonal_total'].sum()*100:.0f}% usable)")
 
 
 print("\n\nDone.\n")
