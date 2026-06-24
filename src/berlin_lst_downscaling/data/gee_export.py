@@ -17,7 +17,6 @@ from berlin_lst_downscaling.data.gee_scenes import (
     list_sentinel2_scenes,
     prepare_landsat_collection,
     prepare_landsat_export_lst,
-    prepare_landsat_export_sr,
     prepare_sentinel2_collection_wrapped,
     prepare_sentinel2_export,
 )
@@ -96,23 +95,7 @@ def _export_landsat(
 
             image = ee.Image(scene_list.get(i))
 
-            prefix_base = f"{cfg.landsat.export.prefix}/{y}/{scene_id}"
-
-            # ── SR export (30m) ──
-            sr_img = prepare_landsat_export_sr(image, cfg)
-            _submit_or_dry_run(
-                sr_img,
-                description=f"ard_landsat_sr_{scene_id}",
-                bucket=bucket,
-                prefix=f"{prefix_base}_SR",
-                scale=cfg.landsat.export.scale_sr,
-                region=region,
-                max_pixels=max_pixels,
-                crs=cfg.ard.crs,
-                dry_run=dry_run,
-                label=f"  [{date}] SR @ {cfg.landsat.export.scale_sr}m",
-                tasks=tasks,
-            )
+            prefix = f"{cfg.landsat.export.prefix}/{y}/{scene_id}_LST"
 
             # ── LST export (100m) ──
             lst_img = prepare_landsat_export_lst(image, cfg)
@@ -120,7 +103,7 @@ def _export_landsat(
                 lst_img,
                 description=f"ard_landsat_lst_{scene_id}",
                 bucket=bucket,
-                prefix=f"{prefix_base}_LST",
+                prefix=prefix,
                 scale=cfg.landsat.export.scale_lst,
                 region=region,
                 max_pixels=max_pixels,

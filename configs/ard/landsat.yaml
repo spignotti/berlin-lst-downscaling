@@ -29,15 +29,14 @@ landsat:
   radiometry:
     # C2 scaling: DN * scale + add
     # See https://www.usgs.gov/landsat-missions/landsat-collection-2-surface-temperature
-    sr_mult: 2.75e-05
-    sr_add: -0.2
+    sr_mult: 2.75e-05       # not exported — S2 provides spectral predictors
+    sr_add: -0.2             # not exported
     st_mult: 0.00341802
     st_add: 149.0
-    reflectance_clip: [0.0, 1.0]
-    lst_plausible_kelvin: [250.0, 350.0]  # Phase 1: downstream QA filter
+    reflectance_clip: [0.0, 1.0]  # not exported (SR not exported)
+    lst_plausible_kelvin: [250.0, 350.0]
 
   export:
-    # Two-task split: SR at 30 m, LST at 100 m (preserves native LST resolution)
-    scale_sr: 30
+    # Single-task: LST at 100 m (native resolution, downscaling target)
     scale_lst: 100
     prefix: "ard/dynamic/landsat"

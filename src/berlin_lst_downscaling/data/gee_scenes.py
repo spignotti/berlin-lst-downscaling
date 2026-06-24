@@ -101,15 +101,12 @@ def prepare_landsat_collection(
         "cirrus": cfg.landsat.cloud.bits.cirrus,
     }
     dilation = cfg.landsat.cloud.dilation_pixels
-    sr_bands = list(cfg.landsat.bands_sr)  # plain list of str
     lst_band = str(cfg.landsat.band_lst)
     rad = cfg.landsat.radiometry
-    sr_mult = float(rad.sr_mult)
-    sr_add = float(rad.sr_add)
     st_mult = float(rad.st_mult)
     st_add = float(rad.st_add)
-    clip_min = float(rad.reflectance_clip[0])
-    clip_max = float(rad.reflectance_clip[1])
+    lst_low_k = float(rad.lst_plausible_kelvin[0])
+    lst_high_k = float(rad.lst_plausible_kelvin[1])
 
     def _process(img: ee.Image) -> ee.Image:
         # ── Cloud mask (inlined from gee_masks.mask_landsat) ──
@@ -125,22 +122,21 @@ def prepare_landsat_collection(
         if dilation > 0:
             clear = clear.focal_min(dilation, kernelType="square")
 
-        # ── Radiometric scaling (inlined from gee_radiometry) ──
-        # Use positional unpacking (*tuple) to avoid ee.List promotion issues
-        sr = img.select(*sr_bands).float()
-        sr = sr.multiply(sr_mult).add(sr_add).max(clip_min).min(clip_max)
-
+        # ── LST radiometric scaling ──
         lst = img.select(lst_band).float()
         lst = lst.multiply(st_mult).add(st_add)
+
+        # ── LST plausibility flag (1=plausible, 0=outside range) ──
+        lst_plausible = lst.gte(lst_low_k).And(lst.lte(lst_high_k))
 
         # Chain addBands on the original image to preserve properties
         # (ee.Image.cat drops properties like system:time_start)
         result = (
             img
-            .addBands(sr)  # scaled SR (overwrites original SR bands)
-            .addBands(lst)  # scaled LST (overwrites original LST band)
+            .addBands(lst)  # scaled LST (overwrites original ST_B10)
             .addBands(clear.rename("cloud_mask"))
-            .select(*sr_bands, lst_band, "cloud_mask")
+            .addBands(lst_plausible.rename("lst_plausible"))
+            .select(lst_band, "cloud_mask", "lst_plausible")
         )
         return result
 
@@ -191,22 +187,13 @@ def prepare_sentinel2_collection_wrapped(
 # ── Per-scene export image construction ──────────────────────────────────────
 
 
-def prepare_landsat_export_sr(image: ee.Image, cfg: DictConfig) -> ee.Image:
-    """Select bands for the 30m SR export task.
-
-    Returns an image with SR bands + ``cloud_mask``.
-    """
-    sr_bands = list(cfg.landsat.bands_sr)
-    return image.select([*sr_bands, "cloud_mask"])
-
-
 def prepare_landsat_export_lst(image: ee.Image, cfg: DictConfig) -> ee.Image:
     """Select bands for the 100m LST export task.
 
-    Returns an image with ST_B10 + ``cloud_mask``.
+    Returns an image with ST_B10 + cloud_mask + lst_plausible.
     """
     lst_band = str(cfg.landsat.band_lst)
-    return image.select([lst_band, "cloud_mask"])
+    return image.select([lst_band, "cloud_mask", "lst_plausible"])
 
 
 def prepare_sentinel2_export(image: ee.Image, cfg: DictConfig) -> ee.Image:
