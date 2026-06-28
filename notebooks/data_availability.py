@@ -24,7 +24,7 @@ socket.getaddrinfo = _ipv4_only
 import ee
 
 # ── Auth ───────────────────────────────────────────────────────────────
-ee.Initialize(project='masterarbeit-berlin-lst')
+ee.Initialize(project='masterarbeit-berlin-lst-v2')
 
 # ── Parameters ─────────────────────────────────────────────────────────
 BERLIN_BBOX = ee.Geometry.Rectangle([13.08, 52.34, 13.76, 52.68])

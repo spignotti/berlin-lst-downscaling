@@ -21,7 +21,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    ee.Initialize(project="masterarbeit-berlin-lst")
+    ee.Initialize(project="masterarbeit-berlin-lst-v2")
 
     tasks = ee.batch.Task.list()
     states = Counter(t.status().get("state", "UNKNOWN") for t in tasks)

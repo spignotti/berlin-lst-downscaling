@@ -8,9 +8,13 @@ from omegaconf import DictConfig
 
 
 def initialize(cfg: DictConfig) -> None:
-    """Initialize Earth Engine with the configured project."""
+    """Initialize Earth Engine with the configured project via service account."""
     project = cfg.ard.gee.project
-    ee.Initialize(project=project)
+    credentials = ee.ServiceAccountCredentials(
+        cfg.ard.gee.service_account_email,
+        cfg.ard.gee.service_account_key_path,
+    )
+    ee.Initialize(credentials, project=project)
 
 
 def get_aoi_geometry(

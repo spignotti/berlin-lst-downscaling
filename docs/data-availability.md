@@ -2,7 +2,7 @@
 
 Analysis date: 2026-06-18  
 Query tool: Google Earth Engine (Python API)  
-Service account: `masterarbeit-vertex@masterarbeit-berlin-lst.iam.gserviceaccount.com`
+Service account: `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com`
 
 ---
 

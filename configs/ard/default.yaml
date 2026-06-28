@@ -36,7 +36,9 @@ ard:
       processing_version: "0.1.0"
 
   gee:
-    project: "masterarbeit-berlin-lst"
+    project: "masterarbeit-berlin-lst-v2"
+    service_account_email: "masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com"
+    service_account_key_path: "${oc.env:GOOGLE_APPLICATION_CREDENTIALS}"
     max_pixels: 10000000000000  # 1e13
     task_poll_interval_sec: 30
     logging_tag: "ard-pipeline"
