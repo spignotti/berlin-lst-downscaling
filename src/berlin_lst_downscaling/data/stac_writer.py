@@ -131,9 +131,9 @@ def write_stac_item(
 
     # Cloud fraction from QA report
     if qa_report and isinstance(qa_report, dict):
-        cloud_pct = qa_report.get("cloud_fraction") or qa_report.get(
-            "cloud_pixel_fraction"
-        )
+        cloud_pct = qa_report.get("cloud_fraction")
+        if cloud_pct is None:
+            cloud_pct = qa_report.get("cloud_pixel_fraction")
         if cloud_pct is not None:
             properties["cloud_fraction"] = cloud_pct
 

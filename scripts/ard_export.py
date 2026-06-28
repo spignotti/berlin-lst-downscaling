@@ -19,6 +19,10 @@ Usage:
     uv run python scripts/ard_export.py dry_run=false
     uv run python scripts/ard_export.py year=2023 source=landsat dry_run=false
 
+    # Smoke test: export only 1 scene per source
+    uv run python scripts/ard_export.py year=2023 smoke=true
+    uv run python scripts/ard_export.py year=2023 source=landsat smoke=true dry_run=false
+
 Safety note:
     Defaults to --dry-run=true to prevent accidental mass exports.
 """
@@ -40,6 +44,9 @@ def main(cfg: DictConfig) -> None:
         print("  DRY RUN — no tasks will be submitted")
         print("  Use `dry_run=false` to submit")
         print("=" * 60)
+
+    if cfg.smoke:
+        print("  SMOKE MODE — submitting only 1 scene per source\n")
 
     sources = ["landsat", "sentinel2", "ecostress"]
     if cfg.source:
@@ -82,7 +89,9 @@ def _run_gee_export(cfg: DictConfig, source: str) -> list:
     """Run GEE batch export for a given source."""
     from berlin_lst_downscaling.data.gee_export import export_scenes_by_year
 
-    tasks = export_scenes_by_year(cfg, source=source, year=cfg.year, dry_run=cfg.dry_run)
+    tasks = export_scenes_by_year(
+        cfg, source=source, year=cfg.year, dry_run=cfg.dry_run, smoke=cfg.smoke,
+    )
     return tasks
 
 
@@ -90,7 +99,7 @@ def _run_ecostress_export(cfg: DictConfig) -> list[dict]:
     """Run ECOSTRESS export via AppEEARS."""
     from berlin_lst_downscaling.data.ecostress_export import export_ecostress_by_year
 
-    results = export_ecostress_by_year(cfg, year=cfg.year, dry_run=cfg.dry_run)
+    results = export_ecostress_by_year(cfg, year=cfg.year, dry_run=cfg.dry_run, smoke=cfg.smoke)
     return results
 
 

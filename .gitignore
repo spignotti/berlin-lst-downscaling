@@ -27,3 +27,6 @@ package-lock.json
 # W&B run artifacts (local cache)
 wandb/
 data/logs/
+
+# Pipeline temporary processing files
+data/tmp/

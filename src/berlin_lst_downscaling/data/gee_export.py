@@ -30,6 +30,7 @@ def export_scenes_by_year(
     source: str = "landsat",
     year: int | None = None,
     dry_run: bool = True,
+    smoke: bool = False,
 ) -> list[GeeTask]:
     """Orchestrate GEE batch export for a given source and year.
 
@@ -38,14 +39,15 @@ def export_scenes_by_year(
         source: ``"landsat"`` or ``"sentinel2"``.
         year: Specific year, or ``None`` for all years in the config range.
         dry_run: If ``True``, print planned actions without submitting tasks.
+        smoke: If ``True``, submit/print only 1 scene per source (stop for inspection).
 
     Returns:
         List of submitted ``GeeTask`` objects (empty in dry-run mode).
     """
     if source == "landsat":
-        return _export_landsat(cfg, year, dry_run)
+        return _export_landsat(cfg, year, dry_run, smoke)
     elif source == "sentinel2":
-        return _export_sentinel2(cfg, year, dry_run)
+        return _export_sentinel2(cfg, year, dry_run, smoke)
     else:
         msg = f"Unknown source: {source!r}. Expected 'landsat' or 'sentinel2'."
         raise ValueError(msg)
@@ -58,6 +60,7 @@ def _export_landsat(
     cfg: DictConfig,
     year: int | None,
     dry_run: bool,
+    smoke: bool = False,
 ) -> list[GeeTask]:
     years = _resolve_years(cfg, year)
     bucket = cfg.ard.output.bucket
@@ -113,6 +116,10 @@ def _export_landsat(
                 tasks=tasks,
             )
 
+            if smoke:
+                print("  [SMOKE] 1 scene submitted — stopping year loop.")
+                return tasks
+
     return tasks
 
 
@@ -123,6 +130,7 @@ def _export_sentinel2(
     cfg: DictConfig,
     year: int | None,
     dry_run: bool,
+    smoke: bool = False,
 ) -> list[GeeTask]:
     years = _resolve_years(cfg, year)
     bucket = cfg.ard.output.bucket
@@ -176,6 +184,10 @@ def _export_sentinel2(
                 label=f"  [{date}] S2 @ {cfg.sentinel2.export.scale}m",
                 tasks=tasks,
             )
+
+            if smoke:
+                print("  [SMOKE] 1 scene submitted — stopping year loop.")
+                return tasks
 
     return tasks
 

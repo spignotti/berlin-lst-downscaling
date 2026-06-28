@@ -164,6 +164,7 @@ def _stretch_uint8(band: np.ndarray) -> np.ndarray:
         p98 = p2 + 1.0
 
     stretched = np.clip((band - p2) / (p98 - p2) * 255.0, 0, 255)
+    stretched = np.nan_to_num(stretched, nan=0.0)
     return stretched.astype(np.uint8)
 
 
