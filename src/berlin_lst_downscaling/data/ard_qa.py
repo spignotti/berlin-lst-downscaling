@@ -256,6 +256,7 @@ def generate_qa_report(
     target_resolution: float,
     cfg: DictConfig,
     scene_id: str | None = None,
+    skip_grid_check: bool = False,
 ) -> dict:
     """Generate a full QA report for a processed ARD COG.
 
@@ -269,24 +270,38 @@ def generate_qa_report(
         target_resolution: Expected pixel resolution.
         cfg: Pipeline config (used for ``qa.nodata_threshold``).
         scene_id: Scene identifier (optional, for cohort analysis).
+        skip_grid_check: If ``True``, skip grid conformity check.
+            Used for native-CRS sources (ECOSTRESS) where reprojection
+            is not performed.
 
     Returns:
         JSON-serializable QA report dict.
     """
     nodata_threshold = float(cfg.ard.process.qa.nodata_threshold)
 
-    grid = check_grid_conformity(raster_path, spec, target_resolution)
     stats = compute_radiometric_stats(raster_path, nodata_threshold=nodata_threshold)
     cloud_pct = compute_cloud_fraction(raster_path)
+
+    if skip_grid_check:
+        grid = {
+            "checked": False,
+            "reason": "native CRS source — grid conformity not applicable",
+        }
+        # For sparse-swath sources (ECOSTRESS), any valid pixel is sufficient.
+        # The standard nodata_threshold (0.95) is too strict for narrow swaths.
+        qa_passed = any(b.get("nodata_pct", 1.0) < 1.0 for b in stats.values())
+    else:
+        grid = check_grid_conformity(raster_path, spec, target_resolution)
+        qa_passed = (
+            grid.get("crs_match", False)
+            and grid.get("resolution_match", False)
+        )
 
     report: dict = {
         "grid_conformity": grid,
         "radiometric_stats": stats,
         "cloud_fraction": cloud_pct,
-        "qa_passed": (
-            grid.get("crs_match", False)
-            and grid.get("resolution_match", False)
-        ),
+        "qa_passed": qa_passed,
     }
 
     if scene_id is not None:

@@ -187,6 +187,7 @@ def export_ecostress_by_year(
     cfg: DictConfig,
     year: int | None = None,
     dry_run: bool = True,
+    smoke: bool = False,
 ) -> list[dict[str, Any]]:
     """Download ECOSTRESS data for a given year via AppEEARS and produce COGs in GCS.
 
@@ -205,6 +206,7 @@ def export_ecostress_by_year(
             config range (``cfg.ecostress.time.start_year`` to
             ``cfg.ecostress.time.end_year``).
         dry_run: If ``True``, print planned actions without submitting API calls.
+        smoke: If ``True``, limit to 1 month and 1 file.
 
     Returns:
         List of result dicts with keys ``year``, ``gcs_paths``, and optionally
@@ -223,12 +225,18 @@ def export_ecostress_by_year(
         print(f"ECOSTRESS {y}" + (" [DRY-RUN]" if dry_run else ""))
         print(f"{'='*60}")
 
+        # Select months: in smoke mode, only the first month
+        months = list(cfg.ecostress.time.months)
+        if smoke:
+            months = months[:1]
+            print(f"  [SMOKE] limiting to month {months[0]:02d}")
+
         # ── Step 1: CMR query (informational) ──
         granules = list_ecostress_granules(
             wgs84_bbox=wgs84_bbox,
             start_year=y,
             end_year=y,
-            months=list(cfg.ecostress.time.months),
+            months=months,
         )
         summary = summarize_granules(granules)
         print(f"  CMR granules: {summary['total']}")
@@ -253,7 +261,9 @@ def export_ecostress_by_year(
 
         # Real execution path
         try:
-            result = _execute_year(cfg, y, granules, bucket, prefix, temp_base, wgs84_bbox)
+            result = _execute_year(
+                cfg, y, granules, bucket, prefix, temp_base, wgs84_bbox, smoke=smoke,
+            )
             results.append(result)
         except Exception as exc:
             logger.exception("ECOSTRESS export failed for year %d", y)
@@ -270,6 +280,7 @@ def _execute_year(
     prefix: str,
     temp_base: Path,
     wgs84_bbox: list[float],
+    smoke: bool = False,
 ) -> dict[str, Any]:
     """Execute a full download + COG + upload cycle for one year.
 
@@ -286,7 +297,10 @@ def _execute_year(
     geo_json = get_aoi_geojson_from_cfg(cfg)
     task_name = _build_appeears_task_name(year)
     layers = _build_appeears_layers(cfg)
-    dates = _build_appeears_dates(year, months=list(cfg.ecostress.time.months))
+    months = list(cfg.ecostress.time.months)
+    if smoke:
+        months = months[:1]
+    dates = _build_appeears_dates(year, months=months)
 
     task_id = client.submit_area_task(
         name=task_name,
@@ -321,6 +335,8 @@ def _execute_year(
 
     # Optionally limit number of TIFFs (for testing)
     limit: int | None = cfg.ecostress.export.get("limit", None)
+    if smoke:
+        limit = 1  # smoke mode overrides: process only 1 file
     if limit is not None and limit < len(tif_files):
         tif_files = tif_files[:limit]
         print(f"  [LIMIT={limit}] processing {len(tif_files)} GeoTIFF(s)")

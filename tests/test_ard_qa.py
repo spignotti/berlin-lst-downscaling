@@ -218,3 +218,37 @@ def test_generate_qa_report_integration(tmp_path: Path) -> None:
     assert "qa_passed" in report
     assert isinstance(report["grid_conformity"], dict)
     assert isinstance(report["radiometric_stats"], dict)
+
+
+def test_generate_qa_report_skip_grid_check(tmp_path: Path) -> None:
+    """Skip grid check returns checked=False and passes on valid data."""
+    spec = _make_spec()
+    cfg = OmegaConf.create({
+        "ard": {"process": {"qa": {"nodata_threshold": 0.95}}},
+    })
+    path = _make_synthetic_raster(tmp_path)
+    report = generate_qa_report(
+        path, spec, target_resolution=0, cfg=cfg, skip_grid_check=True,
+    )
+    assert report["grid_conformity"]["checked"] is False
+    assert report["qa_passed"] is True  # has valid data
+
+
+def test_generate_qa_report_skip_grid_no_data(tmp_path: Path) -> None:
+    """Skip grid check with all-nodata raster fails qa_passed."""
+    spec = _make_spec()
+    cfg = OmegaConf.create({
+        "ard": {"process": {"qa": {"nodata_threshold": 0.95}}},
+    })
+    data = np.full((1, 4, 4), np.nan, dtype=np.float32)
+    path = _make_synthetic_raster(
+        tmp_path, data=data, height=4, width=4,
+        nodata=np.nan,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 0),
+        crs="EPSG:4326",
+    )
+    report = generate_qa_report(
+        path, spec, target_resolution=0, cfg=cfg, skip_grid_check=True,
+    )
+    assert report["grid_conformity"]["checked"] is False
+    assert report["qa_passed"] is False  # no valid data

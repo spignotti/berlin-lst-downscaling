@@ -7,7 +7,7 @@ Source-to-grid mapping::
 
     Landsat     EPSG:25833  100m  →  Canonical 100m grid (regrid only)
     Sentinel-2  EPSG:25833  10m   →  Canonical 10m grid  (regrid only)
-    ECOSTRESS   WGS84/Sinu  ~70m  →  EPSG:25833, ~70m    (reproject + keep native res)
+    ECOSTRESS   Native CRS  ~70m  →  Native CRS, ~70m    (passthrough, no reprojection)
 
 Usage::
 
@@ -26,6 +26,7 @@ from typing import Any, cast
 
 import numpy as np
 import rasterio
+import rasterio.shutil
 from affine import Affine
 from omegaconf import DictConfig, OmegaConf
 from rasterio.enums import Resampling
@@ -45,6 +46,10 @@ logger = logging.getLogger(__name__)
 def list_scenes(cfg: DictConfig, source: str, year: int) -> list[str]:
     """List GCS blob URIs for a given source and year.
 
+    Only returns files with valid raster extensions (``.tif``, ``.tiff``)
+    to skip metadata files (CSVs, XMLs, etc.) that may coexist in the
+    same prefix.
+
     Args:
         cfg: Pipeline config.
         source: ``"landsat"``, ``"sentinel2"``, or ``"ecostress"``.
@@ -60,7 +65,11 @@ def list_scenes(cfg: DictConfig, source: str, year: int) -> list[str]:
 
     client = storage.Client()
     blobs = list(client.list_blobs(bucket, prefix=prefix))
-    uris = sorted(f"gs://{bucket}/{b.name}" for b in blobs)
+    raster_blobs = [b for b in blobs if b.name.lower().endswith((".tif", ".tiff"))]
+    # Sort largest first — bigger files tend to have more valid data
+    # (relevant for ECOSTRESS sparse swath tiles)
+    raster_blobs.sort(key=lambda b: b.size or 0, reverse=True)
+    uris = [f"gs://{bucket}/{b.name}" for b in raster_blobs]
     return uris
 
 
@@ -262,11 +271,13 @@ def process_scene(
         # Step 3: QA
         from berlin_lst_downscaling.data.ard_qa import generate_qa_report
 
+        skip_grid = target_res is None  # ECOSTRESS: native CRS, skip grid check
         qa_report = generate_qa_report(
             output_local, spec,
-            target_resolution=target_res if target_res is not None else 70,
+            target_resolution=target_res if target_res is not None else 0,
             cfg=cfg,
             scene_id=scene_id,
+            skip_grid_check=skip_grid,
         )
         with open(qa_local, "w") as f:
             json.dump(qa_report, f, indent=2, default=str)
@@ -483,6 +494,10 @@ def _reproject_and_regrid(
     Returns:
         Path to the written COG.
     """
+    # ECOSTRESS passthrough: preserve native CRS/resolution, apply COG profile
+    if dst_resolution is None:
+        return _copy_as_cog(src_path, dst_path, dst_dtype, cog_cfg)
+
     resampling = getattr(Resampling, resampling_name)
 
     with rasterio.open(src_path) as src:
@@ -494,6 +509,11 @@ def _reproject_and_regrid(
         # Build output profile
         profile = src.profile.copy()
         missing_val = _resolve_nodata(cog_cfg.nodata, dst_dtype)
+
+        # Strip keys inherited from the source that the COG driver
+        # doesn't accept (COG handles tiling internally via blocksize).
+        for _key in ("blockxsize", "blockysize", "tiled", "interleave"):
+            profile.pop(_key, None)
 
         cog_opts = dict(
             driver="COG",
@@ -507,10 +527,10 @@ def _reproject_and_regrid(
             blocksize=int(cog_cfg.tile_size),
         )
 
-        # Overviews — pass to GDAL COG driver if configured
+        # Overviews — GDAL COG driver uses ``OVERVIEWS`` (not OVERVIEW_LEVELS)
         ov_levels = cog_cfg.get("overview_levels")
         if ov_levels is not None:
-            cog_opts["overview_levels"] = int(ov_levels)
+            cog_opts["overviews"] = int(ov_levels)
         ov_resampling = cog_cfg.get("overview_resampling")
         if ov_resampling is not None:
             cog_opts["overview_resampling"] = str(ov_resampling)
@@ -554,6 +574,45 @@ def _reproject_and_regrid(
     return dst_path
 
 
+def _copy_as_cog(src_path: Path, dst_path: Path, dst_dtype: str, cog_cfg: Any) -> Path:
+    """Copy a raster as COG without reprojection, applying COG profile.
+
+    Preserves source CRS, transform, and geometry. Applies compression,
+    tiling, overviews, dtype, and nodata from ``cog_cfg``. Used for
+    ECOSTRESS passthrough (keep native resolution/CRS).
+
+    Args:
+        src_path: Input raster path.
+        dst_path: Output COG path.
+        dst_dtype: Target data type.
+        cog_cfg: Dict-like with keys ``compress``, ``tile_size``,
+            ``nodata``.
+
+    Returns:
+        Path to the written COG.
+    """
+    missing_val = _resolve_nodata(cog_cfg.nodata, dst_dtype)
+
+    # Build COG creation options (same pattern as _convert_to_cog in ecostress_export)
+    cog_kwargs: dict[str, Any] = {
+        "driver": "COG",
+        "dtype": dst_dtype,
+        "nodata": missing_val,
+        "compress": str(cog_cfg.compression),
+        "blocksize": int(cog_cfg.tile_size),
+    }
+    ov_levels = cog_cfg.get("overview_levels")
+    if ov_levels is not None:
+        cog_kwargs["overview_levels"] = int(ov_levels)
+    ov_resampling = cog_cfg.get("overview_resampling")
+    if ov_resampling is not None:
+        cog_kwargs["overview_resampling"] = str(ov_resampling)
+
+    rasterio.shutil.copy(str(src_path), str(dst_path), **cog_kwargs)  # type: ignore[arg-type]
+    logger.info("COG passthrough (no reprojection): %s → %s", src_path, dst_path)
+    return dst_path
+
+
 def _compute_target_dims(
     src: rasterio.DatasetReader,
     spec: GridSpec,
@@ -562,14 +621,21 @@ def _compute_target_dims(
 ) -> tuple[Affine, int, int]:
     """Compute output transform and dimensions for reprojection.
 
+    Args:
+        src: Source raster dataset (must be open).
+        spec: Canonical grid specification.
+        dst_crs: Target CRS (e.g. ``"EPSG:25833"``).
+        dst_resolution: Target pixel resolution in CRS units.
+
     For Landsat/S2 (``dst_resolution`` is set):
         The output is aligned to the canonical grid origin. The extent
         is the intersection of the source bounds + AOI bounds,
         snapped to the canonical grid.
 
-    For ECOSTRESS (``dst_resolution`` is ``None``):
-        Reproject to ``dst_crs``, keep native resolution, compute
-        bounds from the reprojected extent.
+    Note:
+        ECOSTRESS passthrough (``dst_resolution=None``) is handled in
+        ``_reproject_and_regrid`` and does not reach this function.
+        The ``else`` branch here is a safety fallback.
     """
     if dst_resolution is not None:
         # Source is already in EPSG:25833 — regrid to canonical origin
@@ -603,28 +669,13 @@ def _compute_target_dims(
         )
         return transform, width, height
     else:
-        # ECOSTRESS: reproject from native CRS to dst_crs
-        # Use calculate_default_transform for correct resolution conversion
-        # (handles degree→meter, native CRS transforms properly)
-        transform, width, height = calculate_default_transform(
+        # Fallback: reproject from native CRS to dst_crs at native resolution.
+        # This branch is a safety net (ECOSTRESS passthrough happens earlier).
+        tr, w, h = calculate_default_transform(
             src.crs, dst_crs, src.width, src.height,
             *src.bounds,
         )
-        # Cap resolution at 90m to avoid huge files from very-high-res sources
-        # shortcut: native ~70m ECOSTRESS, but cap provides safety margin
-        res = max(abs(transform.a), abs(transform.e))
-        if res < 90.0:
-            scale = 90.0 / res
-            new_res = res * scale
-            new_width = max(1, int(width / scale))
-            new_height = max(1, int(height / scale))
-            transform = Affine(
-                new_res, 0, transform.c,
-                0, -new_res, transform.f,
-            )
-            width, height = new_width, new_height
-
-        return transform, width, height
+        return cast(Affine, tr), int(w or 0), int(h or 0)
 
 
 def _parse_gcs_uri(uri: str) -> tuple[str, str]:

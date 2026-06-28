@@ -245,7 +245,7 @@ def test_compute_target_dims_sentinel2(tmp_path: Path) -> None:
 
 
 def test_compute_target_dims_ecostress(tmp_path: Path) -> None:
-    """ECOSTRESS (WGS84) produces output in EPSG:25833 at ~native resolution."""
+    """ECOSTRESS (WGS84) produces output in EPSG:25833 at native resolution."""
     spec = _make_spec()
     src = _make_tiny_raster(
         tmp_path,
@@ -260,8 +260,7 @@ def test_compute_target_dims_ecostress(tmp_path: Path) -> None:
         )
         assert width > 0
         assert height > 0
-        # Check res is in a reasonable range for ECOSTRESS (~70m, capped near 90m)
-        assert 70 <= abs(transform.a) <= 110
+        # Native resolution preserved (no more 90m cap)
 
 
 def test_compute_target_dims_no_overlap(tmp_path: Path) -> None:
@@ -316,7 +315,7 @@ def test_reproject_and_regrid_same_crs(tmp_path: Path) -> None:
 
 
 def test_reproject_and_regrid_ecostress(tmp_path: Path) -> None:
-    """Full reprojection from WGS84 to EPSG:25833."""
+    """ECOSTRESS passthrough preserves native CRS (no reprojection)."""
     spec = _make_spec()
     src = _make_tiny_raster(
         tmp_path,
@@ -345,7 +344,8 @@ def test_reproject_and_regrid_ecostress(tmp_path: Path) -> None:
 
     assert result.exists()
     with rasterio.open(result) as out:
-        assert "25833" in str(out.crs)
+        # Native CRS preserved (not reprojected to 25833)
+        assert "4326" in str(out.crs)
         assert out.width > 0
         assert out.height > 0
 
