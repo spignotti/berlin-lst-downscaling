@@ -224,14 +224,14 @@ def _submit_or_dry_run(
 def monitor_tasks(
     tasks: list[GeeTask],
     poll_interval_sec: int = 30,
-    timeout_min: int = 120,
+    timeout_min: int = 1440,  # 24h for 1400+ exports
 ) -> tuple[list[GeeTask], list[GeeTask]]:
     """Poll a list of export tasks until all complete or fail.
 
     Args:
         tasks: List of ``GeeTask`` objects.
         poll_interval_sec: Seconds between status checks.
-        timeout_min: Maximum total wait time.
+        timeout_min: Maximum total wait time (default 24h).
 
     Returns:
         ``(completed_tasks, failed_tasks)``.
@@ -239,7 +239,8 @@ def monitor_tasks(
     if not tasks:
         return [], []
 
-    deadline = time.time() + timeout_min * 60
+    start_time = time.time()
+    deadline = start_time + timeout_min * 60
     completed = []
     failed = []
     pending = list(tasks)
@@ -264,17 +265,20 @@ def monitor_tasks(
             states = Counter(
                 t.status().get("state", "UNKNOWN") for t in still_pending
             )
+            elapsed = int(time.time() - start_time)
             print(
                 f"  Pending: {len(still_pending)} | "
                 f"States: {dict(states)} | "
-                f"Elapsed: {int(time.time() + poll_interval_sec - deadline + timeout_min * 60)}s"
+                f"Elapsed: {elapsed}s"
             )
             time.sleep(poll_interval_sec)
 
         pending = still_pending
 
     if pending:
-        print(f"  WARNING: {len(pending)} tasks still pending after {timeout_min}min timeout.")
+        elapsed = int(time.time() - start_time)
+        print(f"  WARNING: {len(pending)} tasks still pending after "
+              f"{elapsed // 60}m (timeout={timeout_min}min).")
 
     return completed, failed
 

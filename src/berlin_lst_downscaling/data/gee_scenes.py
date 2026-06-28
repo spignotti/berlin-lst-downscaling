@@ -190,17 +190,19 @@ def prepare_sentinel2_collection_wrapped(
 def prepare_landsat_export_lst(image: ee.Image, cfg: DictConfig) -> ee.Image:
     """Select bands for the 100m LST export task.
 
-    Returns an image with ST_B10 + cloud_mask + lst_plausible.
+    Returns an image with ST_B10 + cloud_mask + lst_plausible,
+    all cast to float32 for export compatibility.
     """
     lst_band = str(cfg.landsat.band_lst)
-    return image.select([lst_band, "cloud_mask", "lst_plausible"])
+    return image.select([lst_band, "cloud_mask", "lst_plausible"]).toFloat()
 
 
 def prepare_sentinel2_export(image: ee.Image, cfg: DictConfig) -> ee.Image:
     """Select bands for the 10m Sentinel-2 export task.
 
-    Returns an image with all S2 predictor bands + SCL + ``cloud_mask``.
+    Returns an image with all S2 predictor bands + SCL + ``cloud_mask``,
+    all cast to float32 for export compatibility.
     """
     all_bands = list(cfg.sentinel2.bands_10m) + list(cfg.sentinel2.bands_20m)
     scl = str(cfg.sentinel2.band_scl)
-    return image.select([*all_bands, scl, "cloud_mask"])
+    return image.select([*all_bands, scl, "cloud_mask"]).toFloat()

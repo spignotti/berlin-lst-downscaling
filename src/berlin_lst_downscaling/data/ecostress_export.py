@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 import rasterio
+import rasterio.shutil
 from omegaconf import DictConfig
-from rasterio.warp import Resampling
 
 from berlin_lst_downscaling.data.appeears_client import AppEEARSClient
 from berlin_lst_downscaling.data.ecostress_scenes import (
@@ -37,8 +37,6 @@ from berlin_lst_downscaling.data.gee_client import get_aoi_geojson_from_cfg
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-
-CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB for streaming uploads
 
 _APPEARS_LAYER_MAP = {
     "LST": "LST",
@@ -52,15 +50,36 @@ def _build_appeears_task_name(year: int) -> str:
     return f"ecostress-berlin-{year}"
 
 
-def _build_appeears_dates(year: int) -> list[dict[str, Any]]:
-    """Build AppEEARS date specification for a single year, May–Sep."""
+def _build_appeears_dates(year: int, months: list[int] | None = None) -> list[dict[str, Any]]:
+    """Build AppEEARS date specification for a single year.
+
+    Each month gets its own entry with full start/end dates and
+    recurring=True with the year range. AppEEARS expects MM-DD-YYYY
+    when recurring=False, or MM-DD with recurring=True + yearRange.
+
+    Args:
+        year: Target year.
+        months: List of months (1-12). If None, defaults to May–Sep.
+    """
+    if months is None:
+        months = [5, 6, 7, 8, 9]
+
+    def _last_day(m: int) -> str:
+        """Return last day of month as DD string."""
+        if m == 2:
+            return "28"
+        if m in (4, 6, 9, 11):
+            return "30"
+        return "31"
+
     return [
         {
-            "startDate": "05-01",
-            "endDate": "09-30",
+            "startDate": f"{m:02d}-01",
+            "endDate": f"{m:02d}-{_last_day(m)}",
             "recurring": True,
             "yearRange": [year, year],
         }
+        for m in sorted(set(months))
     ]
 
 
@@ -83,11 +102,11 @@ def _convert_to_cog(
 ) -> Path:
     """Convert a plain GeoTIFF to a Cloud-Optimized GeoTIFF.
 
-    The conversion:
-    - Ensures float32 dtype
-    - Sets NaN as NoData
-    - Adds internal tiling (512×512)
-    - Builds overviews (2, 4, 8, 16)
+    Uses ``rasterio.shutil.copy`` with the COG driver, which handles
+    tiling, compression, and overview generation automatically.
+
+    The source is expected to be float32 with NaN nodata (as delivered
+    by AppEEARS).
 
     Args:
         src_path: Input GeoTIFF path.
@@ -99,58 +118,27 @@ def _convert_to_cog(
     """
     cog_cfg = cfg.ecostress.cog
     tile_size = int(cog_cfg.tile_size)
-    overview_levels = list(cog_cfg.overview_levels)
-    nodata = cog_cfg.nodata
     compress = str(cog_cfg.compress)
 
-    with rasterio.open(src_path) as src:
-        # Read all bands
-        data = src.read()
-        profile = src.profile.copy()
+    # Build COG creation keyword arguments
+    cog_kwargs: dict[str, Any] = {
+        "driver": "COG",
+        "compress": compress,
+        "blocksize": tile_size,
+    }
 
-        # Update profile for COG
-        profile.update(
-            driver="COG",
-            dtype=cog_cfg.dtype,
-            nodata=nodata.value if hasattr(nodata, "value") else nodata,
-            compress=compress,
-            tiled=True,
-            blockxsize=tile_size,
-            blockysize=tile_size,
-            interleave="pixel",
-        )
+    ov_levels = cog_cfg.get("overview_levels")
+    if ov_levels is not None:
+        cog_kwargs["overview_levels"] = int(ov_levels)
+    ov_resampling = cog_cfg.get("overview_resampling")
+    if ov_resampling is not None:
+        cog_kwargs["overview_resampling"] = str(ov_resampling)
 
-        with rasterio.open(dst_path, "w", **profile) as dst:
-            dst.write(data.astype(profile["dtype"]))
-
-            # Build overviews
-            if overview_levels and dst.overviews(1):
-                pass  # Overviews already exist from COG driver
-            else:
-                # Read all bands, compute overviews
-                for band_idx in range(1, dst.count + 1):
-                    band_data = dst.read(band_idx)
-                    # Use gdal-like approach — build reduced-resolution copies
-                    for level in overview_levels:
-                        out_shape = (
-                            band_data.shape[0] // level,
-                            band_data.shape[1] // level,
-                        )
-                        if out_shape[0] < 1 or out_shape[1] < 1:
-                            continue
-                        src.read(
-                            band_idx,
-                            out_shape=out_shape,
-                            resampling=Resampling.average,
-                        )
-                        # We could build overviews externally via gdaladdo
-                        # For now, just log what we'd do
-                        logger.debug(
-                            "Overview level %d for band %d: shape=%s",
-                            level,
-                            band_idx,
-                            out_shape,
-                        )
+    rasterio.shutil.copy(
+        str(src_path),
+        str(dst_path),
+        **cog_kwargs,  # type: ignore[arg-type]
+    )
 
     logger.info("COG written: %s", dst_path)
     return dst_path
@@ -298,7 +286,7 @@ def _execute_year(
     geo_json = get_aoi_geojson_from_cfg(cfg)
     task_name = _build_appeears_task_name(year)
     layers = _build_appeears_layers(cfg)
-    dates = _build_appeears_dates(year)
+    dates = _build_appeears_dates(year, months=list(cfg.ecostress.time.months))
 
     task_id = client.submit_area_task(
         name=task_name,
@@ -324,36 +312,82 @@ def _execute_year(
     bundle_files = client.list_bundle_files(task_id)
     print(f"  Bundle files: {len(bundle_files)}")
 
+    # Separate GeoTIFF from metadata files
+    def _is_tiff(f: dict[str, Any]) -> bool:
+        return f["file_name"].lower().endswith((".tif", ".tiff"))
+    tif_files = [f for f in bundle_files if _is_tiff(f)]
+    meta_files = [f for f in bundle_files if not _is_tiff(f)]
+    print(f"  GeoTIFF: {len(tif_files)}, metadata: {len(meta_files)}")
+
+    # Optionally limit number of TIFFs (for testing)
+    limit: int | None = cfg.ecostress.export.get("limit", None)
+    if limit is not None and limit < len(tif_files):
+        tif_files = tif_files[:limit]
+        print(f"  [LIMIT={limit}] processing {len(tif_files)} GeoTIFF(s)")
+
     gcs_paths: list[str] = []
-    for i, file_info in enumerate(bundle_files):
+
+    # ── Process GeoTIFF files → COG → upload ──
+    for i, file_info in enumerate(tif_files):
         file_id = file_info["file_id"]
         file_name = file_info["file_name"]
         raw_path = temp_dir / file_name
 
-        # Download
-        print(f"  [{i+1}/{len(bundle_files)}] Downloading {file_name}...")
+        print(f"  [{i+1}/{len(tif_files)}] Downloading {file_name}...")
         client.download_file(task_id, file_id, raw_path)
+
+        # Pre-flight check: file must exist and be non-empty
+        if not raw_path.is_file():
+            logger.error("Downloaded file missing: %s", raw_path)
+            continue
+        if raw_path.stat().st_size == 0:
+            logger.error("Downloaded file empty: %s", raw_path)
+            raw_path.unlink(missing_ok=True)
+            continue
 
         # Convert to COG
         cog_name = file_name.replace(".tif", "_COG.tif").replace(".TIF", "_COG.tif")
         cog_path = temp_dir / cog_name
+        cog_ok = False
         try:
             _convert_to_cog(raw_path, cog_path, cfg)
+            cog_ok = True
+            upload_path = cog_path
         except Exception as exc:
             logger.warning("COG conversion failed for %s: %s", file_name, exc)
-            # Fallback: upload raw file
-            cog_path = raw_path
+            # Fallback: upload raw file with original name (no _COG suffix)
+            upload_path = raw_path
+            cog_name = file_name
 
         # Upload to GCS
         gcs_path = f"{prefix}/{year}/{cog_name}"
-        uri = _upload_to_gcs(cog_path, gcs_path, bucket)
+        uri = _upload_to_gcs(upload_path, gcs_path, bucket)
         if uri:
             gcs_paths.append(uri)
 
-        # Cleanup individual files (keep COG until verified)
-        if cog_path != raw_path:
+        # Cleanup
+        if cog_ok:
             raw_path.unlink(missing_ok=True)
-        cog_path.unlink(missing_ok=True)
+        upload_path.unlink(missing_ok=True)
+        # Also remove the alternate path if it still exists
+        alt = cog_path if upload_path == raw_path else raw_path
+        alt.unlink(missing_ok=True)
+
+    # ── Upload metadata files as-is ──
+    for i, file_info in enumerate(meta_files):
+        file_id = file_info["file_id"]
+        file_name = file_info["file_name"]
+        raw_path = temp_dir / file_name
+
+        print(f"  [meta {i+1}/{len(meta_files)}] {file_name}...")
+        client.download_file(task_id, file_id, raw_path)
+
+        gcs_path = f"{prefix}/{year}/{file_name}"
+        uri = _upload_to_gcs(raw_path, gcs_path, bucket)
+        if uri:
+            gcs_paths.append(uri)
+
+        raw_path.unlink(missing_ok=True)
 
     # Cleanup temp dir for this year
     shutil.rmtree(temp_dir, ignore_errors=True)

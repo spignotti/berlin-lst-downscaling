@@ -30,11 +30,13 @@ ecostress:
     scale: 70                          # Native resolution, kept on reprojection
     prefix: "ard/validation/ecostress"
     temp_dir: "data/tmp/ecostress"     # Temporary download directory (gitignored)
+    limit: null                        # Max GeoTIFFs to process (null = all; set to 1 for quick smoke test)
 
   # COG settings (applied post-download before GCS upload)
   cog:
     dtype: "float32"
     nodata: "nan"
     tile_size: 512
-    overview_levels: [2, 4, 8, 16]
+    overview_levels: 2          # number of overview levels
+    overview_resampling: "BILINEAR"
     compress: "DEFLATE"

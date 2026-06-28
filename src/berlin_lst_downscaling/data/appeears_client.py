@@ -171,6 +171,8 @@ class AppEEARSClient:
             kwargs["headers"] = headers
 
         url = f"{self.base_url}{path}"
+        # Ensure a reasonable timeout on every request
+        kwargs.setdefault("timeout", (30, 600))  # 30s connect, 10min read
         resp = self._session.request(method, url, **kwargs)
 
         # Auto-refresh on 403
@@ -180,6 +182,7 @@ class AppEEARSClient:
             self._ensure_auth()
             headers = kwargs["headers"]
             headers.update(self._auth_header())
+            kwargs.setdefault("timeout", (30, 600))
             resp = self._session.request(method, url, **kwargs)
 
         if not resp.ok:
@@ -293,8 +296,10 @@ class AppEEARSClient:
                 raise TaskError(f"AppEEARS task {task_id} failed: {err}")
             if state == "processing":
                 # Optionally fetch detailed progress
-                progress = self._request("GET", f"/status/{task_id}").json()
-                detail = progress[0]["progress"]["summary"] if progress else "?"
+                progress_response = self._request("GET", f"/status/{task_id}").json()
+                detail = "?"
+                if isinstance(progress_response, list) and progress_response:
+                    detail = progress_response[0].get("progress", {}).get("summary", "?")
                 logger.info("  %s: %s%% complete", task_id, detail)
             else:
                 logger.info("  %s: state=%s", task_id, state)
