@@ -39,4 +39,4 @@ ecostress:
     tile_size: 512
     overview_levels: 2          # number of overview levels
     overview_resampling: "BILINEAR"
-    compress: "DEFLATE"
+    compress: "ZSTD"

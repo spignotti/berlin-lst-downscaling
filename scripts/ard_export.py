@@ -23,8 +23,6 @@ Safety note:
     Defaults to --dry-run=true to prevent accidental mass exports.
 """
 
-import sys
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
@@ -64,16 +62,15 @@ def main(cfg: DictConfig) -> None:
         print(f"\n{'='*60}")
         print(f"  Submitted {total} GEE export task(s).")
         if not cfg.dry_run:
-            print("  Monitoring tasks...")
-            from berlin_lst_downscaling.data.gee_export import monitor_tasks
-
-            completed, failed = monitor_tasks(
-                all_tasks,
-                poll_interval_sec=cfg.ard.gee.task_poll_interval_sec,
-            )
-            print(f"  Completed: {len(completed)}, Failed: {len(failed)}")
-            if failed:
-                sys.exit(1)
+            for t in all_tasks:
+                s = t.status()
+                print(f"    [{s['state']}] {s['id']} — {s['description']}")
+            print()
+            print("  Monitor completion separately:")
+            print("    uv run python scripts/ard_monitor.py")
+            print()
+            print("  Or monitor specific tasks:")
+            print("    uv run python scripts/ard_monitor.py task_ids=TASK_ID1,TASK_ID2")
     elif not cfg.dry_run:
         # Only print "no tasks" if GEE sources were attempted
         gee_sources_used = [s for s in sources if s in ("landsat", "sentinel2")]

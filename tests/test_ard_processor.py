@@ -51,7 +51,7 @@ def _make_cfg() -> DictConfig:
                     "overview_resampling": "BILINEAR",
                     "nodata": "nan",
                     "dtype": "float32",
-                    "compression": "LZW",
+                    "compression": "ZSTD",
                 },
             },
             "process": {
@@ -293,7 +293,7 @@ def test_reproject_and_regrid_same_crs(tmp_path: Path) -> None:
     cog_cfg = OmegaConf.create({
         "tile_size": 64,
         "nodata": "nan",
-        "compression": "LZW",
+        "compression": "ZSTD",
         "dtype": "float32",
     })
 
@@ -329,7 +329,7 @@ def test_reproject_and_regrid_ecostress(tmp_path: Path) -> None:
     cog_cfg = OmegaConf.create({
         "tile_size": 64,
         "nodata": "nan",
-        "compression": "LZW",
+        "compression": "ZSTD",
         "dtype": "float32",
     })
 
@@ -372,7 +372,7 @@ def test_reproject_and_regrid_mask_names(tmp_path: Path) -> None:
     cog_cfg = OmegaConf.create({
         "tile_size": 16,
         "nodata": "nan",
-        "compression": "LZW",
+        "compression": "ZSTD",
         "dtype": "float32",
     })
 

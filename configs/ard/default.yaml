@@ -32,7 +32,7 @@ ard:
       overview_resampling: "BILINEAR"
       nodata: "nan"
       dtype: "float32"
-      compression: "LZW"
+      compression: "ZSTD"
     stac:                        # Phase 3: STAC metadata
       processing_version: "0.1.0"
 
@@ -42,4 +42,5 @@ ard:
     service_account_key_path: "${oc.env:GOOGLE_APPLICATION_CREDENTIALS}"
     max_pixels: 10000000000000  # 1e13
     task_poll_interval_sec: 30
+    task_timeout_min: 1440          # 24h max wait for GEE exports
     logging_tag: "ard-pipeline"
