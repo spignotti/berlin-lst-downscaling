@@ -1,9 +1,32 @@
 # Additional Data Sources — Availability & Feature Definitions
 
 Analysis date: 2026-06-18  
-Data portal: Berlin Open Data / FIS-Broker, DWD CDC, Copernicus CDS, NASA CMR  
+Research update: 2026-06-28 (concrete download feasibility)  
+Data portal: Berlin Open Data / Geoportal Berlin, DWD CDC, Copernicus CDS, NASA CMR  
 Reference: `docs/data-availability.md` (Landsat, Sentinel-2, ECOSTRESS)  
 Validation scripts: `notebooks/dwd_stations.py`
+
+---
+
+## Research Update — 2026-06-28 (Download Feasibility)
+
+Concrete findings per datasource after detailed feasibility check:
+
+| # | Source | Download Route | Format | CRS | Volume | Library | Status |
+|---|--------|---------------|--------|-----|--------|---------|--------|
+| 1 | LoD2 CityGML | `https://gdi.berlin.de/data/a_lod2/atom/` (INSPIRE ATOM) | CityGML v2.0 ZIP | EPSG:25833 | ~830 KB/tile, ~1,850 tiles (~1.5 GB) | CityGML parser needed (no PyPI package — use `pycitygml` GitHub, or fiona/XML) | ✅ |
+| 2 | Umweltatlas Vegetationshöhe 2020 | `https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/veghoehe_2020.zip` | GeoTIFF | EPSG:25833 | ~785 MB (single file) | `rasterio` (already in deps) | ✅ |
+| 3 | Umweltatlas Versiegelung 2021 | `https://gdi.berlin.de/data/ua_versiegelung_2021/atom/Versiegelung_Raster_2021.zip` (raster); WFS: `wfs/ua_versiegelung_2021` (vector) | GeoTIFF (raster) / GML (WFS) | EPSG:25833 | ~41 MB (raster, single file) | `rasterio` / `geopandas` | ✅ |
+| 4 | DGM 1 m | `https://gdi.berlin.de/data/dgm1/atom/0.atom` (INSPIRE ATOM) | XYZ CSV in ZIP | EPSG:25833, DHHN2016 | ~16 MB/tile compressed, 297 tiles (~4.75 GB) | `pandas` → `rasterio` (XYZ→GeoTIFF via `gdal.Grid()`) | ⚠️ Large volume, auxiliary only |
+| 5 | ERA5-Land | CDS API (`cdsapi` Python) | NetCDF / GRIB | 0.1° lat/lon | ~10 MB (NetCDF, Berlin subset 2017–2025 hourly) | `cdsapi` (needs `pip install`) | ✅ |
+| 6 | SVF | Custom implementation (no maintained Python library found) | Derived from DSM | EPSG:25833 | N/A — compute | Custom numpy + numba (Eigenimplementierung per 28.06. decision) | 🔧 |
+| 7 | Shadow masks | Custom ray-casting (no maintained Python library found) | Derived from DSM + sun position | EPSG:25833 | N/A — compute | Custom numpy + numba + Michalsky-SPA (already implemented) | 🔧 |
+
+**Key decision changes from original analysis:**
+- Canopy height → Umweltatlas VH 2020 (1 m GeoTIFF, not ETH CHM)
+- DGM 1 m → auxiliary for SVF/shadow only (not Copernicus DEM as primary)
+- SVF → self-implemented in Python (no ready library)
+- Shadow → custom ray-casting with pre-computed horizon maps
 
 ---
 
@@ -12,9 +35,9 @@ Validation scripts: `notebooks/dwd_stations.py`
 | Stufe | Features | Data Sources (new) | Status |
 |-------|----------|-------------------|--------|
 | 1 — Spektral | NDVI, NDBI, NDWI, Albedo, Emissivity | Sentinel-2 L2A | ✅ Already in `data-availability.md` |
-| 2 — Morphologie | Building height, Canopy height, DEM, Imperviousness, SVF | LoD2, CHM, Copernicus DEM, Versiegelung | ⬇️ Below |
-| 3 — Verschattung | Shadow masks, Sun geometry | Satellite metadata (derived) | ⬇️ Below |
-| 4 — Meteorologie | Antecedent T, radiation, wind, precip | DWD stations, ERA5-Land | ⬇️ Below |
+| 2 — Morphologie | Building height, Canopy height, DEM, Imperviousness, SVF | LoD2, Umweltatlas VH, DGM 1 m, Versiegelung | ✅ See §2 |
+| 3 — Verschattung | Shadow masks, Sun geometry | Satellite metadata (derived) | 🔧 See §3 |
+| 4 — Meteorologie | Antecedent T, radiation, wind, precip | DWD stations, ERA5-Land, CDS | ✅ See §4 |
 | 5 — Loss | — | — | No new source |
 | Validation | Independ. reference, scale consistency | ECOSTRESS | ✅ Already in `data-availability.md` |
 
@@ -26,129 +49,114 @@ Validation scripts: `notebooks/dwd_stations.py`
 
 | Field | Detail |
 |-------|--------|
-| Source | **Business Location Center (BLC) Berlin 3D Downloadportal** |
-| URL | [https://www.businesslocationcenter.de/berlin3d-downloadportal/](https://www.businesslocationcenter.de/berlin3d-downloadportal/) |
-| Format | CityGML (LoD2), also DXF |
-| Resolution | Single-building level; roof shapes with dormers, eaves, ridges |
-| Coverage | Entire Berlin (890 km²) |
-| Reference year | 2019 (based on 2017–2018 aerial imagery), with periodic updates |
-| License | [dl-de/by-2-0](https://www.govdata.de/dl-de/by-2-0) |
-| Access | Downloadportal (bulk download after registration) |
-| Variables extracted | Building height (m), building volume (m³), building density per grid cell |
-| **Verdict** | ✅ **Available.** Best static morphology layer for urban climate analysis. |
+| Source | **Geoportal Berlin / Berlin Open Data (dl-de-zero-2.0)** |
+| Download (ATOM) | `https://gdi.berlin.de/data/a_lod2/atom/0.atom` |
+| Format | CityGML v2.0 (ZIP per 1 km × 1 km tile) |
+| Tiles | ~1,850 tiles for Berlin (1 km² each), ~830 KB per tile on avg |
+| Total volume | ~1.5 GB compressed |
+| CRS | EPSG:25833 (confirmed) |
+| Reference year | 2024 (published 2024-03-18, revised 2024-04-22) |
+| License | **dl-de-zero-2.0** (since 2024 — improved from older "other-closed" on BLC portal) |
+| Auth | None (fully open, no registration) |
+| Variables extracted | Building height (`measuredHeight`), building footprint, roof geometry |
+| CityGML parsing | No dedicated PyPI package. Options: (a) `fiona` with CityGML driver (experimental), (b) XML/SAX parsing of CityGML (reliable, ~100 lines), (c) `pycitygml` via GitHub. Recommend XML-based extraction of `bldg:measuredHeight` + footprint polygon. |
+| **Verdict** | ✅ **Available under open license.** Use ATOM feed for bulk download. CityGML parsing approach needed — recommend straightforward XML/SAX extraction. |
 
-**Use case:** Rasterize to 10 m → building height, building fraction, volume per pixel.
+**Use case:** Extract `measuredHeight` + footprint → rasterize to 10 m → building height, BCR (building coverage ratio), volume per pixel.
 
-### 2.2 Canopy Height Model (Vegetationshöhe)
+**Note:** The older BLC Downloadportal (`businesslocationcenter.de/berlin3d-downloadportal/`) also offers CityGML but with "other-closed" license. Use the Geoportal Berlin ATOM feed (dl-de-zero-2.0) instead.
 
-Two alternatives evaluated:
+### 2.2 Canopy Height / Vegetationshöhe
 
-#### Option A: ETH Global Canopy Height 2020 (recommended)
-
-| Field | Detail |
-|-------|--------|
-| Source | **ETH Zurich / Lang et al. 2022** — Sentinel-1 + GEDI fusion |
-| GEE asset | `users/nlang/ETH_GlobalCanopyHeight_2020_10m` |
-| Resolution | 10 m (matches target resolution) |
-| Coverage | Global (Berlin included) |
-| Temporal | Single snapshot: **2020** |
-| License | CC-BY 4.0 |
-| **Verdict** | ✅ **Recommended.** 10 m, complete spatial coverage, directly in GEE. |
-
-#### Option B: Berlin Baumkataster (street trees only)
+**Final decision (2026-06-28): Use Umweltatlas Vegetationshöhen 2020.**
 
 | Field | Detail |
 |-------|--------|
-| Source | **Geoportal Berlin / Berlin Open Data** — WFS |
-| Format | Point data (GeoJSON, GML) |
-| Coverage | ~440,000 street trees — **parks, forests, backyards not included** |
-| Attributes | Tree species, planting year, trunk circumference, crown diameter, estimated height |
-| License | dl-de/by-2-0 |
-| **Verdict** | ⚠️ **Too incomplete** as standalone CHM. Use ETH CHM for complete canopy, supplement with street tree points for urban-specific analysis if needed. |
+| Source | **Umweltatlas Berlin** — Vegetationshöhen 2020 |
+| Download (ATOM) | `https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/veghoehe_2020.zip` |
+| Format | GeoTIFF |
+| Resolution | **1 m** |
+| Coverage | Full Berlin |
+| CRS | EPSG:25833 |
+| Volume | ~785 MB (single file, compressed) |
+| License | dl-de-zero-2.0 |
+| Python library | `rasterio` (already in deps) — open with `rasterio.open()`, resample to 10 m |
+| Gaps | Covers all vegetated areas (forests, parks, street trees). Buildings = NoData. |
+| **Verdict** | ✅ **Final selection.** Better native resolution (1 m vs ETH 10 m), open license, and consistent with LoD2 building model (both from Geoportal Berlin). ETM CHM (GEE) dropped as input. |
+
+**Processing:** Open GeoTIFF → resample from 1 m to 10 m (mean aggregation) → clip to AOI.
 
 ### 2.3 DEM, DOM & nDOM (Geländehöhe, Oberflächenmodell & Canopy Height)
 
-Two approaches documented here:
-
-#### Option A: Copernicus DEM GLO-30 (recommended for terrain)
+#### DGM 1 m (auxiliary for SVF/shadow)
 
 | Field | Detail |
 |-------|--------|
-| Source (recommended) | **Copernicus DEM GLO-30** |
-| Access | `s3://copernicus-dem-30m/` (no sign-in required, AWS eu-central-1) |
-| Alternative access | GEE: `COPERNICUS/DEM/GLO30` |
+| Source | **Geoportal Berlin** — INSPIRE Atom feed |
+| Download (ATOM) | `https://gdi.berlin.de/data/dgm1/atom/0.atom` |
+| Format | XYZ CSV in ZIP, e.g., `dgm1_33_376_5820_2_be.xyz` |
+| Tile scheme | 2 km × 2 km, EPSG:25833, DHHN2016 |
+| Coverage | Full Berlin + ~250 m Brandenburg buffer |
+| Tiles for AOI | 297 tiles |
+| Volume per tile | ~16 MB compressed (ZIP), ~120 MB uncompressed (XYZ) |
+| Total volume | ~4.75 GB compressed, ~35.6 GB uncompressed |
+| Acquisition | ALS flights Feb–Mar 2021 |
+| License | dl-de-zero-2.0 |
+| Auth | None (fully open) |
+| Python library | `pandas` (read XYZ) → `gdal.Grid()` or `scipy.interpolate` (grid to GeoTIFF) |
+| **Verdict** | ⚠️ **Available but large.** DGM 1 m is auxiliary for SVF/shadow, not a model input channel. For terrain-only purposes, Copernicus DEM GLO-30 (30 m) via GEE is simpler — use DGM 1 m only where 1 m base surface is needed for urban canyon ray-casting. |
+
+**Processing:** Download ~60–100 tiles covering central Berlin → convert XYZ to 1 m GeoTIFF via `gdal.Grid()` → resample to 10 m for SVF computation.
+
+#### Copernicus DEM GLO-30 (terrain alternative)
+
+| Field | Detail |
+|-------|--------|
+| Source | **Copernicus Programme** |
+| Access | `s3://copernicus-dem-30m/` (AWS eu-central-1, free) or GEE: `COPERNICUS/DEM/GLO30` |
 | Resolution | 30 m |
 | Coverage | Global (Berlin: fully covered) |
 | Temporal | 2021 release |
 | License | Free — Copernicus Programme |
-| **Verdict** | ✅ **Available.** 30 m sufficient for terrain — Berlin is mostly flat (±50 m). |
-
-#### Option B: Berlin DGM1 + DOM1 (1 m, high-res geometry)
-
-| Field | Detail |
-|-------|--------|
-| Source | **Geoportal Berlin / Berlin Open Data** — INSPIRE Atom feeds |
-| DGM1 (terrain model) | `https://gdi.berlin.de/data/dgm1/atom/` → `0.atom` |
-| DOM1 (ALS surface model) | `https://gdi.berlin.de/data/dom/atom/` → `0.atom` |
-| bDOM1 (image-based surface) | `https://gdi.berlin.de/data/bdom/atom/` → `0.atom` |
-| Tile scheme | 2 km × 2 km tiles, EPSG:25833 (UTM 33N), DHHN2016 height |
-| Example tile | `DGM1_390_5820.zip` (easting 390000, northing 5820000) |
-| WMS view | `https://gdi.berlin.de/services/wms/dgm1` |
-| Resolution | **1 m raster** |
-| Coverage | Full Berlin + ~250 m Brandenburg buffer |
-| Acquisition | ALS flights (Feb–Mar 2021), bDOM from 2024 aerial imagery |
-| Format | ZIP of XYZ/CSV (easting, northing, height) |
-| License | dl-de/by-2-0 (Datenlizenz Deutschland Zero 2.0) |
-| Auth | None (fully open, no registration) |
-| Update feed | GeoNetwork RSS: `https://gdi.berlin.de/geonetwork/srv/eng/rss.search?sortBy=changeDate` |
-| **Verdict** | ✅ **Available and valuable for morphology validation.** Use DGM1 + DOM1 to compute nDOM = DOM − DGM for 1 m building + canopy height. LoD2 is cleaner for building-only geometry. |
-
-#### nDOM (Normalized Digital Object Model) — Canopy Height
-
-nDOM = DOM − DGM gives the height of surface objects (buildings + vegetation) at 1 m resolution.
-
-**Comparison: Berlin nDOM vs. ETH Global Canopy Height 2020:**
-
-| Criterion | nDOM from Berlin DGM1+DOM1 | ETH CHM 2020 |
-|-----------|---------------------------|---------------|
-| Resolution | **1 m** | 10 m |
-| Coverage | Berlin only | Global (Berlin included) |
-| Temporal | 2021 (ALS) | 2020 snapshot |
-| What it measures | All surface objects (buildings + vegetation) | Vegetation height only (GEDI-trained) |
-| Building separation | Needs building footprint mask (LoD2) | Already vegetation-only |
-| Derivation | DOM − DGM (requires both downloads) | Ready-to-use GEE asset |
-| Accuracy | ALS point density → cm-level terrain | ~50–70% canopy height RMSE at 10 m |
-| License | dl/de/by-2-0 | CC-BY 4.0 |
-
-**Recommendation:**
-- **Terrain:** Copernicus DEM GLO-30 (30 m, global, no download hassle)
-- **Vegetation height (predictor):** ETH CHM (10 m, ready-to-use, vegetation-only, GEE)
-- **Building + canopy geometry for SVF/shadow:** Berlin DOM1 (1 m) or LoD2 for building-only geometry
-- **nDOM is not recommended as primary canopy height input** — it requires additional downloads, registration not needed but tile-by-tile assembly required, and contains buildings that must be separated. ETH CHM is simpler and sufficient for 10 m ML features.
+| Volume | ~1 MB for Berlin extent |
+| **Verdict** | ✅ **Sufficient for terrain.** Berlin is mostly flat (±50 m). Use as default unless 1 m base surface is explicitly needed for SVF/casting. |
 
 ### 2.4 Versiegelungsgrad (Imperviousness / Sealing)
 
 | Field | Detail |
 |-------|--------|
-| Source | **Umweltatlas Berlin** (via FIS-Broker) |
-| URL | [https://fbinter.stadt-berlin.de/fb/index.jsp](https://fbinter.stadt-berlin.de/fb/index.jsp) (map: `versiegelung2021@senstadt`) |
-| Resolution | **10 m raster** (matches target!) |
+| Source | **Umweltatlas Berlin** — Versiegelung 2021 |
+| Raster download (ATOM) | `https://gdi.berlin.de/data/ua_versiegelung_2021/atom/Versiegelung_Raster_2021.zip` |
+| WFS (vector) | `https://gdi.berlin.de/services/wfs/ua_versiegelung_2021` (block-level ISU5) |
+| Format | GeoTIFF (raster, uncorrected classification) / GML (WFS, block-level polygons) |
+| Resolution | **10 m raster** (original: Sentinel-2 10 m → classified → per-pixel sealing %) |
 | Coverage | Full Berlin |
+| CRS | EPSG:25833 |
+| Volume | ~41 MB (single raster GeoTIFF) |
 | Latest version | **2021** |
 | Earlier editions | 2016, 2011, 2005, 2001, 1990 |
-| Units | Sealing degree in % per cell (0–100) |
-| Access | WMS/WFS/Download (GeoTIFF via FIS-Broker) |
-| License | dl-de/by-2-0 |
-| **Verdict** | ✅ **Excellent.** 10 m, Berlin-wide, regularly updated. Directly usable as predictor. |
+| Units | Sealing degree in % per pixel (0–100) |
+| License | dl-de-zero-2.0 |
+| Python library | `rasterio` (already in deps) |
+| **Verdict** | ✅ **Excellent.** Single-file GeoTIFF, 10 m, 41 MB, open license. Directly usable as predictor. No tile assembly needed. |
+
+**Note:** Two datasets exist: (a) uncorrected raster (Sentinel-2 classification, pixel-level, 10 m), and (b) block-level WFS (ISU5 statistical blocks, official product). For ML input, the uncorrected raster is more appropriate (pixel-level, no aggregation artifacts). The WFS version is useful for validation or aggregated features.
 
 ### 2.5 Sky View Factor (abgeleitet aus LoD2 + DEM)
 
+**Final decision (2026-06-28): Self-implemented SVF in Python.**
+
 | Field | Detail |
 |-------|--------|
-| Source | **Derived** — computed from LoD2 building model + DEM |
+| Source | **Derived** — computed from LoD2 + DGM 1 m |
 | Method | Hemispherical view analysis at 10 m resolution |
-| Tools | UMEP (QGIS), SAGA GIS, or custom `r.skyview` (GRASS GIS) |
-| **Verdict** | 🔧 **Derived, not a data source.** Compute during feature engineering from LoD2 height + DEM. |
+| Search radius | 30 m minimum (Scarano 2017) |
+| **Library research** | |
+| UMEP (QGIS) | Mature urban climate tool, but requires QGIS Python → heavyweight |
+| SAGA GIS `r.skyview` | Available via SAGA Python bindings, but SAGA is Linux-only |
+| PyPI packages | **None found** — `svf`, `horizon`, `pyviewshed`, `richdem` not available on PyPI |
+| **Recommendation** | **Custom numpy/numba implementation.** For each 10 m pixel, sample DSM heights along N azimuth directions (e.g., 36), compute max horizon angle per direction, integrate to SVF. ~150 lines. With numba JIT → feasible for Berlin AOI (~20.7M pixels × 36 directions = ~750M line-of-sight checks). Estimate: ~30–60 min with numba parallel. |
+| **Verdict** | 🔧 **Self-implement.** Use LoD2 rasterized to 10 m for buildings + DGM 1 m for terrain → compute DSM heights → SVF via numpy/numba. |
 
 ---
 
@@ -161,17 +169,25 @@ nDOM = DOM − DGM gives the height of surface objects (buildings + vegetation) 
 | Source | **Satellite metadata** — not a separate download |
 | Landsat | Properties `SUN_AZIMUTH`, `SUN_ELEVATION` in each scene |
 | Sentinel-2 | Properties `MEAN_SOLAR_AZIMUTH`, `MEAN_SOLAR_ZENITH` in each scene |
-| Custom timestamps | `pysolar` or `pvlib` for any (lon, lat, datetime) |
-| **Verdict** | ✅ **Trivially available** from GEE metadata per composite/scene. |
+| Custom timestamps | Project already has self-contained **Michalsky-SPA** implementation (±0.5° accuracy, in STAC writer). Alternative: `pysolar` (PyPI, v0.8, 405 GitHub stars, GPLv3). |
+| **Verdict** | ✅ **Already implemented.** Self-contained SPA in pipeline — no external library needed. `pysolar` available as fallback. |
 
 ### 3.2 Shadow Masks (abgeleitet aus LoD2 + Sun Position)
 
+**Final decision (2026-06-28): Custom ray-casting, binary, per scene.**
+
 | Field | Detail |
 |-------|--------|
-| Source | **Derived** — ray-casting from LoD2 + sun azimuth/elevation + DEM |
-| Tools | `r.sunmask` (GRASS GIS), ESA SNAP, UMEP, `shadow` Python package |
-| Temporal | Dynamic: shadow pattern shifts with sun position per scene |
-| **Verdict** | 🔧 **Derived, not a data source.** Compute per composite/scene during feature engineering. |
+| Source | **Derived** — ray-casting from LoD2-DSM + VH-DSM + sun position |
+| **Library research** | |
+| GRASS `r.sunmask` | Available via Python bindings (`grass.script`), but requires GRASS GIS installation. |
+| UMEP Shadow | Part of UMEP QGIS plugin, not standalone Python. |
+| `pvlib` | Solar position only (no shading). PyPI package, MIT license. |
+| `pysolar` | Solar position + irradiation, not shadow mapping. |
+| PyPI packages for shadow | **None found** — no `shadow`, `pyviewshed`, or similar. |
+| **Recommendation** | **Custom numpy + numba approach.** Pre-compute horizon angles per azimuth direction (from DSM) once, then evaluate shadow for each sun position as a pure lookup. Complexity: DSM horizon pre-compute is one-time (~60 min), per-scene shadow lookup is O(pixels × 1) ~ seconds. For 362 cloud-free Landsat scenes: ~2 sec/scene = ~12 min total. |
+| **Optimization** | Pre-computed DSM horizon maps reduce per-scene work to O(N). Only compute for acquisitions actually used in training (not all 362). Use ProcessPoolExecutor for parallel scene processing. |
+| **Verdict** | 🔧 **Self-implement.** Use pre-computed horizon + ray-casting with numba. One-time DSM horizon pre-compute + fast per-scene shadow lookup. |
 
 ---
 
@@ -225,12 +241,17 @@ No Berlin DWD station measures direct solar radiation. Evaluating three compleme
 | URL | [https://cds.climate.copernicus.eu/](https://cds.climate.copernicus.eu/) |
 | Resolution | 0.1° × 0.1° (~9 km, ~11 × 7 km at Berlin) |
 | Temporal | Hourly, **1950–present** (real-time through present) |
-| Variables | Surface solar radiation downwards (SSRD), surface net solar radiation, surface thermal radiation, plus full meteorology (T2m, wind, precip, humidity) |
-| Access | CDS API (`cdsapi`, free registration, CC-BY) |
+| Variables | Surface solar radiation downwards (SSRD), 2m temperature (t2m) |
+| API | CDS API via `cdsapi` Python package (free registration) |
+| Query | Bounding box subset: Berlin AOI + 2 km buffer (~0.5° × 0.4°) |
+| Volume estimate | 5 months × 9 years (2017–2025) = 45 months × ~30 days × 24 h = ~32,400 hourly steps. At 0.1° resolution AOI ≈ 5×4 = 20 grid cells. 32,400 × 20 × 2 variables = ~1.3M data points → **<10 MB as NetCDF** (trivially small) |
+| Variables for pipeline | `2m_temperature` (t2m, K), `surface_solar_radiation_downwards` (ssrd, J/m²) |
+| Antecedent 3-day mean | Rolling 72-hour mean of t2m and ssrd before each scene acquisition time (computed from hourly data) |
+| Resampling to 10 m | Nearest-neighbor: constant value per ERA5 cell (~9 km) → nan for 10 m grid — trivial (`xarray` reproject) |
+| Library | `cdsapi` (not in deps yet — add to pyproject.toml dev/section) |
+| Account | Copernicus CDS account + API key needed (user has account) |
 | Update latency | ~5 days (ERA5-Land-T near-real-time), final product ~2 months |
-| **Verdict** | ✅ **Best operational choice** — hourly resolution, 2018–2024 full coverage, easy API automation, same pipeline as reanalysis met variables. No direct/diffuse components. |
-
-**Implementation note:** SSRD is accumulated energy (J/m²). Convert to hourly irradiance (W/m²) by dividing the hourly increment by 3600 s.
+| **Verdict** | ✅ **Best operational choice.** Tiny volume, hourly resolution, direct API. SSRD needs conversion J/m² → W/m². |
 
 #### 4.2b SARAH-3 (EUMETSAT CM SAF) — validation complement
 
@@ -300,19 +321,19 @@ Complete feature-to-source mapping for all 5 ablation stages + validation.
 | Surface Temperature (LST) | 1 (target) | Landsat 8/9 TIRS (GEE) | 100 m | 2013–present | ✅ |
 | NDVI / NDBI / NDWI / MNDWI | 1 (predictor) | Sentinel-2 L2A (GEE) | 10 m | 2015–present | ✅ |
 | Albedo | 1 (predictor) | Sentinel-2 L2A (GEE, derived from 10 bands) | 10 m | 2015–present | ✅ |
-| Emissivity | 1 (predictor) | **ASTER GED v3 (GEE)** — NDVI-threshold rejected (collinearity with NDVI predictor) | 100 m | static | ✅ |
-| Building height | 2 | LoD2 CityGML (BLC Berlin) | building vector | 2019 | ✅ |
-| Building fraction | 2 | LoD2 → rasterized 10 m | 10 m | 2019 | ✅ |
-| Canopy height | 2 | ETH Global Canopy Height (GEE) | 10 m | 2020 snapshot | ✅ |
-| DEM / terrain | 2 | Copernicus DEM GLO-30 (AWS/GEE) | 30 m | 2021 static | ✅ |
-| Imperviousness | 2 | Umweltatlas Versiegelung 2021 (FIS-Broker) | 10 m | 2021 | ✅ |
-| Sky View Factor | 2 | Derived from LoD2 + DEM | 10 m | static | 🔧 |
-| Sun azimuth / elevation | 3 | Landsat/S2 metadata (GEE) | per scene | per acquisition | ✅ |
-| Shadow mask | 3 | Derived from LoD2 + sun position + DEM | 10 m | dynamic | 🔧 |
+| Emissivity | 1 (predictor) | **ASTER GED v3 (GEE)** — NDVI-threshold rejected | 100 m | static | ✅ |
+| Building height | 2 | LoD2 CityGML (Geoportal Berlin ATOM) | building vector (2019) | 2024 | ✅ |
+| Building fraction | 2 | LoD2 → rasterized 10 m | 10 m | 2024 | ✅ |
+| Canopy height | 2 | **Umweltatlas Vegetationshöhen 2020** (ATOM GeoTIFF) | 1 m → resample 10 m | 2020 | ✅ |
+| DEM / terrain | 2 | **Copernicus DEM GLO-30** (GEE/AWS) — DGM 1 m auxiliary only | 30 m | 2021 | ✅ |
+| Imperviousness | 2 | Umweltatlas Versiegelung 2021 (ATOM GeoTIFF raster, 10 m) | 10 m | 2021 | ✅ |
+| Sky View Factor | 2 | Derived from LoD2+VH DSM (self-implemented numpy/numba) | 10 m | static | 🔧 |
+| Sun azimuth / elevation | 3 | Landsat/S2 metadata (GEE) or Michalsky-SPA | per scene | per acquisition | ✅ |
+| Shadow mask | 3 | Derived from DSM + sun position (custom ray-casting) | 10 m | dynamic | 🔧 |
 | Antecedent T | 4 | DWD Berlin-Dahlem or BER (hourly) | point | 1973–present | ✅ |
 | Precip | 4 | DWD Berlin-Dahlem or BER (hourly) | point | 1995–present | ✅ |
 | Wind speed | 4 | DWD Berlin Brandenburg BER (hourly) | point | 1973–present | ✅ |
-| Solar radiation | 4 | ERA5-Land (CDS) | ~9 km grid | 1950–present | ✅ |
+| Solar radiation | 4 | ERA5-Land (CDS API, `cdsapi`) | ~9 km grid | 1950–present | ✅ |
 | Cloud cover | 4 | DWD BER (hourly) | point | 1975–present | ✅ |
 | Surface pressure | 4 | DWD BER (hourly) | point | 1975–present | ✅ |
 | Humidity / dew point | 4 | DWD Dahlem (hourly) | point | 1955–present | ✅ |
@@ -346,7 +367,8 @@ Three emissivity sources were evaluated:
 ## Open Decisions
 
 - **Landsat 7:** Not queried (SLC-off stripes). Still available 1999–present if additional historical data is needed.
-- **Solar radiation:** ERA5-Land is the best option (see §4.2). DWD does not measure direct solar radiation at Berlin stations. Alternatives: SARAH-3 (EUMETSAT CM SAF, 0.05°, hourly) for validation, CERES (1°, monthly) too coarse.
+- **Landsat-S2 coupling logic:** Monatsmedian vs. zeitnächster wolkenfreier Pixelwert — deferred to feature engineering phase.
+- **Validation split / Temporal CV:** 2018–2022 train, 2023 val, 2024 test (proposed) — to be finalized.
 - **Dynamic World land cover (GEE):** Available 2015–present at 10 m (`GOOGLE/DYNAMICWORLD/V1`). Not in ablation plan but could replace/supplement imperviousness.
 - **Nighttime ECOSTRESS:** ISS overpass includes ~1,000 night granules over Berlin. Not useful for daytime LST but potentially for diurnal cycle analysis.
 
