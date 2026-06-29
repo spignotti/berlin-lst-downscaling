@@ -193,11 +193,11 @@ def test_resolve_years_range() -> None:
 
 def test_resolve_nodata_nan() -> None:
     import math
-    assert math.isnan(_resolve_nodata("nan", "float32"))
+    assert math.isnan(_resolve_nodata("nan"))
 
 
 def test_resolve_nodata_number() -> None:
-    assert _resolve_nodata(-9999, "float32") == -9999.0
+    assert _resolve_nodata(-9999) == -9999.0
 
 
 # ── _compute_target_dims (Landsat / S2) ──────────────────────────────────
@@ -245,7 +245,8 @@ def test_compute_target_dims_sentinel2(tmp_path: Path) -> None:
 
 
 def test_compute_target_dims_ecostress(tmp_path: Path) -> None:
-    """ECOSTRESS (WGS84) produces output in EPSG:25833 at native resolution."""
+    """ECOSTRESS passthrough is handled upstream;
+    calling this function with dst_resolution=None raises ValueError."""
     spec = _make_spec()
     src = _make_tiny_raster(
         tmp_path,
@@ -255,12 +256,10 @@ def test_compute_target_dims_ecostress(tmp_path: Path) -> None:
         width=5,
     )
     with rasterio.open(src) as src_ds:
-        transform, width, height = _compute_target_dims(
-            src_ds, spec, "EPSG:25833", dst_resolution=None,
-        )
-        assert width > 0
-        assert height > 0
-        # Native resolution preserved (no more 90m cap)
+        with pytest.raises(ValueError, match="dst_resolution=None"):
+            _compute_target_dims(
+                src_ds, spec, "EPSG:25833", dst_resolution=None,
+            )
 
 
 def test_compute_target_dims_no_overlap(tmp_path: Path) -> None:
@@ -392,6 +391,7 @@ def test_reproject_and_regrid_mask_names(tmp_path: Path) -> None:
         assert out.crs.to_string() == "EPSG:25833"
         assert out.width > 0
         assert out.height > 0
+        assert out.descriptions == ("B2", "cloud_mask", "SCL", "B3")
 
 
 # ── process_scene dry-run ────────────────────────────────────────────────
@@ -414,3 +414,64 @@ def test_process_scene_dry_run(tmp_path: Path) -> None:
     assert result["source"] == "landsat"
     assert "output_path" in result
     assert not list(tmp_path.iterdir()), "Dry run created no files"
+
+
+# ── QA failure → no upload (regression) ─────────────────────────────────
+
+
+def test_process_scene_fails_before_upload_on_low_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Low AOI coverage must raise before the COG is uploaded to GCS."""
+    import shutil as _shutil
+
+    from berlin_lst_downscaling.data import ard_processor
+
+    spec = _make_spec()
+    dc = _make_cfg()
+    dc.ard.process.temp_dir = str(tmp_path / "ard_temp")
+    dc.ard.process.qa.min_aoi_coverage = 0.80  # tight threshold
+
+    # ── Build a tiny 200×200 m raster inside the AOI corner ──
+    # 2×2 pixels at 100 m anchored at the AOI origin (368000, 5839000)
+    # gives 4 valid pixels inside an AOI of ~2×10⁹ m² → coverage ~0%.
+    far_transform = Affine(100.0, 0, 368000.0, 0, -100.0, 5797723.0)
+    far_input = _make_tiny_raster(
+        tmp_path,
+        filename="far_input.tif",
+        crs="EPSG:25833",
+        transform=far_transform,
+        height=2,
+        width=2,
+        bands=2,
+        nodata=np.nan,
+        descriptions=["LST", "cloud_mask"],
+    )
+
+    # ── Monkeypatch I/O helpers ──
+    upload_calls: list[tuple[str, str]] = []
+
+    def fake_download(gcs_uri: str, local_path: Path) -> Path:
+        # Copy the synthetic raster to the path _download_from_gcs would write.
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        _shutil.copy2(far_input, local_path)
+        return local_path
+
+    def fake_upload(local_path: Path, gcs_path: str, bucket_name: str) -> str:  # noqa: ARG001
+        upload_calls.append((str(local_path), gcs_path))
+        return f"gs://{bucket_name}/{gcs_path}"
+
+    monkeypatch.setattr(ard_processor, "_download_from_gcs", fake_download)
+    monkeypatch.setattr(ard_processor, "_upload_to_gcs", fake_upload)
+
+    uri = "gs://test-bucket/ard/dynamic/landsat/2023/LC08_FAR_LST.tif"
+    result = process_scene(uri, "landsat", spec, dc, dry_run=False)
+
+    # Status reflects the QA failure…
+    assert result["status"] == "error"
+    assert "aoi_coverage" in result["error"]
+    # …the QA report is attached for debugging…
+    assert "qa_report" in result
+    assert result["qa_report"]["qa_passed"] is False
+    # …and crucially no COG/QA/STAC was ever uploaded to GCS.
+    assert upload_calls == [], f"Unexpected uploads: {upload_calls}"

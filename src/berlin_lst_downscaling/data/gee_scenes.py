@@ -3,6 +3,8 @@
 All functions assume GEE has been initialized (see ``gee_client.initialize``).
 """
 
+from typing import Any, cast
+
 import ee
 from omegaconf import DictConfig
 
@@ -22,7 +24,6 @@ def list_landsat_scenes(cfg: DictConfig, year: int | None = None) -> ee.ImageCol
         An ``ee.ImageCollection`` with ALL scenes (no cloud filtering —
         pixel masking happens later).
     """
-    bbox = cfg.ard.aoi.wgs84_bbox
     months = cfg.ard.time.months
 
     if year is not None:
@@ -39,17 +40,38 @@ def list_landsat_scenes(cfg: DictConfig, year: int | None = None) -> ee.ImageCol
     for c in cols[1:]:
         combined = combined.merge(c)
 
-    return (
-        combined
-        .filterBounds(ee.Geometry.Rectangle(bbox))
-        .filterDate(start, end)
-    )
+    paths = list(cfg.landsat.scene_filter.wrs_paths)
+    rows = list(cfg.landsat.scene_filter.wrs_rows)
+
+    filtered = []
+    for path in paths:
+        for row in rows:
+            filtered.append(
+                combined.filter(
+                    ee.Filter.And(
+                        ee.Filter.eq("WRS_PATH", int(path)),
+                        ee.Filter.eq("WRS_ROW", int(row)),
+                    )
+                )
+            )
+
+    if not filtered:
+        return ee.ImageCollection([]).filterDate(start, end)
+
+    merged = filtered[0]
+    for collection in filtered[1:]:
+        merged = merged.merge(collection)
+
+    return merged.filterDate(start, end)
 
 
 def list_sentinel2_scenes(cfg: DictConfig, year: int | None = None) -> ee.ImageCollection:
     """List all Sentinel-2 L2A scenes for the configured AOI and time window.
 
-    Works identically to ``list_landsat_scenes`` but for S2.
+    This returns the intersecting tiles for the AOI time window. The
+    per-datatake mosaic is built later in ``prepare_sentinel2_collection_wrapped``
+    so the final export can cover the full AOI even when it spans multiple
+    MGRS tiles.
     """
     bbox = cfg.ard.aoi.wgs84_bbox
     months = cfg.ard.time.months
@@ -65,11 +87,7 @@ def list_sentinel2_scenes(cfg: DictConfig, year: int | None = None) -> ee.ImageC
 
     collection = ee.ImageCollection(cfg.sentinel2.collection)
 
-    return (
-        collection
-        .filterBounds(ee.Geometry.Rectangle(bbox))
-        .filterDate(start, end)
-    )
+    return collection.filterBounds(ee.Geometry.Rectangle(bbox)).filterDate(start, end)
 
 
 def _advance_month(ym_str: str) -> str:
@@ -132,8 +150,7 @@ def prepare_landsat_collection(
         # Chain addBands on the original image to preserve properties
         # (ee.Image.cat drops properties like system:time_start)
         result = (
-            img
-            .addBands(lst)  # scaled LST (overwrites original ST_B10)
+            img.addBands(lst, overwrite=True)  # scaled LST (replaces original ST_B10)
             .addBands(clear.rename("cloud_mask"))
             .addBands(lst_plausible.rename("lst_plausible"))
             .select(lst_band, "cloud_mask", "lst_plausible")
@@ -149,7 +166,8 @@ def prepare_sentinel2_collection_wrapped(
     """Apply cloud masking and scaling to a Sentinel-2 collection.
 
     Uses the join-based approach from ``gee_masks.prepare_sentinel2_collection``
-    to associate cloud probability data, then applies scaling.
+    to associate cloud probability data, then applies scaling and mosaics all
+    tiles belonging to the same datatake (shared ``system:time_start``).
 
     Extracts all config values to plain types before ``.map()``.
     """
@@ -168,11 +186,9 @@ def prepare_sentinel2_collection_wrapped(
         scaled = band_stack.multiply(scale).max(clip_min).min(clip_max)
 
         # Chain addBands on the original image to preserve properties
-        result = (
-            img
-            .addBands(scaled.float())  # scaled bands (overwrites originals)
-            .select(*all_bands, scl_band)
-        )
+        result = img.addBands(
+            scaled.float(), overwrite=True
+        ).select(*all_bands, scl_band)  # scaled bands (replaces originals)
 
         # Carry through cloud_mask if present (from join-based masking)
         has_mask = img.bandNames().filter(ee.Filter.eq("item", "cloud_mask")).size().gt(0)
@@ -181,7 +197,8 @@ def prepare_sentinel2_collection_wrapped(
         )
         return result
 
-    return masked.map(_scale)
+    scaled = masked.map(_scale)
+    return _mosaic_sentinel2_datatakes(scaled)
 
 
 # ── Per-scene export image construction ──────────────────────────────────────
@@ -206,3 +223,28 @@ def prepare_sentinel2_export(image: ee.Image, cfg: DictConfig) -> ee.Image:
     all_bands = list(cfg.sentinel2.bands_10m) + list(cfg.sentinel2.bands_20m)
     scl = str(cfg.sentinel2.band_scl)
     return image.select([*all_bands, scl, "cloud_mask"]).toFloat()
+
+
+def _mosaic_sentinel2_datatakes(collection: ee.ImageCollection) -> ee.ImageCollection:
+    """Mosaic all Sentinel-2 tiles that share the same datatake timestamp."""
+    times = ee.List(collection.aggregate_array("system:time_start")).distinct().sort()
+
+    def _mosaic(time_ms: Any) -> ee.Image:
+        # Sort once for both deterministic mosaic overlap priority (last
+        # image wins on overlap) and stable scene_id extraction.
+        group = collection.filter(ee.Filter.eq("system:time_start", time_ms)).sort("system:index")
+        first = ee.Image(group.first())
+        scene_id = ee.String(first.get("system:index")).split("_").get(0)
+        mosaic = group.mosaic()
+        return cast(
+            Any,
+            mosaic.set(
+                {
+                    "system:time_start": time_ms,
+                    "system:index": scene_id,
+                    "scene_id": scene_id,
+                }
+            ),
+        )
+
+    return cast(Any, ee.ImageCollection(times.map(_mosaic)))

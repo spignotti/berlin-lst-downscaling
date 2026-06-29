@@ -10,8 +10,8 @@ Landsat and Sentinel-2 are regridded to the canonical Berlin grid in **EPSG:2583
 
 | Source | Input CRS | Resolution | Processing |
 |--------|-----------|------------|------------|
-| Landsat 8/9 | EPSG:25833 (GEE export) | 100 m → 100 m | Regrid to canonical 100 m grid, align origin, intersect with AOI |
-| Sentinel-2 | EPSG:25833 (GEE export) | 10 m → 10 m | Regrid to canonical 10 m grid, align origin, intersect with AOI |
+| Landsat 8/9 | EPSG:25833 (GEE export) | 100 m → 100 m | Select explicit WRS-2 path/row (Berlin: 193/23), regrid to canonical 100 m grid, align origin, intersect with AOI |
+| Sentinel-2 | EPSG:25833 (GEE export) | 10 m → 10 m | Mosaic all AOI-intersecting tiles per datatake, regrid to canonical 10 m grid, align origin, intersect with AOI |
 | ECOSTRESS | Native CRS (UTM zone, EPSG:32632 typical) | ~70 m → ~70 m | Passthrough, no reprojection; COG profile applied |
 
 ---
@@ -226,9 +226,10 @@ The processor reads `ard/processed/{source}/{year}/_manifest.json` from GCS and 
 1. **ECOSTRESS sparse swath:** Single ECOSTRESS tiles can cover only a small fraction of Berlin because of the narrow ISS swath. Validation requires accumulating many tiles over the validation period.
 2. **ECOSTRESS CRS:** Native CRS is typically EPSG:32632 for Berlin, not the canonical EPSG:25833 grid. Align ECOSTRESS during validation analysis.
 3. **ECOSTRESS layer handling:** AppEEARS exports `LST`, `cloud`, and `QC` as separate files. The current GCS scene listing includes GeoTIFFs under the ECOSTRESS prefix; validation code should select the intended LST assets explicitly.
-4. **Cloud fraction for single-band COGs:** The QA code returns `-1.0` when a raster has fewer than two bands.
-5. **Parallel processing:** `max_workers` defaults to 4. Sentinel-2 with 4 workers peaks at roughly 2 GB RAM. Increase only if the machine has enough memory.
-6. **Contact sheets:** Contact sheets are generated per source/year after thumbnails are uploaded. Failures are warnings, not fatal errors.
+4. **AOI coverage QA:** `aoi_coverage_fraction` is now part of QA. Landsat/Sentinel-2 fail if coverage drops below the configured minimum; ECOSTRESS records coverage but does not gate on it.
+5. **Cloud fraction for single-band COGs:** The QA code returns `-1.0` when a raster has fewer than two bands.
+6. **Parallel processing:** `max_workers` defaults to 4. Sentinel-2 with 4 workers peaks at roughly 2 GB RAM. Increase only if the machine has enough memory.
+7. **Contact sheets:** Contact sheets are generated per source/year after thumbnails are uploaded. Failures are warnings, not fatal errors.
 
 ---
 

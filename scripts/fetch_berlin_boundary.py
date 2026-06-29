@@ -13,6 +13,7 @@ import geopandas as gpd
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 OUTPUT_PATH = DATA_DIR / "berlin_aoi.geojson"
+LANDESGRENZE_PATH = DATA_DIR / "berlin_landesgrenze.geojson"
 
 WFS_URL = (
     "https://gdi.berlin.de/services/wfs/alkis_land"
@@ -42,6 +43,15 @@ def main() -> None:
     print(f"  Received {len(gdf)} feature(s).")
     print(f"  CRS: {gdf.crs}")
     print(f"  Raw bounding box (EPSG:25833): {list(gdf.total_bounds.round(3))}")
+
+    # Save the actual Landesgrenze polygon for visual overlay (COSO feature)
+    # Already in EPSG:25833 from the WFS request.
+    gdf_25833 = gdf.to_crs("EPSG:25833")
+    if len(gdf_25833) > 1:
+        # Dissolve multipart features into a single polygon outline
+        gdf_25833 = gdf_25833.dissolve()
+    gdf_25833.to_file(LANDESGRENZE_PATH, driver="GeoJSON")
+    print(f"  Saved Berlin Landesgrenze to {LANDESGRENZE_PATH}")
 
     # Buffer and compute bounding rectangle
     gdf_buffered = gdf.to_crs("EPSG:25833").buffer(BUFFER_METERS)

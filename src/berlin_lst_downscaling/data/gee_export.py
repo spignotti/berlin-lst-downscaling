@@ -69,9 +69,9 @@ def _export_landsat(
     tasks: list[GeeTask] = []
 
     for y in years:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Landsat {y}" + (" [DRY-RUN]" if dry_run else ""))
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         raw = list_landsat_scenes(cfg, year=y)
         processed = prepare_landsat_collection(raw, cfg)
@@ -88,7 +88,7 @@ def _export_landsat(
         props_list: list = processed.select([]).toList(n).getInfo() or []
         for i in range(n):
             props = props_list[i].get("properties", {})
-            scene_id = str(props.get("system:index", f"scene_{i}"))
+            scene_id = str(props.get("scene_id") or props.get("system:index", f"scene_{i}"))
             time_ms = props.get("system:time_start")
             date = (
                 datetime.fromtimestamp(time_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
@@ -139,9 +139,9 @@ def _export_sentinel2(
     tasks: list[GeeTask] = []
 
     for y in years:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Sentinel-2 {y}" + (" [DRY-RUN]" if dry_run else ""))
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         raw = list_sentinel2_scenes(cfg, year=y)
         processed = prepare_sentinel2_collection_wrapped(raw, cfg)
@@ -158,7 +158,7 @@ def _export_sentinel2(
         props_list: list = processed.select([]).toList(n).getInfo() or []
         for i in range(n):
             props = props_list[i].get("properties", {})
-            scene_id = str(props.get("system:index", f"scene_{i}"))
+            scene_id = str(props.get("scene_id") or props.get("system:index", f"scene_{i}"))
             time_ms = props.get("system:time_start")
             date = (
                 datetime.fromtimestamp(time_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
@@ -274,23 +274,19 @@ def monitor_tasks(
                 still_pending.append(t)
 
         if still_pending:
-            states = Counter(
-                t.status().get("state", "UNKNOWN") for t in still_pending
-            )
+            states = Counter(t.status().get("state", "UNKNOWN") for t in still_pending)
             elapsed = int(time.time() - start_time)
-            print(
-                f"  Pending: {len(still_pending)} | "
-                f"States: {dict(states)} | "
-                f"Elapsed: {elapsed}s"
-            )
+            print(f"  Pending: {len(still_pending)} | States: {dict(states)} | Elapsed: {elapsed}s")
             time.sleep(poll_interval_sec)
 
         pending = still_pending
 
     if pending:
         elapsed = int(time.time() - start_time)
-        print(f"  WARNING: {len(pending)} tasks still pending after "
-              f"{elapsed // 60}m (timeout={timeout_min}min).")
+        print(
+            f"  WARNING: {len(pending)} tasks still pending after "
+            f"{elapsed // 60}m (timeout={timeout_min}min)."
+        )
 
     return completed, failed
 

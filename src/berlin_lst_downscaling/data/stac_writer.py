@@ -94,6 +94,7 @@ def write_stac_item(
     """
     cog_uri = f"gs://{output_bucket}/{output_prefix}/{year}/{scene_id}.tif"
     qa_uri = f"gs://{output_bucket}/{output_prefix}/{year}/{scene_id}_qa.json"
+    stac_uri = f"gs://{output_bucket}/{output_prefix}/{year}/{scene_id}_stac.json"
 
     # Read geographic metadata from the COG
     with rasterio.open(cog_path) as src:
@@ -173,7 +174,9 @@ def write_stac_item(
         "bbox": bbox,
         "properties": properties,
         "assets": assets,
-        "links": [],
+        "links": [
+            {"rel": "self", "href": stac_uri, "type": "application/geo+json"},
+        ],
     }
 
     if crs:
@@ -221,9 +224,9 @@ def _add_solar_angles(
             center_lat, center_lon = center_y, center_x
     except Exception:
         logger.warning(
-            "Failed to reproject center for solar position; using native coords"
+            "Failed to reproject center for solar position — skipping solar angles"
         )
-        center_lat, center_lon = center_y, center_x
+        return
 
     try:
         az, elev = _solar_position(center_lat, center_lon, dt)

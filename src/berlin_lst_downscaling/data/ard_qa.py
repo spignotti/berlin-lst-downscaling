@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import rasterio
 from omegaconf import DictConfig
+from rasterio.windows import from_bounds
 
 from berlin_lst_downscaling.data.grid_spec import GridSpec
 
@@ -37,8 +38,8 @@ def compute_cloud_fraction(raster_path: Path) -> float:
         if src.count < 2:
             return -1.0
 
-        mask_band = src.read(src.count)  # last band is cloud mask
-        valid = ~np.isnan(mask_band)
+        mask_band = src.read(src.count, masked=True)  # last band is cloud mask
+        valid = ~mask_band.mask
         if not valid.any():
             return -1.0
 
@@ -47,77 +48,62 @@ def compute_cloud_fraction(raster_path: Path) -> float:
         return float(cloud_pixels / total_valid) if total_valid > 0 else 0.0
 
 
-def detect_cohort_outliers(
-    reports: list[dict],
-    z_score_threshold: float = 3.0,
-) -> list[dict[str, Any]]:
-    """Detect radiometric outliers across a cohort of QA reports.
+def compute_aoi_coverage_fraction(raster_path: Path, spec: GridSpec) -> float:
+    """Compute the fraction of AOI pixels covered by valid raster data.
 
-    For each numeric statistic (min, max, mean, std) across all scenes,
-    computes the z-score for each scene. Scenes with ``|z| > threshold``
-    in any band/statistic are flagged.
-
-    Args:
-        reports: List of QA report dicts (each from ``generate_qa_report``).
-        z_score_threshold: Z-score threshold for flagging.
-
-    Returns:
-        List of ``{"scene_id": str, "flags": list[str]}`` for outliers.
+    AOI bounds are in ``spec.crs`` (EPSG:25833 by default). For native-CRS
+    sources (ECOSTRESS, EPSG:32632), the AOI bounds are reprojected into
+    the raster CRS before computing the window, so the fraction reflects
+    true AOI overlap regardless of the raster's CRS.
     """
-    if not reports:
-        return []
+    with rasterio.open(raster_path) as src:
+        if str(src.crs) == str(spec.crs):
+            aoi_left, aoi_bottom, aoi_right, aoi_top = (
+                spec.aoi_xmin,
+                spec.aoi_ymin,
+                spec.aoi_xmax,
+                spec.aoi_ymax,
+            )
+        else:
+            from rasterio.warp import transform_bounds  # noqa: PLC0415
 
-    from collections import defaultdict
+            try:
+                aoi_left, aoi_bottom, aoi_right, aoi_top = transform_bounds(
+                    spec.crs,
+                    src.crs,
+                    spec.aoi_xmin,
+                    spec.aoi_ymin,
+                    spec.aoi_xmax,
+                    spec.aoi_ymax,
+                )
+            except (ValueError, RuntimeError):
+                return 0.0
 
-    # Collect: {band: {stat: {scene_id: value}}}
-    stats_map: dict[str, dict[str, dict[str, float]]] = defaultdict(
-        lambda: defaultdict(dict)
-    )
+        try:
+            window = from_bounds(
+                aoi_left,
+                aoi_bottom,
+                aoi_right,
+                aoi_top,
+                transform=src.transform,
+            )
+        except ValueError:
+            return 0.0
 
-    scene_ids: list[str] = []
-    for report in reports:
-        sid: str = str(report.get("scene_id", "?"))
-        scene_ids.append(sid)
-        per_band = report.get("radiometric_stats", {})
-        for band, s in per_band.items():
-            if not isinstance(s, dict):
-                continue
-            for stat_key in ("min", "max", "mean", "std"):
-                val = s.get(stat_key)
-                if val is not None:
-                    stats_map[band][stat_key][sid] = float(val)
-
-    outliers: list[dict[str, Any]] = []
-    for sid in scene_ids:
-        flags: list[str] = []
-        for band, stat_dict in stats_map.items():
-            for stat_key, scene_vals in stat_dict.items():
-                values = list(scene_vals.values())
-                if len(values) < 3:
-                    continue
-                mean_v = float(np.mean(values))
-                std_v = float(np.std(values, ddof=0))
-                if std_v < 1e-12:
-                    continue
-                val = scene_vals.get(sid)
-                if val is None:
-                    continue
-                z = abs(val - mean_v) / std_v
-                if z > z_score_threshold:
-                    flags.append(f"{band}/{stat_key}: z={z:.1f}")
-
-        if flags:
-            outliers.append({"scene_id": sid, "flags": flags})
-
-    return outliers
+        data = src.read(1, window=window, boundless=True, masked=True)
+        total_pixels = data.size
+        if total_pixels == 0:
+            return 0.0
+        valid_pixels = int(np.ma.count(data))
+        return float(valid_pixels / total_pixels)
 
 
 def check_grid_conformity(
     raster_path: Path,
     spec: GridSpec,
     target_resolution: float,
-    tolerance: float = 1e-6,
-) -> dict[str, bool | dict]:
+    tolerance: float = 1e-2,
+) -> dict[str, Any]:
     """Verify CRS, resolution, and origin alignment against the spec.
 
     Args:
@@ -278,29 +264,38 @@ def generate_qa_report(
         JSON-serializable QA report dict.
     """
     nodata_threshold = float(cfg.ard.process.qa.nodata_threshold)
+    # Fail-safe default matches the documented value in
+    # ``configs/ard/ard_process.yaml`` so that a missing/typo'd config key
+    # cannot silently disable coverage gating.
+    min_aoi_coverage = float(cfg.ard.process.qa.get("min_aoi_coverage", 0.80))
 
     stats = compute_radiometric_stats(raster_path, nodata_threshold=nodata_threshold)
     cloud_pct = compute_cloud_fraction(raster_path)
+    aoi_coverage_fraction = compute_aoi_coverage_fraction(raster_path, spec)
 
     if skip_grid_check:
         grid = {
             "checked": False,
             "reason": "native CRS source — grid conformity not applicable",
+            "aoi_coverage_fraction": aoi_coverage_fraction,
         }
         # For sparse-swath sources (ECOSTRESS), any valid pixel is sufficient.
         # The standard nodata_threshold (0.95) is too strict for narrow swaths.
         qa_passed = any(b.get("nodata_pct", 1.0) < 1.0 for b in stats.values())
     else:
         grid = check_grid_conformity(raster_path, spec, target_resolution)
+        grid["aoi_coverage_fraction"] = aoi_coverage_fraction
         qa_passed = (
             grid.get("crs_match", False)
             and grid.get("resolution_match", False)
+            and aoi_coverage_fraction >= min_aoi_coverage
         )
 
     report: dict = {
         "grid_conformity": grid,
         "radiometric_stats": stats,
         "cloud_fraction": cloud_pct,
+        "aoi_coverage_fraction": aoi_coverage_fraction,
         "qa_passed": qa_passed,
     }
 

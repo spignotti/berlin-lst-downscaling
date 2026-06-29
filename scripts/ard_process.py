@@ -49,9 +49,11 @@ def main(cfg: DictConfig) -> None:
     from berlin_lst_downscaling.data.grid_spec import get_spec
 
     spec = get_spec()
-    print(f"\nGrid: {spec.crs}  "
-          f"10m: {spec.width_10m}×{spec.height_10m}  "
-          f"100m: {spec.width_100m}×{spec.height_100m}")
+    print(
+        f"\nGrid: {spec.crs}  "
+        f"10m: {spec.width_10m}×{spec.height_10m}  "
+        f"100m: {spec.width_100m}×{spec.height_100m}"
+    )
     print()
 
     # ── W&B init (optional, graceful fallback) ──
@@ -104,10 +106,10 @@ def main(cfg: DictConfig) -> None:
         errors = [r for r in all_results if r.get("status") == "error"]
         print(f"  Success: {len(success)}, Errors: {len(errors)}")
         for r in success:
-            sid = r.get('scene_id', '?')
+            sid = r.get("scene_id", "?")
             print(f"    ✅ [{r['source']}] {sid} → {r.get('output_path', '?')}")
         for r in errors:
-            sid = r.get('scene_id', '?')
+            sid = r.get("scene_id", "?")
             print(f"    ❌ [{r['source']}] {sid}: {r.get('error', '?')}")
 
         # Log summary to W&B
@@ -139,6 +141,7 @@ def main(cfg: DictConfig) -> None:
                         "scene_id": r.get("scene_id", ""),
                         "source": r.get("source", ""),
                         "cloud_fraction": qa.get("cloud_fraction", -1),
+                        "aoi_coverage_fraction": qa.get("aoi_coverage_fraction", -1),
                         "crs_match": grid.get("crs_match", False),
                         "resolution_match": grid.get("resolution_match", False),
                         "qa_passed": qa.get("qa_passed", False),

@@ -29,6 +29,9 @@ def prepare_sentinel2_collection(
     scl_band = str(cfg.sentinel2.band_scl)
     threshold = cfg.sentinel2.cloud.threshold
     scl_mask_classes = list(cfg.sentinel2.cloud.scl_mask)
+    shadow_projection = bool(cfg.sentinel2.cloud.shadow_projection)
+    shadow_dilation_px = int(cfg.sentinel2.cloud.shadow_dilation_px)
+    shadow_nir_threshold = int(cfg.sentinel2.cloud.shadow_nir_threshold)
 
     join_filter = ee.Filter.equals(leftField="system:index", rightField="system:index")
     inner_join = ee.Join.saveFirst("cloud_prob")
@@ -52,6 +55,46 @@ def prepare_sentinel2_collection(
 
         # Combined mask (1 = clear)
         clear = prob_mask.And(scl_mask)
-        return feature.addBands(clear.rename("cloud_mask"))
+        feature = feature.addBands(clear.rename("cloud_mask"))
+
+        # Project cloud shadows (optional, Phase 2)
+        if shadow_projection:
+            feature = _add_shadow_projection(feature, shadow_dilation_px, shadow_nir_threshold)
+
+        return feature
 
     return joined.map(_apply_mask)
+
+
+def _add_shadow_projection(
+    image: ee.Image, dilation_px: int, nir_threshold: int
+) -> ee.Image:
+    """Project cloud shadows via dilation + dark NIR threshold.
+
+    Dilates the cloud mask to cover the potential shadow zone (~2.5 km
+    at 10 m with default 250 px radius), then flags dark NIR pixels inside
+    that zone as shadow.  Non-directional dilation is used — the NIR
+    threshold eliminates false positives (dark vegetation, water).
+
+    Args:
+        image: S2 image with ``cloud_mask`` (1=clear, 0=cloud) at 10 m.
+        dilation_px: FocalMax kernel radius in pixels.
+        nir_threshold: NIR reflectance raw-DN threshold (e.g. 500 ≈ 0.05).
+
+    Returns:
+        Image with ``cloud_mask`` band updated to include projected shadows.
+    """
+    cloud_mask = image.select("cloud_mask")
+    nir = image.select("B8")
+
+    # Dilate cloud area in all directions to cover potential shadow zone
+    cloud = cloud_mask.eq(0)
+    shadow_zone = cloud.focalMax(dilation_px, "square", "pixels")
+
+    # Shadow = (in dilated zone) AND (dark NIR) AND (not original cloud)
+    nir_dark = nir.lt(nir_threshold)
+    new_shadow = shadow_zone.And(nir_dark).And(cloud.Not())
+
+    # Merge into mask: 0 = cloud/shadow
+    updated_mask = cloud_mask.where(new_shadow, 0)
+    return image.addBands(updated_mask.rename("cloud_mask"), overwrite=True)

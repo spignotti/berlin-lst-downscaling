@@ -268,6 +268,11 @@ def test_stac_item_contains_all_scope_fields(tmp_path: Path) -> None:
     assert "qa-json" in item["assets"]
     assert item["assets"]["cog"]["href"].startswith("gs://")
 
+    # Links
+    assert len(item["links"]) == 1
+    assert item["links"][0]["rel"] == "self"
+    assert item["links"][0]["href"].endswith("_stac.json")
+
     # Geometry
     assert "geometry" in item
     assert "bbox" in item

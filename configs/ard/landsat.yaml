@@ -26,6 +26,12 @@ landsat:
       cirrus: 2
     dilation_pixels: 2
 
+  scene_filter:
+    # Berlin is fully covered by path/row 193/23; keep the allowlist explicit
+    # so neighbouring grazers (e.g. 192/23, 194/23, 193/24) never enter the export.
+    wrs_paths: [193]
+    wrs_rows: [23]
+
   radiometry:
     # C2 scaling: DN * scale + add
     # See https://www.usgs.gov/landsat-missions/landsat-collection-2-surface-temperature

@@ -30,7 +30,7 @@ import rasterio.shutil
 from affine import Affine
 from omegaconf import DictConfig, OmegaConf
 from rasterio.enums import Resampling
-from rasterio.warp import calculate_default_transform, reproject
+from rasterio.warp import reproject
 
 from berlin_lst_downscaling.data.grid_spec import GridSpec
 
@@ -103,9 +103,13 @@ def process_source(
     for y in years:
         uris = list_scenes(cfg, source, y)
         if not uris:
-            logger.info("%s %s: no scenes found on GCS (prefix: %s/%s/)",
-                         source, y,
-                         source_cfg.gcs_prefix, y)
+            logger.info(
+                "%s %s: no scenes found on GCS (prefix: %s/%s/)",
+                source,
+                y,
+                source_cfg.gcs_prefix,
+                y,
+            )
             continue
 
         logger.info("%s %s: %s scene(s) available", source, y, len(uris))
@@ -116,10 +120,7 @@ def process_source(
             completed_ids = set(manifest.get("completed", []))
             if completed_ids:
                 uris_before = len(uris)
-                uris = [
-                    u for u in uris
-                    if _parse_scene_id(u, source, cfg) not in completed_ids
-                ]
+                uris = [u for u in uris if _parse_scene_id(u, source, cfg) not in completed_ids]
                 skipped = uris_before - len(uris)
                 if skipped:
                     logger.info("Resume: skipping %d already-processed scene(s)", skipped)
@@ -129,16 +130,20 @@ def process_source(
             logger.info("[SMOKE] limiting to 1 scene")
 
         # Decide execution mode
-        parallel = (
-            not dry_run
-            and cfg.ard.process.get("max_workers", 1) > 1
-            and len(uris) > 1
-        )
+        parallel = not dry_run and cfg.ard.process.get("max_workers", 1) > 1 and len(uris) > 1
 
         if parallel:
             total_results.extend(
                 _process_scenes_parallel(
-                    uris, source, spec, cfg, y, bucket, source_cfg, resume, smoke,
+                    uris,
+                    source,
+                    spec,
+                    cfg,
+                    y,
+                    bucket,
+                    source_cfg,
+                    resume,
+                    smoke,
                 )
             )
             if smoke:
@@ -158,12 +163,19 @@ def process_source(
 
                 # Update completion manifest after each scene
                 if resume and status == "success":
-                    _update_manifest(bucket, source_cfg.output_prefix, y,
-                                     scene_id, status="completed")
+                    _update_manifest(
+                        bucket, source_cfg.output_prefix, y, scene_id, status="completed"
+                    )
                 elif resume and status == "error":
                     err_msg = result.get("error", "unknown error")
-                    _update_manifest(bucket, source_cfg.output_prefix, y,
-                                     scene_id, status="failed", error=err_msg)
+                    _update_manifest(
+                        bucket,
+                        source_cfg.output_prefix,
+                        y,
+                        scene_id,
+                        status="failed",
+                        error=err_msg,
+                    )
 
                 if smoke and status == "success":
                     logger.info("SMOKE: Scene processed — stopping year loop.")
@@ -175,10 +187,7 @@ def process_source(
                 generate_contact_sheet_from_gcs,
             )
 
-            cs_output = (
-                Path(cfg.ard.process.temp_dir)
-                / source / str(y) / "_contact_sheet.png"
-            )
+            cs_output = Path(cfg.ard.process.temp_dir) / source / str(y) / "_contact_sheet.png"
             cs_output.parent.mkdir(parents=True, exist_ok=True)
             try:
                 generate_contact_sheet_from_gcs(
@@ -195,8 +204,7 @@ def process_source(
                     bucket,
                 )
             except Exception as cs_exc:
-                logger.warning("Contact sheet generation failed for %s %s: %s",
-                               source, y, cs_exc)
+                logger.warning("Contact sheet generation failed for %s %s: %s", source, y, cs_exc)
 
     return total_results
 
@@ -259,7 +267,8 @@ def process_scene(
 
         # Step 2: Reproject / regrid
         _reproject_and_regrid(
-            input_local, output_local,
+            input_local,
+            output_local,
             dst_crs=spec.crs,
             dst_resolution=target_res,
             dst_dtype=cog_cfg.dtype,
@@ -273,7 +282,8 @@ def process_scene(
 
         skip_grid = target_res is None  # ECOSTRESS: native CRS, skip grid check
         qa_report = generate_qa_report(
-            output_local, spec,
+            output_local,
+            spec,
             target_resolution=target_res if target_res is not None else 0,
             cfg=cfg,
             scene_id=scene_id,
@@ -282,9 +292,17 @@ def process_scene(
         with open(qa_local, "w") as f:
             json.dump(qa_report, f, indent=2, default=str)
 
+        result["qa_report"] = qa_report
+        if not qa_report.get("qa_passed", False):
+            raise ValueError(
+                f"QA failed for {scene_id}: "
+                f"aoi_coverage={qa_report.get('aoi_coverage_fraction', 0.0):.3f}"
+            )
+
         # Step 4: Upload output COG
-        _upload_to_gcs(output_local, f"{source_cfg.output_prefix}/{year}/{scene_id}.tif",
-                       bucket_name)
+        _upload_to_gcs(
+            output_local, f"{source_cfg.output_prefix}/{year}/{scene_id}.tif", bucket_name
+        )
 
         # Step 5: Upload QA report
         _upload_to_gcs(
@@ -344,7 +362,6 @@ def process_scene(
             logger.warning("Thumbnail generation failed for %s: %s", scene_id, thumb_exc)
 
         result["status"] = "success"
-        result["qa_report"] = qa_report
         result["stac_item"] = stac_item
 
     except Exception as exc:
@@ -388,7 +405,11 @@ def _process_scenes_parallel(
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(
-                _process_scene_worker, uri, source, spec, cfg_container,
+                _process_scene_worker,
+                uri,
+                source,
+                spec,
+                cfg_container,
             ): uri
             for uri in uris
         }
@@ -404,12 +425,18 @@ def _process_scenes_parallel(
 
             # Update manifest from the main process (serial, no race)
             if resume and status == "success":
-                _update_manifest(bucket, source_cfg.output_prefix, year,
-                                 scene_id, status="completed")
+                _update_manifest(
+                    bucket, source_cfg.output_prefix, year, scene_id, status="completed"
+                )
             elif resume and status == "error":
-                _update_manifest(bucket, source_cfg.output_prefix, year,
-                                 scene_id, status="failed",
-                                 error=result.get("error", "unknown error"))
+                _update_manifest(
+                    bucket,
+                    source_cfg.output_prefix,
+                    year,
+                    scene_id,
+                    status="failed",
+                    error=result.get("error", "unknown error"),
+                )
 
             if smoke and status == "success":
                 logger.info("SMOKE: Scene processed — cancelling remaining futures.")
@@ -502,13 +529,16 @@ def _reproject_and_regrid(
 
     with rasterio.open(src_path) as src:
         dst_transform, dst_width, dst_height = _compute_target_dims(
-            src, spec, dst_crs, dst_resolution,
+            src,
+            spec,
+            dst_crs,
+            dst_resolution,
         )
         src_count = src.count
 
         # Build output profile
         profile = src.profile.copy()
-        missing_val = _resolve_nodata(cog_cfg.nodata, dst_dtype)
+        missing_val = _resolve_nodata(cog_cfg.nodata)
 
         # Strip keys inherited from the source that the COG driver
         # doesn't accept (COG handles tiling internally via blocksize).
@@ -527,14 +557,6 @@ def _reproject_and_regrid(
             blocksize=int(cog_cfg.tile_size),
         )
 
-        # Overviews — GDAL COG driver uses ``OVERVIEWS`` (not OVERVIEW_LEVELS)
-        ov_levels = cog_cfg.get("overview_levels")
-        if ov_levels is not None:
-            cog_opts["overviews"] = int(ov_levels)
-        ov_resampling = cog_cfg.get("overview_resampling")
-        if ov_resampling is not None:
-            cog_opts["overview_resampling"] = str(ov_resampling)
-
         profile.update(**cog_opts)
 
         src_nodata = src.nodata
@@ -545,6 +567,11 @@ def _reproject_and_regrid(
         # If GEE exports don't set band descriptions, src.descriptions
         # returns empty strings and all bands use the configured resampling.
         mask_names = {"cloud_mask", "lst_plausible", "scl"}
+
+        # Overview config (read before the write loop)
+        ov_levels = cog_cfg.get("overview_levels")
+        ov_resampling_str = cog_cfg.get("overview_resampling", "average")
+        ov_resampling = getattr(Resampling, ov_resampling_str, Resampling.average)
 
         # Band-at-a-time processing to keep peak memory low.
         # For S2 (12 bands × 4980×4145 × float32), this drops peak
@@ -562,14 +589,26 @@ def _reproject_and_regrid(
                     src_crs=src.crs,
                     dst_transform=dst_transform,
                     dst_crs=dst_crs,
+                    src_nodata=src_nodata,
+                    dst_nodata=missing_val,
                     resampling=band_resamp,
                 )
+                # Safety net: catch any remaining pure nodata pixels
                 if src_nodata is not None:
                     band_arr = np.where(
                         np.isclose(band_arr, src_nodata, rtol=1e-5),
-                        missing_val, band_arr,
+                        missing_val,
+                        band_arr,
                     )
                 dst.write(band_arr, i + 1)
+                dst.set_band_description(i + 1, src.descriptions[i] or f"band_{i + 1}")
+
+            # Build overviews via GDAL internal overviews (avoids invalid
+            # GDAL creation options for the COG driver on this platform).
+            if ov_levels is not None:
+                factors = [2 ** (i + 1) for i in range(int(ov_levels))]
+                dst.build_overviews(factors, ov_resampling)
+                dst.update_tags(ns="rio_overview", resampling=ov_resampling_str)
 
     return dst_path
 
@@ -591,24 +630,39 @@ def _copy_as_cog(src_path: Path, dst_path: Path, dst_dtype: str, cog_cfg: Any) -
     Returns:
         Path to the written COG.
     """
-    missing_val = _resolve_nodata(cog_cfg.nodata, dst_dtype)
+    missing_val = _resolve_nodata(cog_cfg.nodata)
 
-    # Build COG creation options (same pattern as _convert_to_cog in ecostress_export)
-    cog_kwargs: dict[str, Any] = {
-        "driver": "COG",
-        "dtype": dst_dtype,
-        "nodata": missing_val,
-        "compress": str(cog_cfg.compression),
-        "blocksize": int(cog_cfg.tile_size),
-    }
-    ov_levels = cog_cfg.get("overview_levels")
-    if ov_levels is not None:
-        cog_kwargs["overview_levels"] = int(ov_levels)
-    ov_resampling = cog_cfg.get("overview_resampling")
-    if ov_resampling is not None:
-        cog_kwargs["overview_resampling"] = str(ov_resampling)
+    with rasterio.open(src_path) as src:
+        profile = src.profile.copy()
 
-    rasterio.shutil.copy(str(src_path), str(dst_path), **cog_kwargs)  # type: ignore[arg-type]
+        # Strip keys the COG driver doesn't accept
+        for _key in ("blockxsize", "blockysize", "tiled", "interleave"):
+            profile.pop(_key, None)
+
+        profile.update(
+            driver="COG",
+            dtype=dst_dtype,
+            nodata=missing_val,
+            compress=str(cog_cfg.compression),
+            blocksize=int(cog_cfg.tile_size),
+        )
+
+        ov_levels = cog_cfg.get("overview_levels")
+        ov_resampling_str = cog_cfg.get("overview_resampling", "average")
+        ov_resampling = getattr(Resampling, ov_resampling_str, Resampling.average)
+
+        with rasterio.open(dst_path, "w", **profile) as dst:
+            for i in range(src.count):
+                band = src.read(i + 1).astype(dst_dtype)
+                band[~np.isfinite(band)] = missing_val
+                dst.write(band, i + 1)
+
+            # Build overviews via GDAL internal overviews
+            if ov_levels is not None:
+                factors = [2 ** (i + 1) for i in range(int(ov_levels))]
+                dst.build_overviews(factors, ov_resampling)
+                dst.update_tags(ns="rio_overview", resampling=ov_resampling_str)
+
     logger.info("COG passthrough (no reprojection): %s → %s", src_path, dst_path)
     return dst_path
 
@@ -635,7 +689,6 @@ def _compute_target_dims(
     Note:
         ECOSTRESS passthrough (``dst_resolution=None``) is handled in
         ``_reproject_and_regrid`` and does not reach this function.
-        The ``else`` branch here is a safety fallback.
     """
     if dst_resolution is not None:
         # Source is already in EPSG:25833 — regrid to canonical origin
@@ -664,18 +717,19 @@ def _compute_target_dims(
             raise ValueError(msg)
 
         transform = Affine(
-            res, 0, origin_x + col_start * res,
-            0, -res, origin_y - row_start * res,
+            res,
+            0,
+            origin_x + col_start * res,
+            0,
+            -res,
+            origin_y - row_start * res,
         )
         return transform, width, height
-    else:
-        # Fallback: reproject from native CRS to dst_crs at native resolution.
-        # This branch is a safety net (ECOSTRESS passthrough happens earlier).
-        tr, w, h = calculate_default_transform(
-            src.crs, dst_crs, src.width, src.height,
-            *src.bounds,
-        )
-        return cast(Affine, tr), int(w or 0), int(h or 0)
+
+    # dst_resolution=None is handled in _reproject_and_regrid (ECOSTRESS passthrough)
+    # and never reaches this function
+    msg = "_compute_target_dims called with dst_resolution=None"
+    raise ValueError(msg)
 
 
 def _parse_gcs_uri(uri: str) -> tuple[str, str]:
@@ -720,8 +774,8 @@ def _parse_year(gcs_uri: str) -> int:
     return 0
 
 
-def _resolve_nodata(nodata_val: Any, dtype: str) -> float:
-    """Resolve nodata value to a float compatible with the dtype."""
+def _resolve_nodata(nodata_val: Any) -> float:
+    """Resolve nodata value to a float."""
     if nodata_val == "nan":
         return float("nan")
     return float(nodata_val)
@@ -732,11 +786,6 @@ def _resolve_years(cfg: DictConfig, year: int | None) -> list[int]:
     if year is not None:
         return [year]
     return list(range(cfg.ard.time.start_year, cfg.ard.time.end_year + 1))
-
-
-def _manifest_uri(bucket: str, prefix: str, year: int) -> str:
-    """GCS URI for the year-level completion manifest."""
-    return f"gs://{bucket}/{prefix}/{year}/_manifest.json"
 
 
 def _read_manifest(bucket: str, prefix: str, year: int) -> dict[str, Any]:
