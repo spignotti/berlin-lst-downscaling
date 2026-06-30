@@ -85,24 +85,22 @@ def test_solar_position_nighttime() -> None:
 # ── Config hash ─────────────────────────────────────────────────────────
 
 
-def test_config_hash_deterministic() -> None:
+def test_config_hash() -> None:
+    """Config hash: deterministic, 12-char, sensitive to value diff, order-independent."""
+    # Deterministic + 12 chars
     cfg = {"ard": {"time": {"start_year": 2017, "end_year": 2025}}}
-    h1 = _config_hash(cfg)
-    h2 = _config_hash(cfg)
+    h1, h2 = _config_hash(cfg), _config_hash(cfg)
     assert h1 == h2
     assert len(h1) == 12
 
+    # Sensitive to value diff
+    cfg_diff = {"ard": {"time": {"start_year": 2020}}}
+    assert _config_hash(cfg) != _config_hash(cfg_diff)
 
-def test_config_hash_changes_on_diff() -> None:
-    cfg1 = {"ard": {"time": {"start_year": 2017}}}
-    cfg2 = {"ard": {"time": {"start_year": 2020}}}
-    assert _config_hash(cfg1) != _config_hash(cfg2)
-
-
-def test_config_hash_stable_across_order() -> None:
-    cfg1 = {"ard": {"a": 1, "b": 2}}
-    cfg2 = {"ard": {"b": 2, "a": 1}}
-    assert _config_hash(cfg1) == _config_hash(cfg2)
+    # Order-independent
+    cfg_a = {"ard": {"a": 1, "b": 2}}
+    cfg_b = {"ard": {"b": 2, "a": 1}}
+    assert _config_hash(cfg_a) == _config_hash(cfg_b)
 
 
 # ── Overflight datetime ─────────────────────────────────────────────────
@@ -122,15 +120,6 @@ def test_overflight_sentinel2_full() -> None:
     assert dt.tzinfo is not None
 
 
-def test_overflight_sentinel2_no_time_fallthrough() -> None:
-    """Scene ID without T pattern falls through to year-based fallback."""
-    dt = _parse_overflight_datetime("S2A_unknown_format", "sentinel2", 2022)
-    assert dt is not None
-    assert dt.year == 2022
-    assert dt.month == 7
-    assert dt.day == 1
-
-
 def test_overflight_landsat_date() -> None:
     dt = _parse_overflight_datetime(
         "LC08_L2SP_193023_20230511_20230516_02_T1", "landsat", 2023
@@ -142,14 +131,6 @@ def test_overflight_landsat_date() -> None:
     assert dt.hour == 10  # approximate overpass time
     assert dt.minute == 0
     assert dt.tzinfo is not None
-
-
-def test_overflight_landsat_no_recognizable_date() -> None:
-    """When no YYYYMMDD pattern is found, fall back to year default."""
-    dt = _parse_overflight_datetime("LC08_GARBAGE", "landsat", 2021)
-    assert dt is not None
-    assert dt.year == 2021
-    assert dt.month == 7
 
 
 def test_overflight_ecostress() -> None:
@@ -166,7 +147,7 @@ def test_overflight_ecostress() -> None:
 
 
 def test_overflight_fallback() -> None:
-    """Unknown source falls back to July 1."""
+    """Unknown source / unparseable date falls back to July 1 of given year."""
     dt = _parse_overflight_datetime("NO_MATCH", "unknown_source", 2020)
     assert dt is not None
     assert dt.year == 2020

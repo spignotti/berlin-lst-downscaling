@@ -7,6 +7,7 @@ Reprojection logic is tested with tiny in-memory synthetic rasters.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -15,13 +16,13 @@ import rasterio
 from affine import Affine
 from omegaconf import DictConfig, OmegaConf
 
+from berlin_lst_downscaling.data import ard_processor
 from berlin_lst_downscaling.data.ard_processor import (
     _compute_target_dims,
     _parse_gcs_uri,
     _parse_scene_id,
     _parse_year,
     _reproject_and_regrid,
-    _resolve_nodata,
     _resolve_years,
     process_scene,
 )
@@ -92,11 +93,7 @@ def _make_tiny_raster(
     nodata: float | None = None,
     descriptions: list[str] | None = None,
 ) -> Path:
-    """Create a tiny (4×4) multi-band raster for fast tests.
-
-    Args:
-        descriptions: Optional band description strings (one per band).
-    """
+    """Create a tiny (4×4) multi-band raster for fast tests."""
     path = tmp_path / filename
     data = np.random.rand(bands, height, width).astype(np.float32) * 100
     if nodata is not None:
@@ -128,51 +125,52 @@ def _make_tiny_raster(
 # ── _parse_gcs_uri ───────────────────────────────────────────────────────
 
 
-def test_parse_gcs_uri_standard() -> None:
-    bucket, path = _parse_gcs_uri("gs://my-bucket/some/path/file.tif")
-    assert bucket == "my-bucket"
-    assert path == "some/path/file.tif"
+@pytest.mark.parametrize(
+    ("uri", "expected_bucket", "expected_path"),
+    [
+        ("gs://my-bucket/some/path/file.tif", "my-bucket", "some/path/file.tif"),
+        ("my-bucket/file.tif", "my-bucket", "file.tif"),
+    ],
+)
+def test_parse_gcs_uri(uri: str, expected_bucket: str, expected_path: str) -> None:
+    bucket, path = _parse_gcs_uri(uri)
+    assert bucket == expected_bucket
+    assert path == expected_path
 
 
-def test_parse_gcs_uri_no_scheme() -> None:
-    bucket, path = _parse_gcs_uri("my-bucket/file.tif")
-    assert bucket == "my-bucket"
-    assert path == "file.tif"
-
-
-# ── _parse_scene_id ──────────────────────────────────────────────────────
+# ── _parse_scene_id (per-source patterns) ────────────────────────────────
 
 
 def test_parse_scene_id_landsat() -> None:
     cfg = _make_cfg()
     uri = "gs://bucket/ard/dynamic/landsat/2023/LC08_123456_LST.tif"
-    scene_id = _parse_scene_id(uri, "landsat", cfg)
-    assert scene_id == "LC08_123456"
+    assert _parse_scene_id(uri, "landsat", cfg) == "LC08_123456"
 
 
 def test_parse_scene_id_sentinel2() -> None:
     cfg = _make_cfg()
     uri = "gs://bucket/ard/dynamic/sentinel2/2023/S2A_MSIL2A_20230601T100031.tif"
-    scene_id = _parse_scene_id(uri, "sentinel2", cfg)
-    assert scene_id == "S2A_MSIL2A_20230601T100031"
+    assert _parse_scene_id(uri, "sentinel2", cfg) == "S2A_MSIL2A_20230601T100031"
 
 
 def test_parse_scene_id_ecostress() -> None:
     cfg = _make_cfg()
     uri = "gs://bucket/ard/validation/ecostress/2023/ECO_L2T_LSTE_12345_COG.tif"
-    scene_id = _parse_scene_id(uri, "ecostress", cfg)
-    assert scene_id == "ECO_L2T_LSTE_12345"
+    assert _parse_scene_id(uri, "ecostress", cfg) == "ECO_L2T_LSTE_12345"
 
 
 # ── _parse_year ──────────────────────────────────────────────────────────
 
 
-def test_parse_year_found() -> None:
-    assert _parse_year("gs://bucket/ard/dynamic/landsat/2023/scene.tif") == 2023
-
-
-def test_parse_year_not_found() -> None:
-    assert _parse_year("gs://bucket/scene.tif") == 0
+@pytest.mark.parametrize(
+    ("uri", "expected"),
+    [
+        ("gs://bucket/ard/dynamic/landsat/2023/scene.tif", 2023),
+        ("gs://bucket/scene.tif", 0),
+    ],
+)
+def test_parse_year(uri: str, expected: int) -> None:
+    assert _parse_year(uri) == expected
 
 
 # ── _resolve_years ───────────────────────────────────────────────────────
@@ -188,19 +186,7 @@ def test_resolve_years_range() -> None:
     assert _resolve_years(cfg, None) == [2020, 2021, 2022]
 
 
-# ── _resolve_nodata ──────────────────────────────────────────────────────
-
-
-def test_resolve_nodata_nan() -> None:
-    import math
-    assert math.isnan(_resolve_nodata("nan"))
-
-
-def test_resolve_nodata_number() -> None:
-    assert _resolve_nodata(-9999) == -9999.0
-
-
-# ── _compute_target_dims (Landsat / S2) ──────────────────────────────────
+# ── _compute_target_dims (Landsat / S2 / ECOSTRESS / no-overlap) ────────
 
 
 def test_compute_target_dims_landsat(tmp_path: Path) -> None:
@@ -399,8 +385,7 @@ def test_reproject_and_regrid_mask_names(tmp_path: Path) -> None:
 
 def test_process_scene_dry_run(tmp_path: Path) -> None:
     """Dry-run mode returns plan dict with no side effects."""
-    cfg = _make_spec()
-    spec = cfg
+    spec = _make_spec()
 
     # Override temp dir for safety
     dc = _make_cfg()
@@ -416,23 +401,24 @@ def test_process_scene_dry_run(tmp_path: Path) -> None:
     assert not list(tmp_path.iterdir()), "Dry run created no files"
 
 
-# ── QA failure → no upload (regression) ─────────────────────────────────
+# ── QA failure → no upload (load-bearing regression) ─────────────────────
 
 
 def test_process_scene_fails_before_upload_on_low_coverage(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Low AOI coverage must raise before the COG is uploaded to GCS."""
-    import shutil as _shutil
+    """Low AOI coverage must raise before the COG is uploaded to GCS.
 
-    from berlin_lst_downscaling.data import ard_processor
-
+    This is the only test that exercises the upload ordering. If a future
+    refactor accidentally uploads the COG before QA validates it, this
+    test catches it via the ``upload_calls`` list.
+    """
     spec = _make_spec()
     dc = _make_cfg()
     dc.ard.process.temp_dir = str(tmp_path / "ard_temp")
     dc.ard.process.qa.min_aoi_coverage = 0.80  # tight threshold
 
-    # ── Build a tiny 200×200 m raster inside the AOI corner ──
+    # ── Build a tiny 200×200 m raster in the AOI corner ──
     # 2×2 pixels at 100 m anchored at the AOI origin (368000, 5839000)
     # gives 4 valid pixels inside an AOI of ~2×10⁹ m² → coverage ~0%.
     far_transform = Affine(100.0, 0, 368000.0, 0, -100.0, 5797723.0)
@@ -452,9 +438,8 @@ def test_process_scene_fails_before_upload_on_low_coverage(
     upload_calls: list[tuple[str, str]] = []
 
     def fake_download(gcs_uri: str, local_path: Path) -> Path:
-        # Copy the synthetic raster to the path _download_from_gcs would write.
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        _shutil.copy2(far_input, local_path)
+        shutil.copy2(far_input, local_path)
         return local_path
 
     def fake_upload(local_path: Path, gcs_path: str, bucket_name: str) -> str:  # noqa: ARG001

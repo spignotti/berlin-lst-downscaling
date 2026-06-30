@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 from affine import Affine
 from omegaconf import OmegaConf
@@ -435,7 +436,16 @@ def test_generate_qa_report_missing_min_aoi_coverage_uses_safe_default(
 # ── Bug #2 boundary — coverage exactly at the threshold ─────────────────
 
 
-def test_generate_qa_report_coverage_threshold_boundary(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("valid_columns", "expected_coverage", "expected_qa_passed"),
+    [
+        (8, 0.8, True),   # exactly at the threshold
+        (7, 0.7, False),  # below the threshold
+    ],
+)
+def test_generate_qa_report_coverage_threshold_boundary(
+    tmp_path: Path, valid_columns: int, expected_coverage: float, expected_qa_passed: bool,
+) -> None:
     """Coverage exactly at min_aoi_coverage should pass; below should fail."""
     spec = _make_small_spec()
     cfg = OmegaConf.create(
@@ -444,36 +454,18 @@ def test_generate_qa_report_coverage_threshold_boundary(tmp_path: Path) -> None:
         }
     )
 
-    # Exactly 80% valid pixels (8/10 columns).
-    boundary = np.ones((1, 10, 10), dtype=np.float32)
-    boundary[:, :, 8:] = np.nan
-    boundary_path = _make_synthetic_raster(
+    data = np.ones((1, 10, 10), dtype=np.float32)
+    data[:, :, valid_columns:] = np.nan
+    path = _make_synthetic_raster(
         tmp_path,
-        filename="boundary.tif",
-        data=boundary,
+        filename=f"boundary_{valid_columns}.tif",
+        data=data,
         height=10,
         width=10,
         transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
         nodata=np.nan,
         crs="EPSG:25833",
     )
-    report = generate_qa_report(boundary_path, spec, target_resolution=10, cfg=cfg)
-    assert report["aoi_coverage_fraction"] == 0.8
-    assert report["qa_passed"] is True  # 0.8 >= 0.8 boundary
-
-    # 70% (7/10 columns) — below threshold.
-    below = np.ones((1, 10, 10), dtype=np.float32)
-    below[:, :, 7:] = np.nan
-    below_path = _make_synthetic_raster(
-        tmp_path,
-        filename="below.tif",
-        data=below,
-        height=10,
-        width=10,
-        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
-        nodata=np.nan,
-        crs="EPSG:25833",
-    )
-    report = generate_qa_report(below_path, spec, target_resolution=10, cfg=cfg)
-    assert report["aoi_coverage_fraction"] == 0.7
-    assert report["qa_passed"] is False
+    report = generate_qa_report(path, spec, target_resolution=10, cfg=cfg)
+    assert report["aoi_coverage_fraction"] == expected_coverage
+    assert report["qa_passed"] is expected_qa_passed
