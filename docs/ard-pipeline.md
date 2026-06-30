@@ -85,11 +85,11 @@ Defined in `src/berlin_lst_downscaling/data/grid_spec.py` and `configs/ard/defau
 |----------|-------|
 | CRS | EPSG:25833 (ETRS89 / UTM zone 33N) |
 | Origin | `(368000, 5839000)` |
-| AOI bounds | ~368000–417785 E, 5797523–5839259 N |
+| AOI source | `data/boundaries/berlin_landesgrenze_2km_buffer.geojson` |
 | 10 m grid | 4980 × 4150 pixels |
 | 100 m grid | 498 × 415 pixels |
 
-The 10 m and 100 m grids share the same origin. The 100 m grid is an exact 10 × 10 aggregate of the 10 m grid.
+The 10 m and 100 m grids share the same origin. The 100 m grid is an exact 10 × 10 aggregate of the 10 m grid. AOI bounds are derived at runtime from the buffered Berlin boundary instead of being hardcoded in config.
 
 ---
 

@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import rasterio
 from omegaconf import DictConfig
-from rasterio.mask import mask as rio_mask
+from rasterio.mask import raster_geometry_mask
 
 from berlin_lst_downscaling.data.grid_spec import GridSpec
 
@@ -68,19 +68,16 @@ def compute_aoi_coverage_fraction(raster_path: Path, spec: GridSpec) -> float:
             ]
 
         try:
-            data, _ = rio_mask(src, geom, crop=True, nodata=src.nodata)
+            geom_mask, _, window = raster_geometry_mask(src, geom, crop=True)
         except ValueError:
             return 0.0
 
-        total_pixels = data.size / src.count
+        total_pixels = int(np.count_nonzero(~geom_mask))
         if total_pixels == 0:
             return 0.0
 
-        band = np.ma.masked_invalid(data[0].astype(float))
-        if src.nodata is not None and not np.isnan(src.nodata):
-            band = np.ma.masked_equal(band, src.nodata)
-
-        valid_pixels = int(np.ma.count(band))
+        band = src.read(1, window=window, masked=True)
+        valid_pixels = int(np.count_nonzero((~geom_mask) & (~np.ma.getmaskarray(band))))
         return float(valid_pixels / total_pixels)
 
 

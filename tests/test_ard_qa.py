@@ -364,6 +364,33 @@ def test_compute_aoi_coverage_fraction_uses_polygon(tmp_path: Path) -> None:
     assert compute_aoi_coverage_fraction(path, spec) == 0.0
 
 
+def test_compute_aoi_coverage_fraction_uses_polygon_area_not_bbox(tmp_path: Path) -> None:
+    """Coverage denominator should be AOI polygon area, not its bounding box."""
+    from shapely.geometry import Polygon  # noqa: PLC0415
+
+    spec = make_grid_spec(
+        origin_x=0.0,
+        origin_y=100.0,
+        aoi_25833=(0.0, 0.0, 100.0, 100.0),
+        wgs84_bbox=(0.0, 0.0, 1.0, 1.0),
+        aoi_polygon_25833=Polygon([(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)]),
+    )
+
+    data = np.ones((1, 10, 10), dtype=np.float32)
+    path = _make_synthetic_raster(
+        tmp_path,
+        filename="triangle_clip.tif",
+        data=data,
+        height=10,
+        width=10,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        nodata=np.nan,
+        crs="EPSG:25833",
+    )
+    cov = compute_aoi_coverage_fraction(path, spec)
+    assert cov > 0.99
+
+
 def test_generate_qa_report_fails_on_low_aoi_coverage(tmp_path: Path) -> None:
     """Landsat/Sentinel-2 QA should fail when AOI coverage is too low."""
     spec = _make_small_spec()
