@@ -18,9 +18,11 @@ Landsat and Sentinel-2 are regridded to the canonical Berlin grid in **EPSG:2583
 
 ## Pipeline Flow
 
+> **Orchestrator:** `scripts/ard_run.py` is the single entry point for the full pipeline. It chains the phases below via sub-commands (`smoke`, `all`, `plan`, `export`, `process`, `validate`, `doctor`). The individual scripts (`ard_export.py`, `ard_monitor.py`, `ard_process.py`, `ard_smoke_validation.py`) remain usable directly for dev/debugging.
+
 ### 1. Export phase
 
-Entry point: `scripts/ard_export.py`
+Driver: `scripts/ard_export.py` (called by `ard_run.py export` / `ard_run.py smoke` / `ard_run.py all`)
 
 | Source | Export path | Output prefix | Config |
 |--------|-------------|---------------|--------|
@@ -30,11 +32,11 @@ Entry point: `scripts/ard_export.py`
 
 GEE exports submit Earth Engine tasks for the configured year and source. ECOSTRESS export submits an AppEEARS area task, downloads the result bundle, converts GeoTIFF layers to COGs, and uploads them to GCS.
 
-Task monitoring is split out into `scripts/ard_monitor.py`.
+Task monitoring is split out into `scripts/ard_monitor.py` (called automatically by `ard_run.py` between export and process).
 
 ### 2. Processing phase
 
-Entry point: `scripts/ard_process.py`  
+Driver: `scripts/ard_process.py` (called by `ard_run.py process` / `ard_run.py smoke` / `ard_run.py all`)  
 Config: `configs/ard/ard_process.yaml`
 
 For each selected source and year, the processor:
