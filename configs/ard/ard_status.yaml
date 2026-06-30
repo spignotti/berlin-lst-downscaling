@@ -1,0 +1,18 @@
+# @package _global_
+
+# Configuration for scripts/ard_status.py — listing GEE export tasks.
+# Reuses the default ARD config for GEE project / SA credentials.
+
+defaults:
+  - default
+  - _self_
+
+# CLI override: set to true to include completed/failed/canceled tasks
+# (default: only pending/running/ready)
+show_all: false
+
+# ── Hydra overrides to keep scripts in-place ─────────────────────────────
+hydra:
+  run:
+    dir: .
+  output_subdir: null

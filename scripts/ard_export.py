@@ -6,36 +6,41 @@ Supports:
   * sentinel2 — GEE batch export to GCS
   * ecostress — AppEEARS area task, download, COG conversion, GCS upload
 
-Usage:
-    # Dry run (default): print what would be exported
-    uv run python scripts/ard_export.py
-    uv run python scripts/ard_export.py source=landsat
-    uv run python scripts/ard_export.py source=ecostress
+Typical use:
+    uv run python scripts/ard_run.py        # orchestrator (preferred)
+    uv run python scripts/ard_run.py all    # full pipeline run
 
-    # Single year dry run
-    uv run python scripts/ard_export.py year=2023
+Direct use (dev / debugging):
+    # Plan (default): show what would be exported
+    uv run python scripts/ard_export.py mode=plan source=landsat
+    uv run python scripts/ard_export.py mode=plan year=2023
 
-    # Actually submit exports (use --dry-run=false)
-    uv run python scripts/ard_export.py dry_run=false
-    uv run python scripts/ard_export.py year=2023 source=landsat dry_run=false
+    # Smoke test: 1 scene per source
+    uv run python scripts/ard_export.py mode=smoke year=2023
 
-    # Smoke test: export only 1 scene per source
-    uv run python scripts/ard_export.py year=2023 smoke=true
-    uv run python scripts/ard_export.py year=2023 source=landsat smoke=true dry_run=false
+    # Full run: all sources × all years
+    uv run python scripts/ard_export.py mode=all
+
+The ``mode`` flag collapses the old ``dry_run`` + ``smoke`` pair:
+  plan  → dry_run=True,  smoke=False
+  smoke → dry_run=False, smoke=True
+  all   → dry_run=False, smoke=False
 
 Safety note:
-    Defaults to --dry-run=true to prevent accidental mass exports.
+    Without ``mode``, ``dry_run`` defaults to true (safe — no submissions).
 """
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+from berlin_lst_downscaling.data.ard_modes import apply_mode
 from berlin_lst_downscaling.data.gee_client import initialize
 
 
 @hydra.main(version_base=None, config_path="../configs/ard", config_name="gee_export")
 def main(cfg: DictConfig) -> None:
     """Submit or dry-run export tasks for one or all sources."""
+    apply_mode(cfg)
     print(OmegaConf.to_yaml(cfg, resolve=True))
     print()
 

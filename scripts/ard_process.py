@@ -5,22 +5,25 @@ Reads raw GEE/AppEEARS COGs from GCS, reprojects/regrids to the
 canonical grid, runs QA checks, and writes validated COGs + JSON
 reports back to GCS.
 
-Usage:
+Typical use:
+    uv run python scripts/ard_run.py        # orchestrator (preferred)
+    uv run python scripts/ard_run.py all    # full pipeline run
 
-    # Dry run: list what would be processed
-    uv run python scripts/ard_process.py
+Direct use (dev / debugging):
+    # Plan (default): show what would be processed
+    uv run python scripts/ard_process.py mode=plan source=landsat
+    uv run python scripts/ard_process.py mode=plan year=2023
 
-    # Single source, single year
-    uv run python scripts/ard_process.py source=landsat year=2023
+    # Smoke test: 1 scene per source
+    uv run python scripts/ard_process.py mode=smoke year=2023
 
-    # Smoke test (1 scene per source)
-    uv run python scripts/ard_process.py source=landsat smoke=true
+    # Full run: all sources × all years (resume-aware)
+    uv run python scripts/ard_process.py mode=all
 
-    # Actually process
-    uv run python scripts/ard_process.py source=landsat year=2023 dry_run=false
-
-    # Full pipeline (all sources, all years) — USE WITH CAUTION
-    uv run python scripts/ard_process.py dry_run=false
+The ``mode`` flag collapses the old ``dry_run`` + ``smoke`` pair:
+  plan  → dry_run=True,  smoke=False
+  smoke → dry_run=False, smoke=True
+  all   → dry_run=False, smoke=False
 """
 
 from __future__ import annotations
@@ -30,10 +33,13 @@ import sys
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
+from berlin_lst_downscaling.data.ard_modes import apply_mode
+
 
 @hydra.main(version_base=None, config_path="../configs/ard", config_name="ard_process")
 def main(cfg: DictConfig) -> None:
     """Reproject, regrid, QA, and upload ARD scenes."""
+    apply_mode(cfg)
     print(OmegaConf.to_yaml(cfg, resolve=True))
     print()
 

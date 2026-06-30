@@ -15,10 +15,11 @@ defaults:
   - ecostress
   - _self_
 
+mode: null                 # "plan" | "smoke" | "all" — drives dry_run + smoke (preferred)
 year: null                 # null = all years, or e.g. year=2023
 source: null               # null = all sources, or "landsat" / "sentinel2" / "ecostress"
-dry_run: true              # default safe — shows what would be processed
-smoke: false               # process only 1 scene per source, stop for human approval
+dry_run: true              # default safe — shows what would be processed (overridden by mode)
+smoke: false               # process only 1 scene per source (overridden by mode)
 
 ard:
   process:

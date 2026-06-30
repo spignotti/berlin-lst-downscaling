@@ -40,11 +40,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
-from google.cloud import storage as gcs
 from matplotlib import lines as mlines
 from rasterio.vrt import WarpedVRT
 
 from berlin_lst_downscaling.data.ard_qa import compute_aoi_coverage_fraction
+from berlin_lst_downscaling.data.gcs_client import download_blob
 from berlin_lst_downscaling.data.grid_spec import GridSpec, get_spec
 
 matplotlib.use("Agg")
@@ -89,26 +89,21 @@ class SceneData:
 # ── Scene discovery ───────────────────────────────────────────────────────────
 
 
-def _get_gcs_bucket() -> gcs.Bucket:
-    """Return authenticated GCS bucket handle."""
-    return gcs.Client().bucket(_GCS_BUCKET)
-
-
 def discover_scenes(year: int = 2023) -> list[dict[str, Any]]:
     """Discover smoke-test scenes on GCS via the GCS client."""
+    from berlin_lst_downscaling.data.gcs_client import list_blobs
+
     scenes: list[dict[str, Any]] = []
-    bucket = _get_gcs_bucket()
     for source, cfg in _SOURCES.items():
         prefix = f"{cfg['input_prefix']}/{year}/"
-        blobs = list(bucket.list_blobs(prefix=prefix))
-        for blob in blobs:
-            if not blob.name.endswith(".tif"):
+        for blob_name in list_blobs(_GCS_BUCKET, prefix=prefix):
+            if not blob_name.endswith(".tif"):
                 continue
-            if blob.name.endswith("_COG.tif"):
+            if blob_name.endswith("_COG.tif"):
                 continue
             # Turn blob name into a gs:// URI for internal routing
-            cog_uri = f"gs://{_GCS_BUCKET}/{blob.name}"
-            scene_id = _parse_scene_id(blob.name)
+            cog_uri = f"gs://{_GCS_BUCKET}/{blob_name}"
+            scene_id = _parse_scene_id(blob_name)
             if scene_id:
                 scenes.append(
                     {
@@ -166,14 +161,12 @@ def _download_from_gcs(gcs_uri: str, temp_dir: Path) -> Path | None:
     if local_path.exists():
         return local_path
     try:
-        bucket = _get_gcs_bucket()
-        blob = bucket.blob(blob_name)
-        blob.download_to_filename(str(local_path))
-        if local_path.exists() and local_path.stat().st_size > 0:
-            return local_path
-        return None
+        download_blob(_GCS_BUCKET, blob_name, local_path)
     except Exception:
         return None
+    if local_path.exists() and local_path.stat().st_size > 0:
+        return local_path
+    return None
 
 
 # ── Band analysis ─────────────────────────────────────────────────────────────

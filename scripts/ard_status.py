@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 """List all GEE export tasks for this project with their current state.
 
+Uses the service-account init from ``berlin_lst_downscaling.data.gee_client``
+(consistent with ``ard_list.py`` / ``ard_export.py`` / ``ard_monitor.py``).
+
 Usage:
     uv run python scripts/ard_status.py
-    uv run python scripts/ard_status.py --show-all    # include COMPLETED/FAILED
+    uv run python scripts/ard_status.py show_all=true
 """
 
-import argparse
+import sys
 from collections import Counter
 
 import ee
+import hydra
+from omegaconf import DictConfig
+
+from berlin_lst_downscaling.data.gee_client import initialize
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="List GEE export tasks and their states.")
-    parser.add_argument(
-        "--show-all",
-        action="store_true",
-        help="Include completed and failed tasks (default: only pending/running/ready)",
-    )
-    args = parser.parse_args()
+@hydra.main(version_base=None, config_path="../configs/ard", config_name="ard_status")
+def main(cfg: DictConfig) -> None:
+    """List GEE export tasks and their states."""
+    initialize(cfg)
+    show_all = bool(cfg.get("show_all", False))
 
-    ee.Initialize(project="masterarbeit-berlin-lst-v2")
-
-    tasks = ee.batch.Task.list()
+    tasks = list(ee.batch.Task.list())
     states = Counter(t.status().get("state", "UNKNOWN") for t in tasks)
 
     print(f"Total tasks: {len(tasks)}")
@@ -34,7 +36,7 @@ def main() -> None:
     ard_tasks = [t for t in tasks if "ard_" in (t.status().get("description") or "")]
 
     relevant_states = {"READY", "RUNNING", "UNSUBMITTED"}
-    if args.show_all:
+    if show_all:
         relevant_states = {"READY", "RUNNING", "UNSUBMITTED", "COMPLETED", "FAILED", "CANCELED"}
 
     for t in ard_tasks:
@@ -49,6 +51,10 @@ def main() -> None:
 
     if not any(t.status().get("state") in relevant_states for t in ard_tasks):
         print("  (no matching tasks in relevant states)")
+
+    # Non-zero exit if there are any failed tasks (helpful for monitoring)
+    if states.get("FAILED", 0) > 0 and not show_all:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

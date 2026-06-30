@@ -13,9 +13,10 @@ defaults:
   - _self_
 
 # Composable overrides
+mode: null                 # "plan" | "smoke" | "all" — drives dry_run + smoke (preferred)
 year: null                 # null = all years, or set e.g. year=2023
-dry_run: true              # --dry-run is the default for safety
-smoke: false               # process only 1 scene per source (stop for inspection)
+dry_run: true              # --dry-run is the default for safety (overridden by mode)
+smoke: false               # process only 1 scene per source (overridden by mode)
 source: null               # null = all sources, or "landsat" / "sentinel2"
 
 # ── Hydra overrides to keep scripts in-place ─────────────────────────────
