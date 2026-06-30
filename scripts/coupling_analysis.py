@@ -18,6 +18,7 @@ import ee
 import hydra
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.boundary import buffered_bbox_wgs84
 from berlin_lst_downscaling.data.gee_client import initialize
 from berlin_lst_downscaling.data.gee_scenes import list_landsat_scenes, list_sentinel2_scenes
 
@@ -117,7 +118,7 @@ def main(cfg: DictConfig) -> None:
     print("  Coupling Analysis: Landsat ↔ Sentinel-2")
     print("=" * 64)
     print()
-    print(f"  AOI:          {list(cfg.ard.aoi.wgs84_bbox)}")
+    print(f"  AOI:          {list(buffered_bbox_wgs84(cfg.ard.aoi.boundary_file))}")
     print(f"  Period:       {cfg.ard.time.start_year}\u2013{cfg.ard.time.end_year}, "
           f"months {list(cfg.ard.time.months)}")
     print(f"  Landsat cols: {list(cfg.landsat.collections)}")
@@ -310,7 +311,7 @@ def _build_report(
         "# Coupling Analysis: Landsat \u2194 Sentinel-2",
         "",
         f"**Run date:** {now}",
-        f"**AOI:** Berlin + 2 km buffer `{list(cfg.ard.aoi.wgs84_bbox)}`",
+        f"**AOI:** Berlin + 2 km buffer `{list(buffered_bbox_wgs84(cfg.ard.aoi.boundary_file))}`",
         f"**Period:** May\u2013Sep {cfg.ard.time.start_year}\u2013{cfg.ard.time.end_year}",
         f"**Landsat collections:** `{'`, `'.join(cfg.landsat.collections)}`",
         f"**Sentinel-2 collection:** `{cfg.sentinel2.collection}`",

@@ -422,14 +422,14 @@ def _check_grid(cog_path: Path) -> dict[str, Any]:
 
 
 def _load_boundary_gdf() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """Load the Berlin Landesgrenze and AOI rectangle as GeoDataFrames.
+    """Load the Berlin Landesgrenze and buffered AOI polygon.
 
     Returns:
         (landesgrenze_gdf, aoi_gdf) — both in EPSG:25833.
     """
-    data_dir = Path(__file__).resolve().parent.parent / "data"
+    data_dir = Path(__file__).resolve().parent.parent / "data" / "boundaries"
     landesgrenze = gpd.read_file(data_dir / "berlin_landesgrenze.geojson")
-    aoi = gpd.read_file(data_dir / "berlin_aoi.geojson")
+    aoi = gpd.read_file(data_dir / "berlin_landesgrenze_2km_buffer.geojson")
     return landesgrenze, aoi
 
 
@@ -452,7 +452,7 @@ def _add_boundary_overlay(
     boundary_gdf: gpd.GeoDataFrame,
     aoi_gdf: gpd.GeoDataFrame | None = None,
 ) -> None:
-    """Draw Berlin Landesgrenze and AOI rectangle.
+    """Draw Berlin Landesgrenze and buffered AOI polygon.
     onto an existing matplotlib axes that already shows an image with proper
     ``extent`` in CRS coordinates.
     """
@@ -865,7 +865,7 @@ def main(year: int = 2023) -> None:
     try:
         boundary_gdf, aoi_gdf = _load_boundary_gdf()
         print(f"  Berlin Landesgrenze: {len(boundary_gdf)} feature(s)")
-        print(f"  AOI rectangle: {len(aoi_gdf)} feature(s)")
+        print(f"  AOI polygon: {len(aoi_gdf)} feature(s)")
     except Exception as exc:
         print(f"  ❌ Failed to load boundary: {exc}")
         print("  Proceeding without boundary overlay.")

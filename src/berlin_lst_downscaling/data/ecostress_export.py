@@ -28,6 +28,7 @@ import rasterio.shutil
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.appeears_client import AppEEARSClient
+from berlin_lst_downscaling.data.boundary import buffered_bbox_wgs84
 from berlin_lst_downscaling.data.ecostress_scenes import (
     list_ecostress_granules,
     summarize_granules,
@@ -216,7 +217,7 @@ def export_ecostress_by_year(
     bucket = cfg.ard.output.bucket
     prefix = cfg.ecostress.export.prefix
     temp_base = Path(cfg.ecostress.export.temp_dir)
-    wgs84_bbox = list(cfg.ard.aoi.wgs84_bbox)
+    wgs84_bbox = list(buffered_bbox_wgs84(cfg.ard.aoi.boundary_file))
 
     results: list[dict[str, Any]] = []
 

@@ -7,8 +7,8 @@ ard:
 
   # Berlin + 2 km buffer, fetched from Geoportal Berlin WFS.
   aoi:
-    wgs84_bbox: [13.0471, 52.3122, 13.7937, 52.6970]
-    aoi_25833: [368002.320, 5797523.137, 417784.933, 5839258.933]
+    boundary_file: "data/boundaries/berlin_landesgrenze_2km_buffer.geojson"
+    buffer_meters: 2000
 
   # Target grid: 10 m with nested 100 m (exact 10×10 aggregate, same origin).
   grid:

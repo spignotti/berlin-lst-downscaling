@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Fetch the Berlin administrative boundary (Landesgrenze) from Geoportal Berlin
-via WFS, apply a 2 km buffer, and save the AOI rectangle as GeoJSON.
+"""Fetch the Berlin administrative boundary (Landesgrenze) from Geoportal Berlin.
 
-Output:
-    data/berlin_aoi.geojson — bounding-box rectangle of Berlin + 2 km buffer
-    in EPSG:25833. This is the authoritative AOI for all downstream processing.
+Outputs:
+    data/boundaries/berlin_landesgrenze.geojson
+    data/boundaries/berlin_landesgrenze_2km_buffer.geojson
+
+The buffered polygon is the authoritative AOI source. The export bounding box
+is derived from it at runtime; we do not persist a separate rectangle file.
 """
 
 from pathlib import Path
 
 import geopandas as gpd
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-OUTPUT_PATH = DATA_DIR / "berlin_aoi.geojson"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "boundaries"
+BUFFER_PATH = DATA_DIR / "berlin_landesgrenze_2km_buffer.geojson"
 LANDESGRENZE_PATH = DATA_DIR / "berlin_landesgrenze.geojson"
 
 WFS_URL = (
@@ -26,7 +28,7 @@ WFS_URL = (
 BUFFER_METERS = 2000
 
 
-def main() -> None:
+def fetch_and_save() -> tuple[Path, Path]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Fetching Berlin Landesgrenze from Geoportal Berlin WFS...")
@@ -53,38 +55,28 @@ def main() -> None:
     gdf_25833.to_file(LANDESGRENZE_PATH, driver="GeoJSON")
     print(f"  Saved Berlin Landesgrenze to {LANDESGRENZE_PATH}")
 
-    # Buffer and compute bounding rectangle
-    gdf_buffered = gdf.to_crs("EPSG:25833").buffer(BUFFER_METERS)
-    xmin, ymin, xmax, ymax = gdf_buffered.total_bounds
-
-    # Create the bounding rectangle as a GeoDataFrame
-    from shapely.geometry import Polygon
-
-    rect = Polygon(
-        [
-            (xmin, ymin),
-            (xmax, ymin),
-            (xmax, ymax),
-            (xmin, ymax),
-            (xmin, ymin),
-        ]
-    )
-    aoi_gdf = gpd.GeoDataFrame(
-        {"name": ["berlin_aoi_2km_buffer"]},
-        geometry=[rect],
-        crs="EPSG:25833",
-    )
-    aoi_gdf.to_file(OUTPUT_PATH, driver="GeoJSON")
-    print(f"  Saved AOI rectangle to {OUTPUT_PATH}")
+    # Buffer and save the buffered polygon
+    gdf_buffered = gdf_25833.copy()
+    gdf_buffered.geometry = gdf_buffered.buffer(BUFFER_METERS)
+    if len(gdf_buffered) > 1:
+        gdf_buffered = gdf_buffered.dissolve()
+    gdf_buffered.to_file(BUFFER_PATH, driver="GeoJSON")
+    print(f"  Saved buffered AOI polygon to {BUFFER_PATH}")
 
     # Also compute WGS84 bounding box for GEE
-    aoi_wgs84 = aoi_gdf.to_crs("EPSG:4326")
+    aoi_wgs84 = gdf_buffered.to_crs("EPSG:4326")
     wgs84_bounds = aoi_wgs84.total_bounds
     print(f"  AOI bounding box (EPSG:4326): [{wgs84_bounds[0]:.4f}, {wgs84_bounds[1]:.4f}, "
           f"{wgs84_bounds[2]:.4f}, {wgs84_bounds[3]:.4f}]")
 
-    print("\nDone. Use this EPSG:25833 bbox in ard configs:")
-    print(f"  aoi_25833: [{xmin:.3f}, {ymin:.3f}, {xmax:.3f}, {ymax:.3f}]")
+    xmin, ymin, xmax, ymax = gdf_buffered.total_bounds
+    print("\nDone. Derived export bbox (EPSG:25833) from buffered polygon:")
+    print(f"  [{xmin:.3f}, {ymin:.3f}, {xmax:.3f}, {ymax:.3f}]")
+    return LANDESGRENZE_PATH, BUFFER_PATH
+
+
+def main() -> None:
+    fetch_and_save()
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ from typing import Any
 import ee
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.boundary import buffered_bbox_wgs84, buffered_geojson_wgs84
+
 
 def initialize(cfg: DictConfig) -> None:
     """Initialize Earth Engine with the configured project via service account."""
@@ -29,8 +31,8 @@ def get_aoi_geometry(
 
 
 def get_aoi_from_cfg(cfg: DictConfig) -> Any:
-    """Convenience: read the WGS84 bbox from the Hydra config."""
-    return get_aoi_geometry(cfg.ard.aoi.wgs84_bbox)
+    """Convenience: derive the WGS84 bbox from the buffered AOI polygon."""
+    return get_aoi_geometry(buffered_bbox_wgs84(cfg.ard.aoi.boundary_file))
 
 
 def get_aoi_geojson_from_cfg(cfg: DictConfig) -> dict:
@@ -38,25 +40,4 @@ def get_aoi_geojson_from_cfg(cfg: DictConfig) -> dict:
 
     Used for AppEEARS area task submission (not GEE).
     """
-    west, south, east, north = cfg.ard.aoi.wgs84_bbox
-    return {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [west, south],
-                            [east, south],
-                            [east, north],
-                            [west, north],
-                            [west, south],
-                        ]
-                    ],
-                },
-                "properties": {},
-            }
-        ],
-    }
+    return buffered_geojson_wgs84(cfg.ard.aoi.boundary_file)

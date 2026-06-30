@@ -334,6 +334,36 @@ def test_compute_aoi_coverage_fraction_full_and_partial(tmp_path: Path) -> None:
     assert compute_aoi_coverage_fraction(partial_path, spec) == 0.5
 
 
+def test_compute_aoi_coverage_fraction_uses_polygon(tmp_path: Path) -> None:
+    """Coverage uses the AOI polygon, not just the AOI bounding box."""
+    from shapely.geometry import box  # noqa: PLC0415
+
+    spec = make_grid_spec(
+        origin_x=0.0,
+        origin_y=100.0,
+        aoi_25833=(0.0, 0.0, 100.0, 100.0),
+        wgs84_bbox=(0.0, 0.0, 1.0, 1.0),
+        aoi_polygon_25833=box(0.0, 0.0, 50.0, 100.0),  # left half only
+    )
+
+    # Valid data only on the RIGHT half; the polygon covers only the LEFT half.
+    # Bbox-based coverage would see 50% valid pixels. Polygon-based coverage
+    # should see 0% because the left-half AOI polygon contains only NaNs.
+    data = np.ones((1, 10, 10), dtype=np.float32)
+    data[:, :, :5] = np.nan
+    path = _make_synthetic_raster(
+        tmp_path,
+        filename="polygon_clip.tif",
+        data=data,
+        height=10,
+        width=10,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        nodata=np.nan,
+        crs="EPSG:25833",
+    )
+    assert compute_aoi_coverage_fraction(path, spec) == 0.0
+
+
 def test_generate_qa_report_fails_on_low_aoi_coverage(tmp_path: Path) -> None:
     """Landsat/Sentinel-2 QA should fail when AOI coverage is too low."""
     spec = _make_small_spec()

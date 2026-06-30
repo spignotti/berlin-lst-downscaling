@@ -66,12 +66,13 @@ def _list_gee_source(cfg: DictConfig, src: str, years: list[int]) -> None:
 
 def _list_ecostress_source(cfg: DictConfig, years: list[int]) -> None:
     """List granules for ECOSTRESS via CMR."""
+    from berlin_lst_downscaling.data.boundary import buffered_bbox_wgs84
     from berlin_lst_downscaling.data.ecostress_scenes import (
         list_ecostress_granules,
         summarize_granules,
     )
 
-    wgs84_bbox = list(cfg.ard.aoi.wgs84_bbox)
+    wgs84_bbox = list(buffered_bbox_wgs84(cfg.ard.aoi.boundary_file))
     months = list(cfg.ecostress.time.months)
 
     for year in years:

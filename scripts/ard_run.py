@@ -9,6 +9,8 @@ Sub-commands:
   process     only stage 2: process all available scenes
   validate    only stage 3: visual QC on processed data
   doctor      infrastructure access check (alias for ard_smoke.py)
+  boundary    refresh Berlin boundary from Geoportal WFS
+  boundary    refresh Berlin boundary (Landesgrenze + 2 km buffer)
 
 Typical usage:
     uv run python scripts/ard_run.py                  # smoke (default)
@@ -18,6 +20,7 @@ Typical usage:
     uv run python scripts/ard_run.py --year 2024      # smoke a different year
     uv run python scripts/ard_run.py --source landsat # smoke one source only
     uv run python scripts/ard_run.py --verbose        # stream subprocess output
+    uv run python scripts/ard_run.py boundary         # refresh Berlin boundary files
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ _COMMAND_HELP = {
     "process":  "Stage 2 only: process all available scenes (resume-aware).",
     "validate": "Stage 3 only: visual QC on processed data.",
     "doctor":   "Infrastructure access check (alias for ard_smoke.py).",
+    "boundary": "Refresh Berlin boundary (Landesgrenze + 2 km buffer) from Geoportal WFS.",
 }
 
 
@@ -186,6 +190,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return rc
 
 
+def _cmd_boundary(args: argparse.Namespace) -> int:
+    """Refresh the Berlin boundary files from Geoportal Berlin WFS."""
+    rc, _ = _run_step(
+        "boundary", ["uv", "run", "python", "scripts/fetch_berlin_boundary.py"],
+        verbose=args.verbose,
+    )
+    return rc
+
+
 _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "plan":     _cmd_plan,
     "smoke":    _cmd_smoke,
@@ -194,6 +207,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "process":  _cmd_process,
     "validate": _cmd_validate,
     "doctor":   _cmd_doctor,
+    "boundary": _cmd_boundary,
 }
 
 

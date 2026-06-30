@@ -12,11 +12,13 @@ import functools
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
+from typing import Any
 
 from affine import Affine
+from shapely.geometry import box
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
-AOI_FILE = DATA_DIR / "berlin_aoi.geojson"
+DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data" / "boundaries"
+AOI_FILE = DATA_DIR / "berlin_landesgrenze_2km_buffer.geojson"
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,9 @@ class GridSpec:
 
     # WGS84 bbox for GEE queries
     wgs84_bbox: tuple[float, float, float, float]
+
+    # Buffered AOI polygon in EPSG:25833 (single source of truth for QA masking)
+    aoi_polygon_25833: Any
 
     # Optional overrides with defaults
     crs: str = "EPSG:25833"
@@ -88,6 +93,7 @@ def make_grid_spec(
     origin_y: float,
     aoi_25833: tuple[float, float, float, float],
     wgs84_bbox: tuple[float, float, float, float],
+    aoi_polygon_25833: Any | None = None,
     res_10m: float = 10.0,
     res_100m: float = 100.0,
 ) -> GridSpec:
@@ -117,6 +123,7 @@ def make_grid_spec(
         aoi_xmax=axmax,
         aoi_ymax=aymax,
         wgs84_bbox=wgs84_bbox,
+        aoi_polygon_25833=aoi_polygon_25833 or box(axmin, aymin, axmax, aymax),
     )
 
 
@@ -140,7 +147,7 @@ def get_spec() -> GridSpec:
     with open(AOI_FILE) as f:
         data = json.load(f)
 
-    # Parse the bounding rectangle (first feature)
+    # Parse the buffered AOI polygon (first feature) and derive its bbox
     coords = data["features"][0]["geometry"]["coordinates"][0]
     xs = [p[0] for p in coords]
     ys = [p[1] for p in coords]
@@ -161,4 +168,5 @@ def get_spec() -> GridSpec:
         origin_y=origin_y,
         aoi_25833=aoi_25833,
         wgs84_bbox=wgs84_bbox,
+        aoi_polygon_25833=gdf.geometry.iloc[0],
     )

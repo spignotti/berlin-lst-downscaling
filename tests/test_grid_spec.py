@@ -5,7 +5,7 @@ Verifies the geometric foundation of the downscaling pipeline:
   * 100m grid is an exact 10×10 aggregate of the 10m grid
   * Affine transforms have correct resolution and origin
   * AOI fits within the grid extent
-  * The default spec loaded from ``data/berlin_aoi.geojson`` is sane
+  * The default spec loaded from ``data/boundaries/berlin_landesgrenze_2km_buffer.geojson`` is sane
 """
 
 from berlin_lst_downscaling.data.grid_spec import GridSpec, get_spec, make_grid_spec
@@ -69,7 +69,7 @@ def test_grid_spec_to_dict() -> None:
 
 
 def test_get_spec_returns_grid_spec() -> None:
-    """Requires ``data/berlin_aoi.geojson`` from the fetch-boundary script."""
+    """Requires ``data/boundaries/berlin_landesgrenze_2km_buffer.geojson``."""
     try:
         spec = get_spec()
     except FileNotFoundError:
@@ -78,3 +78,4 @@ def test_get_spec_returns_grid_spec() -> None:
     assert spec.width_10m > 0
     assert spec.height_10m > 0
     assert spec.width_10m % 10 == 0  # nested alignment invariant
+    assert spec.aoi_polygon_25833 is not None

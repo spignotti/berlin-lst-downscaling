@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import rasterio
 from omegaconf import DictConfig
-from rasterio.windows import from_bounds
+from rasterio.mask import mask as rio_mask
 
 from berlin_lst_downscaling.data.grid_spec import GridSpec
 
@@ -57,44 +57,30 @@ def compute_aoi_coverage_fraction(raster_path: Path, spec: GridSpec) -> float:
     true AOI overlap regardless of the raster's CRS.
     """
     with rasterio.open(raster_path) as src:
-        if str(src.crs) == str(spec.crs):
-            aoi_left, aoi_bottom, aoi_right, aoi_top = (
-                spec.aoi_xmin,
-                spec.aoi_ymin,
-                spec.aoi_xmax,
-                spec.aoi_ymax,
-            )
-        else:
-            from rasterio.warp import transform_bounds  # noqa: PLC0415
+        geom = [spec.aoi_polygon_25833]
+        if str(src.crs) != str(spec.crs):
+            import geopandas as gpd  # noqa: PLC0415
 
-            try:
-                aoi_left, aoi_bottom, aoi_right, aoi_top = transform_bounds(
-                    spec.crs,
-                    src.crs,
-                    spec.aoi_xmin,
-                    spec.aoi_ymin,
-                    spec.aoi_xmax,
-                    spec.aoi_ymax,
-                )
-            except (ValueError, RuntimeError):
-                return 0.0
+            geom = [
+                gpd.GeoSeries([spec.aoi_polygon_25833], crs=spec.crs)
+                .to_crs(src.crs)
+                .iloc[0]
+            ]
 
         try:
-            window = from_bounds(
-                aoi_left,
-                aoi_bottom,
-                aoi_right,
-                aoi_top,
-                transform=src.transform,
-            )
+            data, _ = rio_mask(src, geom, crop=True, nodata=src.nodata)
         except ValueError:
             return 0.0
 
-        data = src.read(1, window=window, boundless=True, masked=True)
-        total_pixels = data.size
+        total_pixels = data.size / src.count
         if total_pixels == 0:
             return 0.0
-        valid_pixels = int(np.ma.count(data))
+
+        band = np.ma.masked_invalid(data[0].astype(float))
+        if src.nodata is not None and not np.isnan(src.nodata):
+            band = np.ma.masked_equal(band, src.nodata)
+
+        valid_pixels = int(np.ma.count(band))
         return float(valid_pixels / total_pixels)
 
 

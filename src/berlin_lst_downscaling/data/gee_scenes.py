@@ -8,6 +8,7 @@ from typing import Any, cast
 import ee
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.boundary import buffered_bbox_wgs84
 from berlin_lst_downscaling.data.gee_masks import prepare_sentinel2_collection
 
 # ── Listing ──────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ def list_sentinel2_scenes(cfg: DictConfig, year: int | None = None) -> ee.ImageC
     so the final export can cover the full AOI even when it spans multiple
     MGRS tiles.
     """
-    bbox = cfg.ard.aoi.wgs84_bbox
+    bbox = buffered_bbox_wgs84(cfg.ard.aoi.boundary_file)
     months = cfg.ard.time.months
 
     if year is not None:
