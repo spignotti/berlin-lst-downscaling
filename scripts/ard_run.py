@@ -80,6 +80,10 @@ def main() -> None:
         "--verbose", action="store_true",
         help="Stream subprocess output to terminal (default: status only).",
     )
+    parser.add_argument(
+        "--quiet", action="store_true",
+        help="Suppress subprocess stdout (only show PASS/FAIL status).",
+    )
 
     cli_args = parser.parse_args()
     command = cli_args.command or "smoke"
@@ -96,7 +100,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         ("export plan",  ["uv", "run", "python", "scripts/ard_export.py",  "mode=plan"]),
         ("process plan", ["uv", "run", "python", "scripts/ard_process.py", "mode=plan"]),
     ]
-    return _run_steps(steps, args.verbose)
+    return _run_steps(steps, args.verbose, capture=args.quiet)
 
 
 def _cmd_smoke(args: argparse.Namespace) -> int:
@@ -119,7 +123,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
     ]
     last_output: Path | None = None
     for name, cmd in steps:
-        rc, out = _run_step(name, cmd, verbose=args.verbose)
+        rc, out = _run_step(name, cmd, verbose=args.verbose, capture=args.quiet)
         if rc != 0:
             return 1
         if name == "validate":
@@ -136,7 +140,7 @@ def _cmd_all(args: argparse.Namespace) -> int:
         ("monitor", ["uv", "run", "python", "scripts/ard_monitor.py", "dry_run=false"]),
         ("process", ["uv", "run", "python", "scripts/ard_process.py", "mode=all"]),
     ]
-    rc = _run_steps(steps, args.verbose)
+    rc = _run_steps(steps, args.verbose, capture=args.quiet)
     if rc == 0:
         print(
             "\nFull run complete. Use `ard_run.py validate --year <latest>` for visual QC."
@@ -153,7 +157,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
                      "mode=all", *source_args, *year_args]),
         ("monitor", ["uv", "run", "python", "scripts/ard_monitor.py", "dry_run=false"]),
     ]
-    return _run_steps(steps, args.verbose)
+    return _run_steps(steps, args.verbose, capture=args.quiet)
 
 
 def _cmd_process(args: argparse.Namespace) -> int:
@@ -164,7 +168,7 @@ def _cmd_process(args: argparse.Namespace) -> int:
         ("process", ["uv", "run", "python", "scripts/ard_process.py",
                      "mode=all", *source_args, *year_args]),
     ]
-    return _run_steps(steps, args.verbose)
+    return _run_steps(steps, args.verbose, capture=args.quiet)
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -174,6 +178,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         "validate",
         ["uv", "run", "python", "scripts/ard_smoke_validation.py", "--year", str(year)],
         verbose=args.verbose,
+        capture=args.quiet,
     )
     if rc != 0:
         return 1
@@ -186,6 +191,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     rc, _ = _run_step(
         "doctor", ["uv", "run", "python", "scripts/ard_smoke.py"],
         verbose=args.verbose,
+        capture=args.quiet,
     )
     return rc
 
@@ -195,6 +201,7 @@ def _cmd_boundary(args: argparse.Namespace) -> int:
     rc, _ = _run_step(
         "boundary", ["uv", "run", "python", "scripts/fetch_berlin_boundary.py"],
         verbose=args.verbose,
+        capture=args.quiet,
     )
     return rc
 
@@ -215,7 +222,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
 
 
 def _run_steps(
-    steps: list[tuple[str, list[str]]], verbose: bool,
+    steps: list[tuple[str, list[str]]], verbose: bool, capture: bool = False,
 ) -> int:
     """Run a sequence of steps; stop on first failure, return final exit code."""
     for name, cmd in steps:
@@ -230,19 +237,20 @@ def _run_step(
     cmd: list[str],
     *,
     verbose: bool = False,
-    capture: bool = True,
+    capture: bool = False,
 ) -> tuple[int, str]:
     """Run one pipeline step; print a one-line status; return (rc, stdout).
 
-    Default is to capture stdout/stderr (clean status table). ``verbose=True``
-    streams output directly. ``capture=False`` streams and discards stdout
-    (used when the caller doesn't need to parse it).
+    By default (capture=False) the subprocess streams stdout+stderr live to
+    the terminal so long waits (AppEEARS polls, GEE monitor) show progress.
+    Pass ``capture=True`` (or ``--quiet``) to suppress subprocess output and
+    just show the PASS/FAIL status line — useful for CI or chained scripts.
     """
     print(f"\n▶ {name}")
     if verbose:
         print(f"  $ {' '.join(shlex.quote(c) for c in cmd)}")
     t0 = time.monotonic()
-    if verbose or not capture:
+    if not capture:
         result = subprocess.run(cmd, cwd=PROJECT_ROOT, check=False)  # noqa: S603
         stdout = ""
     else:

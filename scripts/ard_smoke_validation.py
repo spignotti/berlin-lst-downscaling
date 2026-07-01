@@ -323,9 +323,13 @@ def main(year: int = 2023) -> int:
     for s in scenes:
         local_path = temp_dir / Path(s["cog_uri"]).name
         blob_name = s["cog_uri"].removeprefix(blob_prefix)
-        if download_blob(_GCS_BUCKET, blob_name, local_path):
-            qa_stack = _read_qa_stack(s["cog_uri"])
-            local_scenes.append({**s, "cog_path": local_path, "qa_stack": qa_stack})
+        try:
+            download_blob(_GCS_BUCKET, blob_name, local_path)
+        except Exception as exc:
+            logger.warning("Failed to download %s: %s", s["cog_uri"], exc)
+            continue
+        qa_stack = _read_qa_stack(s["cog_uri"])
+        local_scenes.append({**s, "cog_path": local_path, "qa_stack": qa_stack})
 
     # Render 6-panel comparison
     sources = ["landsat", "sentinel2", "ecostress"]
