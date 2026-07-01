@@ -78,6 +78,10 @@ def _make_cfg() -> DictConfig:
                 "qa": {"nodata_threshold": 0.95, "quicklook": False},
             },
         },
+        "landsat": {
+            "collections": ["LANDSAT/LC08/C02/T1_L2", "LANDSAT/LC09/C02/T1_L2"],
+            "band_lst": "ST_B10",
+        },
     })
 
 
@@ -401,26 +405,25 @@ def test_process_scene_dry_run(tmp_path: Path) -> None:
     assert not list(tmp_path.iterdir()), "Dry run created no files"
 
 
-# ── QA failure → no upload (load-bearing regression) ─────────────────────
+# ── QA failure behaviour: soft-warn by default, hard-fail with strict_qa ─
 
 
-def test_process_scene_fails_before_upload_on_low_coverage(
+def test_process_scene_uploads_with_warning_on_low_coverage_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Low AOI coverage must raise before the COG is uploaded to GCS.
+    """Low coverage produces a warning and the COG is still uploaded (default).
 
-    This is the only test that exercises the upload ordering. If a future
-    refactor accidentally uploads the COG before QA validates it, this
-    test catches it via the ``upload_calls`` list.
+    strict_qa defaults to ``false`` so the pipeline keeps structurally
+    valid COGs (correct CRS, resolution, origin) and surfaces low coverage
+    as a ``qa_warnings`` entry. Downstream filtering can drop low-coverage
+    scenes; the processor does not.
     """
     spec = _make_spec()
     dc = _make_cfg()
     dc.ard.process.temp_dir = str(tmp_path / "ard_temp")
-    dc.ard.process.qa.min_aoi_coverage = 0.80  # tight threshold
+    dc.ard.process.qa.min_aoi_coverage = 0.80
+    dc.ard.process.strict_qa = False  # explicit, but matches default
 
-    # ── Build a tiny 200×200 m raster in the AOI corner ──
-    # 2×2 pixels at 100 m anchored at the AOI origin (368000, 5839000)
-    # gives 4 valid pixels inside an AOI of ~2×10⁹ m² → coverage ~0%.
     far_transform = Affine(100.0, 0, 368000.0, 0, -100.0, 5797723.0)
     far_input = _make_tiny_raster(
         tmp_path,
@@ -434,7 +437,6 @@ def test_process_scene_fails_before_upload_on_low_coverage(
         descriptions=["LST", "cloud_mask"],
     )
 
-    # ── Monkeypatch I/O helpers ──
     upload_calls: list[tuple[str, str]] = []
 
     def fake_download(gcs_uri: str, local_path: Path) -> Path:
@@ -452,11 +454,58 @@ def test_process_scene_fails_before_upload_on_low_coverage(
     uri = "gs://test-bucket/ard/dynamic/landsat/2023/LC08_FAR_LST.tif"
     result = process_scene(uri, "landsat", spec, dc, dry_run=False)
 
-    # Status reflects the QA failure…
+    assert result["status"] == "success"
+    assert result["qa_report"]["qa_passed"] is False
+    assert any("low_aoi_coverage" in w for w in result["qa_report"]["qa_warnings"])
+    # COG + QA + STAC + thumbnail all uploaded
+    assert len(upload_calls) == 4, f"Expected 4 uploads, got: {upload_calls}"
+
+
+def test_process_scene_fails_before_upload_on_low_coverage_strict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``strict_qa=true``, low coverage raises before any upload.
+
+    Same as the previous test, but with strict_qa flipped on. The order
+    of operations (QA → upload) is the load-bearing regression check.
+    """
+    spec = _make_spec()
+    dc = _make_cfg()
+    dc.ard.process.temp_dir = str(tmp_path / "ard_temp")
+    dc.ard.process.qa.min_aoi_coverage = 0.80
+    dc.ard.process.strict_qa = True
+
+    far_transform = Affine(100.0, 0, 368000.0, 0, -100.0, 5797723.0)
+    far_input = _make_tiny_raster(
+        tmp_path,
+        filename="far_input.tif",
+        crs="EPSG:25833",
+        transform=far_transform,
+        height=2,
+        width=2,
+        bands=2,
+        nodata=np.nan,
+        descriptions=["LST", "cloud_mask"],
+    )
+
+    upload_calls: list[tuple[str, str]] = []
+
+    def fake_download(gcs_uri: str, local_path: Path) -> Path:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(far_input, local_path)
+        return local_path
+
+    def fake_upload(local_path: Path, gcs_path: str, bucket_name: str) -> str:  # noqa: ARG001
+        upload_calls.append((str(local_path), gcs_path))
+        return f"gs://{bucket_name}/{gcs_path}"
+
+    monkeypatch.setattr(ard_processor, "_download_from_gcs", fake_download)
+    monkeypatch.setattr(ard_processor, "_upload_to_gcs", fake_upload)
+
+    uri = "gs://test-bucket/ard/dynamic/landsat/2023/LC08_FAR_LST.tif"
+    result = process_scene(uri, "landsat", spec, dc, dry_run=False)
+
     assert result["status"] == "error"
     assert "aoi_coverage" in result["error"]
-    # …the QA report is attached for debugging…
-    assert "qa_report" in result
     assert result["qa_report"]["qa_passed"] is False
-    # …and crucially no COG/QA/STAC was ever uploaded to GCS.
     assert upload_calls == [], f"Unexpected uploads: {upload_calls}"

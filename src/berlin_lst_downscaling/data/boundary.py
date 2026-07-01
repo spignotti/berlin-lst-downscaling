@@ -74,3 +74,17 @@ def polygon_mask(
     if str(gdf.crs) != crs:
         gdf = gdf.to_crs(crs)
     return ~geometry_mask(gdf.geometry, transform=transform, out_shape=shape, invert=False)
+
+
+def landesgrenze_polygon_25833() -> object:
+    """Return the Berlin Landesgrenze polygon in EPSG:25833 (no buffer).
+
+    The polygon is the union of all landesgrenze features. Use this for
+    per-city coverage metrics that exclude the 2 km buffer.
+    """
+    from shapely.ops import unary_union
+
+    gdf = load_landesgrenze()
+    if str(gdf.crs) != "EPSG:25833":
+        gdf = gdf.to_crs("EPSG:25833")
+    return unary_union(gdf.geometry)

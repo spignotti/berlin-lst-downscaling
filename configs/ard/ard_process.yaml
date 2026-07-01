@@ -45,6 +45,7 @@ ard:
     qa:
       nodata_threshold: 0.95
       min_aoi_coverage: 0.80
+      strict_qa: false
       quicklook: false
 
 # ── Hydra overrides to keep scripts in-place ─────────────────────────────

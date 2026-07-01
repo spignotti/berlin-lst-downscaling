@@ -526,3 +526,198 @@ def test_generate_qa_report_coverage_threshold_boundary(
     report = generate_qa_report(path, spec, target_resolution=10, cfg=cfg)
     assert report["aoi_coverage_fraction"] == expected_coverage
     assert report["qa_passed"] is expected_qa_passed
+
+
+# ── Phase 1: city_coverage_fraction + clear_pixel_count ─────────────────
+
+
+def _write_raster_with_descriptions(
+    tmp_path: Path,
+    filename: str,
+    data: np.ndarray,
+    transform: Affine,
+    crs: str,
+    nodata: float | None,
+    descriptions: list[str],
+) -> Path:
+    path = tmp_path / filename
+    profile = {
+        "driver": "GTiff",
+        "height": data.shape[1],
+        "width": data.shape[2],
+        "count": data.shape[0],
+        "dtype": "float32",
+        "crs": crs,
+        "transform": transform,
+    }
+    if nodata is not None:
+        profile["nodata"] = nodata
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(data)
+        for i, desc in enumerate(descriptions):
+            dst.set_band_description(i + 1, desc)
+    return path
+
+
+def test_generate_qa_report_city_coverage_full(tmp_path: Path) -> None:
+    """Full-raster data inside the city polygon → city_coverage_fraction == 1.0."""
+    from shapely.geometry import box  # noqa: PLC0415
+
+    spec = make_grid_spec(
+        origin_x=0.0,
+        origin_y=100.0,
+        aoi_25833=(0.0, 0.0, 100.0, 100.0),
+        wgs84_bbox=(0.0, 0.0, 1.0, 1.0),
+    )
+    city_poly = box(0.0, 0.0, 100.0, 100.0)  # full 10x10 raster
+
+    data = np.ones((1, 10, 10), dtype=np.float32) * 280.0
+    path = _make_synthetic_raster(
+        tmp_path,
+        filename="city_full.tif",
+        data=data,
+        height=10,
+        width=10,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        nodata=np.nan,
+        crs="EPSG:25833",
+    )
+    cfg = OmegaConf.create(
+        {"ard": {"process": {"qa": {"nodata_threshold": 0.95, "min_aoi_coverage": 0.8}}}}
+    )
+    report = generate_qa_report(
+        path, spec, target_resolution=10, cfg=cfg, landesgrenze_polygon=city_poly
+    )
+    assert report["city_coverage_fraction"] == 1.0
+    assert report["city_total_pixels"] == 100
+
+
+def test_generate_qa_report_city_coverage_half(tmp_path: Path) -> None:
+    """City polygon covers only half the raster → city_coverage_fraction == 1.0 still,
+    because valid pixels (left half) are within the polygon."""
+    from shapely.geometry import box  # noqa: PLC0415
+
+    spec = make_grid_spec(
+        origin_x=0.0,
+        origin_y=100.0,
+        aoi_25833=(0.0, 0.0, 100.0, 100.0),
+        wgs84_bbox=(0.0, 0.0, 1.0, 1.0),
+    )
+    city_poly = box(0.0, 0.0, 50.0, 100.0)  # left half only
+
+    data = np.ones((1, 10, 10), dtype=np.float32) * 280.0
+    data[:, :, 5:] = np.nan  # right half invalid
+    path = _make_synthetic_raster(
+        tmp_path,
+        filename="city_half.tif",
+        data=data,
+        height=10,
+        width=10,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        nodata=np.nan,
+        crs="EPSG:25833",
+    )
+    cfg = OmegaConf.create(
+        {"ard": {"process": {"qa": {"nodata_threshold": 0.95, "min_aoi_coverage": 0.8}}}}
+    )
+    report = generate_qa_report(
+        path, spec, target_resolution=10, cfg=cfg, landesgrenze_polygon=city_poly
+    )
+    # left half is the city polygon; all left-half pixels are valid → 1.0
+    assert report["city_coverage_fraction"] == 1.0
+    assert report["city_total_pixels"] == 50
+
+
+def test_generate_qa_report_clear_pixel_count(tmp_path: Path) -> None:
+    """With cloud_mask band, clear_pixel_count counts non-cloudy valid pixels."""
+    from shapely.geometry import box  # noqa: PLC0415
+
+    spec = _make_small_spec()
+    city_poly = box(0.0, 0.0, 100.0, 100.0)
+
+    # 1 data band (LST) + 1 cloud_mask band: 50% cloudy, 50% clear
+    lst = np.ones((1, 10, 10), dtype=np.float32) * 280.0
+    cloud = np.ones((1, 10, 10), dtype=np.float32)  # 1.0 = clear
+    cloud[:, :, 5:] = 0.0  # right half = cloud
+    data = np.concatenate([lst, cloud], axis=0)
+    path = _write_raster_with_descriptions(
+        tmp_path,
+        "with_cloud.tif",
+        data,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        crs="EPSG:25833",
+        nodata=np.nan,
+        descriptions=["LST", "cloud_mask"],
+    )
+    cfg = OmegaConf.create(
+        {"ard": {"process": {"qa": {"nodata_threshold": 0.95, "min_aoi_coverage": 0.8}}}}
+    )
+    report = generate_qa_report(
+        path, spec, target_resolution=10, cfg=cfg, landesgrenze_polygon=city_poly
+    )
+    # 100 city pixels total, 50 are clear (left half), 50 are cloud (right half)
+    assert report["city_total_pixels"] == 100
+    assert report["city_coverage_fraction"] == 1.0
+    assert report["clear_pixel_count"] == 50
+
+
+def test_generate_qa_report_no_cloud_band(tmp_path: Path) -> None:
+    """Without a cloud_mask band, clear_pixel_count is None (ECOSTRESS before Phase 3)."""
+    from shapely.geometry import box  # noqa: PLC0415
+
+    spec = _make_small_spec()
+    city_poly = box(0.0, 0.0, 100.0, 100.0)
+
+    data = np.ones((1, 10, 10), dtype=np.float32) * 280.0
+    path = _write_raster_with_descriptions(
+        tmp_path,
+        "no_cloud.tif",
+        data,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        crs="EPSG:25833",
+        nodata=np.nan,
+        descriptions=["LST"],
+    )
+    cfg = OmegaConf.create(
+        {"ard": {"process": {"qa": {"nodata_threshold": 0.95, "min_aoi_coverage": 0.8}}}}
+    )
+    report = generate_qa_report(
+        path, spec, target_resolution=10, cfg=cfg, landesgrenze_polygon=city_poly
+    )
+    assert report["city_total_pixels"] == 100
+    assert report["clear_pixel_count"] is None
+
+
+def test_generate_qa_report_qa_warnings(tmp_path: Path) -> None:
+    """Low coverage adds a low_aoi_coverage warning; qa_passed is False but the
+    report still contains the warning so callers can surface it."""
+    from shapely.geometry import box  # noqa: PLC0415
+
+    spec = make_grid_spec(
+        origin_x=0.0,
+        origin_y=100.0,
+        aoi_25833=(0.0, 0.0, 100.0, 100.0),
+        wgs84_bbox=(0.0, 0.0, 1.0, 1.0),
+    )
+    city_poly = box(0.0, 0.0, 100.0, 100.0)
+
+    data = np.ones((1, 10, 10), dtype=np.float32) * 280.0
+    data[:, :, 5:] = np.nan  # 50% coverage
+    path = _make_synthetic_raster(
+        tmp_path,
+        filename="lowcov.tif",
+        data=data,
+        height=10,
+        width=10,
+        transform=Affine(10.0, 0, 0, 0, -10.0, 100.0),
+        nodata=np.nan,
+        crs="EPSG:25833",
+    )
+    cfg = OmegaConf.create(
+        {"ard": {"process": {"qa": {"nodata_threshold": 0.95, "min_aoi_coverage": 0.8}}}}
+    )
+    report = generate_qa_report(
+        path, spec, target_resolution=10, cfg=cfg, landesgrenze_polygon=city_poly
+    )
+    assert report["qa_passed"] is False
+    assert any("low_aoi_coverage" in w for w in report["qa_warnings"])

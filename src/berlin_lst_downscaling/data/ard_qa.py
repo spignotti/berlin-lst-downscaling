@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 import rasterio
+import rasterio.io
+import rasterio.windows
 from omegaconf import DictConfig
 from rasterio.mask import raster_geometry_mask
 
@@ -226,12 +228,19 @@ def generate_qa_report(
     cfg: DictConfig,
     scene_id: str | None = None,
     skip_grid_check: bool = False,
+    landesgrenze_polygon: object | None = None,
 ) -> dict:
     """Generate a full QA report for a processed ARD COG.
 
     Combines grid conformity check, radiometric statistics, and
     cloud fraction. Optionally includes ``scene_id`` for cohort
     outlier detection.
+
+    The report contains both ``aoi_coverage_fraction`` (valid pixels
+    inside the buffered AOI polygon) and ``city_coverage_fraction``
+    (valid pixels inside the Berlin Landesgrenze, no buffer). When a
+    ``landesgrenze_polygon`` is supplied, also reports ``clear_pixel_count``
+    and ``city_total_pixels`` for ML/training use.
 
     Args:
         raster_path: Path to the raster.
@@ -242,6 +251,9 @@ def generate_qa_report(
         skip_grid_check: If ``True``, skip grid conformity check.
             Used for native-CRS sources (ECOSTRESS) where reprojection
             is not performed.
+        landesgrenze_polygon: Optional Berlin-Landesgrenze polygon in the
+            raster CRS. If provided, additional city-level metrics are
+            computed.
 
     Returns:
         JSON-serializable QA report dict.
@@ -255,6 +267,11 @@ def generate_qa_report(
     stats = compute_radiometric_stats(raster_path, nodata_threshold=nodata_threshold)
     cloud_pct = compute_cloud_fraction(raster_path)
     aoi_coverage_fraction = compute_aoi_coverage_fraction(raster_path, spec)
+
+    city_metrics = _compute_city_metrics(raster_path, landesgrenze_polygon)
+    city_coverage_fraction = city_metrics["city_coverage_fraction"]
+    city_total_pixels = city_metrics["city_total_pixels"]
+    clear_pixel_count = city_metrics["clear_pixel_count"]
 
     if skip_grid_check:
         grid = {
@@ -274,15 +291,114 @@ def generate_qa_report(
             and aoi_coverage_fraction >= min_aoi_coverage
         )
 
+    qa_warnings: list[str] = []
+    if not skip_grid_check and aoi_coverage_fraction < min_aoi_coverage:
+        qa_warnings.append(
+            f"low_aoi_coverage: {aoi_coverage_fraction:.3f} < {min_aoi_coverage:.3f}"
+        )
+    if clear_pixel_count is not None and city_total_pixels:
+        clear_fraction = clear_pixel_count / city_total_pixels
+        if clear_fraction < min_aoi_coverage:
+            qa_warnings.append(
+                f"low_clear_fraction: {clear_fraction:.3f} < {min_aoi_coverage:.3f}"
+            )
+
     report: dict = {
         "grid_conformity": grid,
         "radiometric_stats": stats,
         "cloud_fraction": cloud_pct,
         "aoi_coverage_fraction": aoi_coverage_fraction,
+        "city_coverage_fraction": city_coverage_fraction,
+        "city_total_pixels": city_total_pixels,
+        "clear_pixel_count": clear_pixel_count,
         "qa_passed": qa_passed,
+        "qa_warnings": qa_warnings,
     }
 
     if scene_id is not None:
         report["scene_id"] = scene_id
 
     return report
+
+
+def _compute_city_metrics(
+    raster_path: Path,
+    landesgrenze_polygon: object | None,
+) -> dict[str, float | int | None]:
+    """Compute city-level coverage metrics inside the Landesgrenze polygon.
+
+    Returns a dict with three keys:
+        city_coverage_fraction: float — valid pixels inside the polygon
+            divided by the polygon's pixel count in the raster grid.
+        city_total_pixels: int — total number of raster pixels that fall
+            inside the polygon (denominator).
+        clear_pixel_count: int | None — valid AND not-cloudy pixels
+            inside the polygon. ``None`` if the raster has no cloud_mask
+            band.
+    """
+    if landesgrenze_polygon is None:
+        return {
+            "city_coverage_fraction": 0.0,
+            "city_total_pixels": 0,
+            "clear_pixel_count": None,
+        }
+
+    from rasterio.mask import raster_geometry_mask
+
+    with rasterio.open(raster_path) as src:
+        try:
+            geom_mask, _, window = raster_geometry_mask(
+                src, [landesgrenze_polygon], crop=True
+            )
+        except ValueError:
+            return {
+                "city_coverage_fraction": 0.0,
+                "city_total_pixels": 0,
+                "clear_pixel_count": None,
+            }
+
+        city_total_pixels = int(np.count_nonzero(~geom_mask))
+        if city_total_pixels == 0:
+            return {
+                "city_coverage_fraction": 0.0,
+                "city_total_pixels": 0,
+                "clear_pixel_count": None,
+            }
+
+        band = src.read(1, window=window, masked=True)
+        inside_mask = ~geom_mask
+        valid_in_city = int(np.count_nonzero(inside_mask & (~np.ma.getmaskarray(band))))
+        city_coverage_fraction = float(valid_in_city / city_total_pixels)
+
+        # Cloud-mask band is identified by description "cloud_mask"
+        cloud_mask = _try_read_cloud_mask(src, window)
+        if cloud_mask is not None:
+            not_cloud = cloud_mask >= 0.5
+            clear_mask = inside_mask & (~np.ma.getmaskarray(band)) & not_cloud
+            clear_pixel_count = int(np.count_nonzero(clear_mask))
+        else:
+            clear_pixel_count = None
+
+    return {
+        "city_coverage_fraction": city_coverage_fraction,
+        "city_total_pixels": city_total_pixels,
+        "clear_pixel_count": clear_pixel_count,
+    }
+
+
+def _try_read_cloud_mask(
+    src: rasterio.io.DatasetReader,
+    window: rasterio.windows.Window | None,
+) -> np.ndarray | None:
+    """Return the cloud_mask band as a 2D array, or None if absent.
+
+    The cloud_mask band is identified by ``src.descriptions`` containing
+    the literal ``"cloud_mask"``. Multi-band rasters that do not declare
+    a cloud_mask band (e.g. single-band ECOSTRESS without Phase 3
+    cloud band) return ``None``.
+    """
+    for i in range(1, src.count + 1):
+        desc = (src.descriptions[i - 1] or "").lower()
+        if desc == "cloud_mask":
+            return src.read(i, window=window, masked=False)
+    return None

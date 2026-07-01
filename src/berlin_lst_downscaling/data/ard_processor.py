@@ -279,8 +279,10 @@ def process_scene(
 
         # Step 3: QA
         from berlin_lst_downscaling.data.ard_qa import generate_qa_report
+        from berlin_lst_downscaling.data.boundary import landesgrenze_polygon_25833
 
         skip_grid = target_res is None  # ECOSTRESS: native CRS, skip grid check
+        landesgrenze = landesgrenze_polygon_25833()
         qa_report = generate_qa_report(
             output_local,
             spec,
@@ -288,15 +290,27 @@ def process_scene(
             cfg=cfg,
             scene_id=scene_id,
             skip_grid_check=skip_grid,
+            landesgrenze_polygon=landesgrenze,
         )
         with open(qa_local, "w") as f:
             json.dump(qa_report, f, indent=2, default=str)
 
         result["qa_report"] = qa_report
+
+        # Phase 2: Soft-warn instead of hard-fail. Coverage is now a warning
+        # in qa_warnings; COG is uploaded regardless. strict_qa=true restores
+        # the old hard-fail behaviour.
         if not qa_report.get("qa_passed", False):
-            raise ValueError(
-                f"QA failed for {scene_id}: "
-                f"aoi_coverage={qa_report.get('aoi_coverage_fraction', 0.0):.3f}"
+            strict_qa = bool(cfg.ard.process.get("strict_qa", False))
+            if strict_qa:
+                raise ValueError(
+                    f"QA failed for {scene_id} (strict_qa=true): "
+                    f"aoi_coverage={qa_report.get('aoi_coverage_fraction', 0.0):.3f}"
+                )
+            logger.warning(
+                "QA warnings for %s (strict_qa=false, uploading anyway): %s",
+                scene_id,
+                qa_report.get("qa_warnings", []),
             )
 
         # Step 4: Upload output COG
