@@ -183,12 +183,17 @@ def process_source(
 
         # Generate contact sheet from thumbnails uploaded this year
         if not dry_run:
+            # Use a one-shot tempdir instead of ``cfg.ard.process.temp_dir``
+            # so the contact sheet does not pollute ``data/tmp/ard_process/``
+            # with per-source/year subfolders that linger forever.
+            import shutil
+            import tempfile
+
             from berlin_lst_downscaling.data.quicklook import (
                 generate_contact_sheet_from_gcs,
             )
-
-            cs_output = Path(cfg.ard.process.temp_dir) / source / str(y) / "_contact_sheet.png"
-            cs_output.parent.mkdir(parents=True, exist_ok=True)
+            cs_tmp = Path(tempfile.mkdtemp(prefix=f"contact_sheet_{source}_{y}_"))
+            cs_output = cs_tmp / "_contact_sheet.png"
             try:
                 generate_contact_sheet_from_gcs(
                     bucket=bucket,
@@ -205,6 +210,8 @@ def process_source(
                 )
             except Exception as cs_exc:
                 logger.warning("Contact sheet generation failed for %s %s: %s", source, y, cs_exc)
+            finally:
+                shutil.rmtree(cs_tmp, ignore_errors=True)
 
     return total_results
 
