@@ -344,51 +344,82 @@ def _execute_year(
 
     gcs_paths: list[str] = []
 
-    # ── Process GeoTIFF files → COG → upload ──
-    for i, file_info in enumerate(tif_files):
-        file_id = file_info["file_id"]
-        file_name = file_info["file_name"]
-        raw_path = temp_dir / file_name
+    # ── Group TIFs by acquisition (datetime + aid + utm zone) ──
+    # AppEEARS delivers LST/cloud/QC as separate files per acquisition.
+    # We group by the acquisition suffix and combine LST+cloud into a
+    # single 2-band COG; QC is uploaded as-is for QC analysis.
+    acquisitions = _group_tifs_by_acquisition(tif_files)
+    print(f"  Acquisitions: {len(acquisitions)}")
+    for acq_id, layers in acquisitions.items():
+        print(f"    {acq_id}: {sorted(layers.keys())}")
 
-        print(f"  [{i+1}/{len(tif_files)}] Downloading {file_name}...")
-        client.download_file(task_id, file_id, raw_path)
+    # ── Download + process each acquisition ──
+    for acq_idx, (acq_id, layers) in enumerate(acquisitions.items()):
+        print(f"  [{acq_idx+1}/{len(acquisitions)}] Processing acquisition {acq_id}...")
+        downloaded: dict[str, Path] = {}
+        for layer_name, file_info in layers.items():
+            file_id = file_info["file_id"]
+            file_name = file_info["file_name"]
+            raw_path = temp_dir / f"{acq_id}_{layer_name}.tif"
+            client.download_file(task_id, file_id, raw_path)
+            if not raw_path.is_file() or raw_path.stat().st_size == 0:
+                logger.error(
+                    "Downloaded file missing/empty: %s (layer=%s)", raw_path, layer_name
+                )
+                continue
+            downloaded[layer_name] = raw_path
 
-        # Pre-flight check: file must exist and be non-empty
-        if not raw_path.is_file():
-            logger.error("Downloaded file missing: %s", raw_path)
+        if "LST" not in downloaded:
+            logger.warning("Acquisition %s has no LST band, skipping", acq_id)
+            for p in downloaded.values():
+                p.unlink(missing_ok=True)
             continue
-        if raw_path.stat().st_size == 0:
-            logger.error("Downloaded file empty: %s", raw_path)
-            raw_path.unlink(missing_ok=True)
-            continue
 
-        # Convert to COG
-        cog_name = file_name.replace(".tif", "_COG.tif").replace(".TIF", "_COG.tif")
-        cog_path = temp_dir / cog_name
-        cog_ok = False
-        try:
-            _convert_to_cog(raw_path, cog_path, cfg)
-            cog_ok = True
-            upload_path = cog_path
-        except Exception as exc:
-            logger.warning("COG conversion failed for %s: %s", file_name, exc)
-            # Fallback: upload raw file with original name (no _COG suffix)
-            upload_path = raw_path
-            cog_name = file_name
+        # ── Build combined 2-band COG (LST + cloud) ──
+        lst_path = downloaded["LST"]
+        cloud_path = downloaded.get("cloud")
+        if cloud_path is not None:
+            combined_path = temp_dir / f"{acq_id}_COG.tif"
+            try:
+                _combine_lst_cloud_to_cog(
+                    lst_path, cloud_path, combined_path, cfg
+                )
+                upload_path = combined_path
+                combined_name = f"{acq_id}_COG.tif"
+            except Exception as exc:
+                logger.warning(
+                    "LST+cloud combine failed for %s, falling back to LST-only: %s",
+                    acq_id, exc,
+                )
+                _convert_to_cog(lst_path, lst_path.with_name(f"{acq_id}_COG.tif"), cfg)
+                upload_path = lst_path.with_name(f"{acq_id}_COG.tif")
+                combined_name = f"{acq_id}_COG.tif"
+        else:
+            _convert_to_cog(lst_path, lst_path.with_name(f"{acq_id}_COG.tif"), cfg)
+            upload_path = lst_path.with_name(f"{acq_id}_COG.tif")
+            combined_name = f"{acq_id}_COG.tif"
 
-        # Upload to GCS
-        gcs_path = f"{prefix}/{year}/{cog_name}"
+        gcs_path = f"{prefix}/{year}/{combined_name}"
         uri = _upload_to_gcs(upload_path, gcs_path, bucket)
         if uri:
             gcs_paths.append(uri)
 
+        # Upload standalone cloud + QC layers for QA / debug
+        for layer_name, lp in downloaded.items():
+            if layer_name == "LST" or layer_name == "cloud":
+                continue  # already in combined COG
+            gcs_layer_path = f"{prefix}/{year}/{acq_id}_{layer_name}.tif"
+            _upload_to_gcs(lp, gcs_layer_path, bucket)
+
         # Cleanup
-        if cog_ok:
-            raw_path.unlink(missing_ok=True)
+        for p in downloaded.values():
+            p.unlink(missing_ok=True)
         upload_path.unlink(missing_ok=True)
-        # Also remove the alternate path if it still exists
-        alt = cog_path if upload_path == raw_path else raw_path
-        alt.unlink(missing_ok=True)
+
+        # In smoke mode, only process first acquisition
+        if smoke:
+            print("  [SMOKE] 1 acquisition processed — stopping.")
+            break
 
     # ── Upload metadata files as-is ──
     for i, file_info in enumerate(meta_files):
@@ -420,6 +451,135 @@ def _execute_year(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _group_tifs_by_acquisition(
+    tif_files: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Group TIF bundle files by acquisition id, keyed by layer name.
+
+    AppEEARS file naming pattern::
+
+        ECO_L2T_LSTE.002_{layer}_{datetime}_aid{N}_{zone}.tif
+
+    The acquisition id is the suffix starting at the datetime, e.g.
+    ``20230501T045756_aid0001_32N``. Files without the standard pattern
+    are dropped with a warning.
+
+    Returns:
+        ``{acq_id: {layer_name: file_info}}``
+    """
+    import re
+
+    pattern = re.compile(
+        r"^ECO_L2T_LSTE\.\d+_(?P<layer>[A-Za-z]+)_(?P<acq>\d+T\d+_aid\d+_[A-Z0-9]+)\.tif$"
+    )
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for f in tif_files:
+        m = pattern.match(f["file_name"])
+        if not m:
+            logger.warning("Skipping file with unexpected name: %s", f["file_name"])
+            continue
+        layer = m.group("layer")
+        acq_id = m.group("acq")
+        grouped.setdefault(acq_id, {})[layer] = f
+    return grouped
+
+
+def _combine_lst_cloud_to_cog(
+    lst_path: Path,
+    cloud_path: Path,
+    dst_path: Path,
+    cfg: DictConfig,
+) -> Path:
+    """Combine LST and cloud GeoTIFFs into a single 2-band COG.
+
+    Both inputs are expected to share the same CRS, transform, and shape
+    (which AppEEARS guarantees for layers of the same acquisition). The
+    output has band descriptions ``["LST", "cloud_mask"]`` so the QA
+    module and the smoke visualization can find the cloud band by
+    description.
+
+    Args:
+        lst_path: Path to the LST GeoTIFF.
+        cloud_path: Path to the cloud GeoTIFF.
+        dst_path: Output 2-band COG path.
+        cfg: Pipeline config (uses ``ecostress.cog`` section).
+
+    Returns:
+        Path to the written 2-band COG.
+    """
+    cog_cfg = cfg.ecostress.cog
+    import numpy as np
+    import rasterio
+    import rasterio.shutil  # type: ignore[attr-defined]
+    from rasterio.enums import Resampling
+
+    with rasterio.open(lst_path) as lst_src, rasterio.open(cloud_path) as cld_src:
+        if lst_src.shape != cld_src.shape:
+            raise ValueError(
+                f"LST and cloud shape mismatch: {lst_src.shape} vs {cld_src.shape}"
+            )
+        if str(lst_src.crs) != str(cld_src.crs):
+            raise ValueError(
+                f"LST and cloud CRS mismatch: {lst_src.crs} vs {cld_src.crs}"
+            )
+
+        profile = lst_src.profile.copy()
+        profile.update(count=2, dtype="float32")
+        if "blockxsize" in profile:
+            profile.pop("blockxsize")
+        if "blockysize" in profile:
+            profile.pop("blockysize")
+        if "tiled" in profile:
+            profile.pop("tiled")
+
+        nodata = float("nan")
+        profile["nodata"] = nodata
+
+        with rasterio.open(dst_path, "w", **profile) as dst:
+            # Band 1: LST (passthrough)
+            lst_data = lst_src.read(1).astype("float32")
+            if lst_src.nodata is not None and not np.isnan(lst_src.nodata):
+                lst_data = np.where(
+                    np.isclose(lst_data, lst_src.nodata, rtol=1e-5), nodata, lst_data
+                )
+            dst.write(lst_data, 1)
+            dst.set_band_description(1, "LST")
+
+            # Band 2: cloud (1=clear, 0=cloud). AppEEARS encodes cloud as
+            # values 0/1; pass through and apply NaN for nodata.
+            cld_data = cld_src.read(1).astype("float32")
+            if cld_src.nodata is not None and not np.isnan(cld_src.nodata):
+                cld_data = np.where(
+                    np.isclose(cld_data, cld_src.nodata, rtol=1e-5), nodata, cld_data
+                )
+            dst.write(cld_data, 2)
+            dst.set_band_description(2, "cloud_mask")
+
+            # Overviews
+            ov_levels = cog_cfg.get("overview_levels")
+            if ov_levels:
+                factors = [2 ** (i + 1) for i in range(int(ov_levels))]
+                resampling = getattr(
+                    Resampling, str(cog_cfg.get("overview_resampling", "average")),
+                    Resampling.average,
+                )
+                dst.build_overviews(factors, resampling)
+                dst.update_tags(ns="rio_overview", resampling=str(resampling))
+
+        # Re-write as proper COG with compression
+        cog_tmp = dst_path.with_suffix(".cog.tmp")
+        rasterio.shutil.copy(
+            str(dst_path),
+            str(cog_tmp),
+            driver="COG",
+            compress=str(cog_cfg.compress),
+            blocksize=int(cog_cfg.tile_size),
+        )
+        cog_tmp.replace(dst_path)
+
+    return dst_path
 
 
 def _resolve_years(cfg: DictConfig, year: int | None) -> list[int]:

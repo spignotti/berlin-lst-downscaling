@@ -26,6 +26,7 @@ from berlin_lst_downscaling.data.ard_processor import (
     _resolve_years,
     process_scene,
 )
+from berlin_lst_downscaling.data.ecostress_export import _group_tifs_by_acquisition
 from berlin_lst_downscaling.data.grid_spec import GridSpec, make_grid_spec
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -232,6 +233,36 @@ def test_compute_target_dims_sentinel2(tmp_path: Path) -> None:
     assert height > 0
     assert (transform.c - spec.origin_x) % 10 == 0
     assert (spec.origin_y - transform.f) % 10 == 0
+
+
+# ── Phase 3: ECOSTRESS acquisition grouping ─────────────────────────────
+
+
+def test_group_tifs_by_acquisition() -> None:
+    """AppEEARS TIFs are grouped by acquisition id and keyed by layer."""
+    files = [
+        {"file_id": "1", "file_name": "ECO_L2T_LSTE.002_LST_20230501T045756_aid0001_32N.tif"},
+        {"file_id": "2", "file_name": "ECO_L2T_LSTE.002_cloud_20230501T045756_aid0001_32N.tif"},
+        {"file_id": "3", "file_name": "ECO_L2T_LSTE.002_QC_20230501T045756_aid0001_32N.tif"},
+        {"file_id": "4", "file_name": "ECO_L2T_LSTE.002_LST_20230502T051000_aid0001_32N.tif"},
+        {"file_id": "5", "file_name": "ECO_L2T_LSTE.002_cloud_20230502T051000_aid0001_32N.tif"},
+    ]
+    grouped = _group_tifs_by_acquisition(files)
+    assert len(grouped) == 2
+    assert set(grouped["20230501T045756_aid0001_32N"].keys()) == {"LST", "cloud", "QC"}
+    assert set(grouped["20230502T051000_aid0001_32N"].keys()) == {"LST", "cloud"}
+
+
+def test_group_tifs_skips_unexpected_names() -> None:
+    """Files not matching the AppEEARS pattern are dropped with a warning."""
+    files = [
+        {"file_id": "1", "file_name": "ECO_L2T_LSTE.002_LST_20230501T045756_aid0001_32N.tif"},
+        {"file_id": "2", "file_name": "README.md"},  # not a TIF
+        {"file_id": "3", "file_name": "garbage.tif"},  # not matching pattern
+    ]
+    grouped = _group_tifs_by_acquisition(files)
+    assert len(grouped) == 1
+    assert "LST" in grouped["20230501T045756_aid0001_32N"]
 
 
 def test_compute_target_dims_ecostress(tmp_path: Path) -> None:
