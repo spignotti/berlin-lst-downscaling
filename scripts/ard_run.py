@@ -115,12 +115,19 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         ("access",   ["uv", "run", "python", "scripts/ard_smoke.py"]),
         ("export",   ["uv", "run", "python", "scripts/ard_export.py",
                       "mode=smoke", f"year={year}", *source_args]),
-        ("monitor",  ["uv", "run", "python", "scripts/ard_monitor.py", "dry_run=false"]),
+    ]
+    # monitor is only meaningful for GEE sources (Landsat, S2). When the
+    # user is iterating on ECOSTRESS alone, skip the GEE poll — there are
+    # no GEE tasks to monitor and the step just adds Python startup time.
+    if args.source != "ecostress":
+        steps.append(("monitor", ["uv", "run", "python", "scripts/ard_monitor.py",
+                                  "dry_run=false"]))
+    steps.extend([
         ("process",  ["uv", "run", "python", "scripts/ard_process.py",
                       "mode=smoke", f"year={year}", *source_args]),
         ("validate", ["uv", "run", "python", "scripts/ard_smoke_validation.py",
                       "--year", str(year)]),
-    ]
+    ])
     last_output: Path | None = None
     for name, cmd in steps:
         rc, out = _run_step(name, cmd, verbose=args.verbose, capture=args.quiet)
@@ -155,8 +162,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
     steps: list[tuple[str, list[str]]] = [
         ("export",  ["uv", "run", "python", "scripts/ard_export.py",
                      "mode=all", *source_args, *year_args]),
-        ("monitor", ["uv", "run", "python", "scripts/ard_monitor.py", "dry_run=false"]),
     ]
+    # Skip GEE monitor when only ECOSTRESS is selected — no GEE tasks to wait on.
+    if args.source != "ecostress":
+        steps.append(("monitor", ["uv", "run", "python", "scripts/ard_monitor.py",
+                                  "dry_run=false"]))
     return _run_steps(steps, args.verbose, capture=args.quiet)
 
 

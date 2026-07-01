@@ -351,18 +351,14 @@ def main(year: int = 2023) -> int:
         qa_stack = _read_qa_stack(s["cog_uri"])
         local_scenes.append({**s, "cog_path": local_path, "qa_stack": qa_stack})
 
-    # Render 6-panel comparison
+    # Render comparison — one row per available source, 2 columns (data + cloud).
+    # Size: 1 row → 1×2, 2 rows → 2×2, 3 rows → 3×2.
     sources = ["landsat", "sentinel2", "ecostress"]
-    fig, axes = plt.subplots(3, 2, figsize=(18, 22))
-    for row, source in enumerate(sources):
-        scene = next((s for s in local_scenes if s["source"] == source), None)
-        if scene is None:
-            for col in range(2):
-                axes[row, col].text(
-                    0.5, 0.5, f"{source}: not available",
-                    ha="center", va="center", transform=axes[row, col].transAxes,
-                )
-            continue
+    available = [s for s in sources if any(ls["source"] == s for ls in local_scenes)]
+    n_rows = max(1, len(available))
+    fig, axes = plt.subplots(n_rows, 2, figsize=(18, 7 * n_rows), squeeze=False)
+    for row, source in enumerate(available):
+        scene = next(ls for ls in local_scenes if ls["source"] == source)
         qa = scene["qa_stack"]
         _render_data_panel(axes[row, 0], source, scene["cog_path"], scene["scene_id"], qa)
         _add_boundary_overlay(axes[row, 0], landesgrenze, aoi)
