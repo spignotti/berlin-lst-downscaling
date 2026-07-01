@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _GCS_BUCKET = "berlin-lst-data"
 _OUTPUT_DIR = Path("data/tmp/ard_smoke")
+KEEP_N_RUNS = 3  # number of recent smoke-validation runs to keep on disk
 
 _SOURCES: dict[str, dict[str, Any]] = {
     "landsat": {"input_prefix": "ard/processed/landsat"},
@@ -294,9 +295,28 @@ def _add_boundary_overlay(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
+def _prune_old_runs(output_dir: Path, keep: int) -> None:
+    """Delete oldest run directories so only the most recent ``keep`` remain.
+
+    Each validation run creates ``{output_dir}/{timestamp}/``. Over time these
+    accumulate. Sorted by name (ISO timestamp) the oldest ones are removed.
+    """
+    if not output_dir.is_dir():
+        return
+    runs = sorted(p for p in output_dir.iterdir() if p.is_dir())
+    if len(runs) <= keep:
+        return
+    import shutil
+
+    for stale in runs[:-keep]:
+        shutil.rmtree(stale, ignore_errors=True)
+        print(f"  Pruned old smoke run: {stale.name}")
+
+
 def main(year: int = 2023) -> int:
     """Run smoke-test validation; produce comparison.png and comparison.json."""
     import time
+    _prune_old_runs(_OUTPUT_DIR, keep=KEEP_N_RUNS)
     output_dir = _OUTPUT_DIR / time.strftime("%Y%m%d_%H%M%S")
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Smoke validation output: {output_dir}")
