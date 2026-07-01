@@ -327,12 +327,12 @@ def _execute_year(
     bundle_files = client.list_bundle_files(task_id)
     print(f"  Bundle files: {len(bundle_files)}")
 
-    # Separate GeoTIFF from metadata files
+    # Keep only GeoTIFFs — AppEEARS metadata files (CSVs, README, .xml,
+    # request.json) are debug-only and not needed for the pipeline.
     def _is_tiff(f: dict[str, Any]) -> bool:
         return f["file_name"].lower().endswith((".tif", ".tiff"))
     tif_files = [f for f in bundle_files if _is_tiff(f)]
-    meta_files = [f for f in bundle_files if not _is_tiff(f)]
-    print(f"  GeoTIFF: {len(tif_files)}, metadata: {len(meta_files)}")
+    print(f"  GeoTIFFs: {len(tif_files)}")
 
     # Optionally limit number of TIFFs (for testing)
     limit: int | None = cfg.ecostress.export.get("limit", None)
@@ -359,7 +359,6 @@ def _execute_year(
         downloaded: dict[str, Path] = {}
         for layer_name, file_info in layers.items():
             file_id = file_info["file_id"]
-            file_name = file_info["file_name"]
             raw_path = temp_dir / f"{acq_id}_{layer_name}.tif"
             client.download_file(task_id, file_id, raw_path)
             if not raw_path.is_file() or raw_path.stat().st_size == 0:
@@ -420,22 +419,6 @@ def _execute_year(
         if smoke:
             print("  [SMOKE] 1 acquisition processed — stopping.")
             break
-
-    # ── Upload metadata files as-is ──
-    for i, file_info in enumerate(meta_files):
-        file_id = file_info["file_id"]
-        file_name = file_info["file_name"]
-        raw_path = temp_dir / file_name
-
-        print(f"  [meta {i+1}/{len(meta_files)}] {file_name}...")
-        client.download_file(task_id, file_id, raw_path)
-
-        gcs_path = f"{prefix}/{year}/{file_name}"
-        uri = _upload_to_gcs(raw_path, gcs_path, bucket)
-        if uri:
-            gcs_paths.append(uri)
-
-        raw_path.unlink(missing_ok=True)
 
     # Cleanup temp dir for this year
     shutil.rmtree(temp_dir, ignore_errors=True)
