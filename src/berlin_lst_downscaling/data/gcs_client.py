@@ -20,6 +20,7 @@ __all__ = [
     "list_blobs",
     "download_blob",
     "upload_blob",
+    "read_text",
 ]
 
 
@@ -43,6 +44,14 @@ def download_blob(bucket: str, name: str, dest: Path) -> None:
     """Download a single blob to ``dest`` (creates parent dirs)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     get_client().bucket(bucket).blob(name).download_to_filename(str(dest))
+
+
+def read_text(bucket: str, name: str) -> str | None:
+    """Read a blob as text. Returns None if the blob does not exist."""
+    blob = get_client().bucket(bucket).blob(name)
+    if not blob.exists():
+        return None
+    return blob.download_as_text()
 
 
 def upload_blob(bucket: str, src: Path, name: str) -> None:
