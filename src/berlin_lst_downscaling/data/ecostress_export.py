@@ -327,8 +327,6 @@ def _execute_year(
     bundle_files = client.list_bundle_files(task_id)
     print(f"  Bundle files: {len(bundle_files)}")
 
-    # Keep only GeoTIFFs — AppEEARS metadata files (CSVs, README, .xml,
-    # request.json) are debug-only and not needed for the pipeline.
     def _is_tiff(f: dict[str, Any]) -> bool:
         return f["file_name"].lower().endswith((".tif", ".tiff"))
     tif_files = [f for f in bundle_files if _is_tiff(f)]

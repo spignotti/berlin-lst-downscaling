@@ -116,9 +116,6 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
         ("export",   ["uv", "run", "python", "scripts/ard_export.py",
                       "mode=smoke", f"year={year}", *source_args]),
     ]
-    # monitor is only meaningful for GEE sources (Landsat, S2). When the
-    # user is iterating on ECOSTRESS alone, skip the GEE poll — there are
-    # no GEE tasks to monitor and the step just adds Python startup time.
     if args.source != "ecostress":
         steps.append(("monitor", ["uv", "run", "python", "scripts/ard_monitor.py",
                                   "dry_run=false"]))
@@ -163,7 +160,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
         ("export",  ["uv", "run", "python", "scripts/ard_export.py",
                      "mode=all", *source_args, *year_args]),
     ]
-    # Skip GEE monitor when only ECOSTRESS is selected — no GEE tasks to wait on.
     if args.source != "ecostress":
         steps.append(("monitor", ["uv", "run", "python", "scripts/ard_monitor.py",
                                   "dry_run=false"]))

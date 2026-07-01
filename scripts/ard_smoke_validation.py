@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 _GCS_BUCKET = "berlin-lst-data"
 _OUTPUT_DIR = Path("data/tmp/ard_smoke")
-KEEP_N_RUNS = 3  # number of recent smoke-validation runs to keep on disk
+KEEP_N_RUNS = 3
 
 _SOURCES: dict[str, dict[str, Any]] = {
     "landsat": {"input_prefix": "ard/processed/landsat"},
@@ -296,11 +296,7 @@ def _add_boundary_overlay(
 
 
 def _prune_old_runs(output_dir: Path, keep: int) -> None:
-    """Delete oldest run directories so only the most recent ``keep`` remain.
-
-    Each validation run creates ``{output_dir}/{timestamp}/``. Over time these
-    accumulate. Sorted by name (ISO timestamp) the oldest ones are removed.
-    """
+    """Delete oldest run directories so only the most recent ``keep`` remain."""
     if not output_dir.is_dir():
         return
     runs = sorted(p for p in output_dir.iterdir() if p.is_dir())
@@ -352,7 +348,6 @@ def main(year: int = 2023) -> int:
         local_scenes.append({**s, "cog_path": local_path, "qa_stack": qa_stack})
 
     # Render comparison — one row per available source, 2 columns (data + cloud).
-    # Size: 1 row → 1×2, 2 rows → 2×2, 3 rows → 3×2.
     sources = ["landsat", "sentinel2", "ecostress"]
     available = [s for s in sources if any(ls["source"] == s for ls in local_scenes)]
     n_rows = max(1, len(available))

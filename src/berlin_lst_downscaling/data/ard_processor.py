@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, cast
@@ -183,12 +184,6 @@ def process_source(
 
         # Generate contact sheet from thumbnails uploaded this year
         if not dry_run:
-            # Use a one-shot tempdir instead of ``cfg.ard.process.temp_dir``
-            # so the contact sheet does not pollute ``data/tmp/ard_process/``
-            # with per-source/year subfolders that linger forever.
-            import shutil
-            import tempfile
-
             from berlin_lst_downscaling.data.quicklook import (
                 generate_contact_sheet_from_gcs,
             )
