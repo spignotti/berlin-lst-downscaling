@@ -1,5 +1,4 @@
-"""Reproducible deep-learning pipeline that downscales Landsat LST from
-~100 m to 10 m for Berlin."""
+"""Berlin LST downscaling — cloud-native skeleton (pre-implementation)."""
 
 import os
 from pathlib import Path
@@ -19,4 +18,4 @@ if _env_path.exists():
         if _value:
             os.environ.setdefault(_key, _value)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

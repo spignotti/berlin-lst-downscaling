@@ -1,6 +1,6 @@
 # berlin-lst-downscaling
 
-Reproducible deep-learning pipeline that downscales Landsat land surface temperature from ~100 m to 10 m for Berlin via a fixed 2D U-Net and a 5-stage feature ablation. 100 m thermal data is too coarse for block-level urban heat analysis; this produces a 10 m LST time series plus a published model.
+Cloud-native skeleton for Berlin LST downscaling (pre-implementation). Work-in-progress pipeline using Microsoft Planetary Computer STAC for data access, with future DL training via PyTorch/Lightning/TorchGeo.
 
 ## Repository Category
 
@@ -17,9 +17,12 @@ Reproducible deep-learning pipeline that downscales Landsat land surface tempera
 - uv — package management
 - ruff — linting and formatting
 - pyright — type checking
-- pytest — tests
 - nox — validation entrypoint
-- PyTorch, Lightning, TorchGeo, Hydra
+- dvc[gs] — data versioning (GCS remote)
+- wandb — experiment tracking
+- pydantic-settings — env-based config
+- google-cloud-storage — bucket access
+- _planned (not yet used):_ pystac-client, odc-stac, rioxarray, zarr, PyTorch, Lightning, TorchGeo
 
 ## Project Type
 
@@ -37,21 +40,24 @@ tests/            # tests
 - `uv run nox` — full validation gate; run before every commit
 - `nox -s lint` — docs, config, comment-only changes
 - `nox -s lint typecheck` — structural changes (new modules, imports, type signatures)
-- `nox -s lint typecheck test` — logic or behavior changes
+- No test session — tests are opt-in. Quality validated via real-data QA gates (smoke, spike scripts), not unit tests.
 
 ## Python Stack
 
 - `uv` — package and environment management
 - `ruff` — linting and formatting
 - `pyright` — type checking
-- `pytest` — tests
 - `nox` — validation entrypoint; run `uv run nox` before every commit
+- `dvc[gs]` — data versioning
+- `wandb` — experiment tracking
+- `pydantic-settings` — env-based config
 
 ## Conventions
 
-<!-- filled by /python-init and updated over time -->
 - follow existing patterns before introducing new ones
 - keep the README honest and presentable — this is portfolio work
+- **No tests unless explicitly requested** — QA is validated through real-data smoke/spike scripts, not unit tests
+- **Build order:** Spike → Core → Framework (not the reverse — no premature scaffolding)
 
 ## Library Documentation
 
@@ -59,10 +65,10 @@ Context7 MCP is available in this project. When working with any external librar
 
 ## Known Constraints
 
-- Storage: COG per scene, assembled into a multi-date Zarr; no pre-baked patches; pseudo-pairs on the fly. Bucket mounted locally via rclone (not gcsfuse — x86_64 macOS limitation) at `~/.mnt/berlin-lst/`. See `.opencode/skills/google-access/` for mount/access commands.
-- Reproducibility: Hydra configs (nothing hardcoded), seed management, env lock (uv) plus Docker for Vertex AI, Git commit hash logged per W&B run.
+- Storage: Bucket mounted locally via rclone (not gcsfuse — x86_64 macOS limitation) at `~/.mnt/berlin-lst/`. See `.opencode/skills/google-access/` for mount/access commands.
+- Reproducibility: env lock (uv), Git commit hash logged per W&B run.
 - Secrets via ENV, never committed.
-- GEE experiments stay manual (Silas). Data cleaning and repetitive engineering may be delegated.
+- macOS x86_64 ceiling: `numpy<2`, `torch<2.3` for training stack.
 
 ## Notion Integration
 
