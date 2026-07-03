@@ -2,7 +2,7 @@
 
 import nox
 
-nox.options.sessions = ["lint", "typecheck", "test"]
+nox.options.sessions = ["lint", "typecheck"]
 
 
 @nox.session(venv_backend="none")
@@ -24,8 +24,3 @@ def fix(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def typecheck(session: nox.Session) -> None:
     session.run("uv", "run", "pyright", external=True)
-
-
-@nox.session(venv_backend="none")
-def test(session: nox.Session) -> None:
-    session.run("uv", "run", "pytest", "-v", external=True)

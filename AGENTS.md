@@ -32,7 +32,12 @@ Cloud-native skeleton for Berlin LST downscaling (pre-implementation). Work-in-p
 
 ```
 src/berlin_lst_downscaling/    # main package
-tests/            # tests
+    data/acquisition/          # PC STAC search (placeholder)
+    data/ard/                  # ARD processing (placeholder)
+    common/                    # shared config/utils (placeholder)
+configs/                       # experiment configs (placeholder)
+scripts/spikes/                # throwaway experiments
+notebooks/                     # EDA notebooks
 ```
 
 ## Validation

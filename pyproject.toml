@@ -6,9 +6,21 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "dvc[gs]>=3.67.1",
+    "geopandas>=1.0.0",
     "google-cloud-storage>=3.12.0",
+    "lightning>=2.6.5",
+    "odc-stac>=0.4.0",
+    "pillow>=11.0.0",
     "pydantic-settings>=2.14.1",
+    "pystac-client>=0.8.0",
+    "rasterio>=1.4.3",
+    "rioxarray>=0.18.0",
     "wandb>=0.27.2",
+    "zarr>=2.18,<3",
+    # training stack (macOS x86_64 ceiling)
+    "numpy<2",
+    "torch<2.3",
+    "torchgeo>=0.9.0",
 ]
 
 [build-system]
