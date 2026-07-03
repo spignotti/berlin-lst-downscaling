@@ -11,6 +11,7 @@ dependencies = [
     "lightning>=2.6.5",
     "odc-stac>=0.4.0",
     "pillow>=11.0.0",
+    "planetary-computer>=1.0.0",
     "pydantic-settings>=2.14.1",
     "pystac-client>=0.8.0",
     "rasterio>=1.4.3",
