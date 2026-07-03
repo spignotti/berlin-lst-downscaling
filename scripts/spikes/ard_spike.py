@@ -2,20 +2,22 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""ARD spike — load one Landsat + one S2 scene via PC STAC and odc-stac.
+"""ARD spike — load Landsat + S2 scenes via PC STAC and odc-stac.
 
 Usage
 -----
     uv run python scripts/spikes/ard_spike.py
-    uv run python scripts/spikes/ard_spike.py --date 2024-07-15
+    uv run python scripts/spikes/ard_spike.py --date 2024-06-29
+    uv run python scripts/spikes/ard_spike.py --list-items           # fast search only
     uv run python scripts/spikes/ard_spike.py --out /tmp/spike.png
+    uv run python scripts/spikes/ard_spike.py --verbose
 
 Output
 ------
-- Console summary (item IDs, shape per DS, dtype, valid-pixel fractions)
-- Side-by-side 2-panel RGB composite PNG at ``--out`` (default
-  ``data/tmp/ard_spike_<date>.png``).
-- Exits 0 on success, non-zero on failure.
+- Console: per-sensor item IDs, bands, coverage report, performance timing
+- Side-by-side RGB composite PNG (mid-gray for nodata / invalid pixels)
+- ``--list-items``: fast STAC search only, no ``odc.stac.load``
+- Exit 0 on success, non-zero on failure.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +33,13 @@ import rioxarray  # noqa: F401 — registers .rio accessor on xr.Dataset
 from PIL import Image
 
 from berlin_lst_downscaling.common.config import settings
-from berlin_lst_downscaling.data.acquisition import load_landsat_scene, load_s2_scene
+from berlin_lst_downscaling.data.acquisition import (
+    get_catalog,
+    load_landsat_scene,
+    load_s2_scene,
+)
+
+# ── helpers ──────────────────────────────────────────────────────────
 
 
 def _parse_args() -> argparse.Namespace:
@@ -51,6 +60,16 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Output PNG path (default: data/tmp/ard_spike_<date>.png)",
     )
+    parser.add_argument(
+        "--list-items",
+        action="store_true",
+        help="Fast mode: list available items (no data loading)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print additional diagnostics",
+    )
     return parser.parse_args()
 
 
@@ -62,16 +81,20 @@ def _parse_bbox(text: str | None) -> tuple[float, float, float, float]:
         raise ValueError(f"bbox requires 4 comma-separated values, got {len(parts)}")
     minx, miny, maxx, maxy = parts
     if minx >= maxx or miny >= maxy:
-        raise ValueError(f"Invalid bbox: min must be < max ({minx}, {miny}) > ({maxx}, {maxy})")
+        raise ValueError(
+            f"Invalid bbox: min must be < max ({minx}, {miny}) > ({maxx}, {maxy})"
+        )
     return (minx, miny, maxx, maxy)
 
 
 def _clip_for_display(arr: np.ndarray) -> np.ndarray:
-    """Clip array to 2nd/98th percentile and rescale to 0-255 uint8."""
-    # Flatten for percentile computation, ignoring NaN
+    """Clip array to 2nd/98th percentile and rescale to 0-255 uint8.
+
+    NaN values are left as NaN — callers should overlay a nodata mask.
+    """
     flat = arr[~np.isnan(arr)]
     if flat.size == 0:
-        return np.zeros(arr.shape, dtype=np.uint8)
+        return np.full(arr.shape, np.nan, dtype=np.float32)
 
     p2, p98 = np.percentile(flat, (2, 98))
     if p98 - p2 < 1e-8:
@@ -81,116 +104,236 @@ def _clip_for_display(arr: np.ndarray) -> np.ndarray:
     return (clipped * 255).astype(np.uint8)
 
 
-def _rgb_panel(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> Image.Image:
-    """Compose a 3-band RGB Image from band arrays."""
+def _rgb_panel(
+    r: np.ndarray,
+    g: np.ndarray,
+    b: np.ndarray,
+    nodata_mask: np.ndarray | None = None,
+) -> Image.Image:
+    """Compose a 3-band RGB Image with optional nodata → mid-gray overlay."""
     r8 = _clip_for_display(r)
     g8 = _clip_for_display(g)
     b8 = _clip_for_display(b)
-    return Image.fromarray(np.stack([r8, g8, b8], axis=-1), mode="RGB")
+
+    img = np.stack([r8, g8, b8], axis=-1).astype(np.uint8)
+
+    if nodata_mask is not None:
+        img[nodata_mask] = (128, 128, 128)
+
+    return Image.fromarray(img, mode="RGB")
 
 
-def _valid_frac_ls(ds) -> str:
-    """Parse Landsat qa_pixel to report valid (not cloudy/high-confidence) fraction."""
-    try:
-        qa = ds["qa_pixel"].values
-        mask = qa  # bit 3 = cloud shadow, bit 5 = cloud, bit 6/7 = high conf cirrus/cloud
-        # Build mask: clear = none of those bits
-        cloud = mask & (1 << 5) != 0
-        shadow = mask & (1 << 3) != 0
-        clear = ~(cloud | shadow)
-        total = (~np.isnan(qa)).sum()
-        if total == 0:
-            return "— (no valid pixels)"
-        frac = clear.sum() / total
-        valid_pixels = clear.sum()
-        return f"{frac:.1%} ({valid_pixels:,} / {total:,})"
-    except (KeyError, ValueError, TypeError):
-        return "—"
+def _coverage_report(ds, label: str, band: str, nodata_zero: bool = False):
+    """Print spatial coverage stats for a Dataset."""
+    arr = ds[band].values.squeeze()
+    total = arr.size
+
+    if nodata_zero:
+        valid = ~np.isnan(arr) & (arr != 0)
+    else:
+        valid = ~np.isnan(arr)
+
+    n_valid = valid.sum()
+    frac = n_valid / total * 100
+
+    y_coords, x_coords = np.where(valid)
+    print(f"  {label}: {frac:.1f}% valid  ({n_valid:,} / {total:,})")
+    print(
+        f"    Y range: {y_coords.min()}–{y_coords.max()}  "
+        f"(out of 0–{arr.shape[0] - 1})"
+    )
+    print(
+        f"    X range: {x_coords.min()}–{x_coords.max()}  "
+        f"(out of 0–{arr.shape[1] - 1})"
+    )
+
+    # Approximate geographic bbox of valid pixels
+    if hasattr(ds, "rio") and ds.rio.crs:
+        try:
+            # pixel indices → CRS coordinates
+            ys = y_coords[[0, -1]]
+            xs = [x_coords.min(), x_coords.max()]
+            xs_f = np.array(xs, dtype=float)
+            ys_f = np.array(ys, dtype=float)
+            xs_f, ys_f = ds.rio.transform() * (xs_f, ys_f)
+            print(
+                f"    Geo bbox (EPSG:{ds.rio.crs.to_epsg()}): "
+                f"{xs_f[0]:.2f},{ys_f[0]:.2f} → {xs_f[1]:.2f},{ys_f[1]:.2f}"
+            )
+        except Exception as exc:
+            print(f"    (geo bbox diagnostic skipped: {exc})", file=sys.stderr)
 
 
-def _valid_frac_s2(ds) -> str:
-    """Parse S2 SCL to report valid (vegetation/bare/water, not cloud/shadow) fraction."""
-    try:
-        scl = ds["SCL"].values
-        # SCL values: 2=water, 4=vegetation, 5=bare, 6=dark veg, 7=unclassified
-        valid_classes = {2, 4, 5, 6, 7}
-        total = (~np.isnan(scl)).sum()
-        if total == 0:
-            return "— (no valid pixels)"
-        valid = sum((scl[~np.isnan(scl)] == v).sum() for v in valid_classes)
-        frac = valid / total
-        return f"{frac:.1%} ({valid:,} / {total:,})"
-    except (KeyError, ValueError, TypeError):
-        return "—"
+def _ls_nodata_mask(ds) -> np.ndarray:
+    """Landsat nodata: all 3 RGB bands exactly 0 (swath-edge fill)."""
+    return (
+        (ds["red"].values.squeeze() == 0)
+        & (ds["green"].values.squeeze() == 0)
+        & (ds["blue"].values.squeeze() == 0)
+    )
 
 
-def _gray_panel(arr: np.ndarray) -> Image.Image:
-    """Render a single-band array as grayscale image (2-98% stretch)."""
-    grey = _clip_for_display(arr)
-    return Image.fromarray(grey, mode="L")
+def _s2_nodata_mask(ds) -> np.ndarray:
+    """S2 nodata: NaN in the red band."""
+    return np.isnan(ds["B04"].values.squeeze())
+
+
+def _merge_nodata_frac_ls(ds) -> str:
+    """Fraction of Landsat pixels that are **not** nodata-filled."""
+    mask = _ls_nodata_mask(ds)
+    total = mask.size
+    valid = (~mask).sum()
+    frac = valid / total * 100
+    return f"{frac:.1f}% ({valid:,} / {total:,})"
+
+
+def _merge_nodata_frac_ls(ds) -> str:
+    """Fraction of Landsat pixels that are **not** nodata-filled (value=0)."""
+    mask = _ls_nodata_mask(ds)
+    total = mask.size
+    valid = (~mask).sum()
+    frac = valid / total * 100
+    return f"{frac:.1f}% ({valid:,} / {total:,})"
+
+
+def _merge_nodata_frac_s2(ds) -> str:
+    """Fraction of S2 pixels that are **not** NaN."""
+    mask = _s2_nodata_mask(ds)
+    total = mask.size
+    valid = (~mask).sum()
+    frac = valid / total * 100
+    return f"{frac:.1f}% ({valid:,} / {total:,})"
+
+
+def _list_items_mode(date: str, bbox) -> int:
+    """Search items for both sensors and print an overview (no data loading)."""
+    sep = "-" * 60
+    catalog = get_catalog()
+
+    for collection, label in [
+        ("landsat-c2-l2", "Landsat C2-L2"),
+        ("sentinel-2-l2a", "S2 L2A"),
+    ]:
+        print(sep)
+        print(f"{label} — date={date}  bbox={bbox}")
+        search = catalog.search(
+            collections=[collection],
+            bbox=bbox,
+            datetime=date,
+            max_items=50,
+        )
+        items = list(search.items())
+        print(f"  Found {len(items)} items:")
+        for it in items:
+            props = it.properties
+            cloud = props.get("eo:cloud_cover", "?")
+            dt = props.get("datetime", "?")
+            bbox_str = (
+                f"{it.bbox[0]:.2f},{it.bbox[1]:.2f} → {it.bbox[2]:.2f},{it.bbox[3]:.2f}"
+                if it.bbox
+                else "?"
+            )
+            print(f"    {it.id}")
+            print(f"      datetime={dt}, cloud={cloud}%, bbox={bbox_str}")
+
+    print(sep)
+    print("Use --date to change date, or omit --list-items to load+render.")
+    return 0
+
+
+# ── main ─────────────────────────────────────────────────────────────
 
 
 def main() -> int:
     args = _parse_args()
     date = args.date or settings.default_date
     bbox = _parse_bbox(args.bbox)
+    verbose = args.verbose
+
+    if args.list_items:
+        return _list_items_mode(date=date, bbox=bbox)
+
     out_path = args.out or os.fspath(
         Path("data") / "tmp" / f"ard_spike_{date}.png"
     )
-
-    # Ensure output dir exists
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
-    separator = "-" * 60
+    t_start = time.perf_counter()
+    sep = "-" * 60
 
-    # ---------- Landsat ----------
-    print(separator)
+    # ════════════════ Landsat ════════════════
+    print(sep)
     print(f"Landsat  —  date={date}  bbox={bbox}")
+    t_ls_start = time.perf_counter()
+
     try:
-        ls_ds, ls_item_id = load_landsat_scene(date=date, bbox=bbox)
+        ls_ds, ls_item_ids = load_landsat_scene(date=date, bbox=bbox)
     except RuntimeError as exc:
         print(f"FAILED: {exc}")
         return 1
 
-    print(f"  Item ID    : {ls_item_id}")
-    print(f"  CRS        : {ls_ds.rio.crs}")
-    print(f"  Shape      : {dict(ls_ds.sizes)}")
-    print(f"  Bands      : {list(ls_ds.data_vars)}")
+    t_ls_end = time.perf_counter()
+
+    print(f"  Loaded items: {len(ls_item_ids)}")
+    for iid in ls_item_ids:
+        print(f"    {iid}")
+    print(f"  CRS         : {ls_ds.rio.crs}")
+    print(f"  Shape       : {dict(ls_ds.sizes)}")
+    print(f"  Bands       : {list(ls_ds.data_vars)}")
     ls_dtypes = {k: str(ls_ds[k].dtype) for k in ls_ds.data_vars}
-    print(f"  Dtypes     : {ls_dtypes}")
-    print(f"  Valid frac : {_valid_frac_ls(ls_ds)}")
+    print(f"  Dtypes      : {ls_dtypes}")
+    print(f"  Valid pixels: {_merge_nodata_frac_ls(ls_ds)}")
+    print(f"  Load time   : {t_ls_end - t_ls_start:.2f}s")
+    if verbose:
+        _coverage_report(ls_ds, "Landsat cov.", "red", nodata_zero=True)
 
-    # ---------- Sentinel-2 ----------
-    print(separator)
+    # ════════════════ Sentinel-2 ════════════════
+    print(sep)
     print(f"Sentinel-2  —  date={date}  bbox={bbox}")
+    t_s2_start = time.perf_counter()
+
     try:
-        s2_ds, s2_item_id = load_s2_scene(date=date, bbox=bbox)
+        s2_ds, s2_item_ids = load_s2_scene(date=date, bbox=bbox)
     except RuntimeError as exc:
         print(f"FAILED: {exc}")
         return 1
 
-    print(f"  Item ID    : {s2_item_id}")
-    print(f"  CRS        : {s2_ds.rio.crs}")
-    print(f"  Shape      : {dict(s2_ds.sizes)}")
-    print(f"  Bands      : {list(s2_ds.data_vars)}")
-    s2_dtypes = {k: str(s2_ds[k].dtype) for k in s2_ds.data_vars}
-    print(f"  Dtypes     : {s2_dtypes}")
-    print(f"  Valid frac : {_valid_frac_s2(s2_ds)}")
+    t_s2_end = time.perf_counter()
 
-    # ---------- RGB composite ----------
-    print(separator)
+    print(f"  Loaded items: {len(s2_item_ids)}")
+    for iid in s2_item_ids:
+        print(f"    {iid}")
+    print(f"  CRS         : {s2_ds.rio.crs}")
+    print(f"  Shape       : {dict(s2_ds.sizes)}")
+    print(f"  Bands       : {list(s2_ds.data_vars)}")
+    s2_dtypes = {k: str(s2_ds[k].dtype) for k in s2_ds.data_vars}
+    print(f"  Dtypes      : {s2_dtypes}")
+    print(f"  Valid pixels: {_merge_nodata_frac_s2(s2_ds)}")
+    print(f"  Load time   : {t_s2_end - t_s2_start:.2f}s")
+    if verbose:
+        _coverage_report(s2_ds, "S2 cov.", "B04")
+
+    # ════════════════ Render ════════════════
+    print(sep)
     print("Rendering RGB composite …")
 
+    t_render_start = time.perf_counter()
+
     try:
+        ls_mask = _ls_nodata_mask(ls_ds)
+        s2_mask = _s2_nodata_mask(s2_ds)
+
         ls_rgb = _rgb_panel(
             ls_ds["red"].values.squeeze(),
             ls_ds["green"].values.squeeze(),
             ls_ds["blue"].values.squeeze(),
+            nodata_mask=ls_mask,
         )
         s2_rgb = _rgb_panel(
-            s2_ds["B04"].values.squeeze(),  # S2 Red
-            s2_ds["B03"].values.squeeze(),  # S2 Green
-            s2_ds["B02"].values.squeeze(),  # S2 Blue
+            s2_ds["B04"].values.squeeze(),
+            s2_ds["B03"].values.squeeze(),
+            s2_ds["B02"].values.squeeze(),
+            nodata_mask=s2_mask,
         )
     except KeyError as exc:
         print(f"  Missing band for RGB: {exc}")
@@ -205,14 +348,19 @@ def main() -> int:
     composite.paste(s2_rgb, (ls_rgb.width, 0))
 
     composite.save(out_path)
-    print(f"  Saved: {out_path} ({composite.width}×{composite.height} px)")
+    t_render_end = time.perf_counter()
 
-    # ---------- Summary ----------
-    print(separator)
-    print("Spike OK — both sensors loaded successfully.")
-    print(f"  Landsat  : {ls_item_id}")
-    print(f"  Sentinel2: {s2_item_id}")
-    print(separator)
+    print(f"  Saved: {out_path} ({composite.width}×{composite.height} px, "
+          f"{t_render_end - t_render_start:.1f}s)")
+
+    # ════════════════ Summary ════════════════
+    t_total = time.perf_counter() - t_start
+    print(sep)
+    print(f"Spike OK — {t_total:.1f}s total.")
+    print(f"  Landsat  : {len(ls_item_ids)} item(s)")
+    print(f"  Sentinel2: {len(s2_item_ids)} item(s)")
+    print(f"  Output   : {out_path}")
+    print(sep)
 
     return 0
 

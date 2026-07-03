@@ -19,9 +19,20 @@ def load_s2_scene(
     date: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     bands: Sequence[str] | None = None,
+    max_items: int | None = 3,
     **odc_kw: Any,
-) -> tuple[xr.Dataset, str]:
-    """Search Planetary Computer for one Sentinel-2 L2A scene and load it.
+) -> tuple[xr.Dataset, list[str]]:
+    """Search Planetary Computer for Sentinel-2 L2A scenes and load them.
+
+    Loads matching tiles (default: 2 — enough for full Berlin coverage:
+    west + east MGRS tiles) and merges onto the shared ``bbox``-aligned
+    GeoBox via ``odc.stac.load``.
+
+    .. note::
+
+       The production pipeline will select the best tile per date using
+       the ``clear_frac - λ·Δt/3`` score rather than loading all
+       intersecting tiles.
 
     Parameters
     ----------
@@ -39,9 +50,9 @@ def load_s2_scene(
 
     Returns
     -------
-    tuple[xr.Dataset, str]
+    tuple[xr.Dataset, list[str]]
         Loaded scene on ``settings.target_crs`` at
-        ``settings.target_resolution``, and the STAC item ID.
+        ``settings.target_resolution``, and the STAC item IDs.
 
     Raises
     ------
@@ -58,7 +69,7 @@ def load_s2_scene(
         bbox=bbox,
         datetime=date,
         query={"eo:cloud_cover": {"lt": 20}},
-        max_items=1,
+        max_items=max_items,
     )
 
     items = list(search.items())
@@ -67,10 +78,10 @@ def load_s2_scene(
             f"No Sentinel-2 scene found for date={date} bbox={bbox}"
         )
 
-    item = items[0]
+    item_ids = [it.id for it in items]
 
     ds = odc.stac.load(
-        items=[item],
+        items=items,
         bands=bands,
         crs=settings.target_crs,
         resolution=settings.target_resolution,
@@ -79,4 +90,4 @@ def load_s2_scene(
         groupby="solar_day",
         **odc_kw,
     )
-    return ds, item.id
+    return ds, item_ids
