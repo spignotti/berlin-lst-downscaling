@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import odc.stac
+import pystac
 import xarray as xr
 
 from berlin_lst_downscaling.common.config import settings
@@ -30,6 +31,7 @@ def load_landsat_scene(
     bands: Sequence[str] | None = None,
     max_items: int | None = None,
     resolution: int | None = None,
+    items: list[pystac.Item] | None = None,
     **odc_kw: Any,
 ) -> tuple[xr.Dataset, list[str]]:
     """Search Planetary Computer for Landsat scenes and load them.
@@ -43,7 +45,7 @@ def load_landsat_scene(
     ----------
     date :
         ISO date string (e.g. ``"2024-07-15"``). Defaults to
-        ``settings.default_date``.
+        ``settings.default_date``. Ignored when ``items`` is provided.
     bbox :
         WGS84 bounding box ``(minx, miny, maxx, maxy)``. Defaults to
         ``settings.berlin_bbox``.
@@ -53,6 +55,11 @@ def load_landsat_scene(
         Target resolution in meters.  Defaults to
         ``settings.target_resolution``.  The ARD pipeline typically
         passes 100 m (native LST, anti-leakage).
+    items :
+        Pre-fetched STAC items.  When provided, ``date`` and
+        ``max_items`` are ignored and no STAC search is performed.
+        Use this for manifest-driven ``mode=full`` to avoid
+        re-querying PC by date.
     **odc_kw :
         Additional keyword arguments forwarded to ``odc.stac.load``
         (e.g. ``chunks``, ``resampling``).
@@ -68,25 +75,27 @@ def load_landsat_scene(
     RuntimeError
         If no matching scene is found.
     """
-    date = date or settings.default_date
-    bbox = bbox or settings.berlin_bbox
+    if items is not None:
+        # Skip STAC search — caller provides pre-fetched items
+        item_ids = [it.id for it in items]
+    else:
+        date = date or settings.default_date
+        bbox = bbox or settings.berlin_bbox
+        catalog = get_catalog()
+        search = catalog.search(
+            collections=[_LANDSAT_COLLECTION],
+            bbox=bbox,
+            datetime=date,
+            query={"eo:cloud_cover": {"lt": 20}},
+            max_items=max_items,
+        )
+        items = list(search.items())
+        if not items:
+            raise RuntimeError(f"No Landsat scene found for date={date} bbox={bbox}")
+        item_ids = [it.id for it in items]
+
     bands = list(bands) if bands is not None else _LANDSAT_BANDS
     res = resolution if resolution is not None else settings.target_resolution
-
-    catalog = get_catalog()
-    search = catalog.search(
-        collections=[_LANDSAT_COLLECTION],
-        bbox=bbox,
-        datetime=date,
-        query={"eo:cloud_cover": {"lt": 20}},
-        max_items=max_items,
-    )
-
-    items = list(search.items())
-    if not items:
-        raise RuntimeError(f"No Landsat scene found for date={date} bbox={bbox}")
-
-    item_ids = [it.id for it in items]
 
     ds = odc.stac.load(
         items=items,

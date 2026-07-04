@@ -15,21 +15,21 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-def _pc_equal(a: object, b: object) -> Any:
-    """Wrap ``pyarrow.compute.equal`` — avoids pyright stub gaps for pc.equal."""
+def pc_equal(a: object, b: object) -> Any:
+    """Wrap ``pyarrow.compute.equal`` — avoids pyright stub gaps."""
     import pyarrow.compute as _pc
 
     return _pc.equal(a, b)  # type: ignore[attr-defined]
 
 
-def _pc_and(a: Any, b: Any) -> Any:
+def pc_and(a: Any, b: Any) -> Any:
     """Wrap ``pyarrow.compute.and_``."""
     import pyarrow.compute as _pc
 
     return _pc.and_(a, b)  # type: ignore[attr-defined]
 
 
-def _pc_invert(a: Any) -> Any:
+def pc_invert(a: Any) -> Any:
     """Wrap ``pyarrow.compute.invert``."""
     import pyarrow.compute as _pc
 
@@ -119,7 +119,7 @@ class Ledger:
         if self._table.num_rows == 0:
             return []
 
-        tbl = self._table.filter(_pc_equal(self._table.column("source"), source))
+        tbl = self._table.filter(pc_equal(self._table.column("source"), source))
         return _rows_from_table(tbl)
 
     def get(self, scene_id: str, source: str) -> LedgerRow | None:
@@ -127,9 +127,9 @@ class Ledger:
         if self._table.num_rows == 0:
             return None
 
-        mask = _pc_and(
-            _pc_equal(self._table.column("scene_id"), scene_id),
-            _pc_equal(self._table.column("source"), source),
+        mask = pc_and(
+            pc_equal(self._table.column("scene_id"), scene_id),
+            pc_equal(self._table.column("source"), source),
         )
         tbl = self._table.filter(mask)
         rows = _rows_from_table(tbl)
@@ -147,12 +147,12 @@ class Ledger:
             self._table = new_row
             return
 
-        existing_mask = _pc_and(
-            _pc_equal(self._table.column("scene_id"), row.scene_id),
-            _pc_equal(self._table.column("source"), row.source),
+        existing_mask = pc_and(
+            pc_equal(self._table.column("scene_id"), row.scene_id),
+            pc_equal(self._table.column("source"), row.source),
         )
         self._table = pa.concat_tables(
-            [self._table.filter(_pc_invert(existing_mask)), new_row]
+            [self._table.filter(pc_invert(existing_mask)), new_row]
         )
 
     # ── persistence ─────────────────────────────────────────────
@@ -169,13 +169,13 @@ class Ledger:
 
         tbl = self._table
         if source:
-            tbl = tbl.filter(_pc_equal(self._table.column("source"), source))
+            tbl = tbl.filter(pc_equal(self._table.column("source"), source))
         if tbl.num_rows == 0:
             return {}
 
         counts: dict[str, int] = {}
         for s in _STATUSES:
-            n = tbl.filter(_pc_equal(tbl.column("status"), s)).num_rows
+            n = tbl.filter(pc_equal(tbl.column("status"), s)).num_rows
             if n > 0:
                 counts[s] = n
         return counts

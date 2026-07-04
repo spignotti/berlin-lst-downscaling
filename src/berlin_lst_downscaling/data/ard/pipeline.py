@@ -125,13 +125,27 @@ def _process_manifest(
 
     import pyarrow.parquet as pq
 
+    from berlin_lst_downscaling.data.ard.ledger import pc_equal
+
     tbl = pq.read_table(str(manifest))
-    mask = tbl.column("source") == source
+    if tbl.num_rows == 0:
+        return
+
+    mask = pc_equal(tbl.column("source"), source)
     rows = tbl.filter(mask)
+    if rows.num_rows == 0:
+        return
+
+    # Collect manifest rows per source — always carry scene_id + year
     scenes: list[tuple[str, str, int]] = []
+    scene_dates: dict[str, str | None] = {}  # scene_id → date (optional)
     for i in range(rows.num_rows):
         r = rows.slice(i, 1).to_pydict()
-        scenes.append((str(r["scene_id"][0]), source, int(r["year"][0])))
+        sid = str(r["scene_id"][0])
+        scenes.append((sid, source, int(r["year"][0])))
+        # Optional date column (forward-compatible schema extension)
+        _dt = r.get("date", [None])[0]
+        scene_dates[sid] = str(_dt) if _dt is not None else None
 
     todo = reconcile(scenes, ledger, contract)
     _log(cfg, run_id, "manifest_todo", {
@@ -141,7 +155,10 @@ def _process_manifest(
     })
 
     for scene_id, _source, year, _reason in todo:
-        _run_scene(scene_id, source, year, contract, cfg, ledger, run_id)
+        _run_scene(
+            scene_id, source, year, contract, cfg, ledger, run_id,
+            scene_date=scene_dates.get(scene_id),
+        )
 
 
 # ── per-scene processing ─────────────────────────────────────────────
@@ -155,13 +172,27 @@ def _run_scene(
     cfg: DictConfig,
     ledger: Ledger,
     run_id: str,
+    items: list[Any] | None = None,
+    scene_date: str | None = None,
 ) -> None:
     """Process one scene: load → mask → write COG+STAC → update ledger.
 
-    Errors are caught and recorded in the ledger (status="failed"),
-    then the loop continues to the next scene.
+    Parameters
+    ----------
+    items :
+        Pre-fetched STAC items for the scene. Passed to acquisition
+        loaders when provided (manifest-driven ``mode=full``).
+        When ``None`` (smoke mode), the loader searches by date.
+    scene_date :
+        Overrides ``cfg.scene_date`` for this scene. Used by
+        ``mode=full`` where each manifest row carries its own date.
     """
-    _log(cfg, run_id, "scene_start", {"scene_id": scene_id, "source": source})
+    effective_date = scene_date or cfg.scene_date
+    _log(cfg, run_id, "scene_start", {
+        "scene_id": scene_id,
+        "source": source,
+        "scene_date": effective_date,
+    })
     t0 = time.perf_counter()
 
     # Mark as exporting (crash recovery entry)
@@ -182,18 +213,20 @@ def _run_scene(
         # ── LOAD & MASK ──
         if source == "landsat-c2-l2":
             ds, loaded_ids = load_landsat_scene(
-                date=cfg.scene_date,
+                date=effective_date,
                 bbox=bbox,
                 resolution=int(cfg.target_resolution_low),
+                items=items,
             )
             masked = mask_landsat(ds, cfg)
 
         elif source == "sentinel-2-l2a":
             ds, loaded_ids = load_s2_scene(
-                date=cfg.scene_date,
+                date=effective_date,
                 bbox=bbox,
                 resolution=int(cfg.target_resolution_high),
                 bands=["B02", "B03", "B04", "B08", "SCL"],
+                items=items,
             )
             # Solar position for directional cloud-shadow projection
             az, el = _solar_for_scene(source, ds, cfg)
@@ -201,6 +234,13 @@ def _run_scene(
 
         else:
             raise ValueError(f"Unknown source: {source}")
+
+        # Assert that the requested scene_id was actually loaded
+        if scene_id not in loaded_ids:
+            raise RuntimeError(
+                f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
+                f"Date {effective_date!r} or bbox may not cover the requested scene."
+            )
 
         # ── WRITE COG ──
         _log(cfg, run_id, "scene_writing", {"scene_id": scene_id, "source": source})
