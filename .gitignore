@@ -32,5 +32,8 @@ data/logs/
 data/tmp/
 .tmp/
 
+# ECOSTRESS fixture data (seeded via download_ecostress_fixture.py)
+data/ecostress/
+
 # Ephemeral run logs
 outputs/

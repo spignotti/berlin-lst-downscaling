@@ -26,7 +26,6 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import rasterio
@@ -118,42 +117,41 @@ def load_ecostress_scene(
     # Load all four layers as xr.DataArrays
     data_vars: dict[str, xr.DataArray] = {}
     src_crs: str | None = None
-    src_transform: Any = None
 
     for layer, path in files.items():
         with rasterio.open(path) as src:
             band = src.read(1)
-            # Track CRS and transform from the first opened file
+            # Track CRS, transform and dimensions from the first opened file
             if src_crs is None:
                 src_crs = str(src.crs)
-                src_transform = src.transform
-            # For non-LST layers, cast to consistent dtypes
+            # Build x/y coordinate arrays from the Affine transform (pixel center)
+            # transform = Affine(a, b, c, d, e, f) where a=dx, e=dy, c/f = origin
+            x_coords = src.transform.xoff + src.transform.a * (0.5 + np.arange(src.width))
+            y_coords = src.transform.yoff + src.transform.e * (0.5 + np.arange(src.height))
             if layer == "LST":
                 da = xr.DataArray(
                     band.astype("float32")[np.newaxis, ...],
                     dims=("band", "y", "x"),
+                    coords={"band": [0], "y": y_coords, "x": x_coords},
                 )
             elif layer in ("cloud", "water"):
                 da = xr.DataArray(
                     band.astype("uint8")[np.newaxis, ...],
                     dims=("band", "y", "x"),
+                    coords={"band": [0], "y": y_coords, "x": x_coords},
                 )
             else:  # QC
                 da = xr.DataArray(
                     band.astype("uint8")[np.newaxis, ...],
                     dims=("band", "y", "x"),
+                    coords={"band": [0], "y": y_coords, "x": x_coords},
                 )
-            da = da.assign_coords(
-                transform=src.transform, crs=str(src.crs)
-            )
+            da = da.assign_coords(crs=str(src.crs))
             data_vars[layer.lower()] = da
 
     # Build dataset with explicit CRS from the source
     ds = xr.Dataset(data_vars)
-    ds = ds.assign_coords(
-        crs=src_crs,
-        transform=src_transform,
-    )
+    ds = ds.assign_coords(crs=src_crs)
 
     # Reproject to EPSG:25833 (Berlin UTM)
     target_crs = settings.target_crs  # EPSG:25833

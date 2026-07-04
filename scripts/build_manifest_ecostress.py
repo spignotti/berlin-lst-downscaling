@@ -52,7 +52,7 @@ DEFAULT_START = "2018-07-01"
 DEFAULT_END = "2024-12-31"
 DEFAULT_OUT = "data/ard/manifest.ecostress.parquet"
 
-app = typer.Typer(help=__doc__, pretty_exceptions_show=False)
+app = typer.Typer(help=__doc__)
 
 
 def _earthdata_login() -> None:
@@ -98,10 +98,9 @@ def main(
         results = earthaccess.search_data(
             short_name="ECO_L2T_LSTE",
             version="002",
-            bbox=(minx, miny, maxx, maxy),
-            start_date=start,
-            end_date=end,
-            limit=100,
+            bounding_box=(minx, miny, maxx, maxy),
+            temporal=(start, end),
+            count=100,
         )
     except Exception as exc:
         typer.echo(f"ERROR: CMR query failed: {exc}", err=True)

@@ -35,19 +35,20 @@ from pathlib import Path
 
 import earthaccess
 import typer
+from earthaccess.store import Store
 
 # Berlin bounding box (WGS84)
 BERLIN_BBOX = (13.08, 52.32, 13.76, 52.68)
 SMOKE_DATE = "2018-07-30"
 FIXTURE_ROOT = Path("data/ecostress/fixtures")
 
-app = typer.Typer(help=__doc__, pretty_exceptions_show=False)
+app = typer.Typer(help=__doc__)
 
 
-def _earthdata_login() -> None:
+def _earthdata_login() -> earthaccess.auth.Auth:
     """Authenticate with NASA Earthdata.  Exits with a clear message on failure."""
     try:
-        earthaccess.login()
+        return earthaccess.login()
     except Exception as exc:
         typer.echo(
             "ERROR: NASA Earthdata login failed.\n"
@@ -81,10 +82,9 @@ def main(
         granules = earthaccess.search_data(
             short_name="ECO_L2T_LSTE",
             version="002",
-            bbox=(minx, miny, maxx, maxy),
-            start_date=date,
-            end_date=date,
-            limit=limit,
+            bounding_box=(minx, miny, maxx, maxy),
+            temporal=(date, date),
+            count=limit,
         )
     except Exception as exc:
         typer.echo(f"ERROR: CMR query failed: {exc}", err=True)
@@ -112,7 +112,8 @@ def main(
 
     typer.echo(f"Downloading to {out_dir}/ ...")
     try:
-        downloaded = earthaccess.store.Store.get(
+        auth = _earthdata_login()
+        downloaded = Store(auth=auth).get(
             [granule],
             local_path=str(out_dir),
             threads=4,

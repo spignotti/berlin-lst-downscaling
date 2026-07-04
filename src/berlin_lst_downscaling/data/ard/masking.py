@@ -286,10 +286,10 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """
     contract = _contract("ecostress")
 
-    lst_arr = ds["lst"].values.squeeze().astype(np.float32)
-    cloud_arr = ds["cloud"].values.squeeze().astype(np.uint8)
-    water_arr = ds["water"].values.squeeze().astype(np.uint8)
-    qc_arr = ds["qc"].values.squeeze().astype(np.uint8)
+    lst_arr = ds["lst"].values.astype(np.float32)
+    cloud_arr = ds["cloud"].values.astype(np.uint8)
+    water_arr = ds["water"].values.astype(np.uint8)
+    qc_arr = ds["qc"].values.astype(np.uint8)
 
     flag = np.zeros(lst_arr.shape, dtype=np.uint8)
 
