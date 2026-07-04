@@ -1,21 +1,18 @@
-"""COG writer + STAC item emission with atomic write.
+"""COG writer + STAC item emission backed by ``atomic_write``.
 
-``write_cog_atomic`` and ``write_stac_atomic`` each write to a
-temporary path first, then ``os.replace`` to the final location.
+``write_cog_atomic`` and ``write_stac_atomic`` accept ``str`` destination
+URIs (local path, ``gs://`` bucket, or ``~/.mnt/`` mount) and write
+atomically via the storage module.
 
-The COG writer uses a 2-pass procedure:
+The COG writer uses a 2-pass procedure on a local temp file:
 1. Write all bands with final compression (deflate) to a temp file.
 2. Build overviews in-place.
-3. ``os.replace`` to the destination.
-
-This avoids the data-loss window of writing directly to the destination
-and saves the expensive recompress pass (pass 3 eliminated).
+3. Read the temp file into bytes, call ``atomic_write``.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
@@ -27,22 +24,23 @@ import xarray as xr
 from rasterio.enums import Resampling
 
 from berlin_lst_downscaling.data.ard.contract import Contract
+from berlin_lst_downscaling.data.io.storage import atomic_write, exists
 
 # ── COG write (main band file, float32) ──────────────────────────────
 
 
 def write_cog_atomic(
     ds: xr.Dataset,
-    dst: Path,
+    dst: str,
     contract: Contract,
     overwrite: bool = False,
     bands_order: list[str] | None = None,
-) -> Path:
+) -> str:
     """Write a multi-band COG atomically.
 
     The COG is assembled from bands in ``ds`` (or ``bands_order`` if
-    given), written to a ``.tmp`` sibling, then ``os.replace``-ed to
-    final path.
+    given), written to a local temp file, then pushed via
+    ``atomic_write`` to *dst* (local path or GCS URI).
 
     Parameters
     ----------
@@ -51,11 +49,12 @@ def write_cog_atomic(
         be a 2D (or 3D with singleton ``time``) ``float32`` DataArray
         carrying CRS and transform via ``rio``.
     dst :
-        Final output path (e.g. ``…/<scene_id>.tif``).
+        Final output URI (e.g. ``data/ard/…/<scene_id>.tif`` or
+        ``gs://berlin-lst-data/…/<scene_id>.tif``).
     contract :
         Contract describing tiling, compression, and expected nodata.
     overwrite :
-        If ``False`` and ``dst`` exists, a :class:`FileExistsError`
+        If ``False`` and *dst* exists, a :class:`FileExistsError`
         is raised.
     bands_order :
         Band variable names in order they should appear in the COG.
@@ -63,11 +62,11 @@ def write_cog_atomic(
 
     Returns
     -------
-    Path
-        The final ``dst`` path on success.
+    str
+        The final *dst* URI on success.
     """
-    if dst.exists() and not overwrite:
-        raise FileExistsError(str(dst))
+    if exists(dst) and not overwrite:
+        raise FileExistsError(dst)
 
     bands = bands_order or [str(k) for k in ds.data_vars]
     arrays: list[tuple[str, np.ndarray]] = []
@@ -87,11 +86,9 @@ def write_cog_atomic(
     dtypes = [ds[name].values.squeeze().dtype for name in bands]
     common_dtype = _common_dtype(dtypes)
 
-    # Set nodata for float types
     nodata = float("nan") if "float" in common_dtype else None
 
     profile = _build_profile(
-        dst=dst,
         common_dtype=common_dtype,
         n_bands=len(bands),
         h=h,
@@ -102,31 +99,29 @@ def write_cog_atomic(
         nodata=nodata,
     )
 
-    # Clear stale temp files
-    tmp_dir = dst.parent / ".tmp"
+    # Write to local temp file (2-pass: write + overviews)
+    tmp_dir = Path(".tmp")
     shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    dst_tmp = tmp_dir / f"_{dst.name}.cog"
+    dst_tmp = tmp_dir / f"_{Path(dst).name}.cog"
 
     try:
-        # --- pass 1: write with final compression + nodata ---
         with rasterio.open(dst_tmp, "w", **profile) as tmp:
             for i, (name, arr) in enumerate(arrays, 1):
                 out_arr = arr.astype(common_dtype, copy=False)
                 tmp.write(out_arr, i)
                 tmp.set_band_description(i, name)
 
-        # --- pass 2: build overviews in-place ---
         ov_levels = list(contract.tiling.overviews)
         if ov_levels:
             with rasterio.open(dst_tmp, "r+") as tmp:
                 tmp.build_overviews(ov_levels, Resampling.average)
 
-        # Atomic replace
-        os.replace(str(dst_tmp), str(dst))
+        # Read bytes and push via atomic_write
+        cog_bytes = dst_tmp.read_bytes()
+        atomic_write(dst, cog_bytes, overwrite=overwrite)
 
     except BaseException:
-        # Clean up temp files on any error
         dst_tmp.unlink(missing_ok=True)
         raise
 
@@ -138,18 +133,18 @@ def write_cog_atomic(
 
 def write_flag_cog_atomic(
     flag_da: xr.DataArray,
-    dst: Path,
+    dst: str,
     contract: Contract,
     overwrite: bool = False,
-) -> Path:
+) -> str:
     """Write a single-band uint8 flag COG atomically.
 
     The flag band stores a bitmask (fill, cloudy, shadow, cirrus,
     saturated).  It is written as a separate COG to avoid promoting
     uint8 to float32 in the multi-band COG.
     """
-    if dst.exists() and not overwrite:
-        raise FileExistsError(str(dst))
+    if exists(dst) and not overwrite:
+        raise FileExistsError(dst)
 
     arr = flag_da.values.squeeze()
     arr_2d: np.ndarray = arr if arr.ndim == 2 else arr[0]  # type: ignore[assignment]
@@ -158,7 +153,6 @@ def write_flag_cog_atomic(
     geo_transform = flag_da.rio.transform()
 
     profile = _build_profile(
-        dst=dst,
         common_dtype="uint8",
         n_bands=1,
         h=h,
@@ -167,19 +161,21 @@ def write_flag_cog_atomic(
         transform=geo_transform,
         contract=contract,
     )
-    profile["compress"] = "zstd"  # fast for uint8 bitmask data
-    profile["predictor"] = 1  # no prediction for integer data
+    profile["compress"] = "zstd"
+    profile["predictor"] = 1
 
-    tmp_dir = dst.parent / ".tmp"
+    tmp_dir = Path(".tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    dst_tmp = tmp_dir / f"_{dst.name}"
+    dst_tmp = tmp_dir / f"_{Path(dst).name}"
 
     try:
         with rasterio.open(dst_tmp, "w", **profile) as tmp:
             tmp.write(arr_2d, 1)
             tmp.set_band_description(1, "flag")
 
-        os.replace(str(dst_tmp), str(dst))
+        cog_bytes = dst_tmp.read_bytes()
+        atomic_write(dst, cog_bytes, overwrite=overwrite)
+
     except BaseException:
         dst_tmp.unlink(missing_ok=True)
         raise
@@ -192,39 +188,32 @@ def write_flag_cog_atomic(
 
 def write_stac_atomic(
     stac_item: dict[str, Any],
-    dst: Path,
+    dst: str,
     overwrite: bool = False,
-) -> Path:
+) -> str:
     """Write a STAC item as JSON atomically.
 
     Parameters
     ----------
     stac_item :
-        The STAC item dictionary.  Must include ``stac_version``,
-        ``id``, ``type``, ``geometry``, ``properties``, ``assets``,
-        and ``links`` (at minimum).
+        The STAC item dictionary.
     dst :
-        Final output path (e.g. ``…/<scene_id>.stac.json``).
+        Final output URI (e.g. ``…/<scene_id>.stac.json``).
     overwrite :
-        If ``False`` and ``dst`` exists, a :class:`FileExistsError`
+        If ``False`` and *dst* exists, a :class:`FileExistsError`
         is raised.
 
     Returns
     -------
-    Path
-        The final ``dst`` path on success.
+    str
+        The final *dst* URI on success.
     """
-    if dst.exists() and not overwrite:
-        raise FileExistsError(str(dst))
+    if exists(dst) and not overwrite:
+        raise FileExistsError(dst)
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst_tmp = dst.parent / ".tmp" / f"_{dst.name}"
+    json_bytes = json.dumps(stac_item, indent=2).encode("utf-8")
+    atomic_write(dst, json_bytes, overwrite=overwrite)
 
-    dst_tmp.parent.mkdir(parents=True, exist_ok=True)
-    with open(dst_tmp, "w", encoding="utf-8") as f:
-        json.dump(stac_item, f, indent=2)
-
-    os.replace(str(dst_tmp), str(dst))
     return dst
 
 
@@ -232,7 +221,6 @@ def write_stac_atomic(
 
 
 def _build_profile(
-    dst: Path,
     common_dtype: str,
     n_bands: int,
     h: int,
@@ -267,10 +255,8 @@ def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
     dt_set = set(str(d) for d in dtypes)
     if len(dt_set) == 1:
         return dt_set.pop()
-    # For mixed float+uint: promote to float32
     if any("float" in d for d in dt_set):
         return "float32"
-    # Mixed uints → smallest common that fits all
     sizes = [int(d[-2:]) for d in dt_set if d[-2:].isdigit()]
     max_bits = max(sizes) if sizes else 8
     return f"uint{max_bits}"

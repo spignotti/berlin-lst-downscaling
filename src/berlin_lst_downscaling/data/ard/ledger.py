@@ -3,21 +3,22 @@
 The ledger tracks the status of every scene processed by the ARD
 pipeline.  Idempotency, resume, and QA reporting all depend on it.
 
-Every ``upsert`` immediately persists to disk via atomic temp-file
-write (``os.replace``).  This ensures crash consistency — there is no
-batch write at the end of the pipeline run.
+Every ``upsert`` immediately persists via ``atomic_write``.  This
+ensures crash consistency — there is no batch write at the end of
+the pipeline run.
 """
 
 from __future__ import annotations
 
-import os
+import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
 
 
 def pc_equal(a: object, b: object) -> Any:
@@ -99,7 +100,7 @@ class Ledger:
         rows = ledger.scenes_for_source("landsat-c2-l2")
     """
 
-    def __init__(self, path: Path, table: pa.Table, schema_version: int = 1) -> None:
+    def __init__(self, path: str, table: pa.Table, schema_version: int = 1) -> None:
         self._path = path
         self._table = table
         self.schema_version = schema_version
@@ -107,15 +108,17 @@ class Ledger:
     # ── factory ─────────────────────────────────────────────────
 
     @classmethod
-    def open(cls, path: str | Path) -> Ledger:
+    def open(cls, path: str) -> Ledger:
         """Open an existing Parquet ledger or create a new empty one."""
-        p = Path(path)
-        if p.exists() and p.stat().st_size > 0:
-            table = pq.read_table(str(p))
+        if exists(path):
+            raw = read_bytes(path)
+            if len(raw) > 0:
+                table = pq.read_table(io.BytesIO(raw))
+            else:
+                table = pa.Table.from_pylist([], schema=_SCHEMA)
         else:
             table = pa.Table.from_pylist([], schema=_SCHEMA)
-            p.parent.mkdir(parents=True, exist_ok=True)
-        return cls(p, table)
+        return cls(path, table)
 
     # ── queries ─────────────────────────────────────────────────
 
@@ -174,26 +177,18 @@ class Ledger:
 
     # ── persistence ─────────────────────────────────────────────
 
-    def _write_atomic(self) -> Path:
-        """Persist ledger to a temp file, then ``os.replace`` to final path.
+    def _write_atomic(self) -> str:
+        """Persist ledger via ``atomic_write``.
 
-        This ensures the on-disk file is never in a partially-written
-        state — either the full write succeeds, or the old file remains.
+        The Parquet table is serialised to an in-memory buffer, then
+        written atomically to the target URI (local or GCS).
         """
-        tmp_dir = self._path.parent / ".tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        dst_tmp = tmp_dir / f"_{self._path.name}.ledger"
-
-        try:
-            pq.write_table(self._table, str(dst_tmp))
-            os.replace(str(dst_tmp), str(self._path))
-        except BaseException:
-            dst_tmp.unlink(missing_ok=True)
-            raise
-
+        buf = io.BytesIO()
+        pq.write_table(self._table, buf)
+        atomic_write(self._path, buf.getvalue(), overwrite=True)
         return self._path
 
-    def write(self) -> Path:
+    def write(self) -> str:
         """Persist the ledger to its Parquet path (batch convenience).
 
         With per-transition atomic writes enabled, this is a no-op
@@ -226,7 +221,7 @@ class Ledger:
         return self._table
 
     @property
-    def path(self) -> Path:
+    def path(self) -> str:
         return self._path
 
 

@@ -13,6 +13,7 @@ STAC → update ledger.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import time
@@ -48,10 +49,9 @@ def run(cfg: DictConfig) -> int:
     Returns 0 on success, 1 if any scene failed.
     """
     run_id = uuid4().hex[:8]
-    output_root = Path(cfg.output_root)
-    output_root.mkdir(parents=True, exist_ok=True)
+    output_root = str(cfg.output_root)
 
-    led = Ledger.open(output_root / "ledger.parquet")
+    led = Ledger.open(f"{output_root}/ledger.parquet")
     _log(cfg, run_id, "start", {"mode": cfg.mode, "sources": list(cfg.sources)})
 
     sources = list(cfg.sources)
@@ -120,18 +120,21 @@ def _process_manifest(
     run_id: str,
 ) -> None:
     """Process scenes listed in a manifest Parquet (mode=full)."""
-    manifest = Path(cfg.output_root) / "manifest.parquet"
-    if not manifest.exists():
+    from berlin_lst_downscaling.data.io import exists
+
+    manifest_uri = f"{cfg.output_root}/manifest.parquet"
+    if not exists(manifest_uri):
         raise FileNotFoundError(
-            f"mode=full requires a manifest at {manifest}. "
+            f"mode=full requires a manifest at {manifest_uri}. "
             "Run Szenen-Selektion first."
         )
 
     import pyarrow.parquet as pq
 
     from berlin_lst_downscaling.data.ard.ledger import pc_equal
+    from berlin_lst_downscaling.data.io import read_bytes
 
-    tbl = pq.read_table(str(manifest))
+    tbl = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
     if tbl.num_rows == 0:
         return
 
@@ -249,7 +252,7 @@ def _run_scene(
 
         # ── WRITE MAIN COG ──
         _log(cfg, run_id, "scene_writing", {"scene_id": scene_id, "source": source})
-        root = Path(cfg.output_root)
+        root = str(cfg.output_root)
         cog_dst = cog_path(root, source, year, scene_id)
 
         # Split data bands from flag band
@@ -282,8 +285,8 @@ def _run_scene(
                 scene_id=scene_id,
                 source=source,
                 year=year,
-                path_cog=str(cog_dst),
-                path_stac=str(stac_dst),
+                path_cog=cog_dst,
+                path_stac=stac_dst,
                 status="done",
                 schema_hash=contract.schema_hash(),
                 schema_version=contract.schema_version,
@@ -403,16 +406,16 @@ def _build_stac_item(
     year: int,
     masked: xr.Dataset,
     contract: Contract,
-    cog_path_rel: Path,
+    cog_path_rel: str,
     cfg: DictConfig,
-    flag_dst: Path | None = None,
+    flag_dst: str | None = None,
 ) -> dict[str, Any]:
     """Build a minimal STAC item describing one ARD COG.
 
     Parameters
     ----------
     flag_dst :
-        Path to the separate flag COG (``.flag.tif``). When provided and
+        URI to the separate flag COG (``.flag.tif``). When provided and
         ``contract.flag_mode == "separate"``, a ``flag`` asset is added
         pointing to this file.
     """
@@ -439,7 +442,7 @@ def _build_stac_item(
         # NaN nodata → None in JSON (STAC spec compatibility)
         nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
         assets[spec.name] = {
-            "href": str(cog_path_rel),
+            "href": cog_path_rel,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "title": spec.description,
             "raster:bands": [
@@ -454,7 +457,7 @@ def _build_stac_item(
     # Flag band as separate asset
     if flag_dst is not None and contract.flag_mode == "separate":
         assets["flag"] = {
-            "href": str(flag_dst),
+            "href": flag_dst,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "title": "Quality flag (bitmask: fill, cloudy, shadow, cirrus, saturated)",
             "raster:bands": [
@@ -549,7 +552,11 @@ def _log(cfg: DictConfig, run_id: str, event: str, data: dict[str, Any]) -> None
 
     print(line, file=sys.stderr)
 
-    log_dir = Path(cfg.get("logging_dir", cfg.output_root)) / "logs"
+    logging_root = cfg.get("logging_dir", cfg.output_root)
+    # For GCS output_root, default logs to local ./logs/ directory
+    if str(logging_root).startswith("gs://"):
+        logging_root = "./logs"
+    log_dir = Path(logging_root) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{run_id}.jsonl"
     with open(log_path, "a", encoding="utf-8") as f:
