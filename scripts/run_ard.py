@@ -2,17 +2,21 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
+
 """ARD pipeline entry point — Hydra-driven, mode=smoke|full.
 
 Usage
 -----
     uv run python scripts/run_ard.py --config-name smoke
-    uv run python scripts/run_ard.py --config-name smoke scene_date=2024-07-15
+    uv run python scripts/run_ard.py --config-name smoke scene_date=2024-07-15 viz=false
     uv run python scripts/run_ard.py --config-name full
 
 """
 
 from __future__ import annotations
+
+import subprocess
+import sys
 
 import hydra
 from omegaconf import DictConfig
@@ -34,7 +38,28 @@ def main(cfg: DictConfig) -> int:
     print(f"  cloud_base   : {cfg.cloud_base_height_m} m", flush=True)
     print("=" * 60, flush=True)
 
-    return ard_run(cfg)
+    result = ard_run(cfg)
+
+    # Post-run visualization (smoke mode only)
+    if cfg.get("viz", False) and cfg.mode == "smoke":
+        from pathlib import Path  # noqa: F401
+
+        viz_script = Path(__file__).parent / "visualize_smoke.py"
+        print("\n[+] Running smoke visualization ...", flush=True)
+        res = subprocess.run(  # noqa: S603 — script path is hard-coded, not user input
+
+            [sys.executable, viz_script, str(cfg.output_root)],
+            capture_output=True,
+            text=True,
+        )
+        if res.stdout:
+            print(res.stdout, end="", flush=True)
+        if res.stderr:
+            print(res.stderr, end="", file=sys.stderr, flush=True)
+        if res.returncode != 0:
+            print(f"[!] Visualization exited with code {res.returncode}", flush=True)
+
+    return result
 
 
 if __name__ == "__main__":

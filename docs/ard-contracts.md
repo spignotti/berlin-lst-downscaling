@@ -142,11 +142,43 @@ Idempotency check: if the stored hash matches the current contract's hash, the C
 
 ## Schema Version
 
-Current: `2` (updated in Phase A audit).
+Current: `3` (AOI metrics — Berlin boundary pixel counts per scene).
 
 | Version | Change |
 |---|---|
 | 1 | Initial Phase A. Flag band inline in main COG (uint8→float32 promotion). Compression LZ4. |
-| 2 | Flag band split into separate ``.flag.tif`` (uint8, LZ4). Main COG uses deflate. Schema hash includes ``flag_mode`` field. |
+| 2 | Flag band split into separate ``.flag.tif`` (uint8, ZSTD). Main COG uses deflate. Schema hash includes ``flag_mode`` field. |
+| 3 | AOI metrics added to ledger: ``aoi_clear_px``, ``aoi_cloudy_px``, ``aoi_shadow_px``, ``aoi_cirrus_px``, ``aoi_saturated_px``, ``aoi_fill_px``, ``aoi_total_px``, ``aoi_clear_frac``. Flag COG compression ZSTD. |
 
 The `schema_version` column in the ledger is `int` and fields start at `1`. Never mutate in place — increment for breaking changes and document the delta in this file.
+
+## Output Storage
+
+The pipeline writes to ``output_root`` which accepts three URI schemes:
+
+| Scheme | Example | Notes |
+|---|---|---|
+| **Local POSIX** | ``data/ard`` | ``os.replace`` atomic rename. ``.tmp`` sibling dir for staging. |
+| **GCS** | ``gs://berlin-lst-data/ard/`` | ``copy_blob`` + ``delete`` (eventually consistent; tolerated by reconcile). |
+| **FUSE mount** | ``~/.mnt/berlin-lst/ard/`` | Best-effort atomic via ``os.replace``. GDAL ZSTD support required. |
+
+All writers (``write_cog_atomic``, ``write_flag_cog_atomic``, ``write_stac_atomic``) and the ledger use ``atomic_write`` from ``berlin_lst_downscaling.data.io.storage``, which dispatches by URI prefix.
+
+Smoke tests always write locally (``data/tmp/smoke_ard_<date>``). Production runs targeting GCS must set ``output_root: gs://berlin-lst-data/ard/`` in the config.
+
+## AOI Metrics (Schema v3)
+
+Per-scene AOI pixel counts are computed by intersecting the flag COG with a pre-rasterized Berlin Landesgrenze mask (``aoi_10m.tif``, ``aoi_100m.tif``). Fields stored in the ledger:
+
+| Field | Type | Description |
+|---|---|---|
+| ``aoi_clear_px`` | int | Clear (non-cloud/shadow/cirrus/saturated/fill) pixels inside Berlin |
+| ``aoi_cloudy_px`` | int | Cloudy pixels inside Berlin |
+| ``aoi_shadow_px`` | int | Cloud-shadow pixels inside Berlin |
+| ``aoi_cirrus_px`` | int | Cirrus pixels inside Berlin |
+| ``aoi_saturated_px`` | int | Saturated pixels inside Berlin |
+| ``aoi_fill_px`` | int | Fill (no-data / dilated buffer) pixels inside Berlin |
+| ``aoi_total_px`` | int | All non-fill pixels inside Berlin |
+| ``aoi_clear_frac`` | float | ``aoi_clear_px / aoi_total_px`` (NaN if ``aoi_total_px == 0``) |
+
+The mask COGs (``data/boundaries/aoi_10m.tif``, ``data/boundaries/aoi_100m.tif``) are pre-baked by ``scripts/build_aoi.py`` from ``berlin_landesgrenze.geojson`` (EPSG:25833). They must be in the same CRS as the flag COG; reprojection to the scene grid is performed at metrics time if needed.

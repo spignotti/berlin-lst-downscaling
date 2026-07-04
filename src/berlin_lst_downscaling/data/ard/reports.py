@@ -10,6 +10,7 @@ from typing import Any
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.ard.ledger import Ledger
+from berlin_lst_downscaling.data.io import exists
 
 
 def qa_report(
@@ -29,7 +30,7 @@ def qa_report(
         counts = ledger.status_counts(src)
         rows = ledger.scenes_for_source(src)
 
-        # Check file existence for done scenes
+        # Check file existence for done scenes (local or GCS URI)
         cog_ok = 0
         stac_ok = 0
         cog_missing = 0
@@ -37,23 +38,35 @@ def qa_report(
         for r in rows:
             if r.status != "done":
                 continue
-            if r.path_cog and Path(r.path_cog).exists():
+            if r.path_cog and exists(r.path_cog):
                 cog_ok += 1
             else:
                 cog_missing += 1
-            if r.path_stac and Path(r.path_stac).exists():
+            if r.path_stac and exists(r.path_stac):
                 stac_ok += 1
             else:
                 stac_missing += 1
 
-        # Flag COG existence (optional — no ledger field yet)
+        # Flag COG existence
         flag_missing = 0
         for r in rows:
             if r.status != "done" or not r.path_cog:
                 continue
-            flag_path = Path(r.path_cog).with_suffix(".flag.tif")
-            if not flag_path.exists():
+            flag_uri = str(Path(r.path_cog).with_suffix(".flag.tif"))
+            if not exists(flag_uri):
                 flag_missing += 1
+
+        # AOI aggregate metrics (schema v3 — only for done scenes with metrics)
+        done_with_aoi = [r for r in rows if r.status == "done" and r.aoi_clear_frac is not None]
+        aoi_stats: dict[str, Any] = {}
+        if done_with_aoi:
+            fracs: list[float] = [r.aoi_clear_frac for r in done_with_aoi]  # type: ignore[list-item]
+            aoi_stats = {
+                "aoi_scenes": len(fracs),
+                "aoi_mean_clear_frac": round(sum(fracs) / len(fracs), 4),
+                "aoi_min_clear_frac": round(min(fracs), 4),
+                "aoi_max_clear_frac": round(max(fracs), 4),
+            }
 
         per_source[src] = {
             "total": len(rows),
@@ -63,6 +76,7 @@ def qa_report(
             "flag_missing": flag_missing,
             "stac_exists": stac_ok,
             "stac_missing": stac_missing,
+            **aoi_stats,
         }
 
     failed = sum(

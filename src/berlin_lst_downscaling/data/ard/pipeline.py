@@ -27,6 +27,7 @@ from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.acquisition.landsat import load_landsat_scene
 from berlin_lst_downscaling.data.acquisition.sentinel2 import load_s2_scene
+from berlin_lst_downscaling.data.ard.aoi import compute_aoi_metrics
 from berlin_lst_downscaling.data.ard.contract import Contract, contract_for_source
 from berlin_lst_downscaling.data.ard.idempotency import reconcile
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
@@ -270,6 +271,48 @@ def _run_scene(
         if flag_da is not None and contract.flag_mode == "separate":
             write_flag_cog_atomic(flag_da, flag_dst, contract, overwrite=True)
 
+        # ── COMPUTE AOI METRICS ──
+        if flag_da is not None and contract.flag_mode == "separate":
+            aoi_res = (
+                int(cfg.target_resolution_low)
+                if source == "landsat-c2-l2"
+                else int(cfg.target_resolution_high)
+            )
+            aoi_base = cfg.get("aoi.mask_base", "data/boundaries")
+            aoi_uri = f"{aoi_base}/aoi_{aoi_res}m.tif"
+            try:
+                _raw = compute_aoi_metrics(flag_dst, aoi_uri, contract)
+                _v = _raw["aoi_clear_px"]
+                aoi_clear_px = None if _v is None else int(_v)
+                _v = _raw["aoi_cloudy_px"]
+                aoi_cloudy_px = None if _v is None else int(_v)
+                _v = _raw["aoi_shadow_px"]
+                aoi_shadow_px = None if _v is None else int(_v)
+                _v = _raw["aoi_cirrus_px"]
+                aoi_cirrus_px = None if _v is None else int(_v)
+                _v = _raw["aoi_saturated_px"]
+                aoi_saturated_px = None if _v is None else int(_v)
+                _v = _raw["aoi_fill_px"]
+                aoi_fill_px = None if _v is None else int(_v)
+                _v = _raw["aoi_total_px"]
+                aoi_total_px = None if _v is None else int(_v)
+                _v = _raw["aoi_clear_frac"]
+                aoi_clear_frac = None if _v is None else float(_v)
+            except Exception as _exc:
+                # AOI metrics are best-effort; log and continue without them
+                _log(cfg, run_id, "aoi_metrics_error", {
+                    "scene_id": scene_id,
+                    "aoi_uri": aoi_uri,
+                    "error": str(_exc),
+                })
+                aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
+                aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
+                aoi_total_px = aoi_clear_frac = None
+        else:
+            aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
+            aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
+            aoi_total_px = aoi_clear_frac = None
+
         # ── BUILD + WRITE STAC ──
         stac_dst = stac_path(root, source, year, scene_id)
         stac_item = _build_stac_item(
@@ -292,6 +335,14 @@ def _run_scene(
                 schema_version=contract.schema_version,
                 run_id=run_id,
                 updated_at=datetime.now(UTC),
+                aoi_clear_px=aoi_clear_px,
+                aoi_cloudy_px=aoi_cloudy_px,
+                aoi_shadow_px=aoi_shadow_px,
+                aoi_cirrus_px=aoi_cirrus_px,
+                aoi_saturated_px=aoi_saturated_px,
+                aoi_fill_px=aoi_fill_px,
+                aoi_total_px=aoi_total_px,
+                aoi_clear_frac=aoi_clear_frac,
             )
         )
         _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
