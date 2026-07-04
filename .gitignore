@@ -30,6 +30,7 @@ data/logs/
 
 # Pipeline temporary processing files
 data/tmp/
+.tmp/
 
 # Ephemeral run logs
 outputs/

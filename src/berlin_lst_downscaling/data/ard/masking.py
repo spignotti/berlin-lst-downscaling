@@ -255,6 +255,87 @@ def _project_cloud_shadow(
     return shifted > 0.5
 
 
+# ── ECOSTRESS ───────────────────────────────────────────────────────##
+
+
+def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
+    """Apply ECOSTRESS L2T masking: LST + flag band from cloud/water/QC layers.
+
+    Dataset ``ds`` from
+    :func:`~berlin_lst_downscaling.data.acquisition.ecostress.load_ecostress_scene`
+    contains bands ``lst`` (float32 K), ``cloud`` (uint8), ``water`` (uint8),
+    and ``qc`` (uint8).
+
+    Flag derivation (Collection 2 L2T semantics):
+
+    | Source value | Flag bit | Meaning |
+    |---|---|---|
+    | ``cloud == 255`` | ``FLAG_FILL`` | fill / outside granule |
+    | ``cloud == 1`` | ``FLAG_CLOUDY`` | high-confidence cloud |
+    | ``(qc & 0b11) == 3`` | ``FLAG_FILL`` | pixel not produced |
+    | ``(qc & 0b11) == 1`` | ``FLAG_CLOUDY`` | TES degraded (conservative) |
+    | ``water == 1`` | ``FLAG_FILL`` | water bodies excluded from urban LST |
+
+    There is **no cloud-shadow projection** for ECOSTRESS — the L2T product
+    does not carry the per-pixel geometry needed for directional shadow
+    casting (ray-cast shadows deferred to Sekundärdaten-Pipeline Stage 3).
+
+    Returns
+    -------
+    xr.Dataset with bands ``lst`` (float32 Kelvin) and ``flag`` (uint8).
+    """
+    contract = _contract("ecostress")
+
+    lst_arr = ds["lst"].values.squeeze().astype(np.float32)
+    cloud_arr = ds["cloud"].values.squeeze().astype(np.uint8)
+    water_arr = ds["water"].values.squeeze().astype(np.uint8)
+    qc_arr = ds["qc"].values.squeeze().astype(np.uint8)
+
+    flag = np.zeros(lst_arr.shape, dtype=np.uint8)
+
+    # cloud (0=clear, 1=cloud, 255=fill)
+    flag[cloud_arr == 255] |= contract.FLAG_FILL
+    flag[cloud_arr == 1] |= contract.FLAG_CLOUDY
+
+    # water (0=dry, 1=water, 255=fill)
+    flag[water_arr == 255] |= contract.FLAG_FILL
+    flag[water_arr == 1] |= contract.FLAG_FILL
+
+    # QC mandatory QA (bits 0-1): 0b00=best, 0b01=degraded, 0b10=not-set, 0b11=not-produced
+    qc_low2 = qc_arr & 0b11
+    flag[qc_low2 == 3] |= contract.FLAG_FILL  # pixel not produced
+    flag[qc_low2 == 1] |= contract.FLAG_CLOUDY  # TES degraded (conservative)
+
+    # Apply fill to LST band
+    lst_arr[(flag & contract.FLAG_FILL) != 0] = float("nan")
+
+    # Build output Dataset
+    coords = dict(ds.coords)
+    dims = ds.dims
+
+    out = xr.Dataset(
+        {
+            "lst": xr.DataArray(
+                lst_arr[np.newaxis, ...] if "time" in dims else lst_arr,
+                dims=ds["lst"].dims,
+                attrs={"long_name": "Land Surface Temperature", "units": "K"},
+            ),
+            "flag": xr.DataArray(
+                flag[np.newaxis, ...] if "time" in dims else flag,
+                dims=ds["lst"].dims,
+                attrs={"long_name": "Quality flag", "flags": _FLAG_DOC},
+            ),
+        },
+        coords=coords,
+    )
+    # Propagate CRS via rioxarray
+    for var in out.data_vars:
+        out[var].rio.write_crs(ds.rio.crs, inplace=True)
+        out[var].rio.write_transform(ds.rio.transform(), inplace=True)
+
+    return out
+
+
 # ── contract helper ──────────────────────────────────────────────────##
 
 
@@ -269,4 +350,5 @@ _FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=satura
 __all__ = [
     "mask_landsat",
     "mask_s2",
+    "mask_ecostress",
 ]

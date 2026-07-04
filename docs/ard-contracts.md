@@ -110,7 +110,7 @@ Where:
 - **Limitation:** shadows behind tall buildings (DSM-occluded) are not caught — that requires ray-cast through DSM (Stage 3).
 - For Berlin's 3 MGRS tiles, shadows are projected per-tile and flagged per-scene. Inter-tile shadow stitching is not performed in Phase A.
 
-## ECOSTRESS — `ecostress` (Phase B, forward-declared)
+## ECOSTRESS — `ecostress`
 
 **Main COG bands:**
 
@@ -118,10 +118,34 @@ Where:
 |---|---|---|---|
 | `lst` | float32 | Kelvin | ECO_L2T_LSTE.002 native |
 
-Flag band is a separate ``.flag.tif`` COG (fill bits only; no cloud/shadow derived).
+Flag band is a separate ``.flag.tif`` COG (bitmask; see below).
 
-- **Spatial resolution:** ~70 m native, reprojected to EPSG:25833.
-- **Acquisition:** AppEEARS Collection 2 (Phase B). Phase A: stubbed (fixture fallback via envar).
+**Flag bitmask (shared across all sources):**
+
+| Bit | Constant | Meaning |
+|---|---|---|
+| 0 | ``FLAG_FILL`` | fill / outside granule / water body / QC not-produced |
+| 1 | ``FLAG_CLOUDY`` | high-confidence cloud OR TES degraded quality |
+| 2 | ``FLAG_SHADOW`` | not used for ECOSTRESS (no shadow projection in L2T) |
+| 3 | ``FLAG_CIRRUS`` | not used for ECOSTRESS |
+| 4 | ``FLAG_SATURATED`` | not used for ECOSTRESS |
+
+**Masking logic (Collection 2 L2T semantics):**
+
+| Condition | Flag bit set |
+|---|---|
+| ``cloud == 255`` (fill) | ``FLAG_FILL`` |
+| ``cloud == 1`` (cloudy) | ``FLAG_CLOUDY`` |
+| ``water == 1`` (water body) | ``FLAG_FILL`` |
+| ``water == 255`` (fill) | ``FLAG_FILL`` |
+| ``(QC & 0b11) == 3`` (pixel not produced) | ``FLAG_FILL`` |
+| ``(QC & 0b11) == 1`` (TES degraded) | ``FLAG_CLOUDY`` |
+
+- **Spatial resolution:** ~70 m native, reprojected to EPSG:25833 at 70 m.
+- **Native grid:** MGRS UTM tiles, 1568×1568 px per granule.
+- **Acquisition:** AppEEARS async export → GCS bucket (``gs://berlin-lst-data/``); local fixture via ``scripts/download_ecostress_fixture.py``.
+- **Granule discovery:** CMR query via ``earthaccess`` (``scripts/build_manifest_ecostress.py``).
+- **Fixture smoke test:** ``data/ecostress/fixtures/{granule_id}/`` with 4 layer COGs.
 
 ## Schema Hash
 

@@ -3,7 +3,7 @@
 # dependencies = ["matplotlib", "rasterio", "shapely"]
 # ///
 
-"""6-panel QA visualisation for smoke-test output.
+"""9-panel QA visualisation for smoke-test output.
 
 Generates one ``qa/<scene_id>.png`` per done scene containing:
 
@@ -16,6 +16,11 @@ Row 1 (Landsat C2 L2):
   Col 0 — LST  (inferno, Kelvin)
   Col 1 — Cloud mask       (bit 1, red on white)
   Col 2 — Shadow mask      (bit 2, blue on white)
+
+Row 2 (ECOSTRESS L2T):
+  Col 0 — LST  (inferno, Kelvin)
+  Col 1 — Cloud mask       (bit 1, red on white)
+  Col 2 — Water/Fill mask (bit 0, green on white; includes water bodies)
 
 The Berlin Landesgrenze boundary is overlaid in lime on the RGB/LST
 panels (Col 0 of each row).  Cloud (red) and shadow (blue) pixel
@@ -43,6 +48,7 @@ from shapely.ops import unary_union
 
 # ── flag bit constants (must match contract.py) ─────────────────────────
 
+_FLAG_FILL = 1 << 0  # 1
 _FLAG_CLOUDY = 1 << 1  # 2
 _FLAG_SHADOW = 1 << 2  # 4
 
@@ -176,7 +182,7 @@ def visualize_scene(
     # Georeference extent in CRS coords
     extent = [cog_bounds.left, cog_bounds.right, cog_bounds.bottom, cog_bounds.top]
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 16))
     fig.patch.set_facecolor("#f2f2f2")
     BG = "#f2f2f2"
 
@@ -314,6 +320,67 @@ def visualize_scene(
         shadow_panel = np.stack([sh_r, sh_g, sh_b], axis=0).transpose(1, 2, 0) * 0.8 + bg_sh * 0.2
         ax_s.imshow(shadow_panel, extent=extent, origin="upper", aspect="auto")
         ax_s.set_title(f"Shadow  —  {n_shadow:,} px  ({shadow_pct:.1f}%)", fontsize=9, pad=5)
+
+    # ── Row 2 — ECOSTRESS LST + masks ──────────────────────────────────
+    if source == "ecostress":
+        lst = cog_data[1].astype(np.float32)
+        lst_nodata = (
+            np.isnan(lst) if cog_profile.get("nodata") is None else lst == cog_profile["nodata"]
+        )
+        vmin, vmax = _percentile_stretch(lst)
+        lst_stretched = _linear_stretch(lst, vmin, vmax)
+
+        ax_lst = axes[2, 0]
+        ax_lst.imshow(
+            lst_stretched,
+            cmap="inferno",
+            extent=extent,
+            origin="upper",
+            aspect="auto",
+            vmin=0,
+            vmax=1,
+            zorder=1,
+        )
+        # Cloud = red overlay
+        cloud_overlay = np.zeros((height, width, 4), dtype=np.float32)
+        cloud_m = cloud_mask & ~lst_nodata
+        cloud_overlay[cloud_m] = (1.0, 0.0, 0.0, 0.80)
+        ax_lst.imshow(cloud_overlay, extent=extent, origin="upper", aspect="auto", zorder=2)
+        _add_boundary(ax_lst, boundary_exteriors)
+        ax_lst.set_title(
+            "ECOSTRESS L2T  "
+            + scene_id
+            + "\nLST (inferno)  —  Cloud (red) / Water (green)  —  Berlin bbox (lime)",
+            fontsize=9,
+            pad=5,
+        )
+
+        # Cloud mask panel
+        ax_c = axes[2, 1]
+        bg_cloud = np.ones((height, width, 3), dtype=np.float32) * 0.9
+        cm_r = np.zeros_like(cloud_mask, dtype=np.float32)
+        cm_r[cloud_mask] = 1.0
+        cm_g = np.zeros_like(cloud_mask, dtype=np.float32)
+        cm_g[cloud_mask] = 0.0
+        cm_b = np.zeros_like(cloud_mask, dtype=np.float32)
+        cm_b[cloud_mask] = 0.0
+        cloud_panel = np.stack([cm_r, cm_g, cm_b], axis=0).transpose(1, 2, 0) * 0.8 + bg_cloud * 0.2
+        ax_c.imshow(cloud_panel, extent=extent, origin="upper", aspect="auto")
+        ax_c.set_title(f"Cloud  —  {n_cloud:,} px  ({cloud_pct:.1f}%)", fontsize=9, pad=5)
+
+        # Water/Fill mask panel — FLAG_FILL includes water bodies and other nodata
+        # We exclude cloud fill (cloud==255) to show only water + QC fill
+        fill_mask = (flag_resampled & _FLAG_FILL) != 0
+        water_panel = np.ones((height, width, 3), dtype=np.float32) * 0.9
+        w_m = fill_mask & ~lst_nodata
+        water_panel[w_m, 0] = 0.0   # R=0
+        water_panel[w_m, 1] = 0.75   # G=0.75 (soft green)
+        water_panel[w_m, 2] = 0.0    # B=0
+        ax_w = axes[2, 2]
+        ax_w.imshow(water_panel, extent=extent, origin="upper", aspect="auto")
+        n_fill = int(np.sum(w_m))
+        fill_pct = n_fill / n_total * 100
+        ax_w.set_title(f"Water/Fill  —  {n_fill:,} px  ({fill_pct:.1f}%)", fontsize=9, pad=5)
 
     plt.subplots_adjust(hspace=0.12, wspace=0.05)
 

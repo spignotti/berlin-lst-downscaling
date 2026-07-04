@@ -28,13 +28,14 @@ from uuid import uuid4
 import xarray as xr
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.acquisition.ecostress import load_ecostress_scene
 from berlin_lst_downscaling.data.acquisition.landsat import load_landsat_scene
 from berlin_lst_downscaling.data.acquisition.sentinel2 import load_s2_scene
 from berlin_lst_downscaling.data.ard.aoi import compute_aoi_metrics
 from berlin_lst_downscaling.data.ard.contract import Contract, contract_for_source
 from berlin_lst_downscaling.data.ard.idempotency import reconcile
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
-from berlin_lst_downscaling.data.ard.masking import mask_landsat, mask_s2
+from berlin_lst_downscaling.data.ard.masking import mask_ecostress, mask_landsat, mask_s2
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.reports import qa_report
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
@@ -120,11 +121,34 @@ def _run_ecostress_scene(
     items: list[Any] | None = None,
     scene_date: str | None = None,
 ) -> xr.Dataset:
-    """Load + mask an ECOSTRESS L2T granule (Phase B — not yet wired)."""
-    raise NotImplementedError(
-        "ECOSTRESS Phase B is not yet wired. "
-        "Set ecostress.enabled=true and use run_ard_ecostress.py."
+    """Load + mask an ECOSTRESS L2T granule from local COGs.
+
+    No STAC search — scene_id comes from the manifest (mode=full) or
+    from listing the fixture directory (mode=smoke).  The raw_dir
+    (``cfg.ecostress.raw_dir``) is expected to contain one sub-directory
+    per granule, each with ECO_L2T_LSTE layer COGs.
+    """
+    bbox = tuple(cfg.bbox) if cfg.get("bbox") else None
+    resolution = int(cfg.get("target_resolution_low", 70))
+    raw_dir = str(cfg.ecostress.raw_dir)
+
+    ds, loaded_ids = load_ecostress_scene(
+        granule_id=scene_id,
+        raw_dir=raw_dir,
+        bbox=bbox,
+        resolution=resolution,
     )
+
+    # Assert the requested granule was loaded
+    if scene_id not in loaded_ids:
+        raise RuntimeError(
+            f"Granule {scene_id!r} not in loaded IDs {loaded_ids}. "
+            "Check that the granule exists in the raw_dir."
+        )
+
+    # No solar position needed — ECOSTRESS LST is atmospherically corrected
+    masked = mask_ecostress(ds, cfg)
+    return masked
 
 
 # Registry maps source key → per-source runner function.
@@ -494,6 +518,10 @@ def _solar_for_scene(
 
 def _discover_ids(source: str, cfg: DictConfig) -> list[str]:
     """Return item IDs for the scene date, without loading pixel data."""
+    if source == "ecostress":
+        # ECOSTRESS has no STAC — list granules from the raw/fixture directory
+        return _discover_ecostress_ids(cfg)
+
     from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 
     cat = get_catalog()
@@ -512,10 +540,42 @@ def _discover_ids(source: str, cfg: DictConfig) -> list[str]:
     return [item.id for item in search.items()]
 
 
+def _discover_ecostress_ids(cfg: DictConfig) -> list[str]:
+    """List ECOSTRESS granule IDs from the raw/fixture directory.
+
+    The directory is expected to contain one sub-directory per granule,
+    each named with the granule ID (e.g. ``ECOv002_L2T_LSTE_00372_...``).
+    """
+    raw_dir = cfg.ecostress.raw_dir
+    try:
+        root = Path(raw_dir)
+        if not root.exists():
+            return []
+        granule_ids = [
+            d.name for d in root.iterdir()
+            if d.is_dir() and d.name.startswith("ECO")
+        ]
+        return sorted(granule_ids)
+    except Exception:
+        return []
+
+
 def _extract_year(source: str, scene_id: str, cfg: DictConfig) -> int:
     """Extract year from a scene ID, falling back to config scene_date."""
     # Landsat IDs: LC08_L1TP_193024_20240629_20240705_02_T1
     # S2 IDs: S2B_MSIL1C_20240629T095029_N0510_R079_T33UUU_20240629T121424
+    # ECOSTRESS IDs: ECOv002_L2T_LSTE_<orbit>_<scene>_<MGRS>_<YYYYMMDDThhmmss>_...
+    if source == "ecostress":
+        from berlin_lst_downscaling.data.acquisition.ecostress import (
+            _parse_granule_datetime,
+        )
+
+        dt = _parse_granule_datetime(scene_id)
+        if dt is not None:
+            return dt.year
+        # Fallback
+        return int(cfg.scene_date.split("-")[0])
+
     parts = scene_id.split("_")
     for part in parts:
         if len(part) == 8 and part.isdigit():
