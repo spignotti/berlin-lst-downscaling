@@ -1,0 +1,11 @@
+# @package _global_
+# Smoke test: single month (July 2024) — used to validate coupling logic
+# before running the full volume scan.
+defaults:
+  - default
+  - _self_
+
+mode: couple
+years: [2024]
+months: [7]
+manifest_out: "data/tmp/manifest_smoke.parquet"

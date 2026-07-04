@@ -1,0 +1,11 @@
+# @package _global_
+# Full volume scan: Mai–Sep 2017–2025, metadata-only (no pixel loads).
+# Writes scan_report.{json,md} with counts + volume estimates.
+defaults:
+  - default
+  - _self_
+
+mode: scan
+years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+months: [5, 6, 7, 8, 9]
+scan_out_dir: "data/ard"

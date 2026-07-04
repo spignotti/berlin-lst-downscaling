@@ -1,0 +1,52 @@
+# @package _global_
+# Base config for Szenen-Selektion & Kopplung.
+# Extends nothing — self-contained parameters for the selection pipeline.
+
+# ── Spatial / Temporal ───────────────────────────────────────────────────────
+bbox: [13.08, 52.34, 13.76, 52.68]   # WGS84 Berlin bbox (minx, miny, maxx, maxy)
+years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+months: [5, 6, 7, 8, 9]               # May – September (1-indexed)
+
+# ── Pipeline mode ─────────────────────────────────────────────────────────────
+# "couple" → full pixel-coupled manifest
+# "scan"   → metadata-only volume scan, writes scan_report.{json,md}
+mode: couple
+
+# ── Landsat anchor ────────────────────────────────────────────────────────────
+landsat:
+  cloud_cover_max: 20          # eo:cloud_cover filter in percent (0–100)
+  collection: "landsat-c2-l2"
+
+# ── Sentinel-2 matching ────────────────────────────────────────────────────────
+sentinel2:
+  cloud_cover_max: 20          # eo:cloud_cover filter
+  collection: "sentinel-2-l2a"
+  window_days: 3                # search ±N days around anchor acquisition
+  score:
+    lambda: 0.1                # weight for temporal delta in score
+  min_clear_frac: 0.30         # drop anchor if no S2 candidate ≥ this threshold
+
+# ── ECOSTRESS subset ──────────────────────────────────────────────────────────
+ecostress:
+  version: "002"               # ECO_L2T_LSTE.002
+  short_name: "ECO_L2T_LSTE"
+  window_hours: 2              # ±N hours around anchor acquisition (local Berlin time)
+  local_tz: "Europe/Berlin"   # IANA tz name for UTC offset conversion
+  overlap_min: 0.10            # minimum footprint overlap with Berlin bbox
+  clear_frac_min: 0.50         # min fraction of cloud==0 pixels inside Berlin-AOI
+  # AppEEARS credentials are picked up via EARTHDATA_TOKEN env var automatically
+
+# ── AOI (for clear_frac computation) ─────────────────────────────────────────
+aoi:
+  mask_base: "data/boundaries"   # base path for aoi_10m.tif
+
+# ── Output ───────────────────────────────────────────────────────────────────
+manifest_out: "data/ard/manifest.parquet"
+scan_out_dir: "data/ard"
+output_root: "data/ard"           # shared root; manifest_out resolved relative to this
+
+# ── Hydra (suppress run dir) ──────────────────────────────────────────────────
+hydra:
+  output_subdir: null
+  job:
+    chdir: false

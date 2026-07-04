@@ -126,6 +126,39 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
     )
 
 
+# ── Szenen-Selektion ─────────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-selection")
+def smoke_selection(session: nox.Session) -> None:
+    """Run Szenen-Selektion coupling on a single month (July 2024).
+
+    Validates the coupling logic before running the full volume scan.
+    Writes ``data/tmp/manifest_smoke.parquet``.
+    """
+    session.run(
+        "uv", "run", "python", "scripts/build_manifest.py",
+        "--config-dir", "configs/selection",
+        "--config-name", "smoke_jul2024",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="selection-scan")
+def selection_scan(session: nox.Session) -> None:
+    """Run full metadata-only volume scan (2017–2025, Mai–Sep).
+
+    Writes ``data/ard/scan_report.{json,md}`` with counts and GB estimates.
+    No pixel loads — PC STAC + CMR metadata only.
+    """
+    session.run(
+        "uv", "run", "python", "scripts/build_manifest.py",
+        "--config-dir", "configs/selection",
+        "--config-name", "full_2017_2025",
+        external=True,
+    )
+
+
 # ── cloud smoke tests ─────────────────────────────────────────────────
 
 
