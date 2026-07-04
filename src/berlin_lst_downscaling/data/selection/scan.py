@@ -31,8 +31,9 @@ def run_scan(cfg) -> ScanReport:
     Returns a ScanReport and writes the full report to disk.
     """
     # ── Landsat anchors (full range) ─────────────────────────────────────────
-    anchors = build_anchors(cfg)
-    n_landsat_total = len(anchors)
+    anchors, anchor_stats = build_anchors(cfg)
+    # n_landsat_total: all scenes from STAC before pixel fitness gate
+    n_landsat_total = anchor_stats["n_total"]
 
     # ── S2 candidate counts (per anchor, aggregated) ─────────────────────────
     # For the scan we only count, no pixel loads.
@@ -62,19 +63,20 @@ def run_scan(cfg) -> ScanReport:
             n_ecostress = n_landsat_total  # at most one per anchor day
 
     # ── Estimate coupled / dropped from clear_frac threshold ─────────────────
-    # Without pixel loads we use the median clear_frac heuristic.
-    # Empirical observation: median Δt = 1 day, so use λ=0.1 → score ≈ clear_frac − 0.033
-    # If we assume median clear_frac ≈ 0.45 (rough estimate from prior runs):
-    #   score ≈ 0.45 − 0.033 = 0.417 > 0.3 threshold → ~70% coupling rate
-    # Conservative estimate: 60% coupled, 40% dropped.
-    coupling_rate = _estimate_coupling_rate(cfg)
+    # Without pixel loads we use the assumed coupling rate (configurable).
+    # In scan mode the real coupling rate is unknown; in couple mode the
+    # manifest already gives us the observed count after the fact.
+    coupling_rate = float(getattr(cfg.scan, "assumed_coupling_rate", 0.65))
     n_landsat_coupled = int(n_landsat_total * coupling_rate)
     n_landsat_dropped = n_landsat_total - n_landsat_coupled
 
-    # ── Volume estimates ──────────────────────────────────────────────────────
-    est_landsat_gb = n_landsat_total * _GB_LANDSAT
-    est_s2_gb = n_s2_total * _GB_S2
-    est_ecostress_gb = n_ecostress * _GB_ECOSTRESS
+    # ── Volume estimates (from coupled scenes, not candidate sums) ─────────────
+    # Correct: only coupled Landsat anchors get S2 partners + ECOSTRESS subsets.
+    est_landsat_gb = n_landsat_coupled * _GB_LANDSAT
+    # Correct: 1 S2 per coupled anchor (best candidate), not the candidate sum.
+    est_s2_gb = n_landsat_coupled * _GB_S2
+    # ECOSTRESS: at most n_landsat_coupled granules (one per coupled anchor day).
+    est_ecostress_gb = min(n_landsat_coupled, n_ecostress) * _GB_ECOSTRESS
     est_total_gb = est_landsat_gb + est_s2_gb + est_ecostress_gb
 
     # ── Write report files ───────────────────────────────────────────────────
@@ -94,6 +96,7 @@ def run_scan(cfg) -> ScanReport:
             "s2_score_lambda": getattr(cfg.sentinel2.score, "lambda", 0.1),
             "s2_min_clear_frac": cfg.sentinel2.min_clear_frac,
             "ecoftresst_window_hours": cfg.ecostress.window_hours,
+            "assumed_coupling_rate": coupling_rate,
         },
         "counts": {
             "landsat_total": n_landsat_total,

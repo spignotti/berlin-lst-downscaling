@@ -64,19 +64,19 @@ from berlin_lst_downscaling.data.selection.scan import run_scan
 
 def _run_couple(cfg: DictConfig) -> None:
     """Run full pixel-coupled manifest generation."""
-    from omegaconf import OmegaConf
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     print(json.dumps({
         "mode": "couple",
-        "years": cfg_dict.get("years"),
-        "months": cfg_dict.get("months"),
-        "bbox": cfg_dict.get("bbox"),
+        "years": list(cfg.years),
+        "months": list(cfg.months),
+        "bbox": list(cfg.bbox),
     }), file=sys.stderr)
 
     # ── 1. Build Landsat anchors ─────────────────────────────────────────────
     print("  [1/5] Searching Landsat anchors ...", file=sys.stderr)
-    anchors = build_anchors(cfg)
-    print(f"  [1/5] Found {len(anchors)} anchors", file=sys.stderr)
+    anchors, anchor_stats = build_anchors(cfg)
+    print(f"  [1/5] Found {anchor_stats['n_total']} anchors, "
+          f"kept {anchor_stats['n_kept']} after pixel filter "
+          f"({anchor_stats['n_dropped']} dropped)", file=sys.stderr)
     if not anchors:
         print("ERROR: No Landsat anchors found for the configured range.", file=sys.stderr)
         raise SystemExit(1)
@@ -115,12 +115,17 @@ def _run_couple(cfg: DictConfig) -> None:
     manifest_out = cfg.get("manifest_out", f"{cfg.output_root}/manifest.parquet")
     result = write_manifest(coupled, dropped, ecostress_by_anchor, manifest_out)
 
+    coupling_rate = result.n_coupled / result.n_anchors if result.n_anchors > 0 else 0.0
     print(json.dumps({
         "event": "manifest_done",
+        "n_anchors_total": anchor_stats["n_total"],
+        "n_anchors_kept_after_pixel_filter": anchor_stats["n_kept"],
+        "n_anchors_dropped_pixel_filter": anchor_stats["n_dropped"],
         "n_anchors": result.n_anchors,
         "n_coupled": result.n_coupled,
         "n_dropped": result.n_dropped,
         "n_ecostress": result.n_ecostress,
+        "coupling_rate_observed": round(coupling_rate, 4),
         "manifest_path": result.manifest_path,
     }), file=sys.stderr)
 
@@ -143,7 +148,8 @@ def _resolve_landsat_items(anchor: dict, cfg) -> list:
         collections=[cfg.landsat.collection],
         bbox=tuple(cfg.bbox),
         datetime=f"{day_start.strftime('%Y-%m-%d')}/{day_end.strftime('%Y-%m-%d')}",
-        query={"eo:cloud_cover": {"lt": cfg.landsat.cloud_cover_max}},
+        # scene-level cloud_cover filter removed — resolved anchor has already
+        # passed the pixel-wise QA_PIXEL ∩ AOI gate in build_anchors.
     )
     return list(search.items())
 
@@ -153,12 +159,10 @@ def _resolve_landsat_items(anchor: dict, cfg) -> list:
 
 def _run_scan(cfg: DictConfig) -> None:
     """Run metadata-only volume scan."""
-    from omegaconf import OmegaConf
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     print(json.dumps({
         "mode": "scan",
-        "years": cfg_dict.get("years"),
-        "months": cfg_dict.get("months"),
+        "years": list(cfg.years),
+        "months": list(cfg.months),
     }), file=sys.stderr)
 
     print("  [scan] Running metadata-only volume scan ...", file=sys.stderr)

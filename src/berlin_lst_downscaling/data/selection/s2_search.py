@@ -81,6 +81,9 @@ def match_s2_candidates_with_clear_frac(
     Loads Landsat + S2 via odc.stac and computes clear_frac per candidate.
     Reuses the same l8_items for all candidates (the anchor scene).
     """
+    import json
+    import sys
+
     candidates = match_s2_candidates(anchor, cfg)
     if not candidates:
         return candidates
@@ -88,22 +91,57 @@ def match_s2_candidates_with_clear_frac(
     # Resolve S2 items for the candidates (search by date ± 1 day tolerance)
     s2_items_map = _resolve_s2_items([c["datetime"] for c in candidates], cfg)
 
+    candidate_diagnostics = []
     for c in candidates:
         s2_items = s2_items_map.get(c["datetime"])
         if s2_items is None:
             c["clear_frac"] = None
+            candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
             continue
         try:
-            c["clear_frac"] = _compute_clear_frac_for_pair(
+            from berlin_lst_downscaling.data.selection.clear_frac import (
+                compute_clear_frac_with_counts,
+            )
+            cf, counts = compute_clear_frac_with_counts(
                 l8_items=l8_items,
                 s2_items=s2_items,
                 anchor_bbox=tuple(cfg.bbox),
                 aoi_mask_path=f"{cfg.aoi.mask_base}/aoi_10m.tif",
             )
+            c["clear_frac"] = cf
+            candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
         except Exception:
             c["clear_frac"] = None
+            candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
+
+    # Log structured diagnostic event for this anchor
+    event = {
+        "event": "clear_frac_diagnostic",
+        "anchor_id": anchor["scene_id"],
+        "anchor_date": anchor["date"],
+        "n_candidates": len(candidate_diagnostics),
+        "candidates": candidate_diagnostics,
+    }
+    print(json.dumps(event), file=sys.stderr)
 
     return candidates
+
+
+def _cf_diagnostic_entry(candidate: dict, clear_frac: float | None, counts: dict | None) -> dict:
+    entry = {
+        "s2_id": candidate["scene_id"],
+        "dt_days": candidate.get("dt_days"),
+        "cloud_cover": candidate.get("cloud_cover"),
+        "clear_frac": clear_frac,
+    }
+    if counts is not None:
+        entry.update({
+            "aoi_px": counts["aoi_px"],
+            "l8_clear_px": counts["l8_clear_px"],
+            "s2_clear_px": counts["s2_clear_px"],
+            "intersect_px": counts["intersect_px"],
+        })
+    return entry
 
 
 def _resolve_s2_items(
@@ -119,13 +157,15 @@ def _resolve_s2_items(
     result: dict = {}
 
     for dt in datetimes:
-        day_start = dt.replace(hour=0, minute=0, second=0)
-        day_end = dt.replace(hour=23, minute=59, second=59)
+        # Use date-only range to avoid PC STAC datetime-parsing issues.
+        target_date = dt.date()
+        start_date = target_date - timedelta(days=1)
+        end_date = target_date + timedelta(days=1)
 
         search = cat.search(
             collections=[cfg.sentinel2.collection],
             bbox=tuple(cfg.bbox),
-            datetime=f"{day_start.strftime('%Y-%m-%d')}/{day_end.strftime('%Y-%m-%d')}",
+            datetime=f"{start_date}/{end_date}",
             query={"eo:cloud_cover": {"lt": cfg.sentinel2.cloud_cover_max}},
         )
         items = list(search.items())

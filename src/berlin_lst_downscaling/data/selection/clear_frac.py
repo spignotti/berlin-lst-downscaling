@@ -81,14 +81,96 @@ def compute_clear_frac(
     aoi = _load_aoi_mask(aoi_mask_path, l8_ds)
 
     # ── compute clear_frac ───────────────────────────────────────────────────
-    # denominator: AOI ∩ Landsat-clear pixels
     denom = int(np.sum(aoi & l8_clear))
     if denom == 0:
         return float("nan")
 
-    # numerator: AOI ∩ Landsat-clear ∩ S2-clear pixels
     numer = int(np.sum(aoi & l8_clear & s2_clear))
     return numer / denom
+
+
+def compute_clear_frac_with_counts(
+    l8_items: list,
+    s2_items: list,
+    anchor_bbox: tuple[float, float, float, float],
+    aoi_mask_path: str = "data/boundaries/aoi_10m.tif",
+    resolution: int = 10,
+) -> tuple[float, dict]:
+    """Same as compute_clear_frac but also returns intermediate pixel counts.
+
+    Returns (clear_frac, counts_dict).
+    counts_dict keys: ``aoi_px``, ``l8_clear_px``, ``s2_clear_px``,
+    ``intersect_px``.
+    """
+    if not l8_items or not s2_items:
+        return float("nan"), _empty_counts()
+
+    # ── load both sources onto the same 10-m EPSG:25833 grid ─────────────────
+    l8_ds = odc.stac.load(
+        items=l8_items,
+        bands=["qa_pixel"],
+        crs="EPSG:25833",
+        resolution=resolution,
+        bbox=anchor_bbox,
+        chunks={"x": 2048, "y": 2048},
+        groupby="solar_day",
+    )
+
+    s2_ds = odc.stac.load(
+        items=s2_items,
+        bands=["SCL"],
+        crs="EPSG:25833",
+        resolution=resolution,
+        bbox=anchor_bbox,
+        chunks={"x": 2048, "y": 2048},
+        groupby="solar_day",
+    )
+
+    # ── build boolean clear masks ───────────────────────────────────────────
+    l8_clear = _landsat_is_clear(l8_ds)
+    s2_clear = _s2_is_clear(s2_ds)
+
+    # ── AOI mask (reproject to the scene grid) ──────────────────────────────
+    aoi = _load_aoi_mask(aoi_mask_path, l8_ds)
+
+    # ── compute clear_frac + counts ─────────────────────────────────────────
+    aoi_px = int(np.sum(aoi))
+    l8_clear_px = int(np.sum(aoi & l8_clear))
+    s2_clear_px = int(np.sum(aoi & s2_clear))
+    intersect_px = int(np.sum(aoi & l8_clear & s2_clear))
+
+    if l8_clear_px == 0:
+        cf = float("nan")
+        return cf, _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
+
+    cf = intersect_px / l8_clear_px
+    return cf, _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
+
+
+def _counts_dict(
+    clear_frac: float,
+    aoi_px: int,
+    l8_clear_px: int,
+    s2_clear_px: int,
+    intersect_px: int,
+) -> dict:
+    return {
+        "clear_frac": clear_frac,
+        "aoi_px": aoi_px,
+        "l8_clear_px": l8_clear_px,
+        "s2_clear_px": s2_clear_px,
+        "intersect_px": intersect_px,
+    }
+
+
+def _empty_counts() -> dict:
+    return {
+        "clear_frac": float("nan"),
+        "aoi_px": 0,
+        "l8_clear_px": 0,
+        "s2_clear_px": 0,
+        "intersect_px": 0,
+    }
 
 
 def _landsat_is_clear(ds: xr.Dataset) -> np.ndarray:
@@ -170,7 +252,7 @@ def _load_aoi_mask(
     target_crs = target_ds.rio.crs
     target_height, target_width = target_ds.dims["y"], target_ds.dims["x"]
 
-    destination = np.empty((target_height, target_width), dtype=aoi_data.dtype)
+    destination = np.empty((target_height, target_width), dtype=np.uint8)
     rwarp.reproject(
         source=aoi_data.astype(np.uint8),
         src_crs=aoi_crs,

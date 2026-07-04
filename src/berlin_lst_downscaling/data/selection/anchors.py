@@ -4,14 +4,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import numpy as np
+import odc.stac
+import rasterio
+import rasterio.warp as rwarp
+import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
+
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 
 
-def build_anchors(cfg) -> list:
+def build_anchors(cfg) -> tuple[list, dict]:
     """Return Landsat C2 L2 scenes as coupling anchors.
 
     Queries PC STAC for all scenes intersecting the configured bbox within
     the year range, then filters to May–September (configurable months).
+
+    Returns a tuple ``(anchors, stats)`` where ``anchors`` is a list of dicts
+    and ``stats`` is a dict with keys ``n_total``, ``n_kept``, ``n_dropped``
+    (pixel-filter stats; ``n_dropped`` is 0 when ``min_clear_frac`` is 0).
     """
     cat = get_catalog()
 
@@ -26,7 +36,9 @@ def build_anchors(cfg) -> list:
         collections=[cfg.landsat.collection],
         bbox=tuple(cfg.bbox),
         datetime=f"{query_start}/{query_end}",
-        query={"eo:cloud_cover": {"lt": cfg.landsat.cloud_cover_max}},
+        # scene-level cloud_cover filter removed per audit decision:
+        # all Landsat overpasses over Berlin loaded; fitness decided
+        # pixel-wise via QA_PIXEL ∩ AOI below.
     )
 
     anchors: list = []
@@ -63,9 +75,148 @@ def build_anchors(cfg) -> list:
             "item_href": item_href,
         })
 
+    # ── Pixel-wise anchor fitness gate ─────────────────────────────────────
+    min_cf = getattr(cfg.landsat.anchor, "min_clear_frac", 0.0)
+    n_before_filter = len(anchors)
+    if min_cf > 0:
+        kept, dropped = _filter_by_pixel_clear_frac(anchors, cfg, min_cf)
+        anchors = kept
+    else:
+        dropped = []
+
     # Sort chronologically
     anchors.sort(key=lambda a: a["datetime"])
-    return anchors
+
+    stats = {
+        "n_total": n_before_filter,
+        "n_kept": len(anchors),
+        "n_dropped": len(dropped),
+    }
+    return anchors, stats
+
+
+def _filter_by_pixel_clear_frac(
+    anchors: list[dict],
+    cfg,
+    min_clear_frac: float,
+) -> tuple[list[dict], list[dict]]:
+    """Drop anchors whose AOI clear fraction is below min_clear_frac.
+
+    Loads QA_PIXEL via odc.stac for each anchor over the Berlin bbox and
+    computes ``AOI ∩ clear / AOI``.  Anchors below the threshold are
+    dropped from the list and logged to stderr.
+
+    Returns ``(kept, dropped)``.
+    """
+    kept, dropped = [], []
+    for anchor in anchors:
+        cf = compute_anchor_clear_frac(anchor, cfg)
+        if cf is not None and cf >= min_clear_frac:
+            kept.append(anchor)
+        else:
+            dropped.append(anchor)
+            cf_str = f"{cf:.3f}" if cf is not None else "N/A"
+            import sys
+            print(
+                f"[anchor_filter] dropped {anchor['scene_id']} "
+                f"(clear_frac={cf_str} < {min_clear_frac})",
+                file=sys.stderr,
+            )
+    import sys
+    print(
+        f"[anchor_filter] kept {len(kept)}/{len(anchors)} anchors "
+        f"(min_clear_frac={min_clear_frac})",
+        file=sys.stderr,
+    )
+    return kept, dropped
+
+
+def compute_anchor_clear_frac(
+    anchor: dict,
+    cfg,
+) -> float | None:
+    """Compute pixel-wise clear fraction for a Landsat anchor over the Berlin AOI.
+
+    Loads QA_PIXEL via odc.stac over the configured bbox, intersects with
+    the Berlin AOI mask, and returns the fraction of clear pixels.
+
+    Returns None on load failure.
+    """
+    from datetime import timedelta
+
+    anchor_dt = anchor["datetime"]
+    day_start = anchor_dt - timedelta(days=1)
+    day_end = anchor_dt + timedelta(days=1)
+
+    cat = get_catalog()
+    search = cat.search(
+        collections=[cfg.landsat.collection],
+        bbox=tuple(cfg.bbox),
+        datetime=f"{day_start.strftime('%Y-%m-%d')}/{day_end.strftime('%Y-%m-%d')}",
+    )
+    items = list(search.items())
+    if not items:
+        return None
+
+    try:
+        ds = odc.stac.load(
+            items=items,
+            bands=["qa_pixel"],
+            crs="EPSG:25833",
+            resolution=10,
+            bbox=tuple(cfg.bbox),
+            chunks={"x": 2048, "y": 2048},
+            groupby="solar_day",
+        )
+    except Exception:
+        return None
+
+    qa = ds["qa_pixel"].values[0]  # (y, x)
+
+    # QA_PIXEL bits: fill=bit0, cloud=bit2, shadow=bit3, cirrus=bit6
+    fill   = (qa & 1) != 0
+    cloud  = (qa & 4) != 0
+    shadow = (qa & 8) != 0
+    cirrus = (qa & 64) != 0
+    l8_clear = ~fill & ~cloud & ~shadow & ~cirrus
+
+    # AOI mask
+    aoi = _load_aoi_mask(
+        f"{cfg.aoi.mask_base}/aoi_10m.tif",
+        ds,
+    )
+
+    denom = int(np.sum(aoi))
+    if denom == 0:
+        return None
+    numer = int(np.sum(aoi & l8_clear))
+    return numer / denom
+
+
+def _load_aoi_mask(aoi_path: str, target_ds) -> np.ndarray:
+    """Load and reproject the Berlin AOI mask to match the target dataset grid."""
+    with rasterio.open(aoi_path) as aoi_src:
+        aoi_data = aoi_src.read(1).astype(bool)
+        aoi_crs = aoi_src.crs
+        aoi_transform = aoi_src.transform
+
+    target_transform = target_ds.rio.transform()
+    target_crs = target_ds.rio.crs
+    target_height, target_width = target_ds.dims["y"], target_ds.dims["x"]
+
+    destination = np.empty((target_height, target_width), dtype=np.uint8)
+    rwarp.reproject(
+        source=aoi_data.astype(np.uint8),
+        src_crs=aoi_crs,
+        src_transform=aoi_transform,
+        src_width=aoi_src.width,
+        src_height=aoi_src.height,
+        destination=destination,
+        dst_crs=target_crs,
+        dst_transform=target_transform,
+        resampling=rwarp.Resampling.nearest,
+    )
+    return destination.astype(bool)
 
 
 def _parse_item_datetime(item) -> datetime | None:

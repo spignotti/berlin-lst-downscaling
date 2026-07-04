@@ -14,8 +14,13 @@ mode: couple
 
 # ── Landsat anchor ────────────────────────────────────────────────────────────
 landsat:
-  cloud_cover_max: 20          # eo:cloud_cover filter in percent (0–100)
   collection: "landsat-c2-l2"
+  anchor:
+    # Min fraction of clear pixels (QA_PIXEL) inside Berlin AOI.
+    # Very permissive — just skips completely clouded-out scenes cheaply.
+    # Decision: all Landsat overpasses over Berlin loaded; fitness via
+    # pixel-wise QA_PIXEL ∩ AOI (not scene-level cloud_cover).
+    min_clear_frac: 0.05
 
 # ── Sentinel-2 matching ────────────────────────────────────────────────────────
 sentinel2:

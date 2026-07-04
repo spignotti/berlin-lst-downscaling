@@ -11,7 +11,7 @@ Usage::
 
     # smoke test
     cfg = OmegaConf.load("configs/selection/smoke_jul2024.yaml")
-    anchors = build_anchors(cfg)
+    anchors, anchor_stats = build_anchors(cfg)
 
     # volume scan
     report = run_scan(cfg)
