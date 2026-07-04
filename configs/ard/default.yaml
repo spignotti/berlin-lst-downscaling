@@ -1,0 +1,39 @@
+# @package _global_
+# Default ARD pipeline config — shared by all modes.
+
+mode: full
+
+# Acquisition
+scene_date: null                    # ISO date string (smoke uses 2024-06-29)
+bbox: [13.08, 52.34, 13.76, 52.68] # WGS84 Berlin bbox
+target_crs: "EPSG:25833"
+target_resolution_low: 100          # Landsat LST native
+target_resolution_high: 10          # S2 and other bands
+
+# Sources
+sources: ["landsat-c2-l2", "sentinel-2-l2a"]
+
+# Cloud masking
+cloud_dilation_px: 2                # morphological dilation radius for cloud buffer
+s2cloudless_threshold: 40           # s2cloudless probability threshold
+solar_position_source: "stac"       # "stac" | "computed" (fallback)
+
+# Cloud-shadow projection (S2 directional offset)
+cloud_base_height_m: 1000           # assumed cloud base height for shadow offset
+
+# ECOSTRESS (disabled in Phase A)
+ecostress:
+  enabled: false
+  appeeears_task_id: null
+  fixture_path: null                # env BERLIN_LST_ECOSTRESS_FIXTURE override
+
+# Output
+output_root: "data/ard"             # local output path
+logging_dir: "${output_root}/logs"  # structured JSON logs
+qa_dir: "${output_root}"            # QA reports
+
+# Hydra overrides (suppress run dir and cwd changes)
+hydra:
+  output_subdir: null
+  job:
+    chdir: false

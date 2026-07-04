@@ -1,0 +1,11 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+mode: smoke
+scene_date: "2024-06-29"
+sources: ["landsat-c2-l2", "sentinel-2-l2a"]
+output_root: "data/tmp/smoke_ard_2024-06-29"
+ecostress:
+  enabled: false
