@@ -36,6 +36,10 @@ uv run nox -s smoke-sentinel2        # sentinel-2 only
 # ── Phase B (ECOSTRESS) ───────────────────────────────────────────────
 uv run nox -s smoke-ecostress       # local smoke test (stages → processes → cleans up)
 uv run nox -s smoke-ecostress-cloud # GCS smoke test (requires ADC; opt-in)
+
+# ── Phase C (Szenen-Selektion & Kopplung) ────────────────────────────
+uv run nox -s smoke-selection        # coupled manifest smoke test (Juli 2024)
+uv run nox -s selection-scan         # metadata-only volume scan (Mai–Sep 2017–2025)
 ```
 
 ## Smoke tests
@@ -50,6 +54,8 @@ produces COG output and a visualisation, then cleans up the stage.  No manual st
 | `smoke-ecostress` | ECOSTRESS L2T | Local disk | Tile 33UUU, 2018-07-30 |
 | `smoke-cloud` | Landsat + S2 | GCS | Requires rclone mount or ADC |
 | `smoke-ecostress-cloud` | ECOSTRESS L2T | GCS | Requires ADC; **opt-in** (API costs) |
+| `smoke-selection` | Landsat + S2 + ECOSTRESS | Manifest | Coupled scene selection, Juli 2024 |
+| `selection-scan` | Landsat + S2 + ECOSTRESS | Scan report | Metadata-only volume scan |
 
 ## Full production run
 
@@ -65,10 +71,17 @@ Before triggering full-mode:
 ### Build the manifest
 
 ```bash
-uv run python scripts/build_manifest_ecostress.py \
-    --start 2018-07-01 \
-    --end   2024-12-31 \
-    --out   data/ard/manifest.ecostress.parquet
+# Smoke test — coupled manifest for Juli 2024
+uv run nox -s smoke-selection
+
+# Full scan — metadata-only volume assessment (Mai–Sep 2017–2025)
+uv run nox -s selection-scan
+
+# Coupled export — write COGs for selected scenes
+uv run python scripts/build_manifest.py \
+    --config-dir configs/selection \
+    --config-name full_2017_2025 \
+    mode=couple
 ```
 
 ### Run full mode

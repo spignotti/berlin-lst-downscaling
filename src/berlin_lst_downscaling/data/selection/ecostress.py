@@ -1,6 +1,5 @@
 """ECOSTRESS granule search via NASA CMR (earthaccess).
 
-Ported from scripts/build_manifest_ecostress.py — pure Python API, no CLI deps.
 Queries NASA CMR (LP DAAC) for ECO_L2T_LSTE.002 granules covering the
 configured bbox within a date range.
 """

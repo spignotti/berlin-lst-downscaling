@@ -103,21 +103,22 @@ class ManifestResult:
     manifest_path: str         # path to written Parquet
 
 
-# ── submodule imports (after dataclasses are defined) ────────────────────────
+# ── submodule imports (after dataclasses are defined to avoid circular imports) ──
+# noqa: E402 — submodules return dicts; dataclasses defined here to break import cycle
 
-from berlin_lst_downscaling.data.selection.anchors import build_anchors
-from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac
-from berlin_lst_downscaling.data.selection.couple import couple_all
-from berlin_lst_downscaling.data.selection.ecostress import search_ecostress
-from berlin_lst_downscaling.data.selection.ecostress_subset import (
+from berlin_lst_downscaling.data.selection.anchors import build_anchors  # noqa: E402
+from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac  # noqa: E402
+from berlin_lst_downscaling.data.selection.couple import couple_all  # noqa: E402
+from berlin_lst_downscaling.data.selection.ecostress import search_ecostress  # noqa: E402
+from berlin_lst_downscaling.data.selection.ecostress_subset import (  # noqa: E402
     build_ecostress_subset,
 )
-from berlin_lst_downscaling.data.selection.manifest import write_manifest
-from berlin_lst_downscaling.data.selection.s2_search import (
+from berlin_lst_downscaling.data.selection.manifest import write_manifest  # noqa: E402
+from berlin_lst_downscaling.data.selection.s2_search import (  # noqa: E402
     match_s2_candidates,
     match_s2_candidates_with_clear_frac,
 )
-from berlin_lst_downscaling.data.selection.scan import run_scan
+from berlin_lst_downscaling.data.selection.scan import run_scan  # noqa: E402
 
 __all__ = [
     # Core entry-points

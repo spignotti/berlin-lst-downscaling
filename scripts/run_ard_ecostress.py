@@ -13,7 +13,7 @@ Usage
     # Cloud (auto-stages raw L2T to gs://bucket/_staging/)
     uv run python scripts/run_ard_ecostress.py --config-name cloud
 
-    # Full (requires manifest — run scripts/build_manifest_ecostress.py first)
+    # Full (requires manifest — run scripts/build_manifest.py first)
     uv run python scripts/run_ard_ecostress.py --config-name full
 
 """
