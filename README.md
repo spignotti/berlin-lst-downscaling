@@ -1,8 +1,7 @@
 # Berlin LST Downscaling
 
 Downscale Land Surface Temperature (LST) from Landsat / ECOSTRESS to
-10 m Sentinel-2 resolution — Berlin case study. Built on **Microsoft
-Planetary Computer** STAC for data access.
+10 m Sentinel-2 resolution — Berlin case study.
 
 ## Status
 
@@ -15,59 +14,128 @@ Planetary Computer** STAC for data access.
 - Hydra-driven config (smoke / full mode)
 - YAML + JSONL logging
 
-Phase B (ECOSTRESS) is planned.
+**Phase B complete** — ECOSTRESS L2T ARD pipeline:
+
+- NASA Earthdata S3 → ephemeral stage → COG processing → GCS output
+- Per-layer COGs (LST, cloud, water, QC) with QA flag band
+- `aoi_overlap_px` metric: pixel count of COG∩AOI intersection (detects off-target swaths)
+- Tenacity retry on download, GCS upload, and CMR metadata queries
+- Self-contained smoke test: `nox -s smoke-ecostress` (local) or `nox -s smoke-ecostress-cloud` (GCS)
 
 ## Quick start
 
 ```bash
 uv sync
-uv run nox                       # lint + typecheck
+uv run nox                           # lint + typecheck
 
-# Smoke test: one scene per source
-uv run python scripts/run_ard.py --config-name smoke
+# ── Phase A (Landsat + Sentinel-2) ────────────────────────────────────
+uv run nox -s smoke                  # smoke test (landsat + sentinel2, local disk)
+uv run nox -s smoke-landsat         # landsat only
+uv run nox -s smoke-sentinel2        # sentinel-2 only
 
-# Full production run
-uv run python scripts/run_ard.py --config-name full
+# ── Phase B (ECOSTRESS) ───────────────────────────────────────────────
+uv run nox -s smoke-ecostress       # local smoke test (stages → processes → cleans up)
+uv run nox -s smoke-ecostress-cloud # GCS smoke test (requires ADC; opt-in)
 ```
 
-## Pipeline modes
+## Smoke tests
 
-| Mode | What | When |
-|------|------|------|
-| `smoke` | Process 1 scene per source | Validation / CI |
-| `full` | Process a manifest of scenes | Batch production |
+Each smoke test is self-contained: it stages raw inputs, runs the pipeline,
+produces COG output and a visualisation, then cleans up the stage.  No manual steps.
 
-Config lives in `configs/ard/`:
-- `default.yaml` — shared settings (bbox, resolution, cloud parameters)
-- `smoke.yaml` — one scene on 2024-06-29
-- `full.yaml` — manifest-driven batch
+| Session | Source | Target | Notes |
+|---------|--------|--------|-------|
+| `smoke-landsat` | Landsat C2-L2 | Local disk | One scene on 2024-06-29 |
+| `smoke-sentinel2` | Sentinel-2 L2A | Local disk | One scene on 2024-06-29 |
+| `smoke-ecostress` | ECOSTRESS L2T | Local disk | Tile 33UUU, 2018-07-30 |
+| `smoke-cloud` | Landsat + S2 | GCS | Requires rclone mount or ADC |
+| `smoke-ecostress-cloud` | ECOSTRESS L2T | GCS | Requires ADC; **opt-in** (API costs) |
+
+## Full production run
+
+```
+Before triggering full-mode:
+  1. uv run nox -s lint typecheck        # code passes gates
+  2. uv run nox -s smoke-ecostress      # local smoke works
+  3. uv run nox -s smoke-ecostress-cloud # cloud smoke works (requires ADC)
+  4. Run a 10-granule pilot, spot-check one COG in QGIS
+  5. THEN: build manifest → run full
+```
+
+### Build the manifest
+
+```bash
+uv run python scripts/build_manifest_ecostress.py \
+    --start 2018-07-01 \
+    --end   2024-12-31 \
+    --out   data/ard/manifest.ecostress.parquet
+```
+
+### Run full mode
+
+```bash
+uv run python scripts/run_ard_ecostress.py \
+    --config-name full \
+    output_root=gs://berlin-lst-data/ard/ecostress
+```
+
+## Staging model
+
+Raw L2T inputs are **ephemeral**: they exist only for the duration of a
+processing run, then are deleted.  Final artefacts (COGs, STAC items) are
+written to ``output_root`` and are never staged.
+
+Supported URI schemes:
+
+| Scheme | Mechanism |
+|--------|-----------|
+| ``local`` | ``pathlib.Path`` + ``shutil`` (POSIX) |
+| ``gcs`` | ``google.cloud.storage`` (bucket → ``/vsigs/`` path for rasterio) |
+| ``mounted`` | ``pathlib.Path`` + ``shutil`` via rclone FUSE mount |
+
+Cloud staging path: NASA S3 → local tmp → GCS stage (``gs://bucket/_staging/``) → rasterio reads via ``/vsigs/`` → nox cleans GCS stage.
+
+## Storage layout
+
+```
+berlin-lst-data/                    # GCS bucket
+├── _staging/                      # ephemeral raw inputs (auto-deleted)
+│   └── ecostress/
+│       └── {run_id}/
+│           └── ECOv002_L2T_LSTE_…_33UUU_20180730T193555_0712_01/
+│               ├── ECOv002_L2T_LSTE_…_LST.tif
+│               ├── ECOv002_L2T_LSTE_…_cloud.tif
+│               ├── ECOv002_L2T_LSTE_…_water.tif
+│               └── ECOv002_L2T_LSTE_…_QC.tif
+└── ard/                           # final COG output
+    ├── ledger.parquet
+    ├── landsat-c2-l2/
+    ├── sentinel-2-l2a/
+    └── ecostress/
+        └── 2018/
+            └── ECOv002_L2T_LSTE_…_33UUU_20180730T193555_0712_01/
+                ├── lst.tif
+                └── lst.stac.json
+
+data/                              # local working directory
+└── tmp/
+    └── ecostress_stage/          # local smoke test stage (cleaned by nox)
+```
 
 ## Stack
 
 - **Python 3.12** — uv, ruff, pyright, nox
-- **Data access** — pystac-client, odc-stac, Planetary Computer
+- **Data access** — pystac-client, odc-stac, Planetary Computer; earthaccess (ECOSTRESS)
 - **Processing** — xarray, rioxarray, rasterio, numpy, scipy
 - **Storage** — Cloud-Optimized GeoTIFF (COG), STAC Item JSON
 - **State** — PyArrow Parquet ledger (BLAKE3 schema-hash for idempotency)
 - **Config** — Hydra (OmegaConf)
 
-## Output layout
+## Validation
 
-```
-data/ard/
-├── ledger.parquet              # per-scene processing ledger
-├── landsat-c2-l2/
-│   └── 2024/
-│       └── LC08_…_02_T1/
-│           ├── LC08_…_02_T1.tif           # COG
-│           └── LC08_…_02_T1.stac.json     # STAC item
-├── sentinel-2-l2a/
-│   └── 2024/
-│       └── S2A_…/
-│           ├── S2A_…tif
-│           └── S2A_…stac.json
-└── logs/
-    └── {run_id}.jsonl
+```bash
+uv run nox                # lint + typecheck
+uv run nox -s fix        # lint and auto-fix
 ```
 
 ## GCP access
@@ -77,10 +145,3 @@ mount-berlin    # rclone mount of the project GCS bucket
 ```
 
 See `.opencode/skills/google-access/SKILL.md` for full reference.
-
-## Validation
-
-```bash
-uv run nox                # lint + typecheck
-uv run nox -s fix         # lint and auto-fix
-```
