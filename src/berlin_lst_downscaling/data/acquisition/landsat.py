@@ -29,6 +29,7 @@ def load_landsat_scene(
     bbox: tuple[float, float, float, float] | None = None,
     bands: Sequence[str] | None = None,
     max_items: int | None = None,
+    resolution: int | None = None,
     **odc_kw: Any,
 ) -> tuple[xr.Dataset, list[str]]:
     """Search Planetary Computer for Landsat scenes and load them.
@@ -48,6 +49,10 @@ def load_landsat_scene(
         ``settings.berlin_bbox``.
     bands :
         Band asset keys to load. Defaults to ``_LANDSAT_BANDS``.
+    resolution :
+        Target resolution in meters.  Defaults to
+        ``settings.target_resolution``.  The ARD pipeline typically
+        passes 100 m (native LST, anti-leakage).
     **odc_kw :
         Additional keyword arguments forwarded to ``odc.stac.load``
         (e.g. ``chunks``, ``resampling``).
@@ -55,9 +60,8 @@ def load_landsat_scene(
     Returns
     -------
     tuple[xr.Dataset, list[str]]
-        Loaded scene on ``settings.target_crs`` at
-        ``settings.target_resolution``, and the STAC item IDs of
-        **every** matching scene.
+        Loaded scene on ``settings.target_crs`` at the chosen
+        resolution, and the STAC item IDs of **every** matching scene.
 
     Raises
     ------
@@ -67,6 +71,7 @@ def load_landsat_scene(
     date = date or settings.default_date
     bbox = bbox or settings.berlin_bbox
     bands = list(bands) if bands is not None else _LANDSAT_BANDS
+    res = resolution if resolution is not None else settings.target_resolution
 
     catalog = get_catalog()
     search = catalog.search(
@@ -79,9 +84,7 @@ def load_landsat_scene(
 
     items = list(search.items())
     if not items:
-        raise RuntimeError(
-            f"No Landsat scene found for date={date} bbox={bbox}"
-        )
+        raise RuntimeError(f"No Landsat scene found for date={date} bbox={bbox}")
 
     item_ids = [it.id for it in items]
 
@@ -89,7 +92,7 @@ def load_landsat_scene(
         items=items,
         bands=bands,
         crs=settings.target_crs,
-        resolution=settings.target_resolution,
+        resolution=res,
         bbox=bbox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
