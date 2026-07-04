@@ -9,6 +9,8 @@ from berlin_lst_downscaling.data.ard.contract import (
     TilingSpec,
     contract_for_source,
 )
+from berlin_lst_downscaling.data.ard.idempotency import reconcile
+from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
 from berlin_lst_downscaling.data.ard.masking import mask_landsat, mask_s2
 from berlin_lst_downscaling.data.ard.paths import cog_path, scene_dir, stac_path, tmp_dir
 from berlin_lst_downscaling.data.ard.solar_position import solar_position, solar_position_from_stac
@@ -29,4 +31,7 @@ __all__ = [
     "solar_position_from_stac",
     "write_cog_atomic",
     "write_stac_atomic",
+    "Ledger",
+    "LedgerRow",
+    "reconcile",
 ]
