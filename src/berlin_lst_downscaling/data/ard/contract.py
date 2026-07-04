@@ -36,7 +36,7 @@ class TilingSpec:
 
     blocksize: int = 512
     overviews: tuple[int, ...] = (2, 4, 8, 16)
-    compress: str = "lz4"
+    compress: str = "deflate"
     predictor: int = 2
 
 

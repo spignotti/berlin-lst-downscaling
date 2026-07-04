@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import rasterio
+import rioxarray  # noqa: F401  — registers rio accessor with xr
 import xarray as xr
 from omegaconf import DictConfig
 from scipy.ndimage import binary_dilation

@@ -9,9 +9,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+
+def _pc_equal(a: object, b: object) -> Any:
+    """Wrap ``pyarrow.compute.equal`` — avoids pyright stub gaps for pc.equal."""
+    import pyarrow.compute as _pc
+
+    return _pc.equal(a, b)  # type: ignore[attr-defined]
+
+
+def _pc_and(a: Any, b: Any) -> Any:
+    """Wrap ``pyarrow.compute.and_``."""
+    import pyarrow.compute as _pc
+
+    return _pc.and_(a, b)  # type: ignore[attr-defined]
+
+
+def _pc_invert(a: Any) -> Any:
+    """Wrap ``pyarrow.compute.invert``."""
+    import pyarrow.compute as _pc
+
+    return _pc.invert(a)  # type: ignore[attr-defined]
 
 # ── schema ───────────────────────────────────────────────────────────
 
@@ -94,14 +116,20 @@ class Ledger:
 
     def scenes_for_source(self, source: str) -> list[LedgerRow]:
         """Return all rows for a given source."""
-        mask = self._table.column("source") == source
-        tbl = self._table.filter(mask)
+        if self._table.num_rows == 0:
+            return []
+
+        tbl = self._table.filter(_pc_equal(self._table.column("source"), source))
         return _rows_from_table(tbl)
 
     def get(self, scene_id: str, source: str) -> LedgerRow | None:
         """Look up a specific scene row, or ``None``."""
-        mask = (self._table.column("scene_id") == scene_id) & (
-            self._table.column("source") == source
+        if self._table.num_rows == 0:
+            return None
+
+        mask = _pc_and(
+            _pc_equal(self._table.column("scene_id"), scene_id),
+            _pc_equal(self._table.column("source"), source),
         )
         tbl = self._table.filter(mask)
         rows = _rows_from_table(tbl)
@@ -111,17 +139,20 @@ class Ledger:
 
     def upsert(self, row: LedgerRow) -> None:
         """Insert or update a row identified by ``scene_id + source``."""
-        # Build a single-row table
         new_row = pa.Table.from_pylist(
             [_row_to_dict(row)], schema=_SCHEMA
         )
 
-        # Filter out any existing row with same (scene_id, source)
-        existing = (self._table.column("scene_id") == row.scene_id) & (
-            self._table.column("source") == row.source
+        if self._table.num_rows == 0:
+            self._table = new_row
+            return
+
+        existing_mask = _pc_and(
+            _pc_equal(self._table.column("scene_id"), row.scene_id),
+            _pc_equal(self._table.column("source"), row.source),
         )
         self._table = pa.concat_tables(
-            [self._table.filter(~existing), new_row]
+            [self._table.filter(_pc_invert(existing_mask)), new_row]
         )
 
     # ── persistence ─────────────────────────────────────────────
@@ -133,12 +164,18 @@ class Ledger:
 
     def status_counts(self, source: str | None = None) -> dict[str, int]:
         """Return ``{status: count}``, optionally filtered by source."""
+        if self._table.num_rows == 0:
+            return {}
+
         tbl = self._table
         if source:
-            tbl = tbl.filter(tbl.column("source") == source)
+            tbl = tbl.filter(_pc_equal(self._table.column("source"), source))
+        if tbl.num_rows == 0:
+            return {}
+
         counts: dict[str, int] = {}
         for s in _STATUSES:
-            n = tbl.filter(tbl.column("status") == s).num_rows
+            n = tbl.filter(_pc_equal(tbl.column("status"), s)).num_rows
             if n > 0:
                 counts[s] = n
         return counts
@@ -192,7 +229,7 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
                 attempts=int(d["attempts"][0]),
                 last_error=_opt_str(d, "last_error"),
                 run_id=_opt_str(d, "run_id"),
-                updated_at=d["updated_at"][0].as_py(),
+                updated_at=_opt_dt(d, "updated_at"),
             )
         )
     return rows
@@ -201,6 +238,14 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
 def _opt_str(d: dict, key: str) -> str | None:
     val = d[key][0]
     return None if val is None else str(val)
+
+
+def _opt_dt(d: dict, key: str):
+    val = d[key][0]
+    if val is None:
+        return None
+    # PyArrow 24's to_pydict returns datetime objects directly
+    return val.as_py() if hasattr(val, "as_py") else val
 
 
 __all__ = [
