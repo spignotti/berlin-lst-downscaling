@@ -26,11 +26,12 @@ All artefacts live under a deterministic path:
 | COG tiling | 512 × 512 px internal tiles |
 | Overviews | 2, 4, 8, 16 |
 | Main COG compression | **deflate** + predictor 2 (horizontal differencing) |
-| Flag COG compression | **LZ4** (fast, good for uint8 data) |
+| Flag COG compression | **ZSTD** (fast, good for uint8 bitmask data) |
 
-> **Note:** Compression changed from LZ4 → **deflate** after the Phase A audit.
+> **Note:** Main COG compression changed from LZ4 → **deflate** after the Phase A audit.
 > LZ4 was the initial choice but is unsupported by the local GDAL build.
 > Deflate is lossless with better compression ratios for float data.
+> Flag COG uses ZSTD (also unavailable in LZ4, ZSTD is fast and effective on sparse uint8 data).
 
 ## Flag Band (shared across sensors)
 

@@ -87,6 +87,9 @@ def write_cog_atomic(
     dtypes = [ds[name].values.squeeze().dtype for name in bands]
     common_dtype = _common_dtype(dtypes)
 
+    # Set nodata for float types
+    nodata = float("nan") if "float" in common_dtype else None
+
     profile = _build_profile(
         dst=dst,
         common_dtype=common_dtype,
@@ -96,6 +99,7 @@ def write_cog_atomic(
         crs=crs,
         transform=geo_transform,
         contract=contract,
+        nodata=nodata,
     )
 
     # Clear stale temp files
@@ -105,25 +109,18 @@ def write_cog_atomic(
     dst_tmp = tmp_dir / f"_{dst.name}.cog"
 
     try:
-        # --- pass 1: write with final compression ---
+        # --- pass 1: write with final compression + nodata ---
         with rasterio.open(dst_tmp, "w", **profile) as tmp:
             for i, (name, arr) in enumerate(arrays, 1):
                 out_arr = arr.astype(common_dtype, copy=False)
                 tmp.write(out_arr, i)
                 tmp.set_band_description(i, name)
-                # Set nodata for float bands
-                if "float" in str(out_arr.dtype):
-                    tmp.write_nodata(float("nan"), i)
 
         # --- pass 2: build overviews in-place ---
         ov_levels = list(contract.tiling.overviews)
         if ov_levels:
             with rasterio.open(dst_tmp, "r+") as tmp:
                 tmp.build_overviews(ov_levels, Resampling.average)
-                # Re-apply nodata (overview construction can clear it)
-                for i in range(1, len(bands) + 1):
-                    if "float" in common_dtype:
-                        tmp.write_nodata(float("nan"), i)
 
         # Atomic replace
         os.replace(str(dst_tmp), str(dst))
@@ -170,7 +167,7 @@ def write_flag_cog_atomic(
         transform=geo_transform,
         contract=contract,
     )
-    profile["compress"] = "lz4"  # fast for uint8 lookups
+    profile["compress"] = "zstd"  # fast for uint8 bitmask data
     profile["predictor"] = 1  # no prediction for integer data
 
     tmp_dir = dst.parent / ".tmp"
@@ -243,8 +240,9 @@ def _build_profile(
     crs: Any,
     transform: Any,
     contract: Contract,
+    nodata: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    profile: dict[str, Any] = {
         "driver": "GTiff",
         "dtype": common_dtype,
         "count": n_bands,
@@ -259,6 +257,9 @@ def _build_profile(
         "predictor": contract.tiling.predictor,
         "BIGTIFF": "IF_SAFER",
     }
+    if nodata is not None:
+        profile["nodata"] = nodata
+    return profile
 
 
 def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
