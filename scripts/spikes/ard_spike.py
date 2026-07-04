@@ -81,9 +81,7 @@ def _parse_bbox(text: str | None) -> tuple[float, float, float, float]:
         raise ValueError(f"bbox requires 4 comma-separated values, got {len(parts)}")
     minx, miny, maxx, maxy = parts
     if minx >= maxx or miny >= maxy:
-        raise ValueError(
-            f"Invalid bbox: min must be < max ({minx}, {miny}) > ({maxx}, {maxy})"
-        )
+        raise ValueError(f"Invalid bbox: min must be < max ({minx}, {miny}) > ({maxx}, {maxy})")
     return (minx, miny, maxx, maxy)
 
 
@@ -138,14 +136,8 @@ def _coverage_report(ds, label: str, band: str, nodata_zero: bool = False):
 
     y_coords, x_coords = np.where(valid)
     print(f"  {label}: {frac:.1f}% valid  ({n_valid:,} / {total:,})")
-    print(
-        f"    Y range: {y_coords.min()}–{y_coords.max()}  "
-        f"(out of 0–{arr.shape[0] - 1})"
-    )
-    print(
-        f"    X range: {x_coords.min()}–{x_coords.max()}  "
-        f"(out of 0–{arr.shape[1] - 1})"
-    )
+    print(f"    Y range: {y_coords.min()}–{y_coords.max()}  (out of 0–{arr.shape[0] - 1})")
+    print(f"    X range: {x_coords.min()}–{x_coords.max()}  (out of 0–{arr.shape[1] - 1})")
 
     # Approximate geographic bbox of valid pixels
     if hasattr(ds, "rio") and ds.rio.crs:
@@ -253,9 +245,7 @@ def main() -> int:
     if args.list_items:
         return _list_items_mode(date=date, bbox=bbox)
 
-    out_path = args.out or os.fspath(
-        Path("data") / "tmp" / f"ard_spike_{date}.png"
-    )
+    out_path = args.out or os.fspath(Path("data") / "tmp" / f"ard_spike_{date}.png")
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     t_start = time.perf_counter()
@@ -350,8 +340,10 @@ def main() -> int:
     composite.save(out_path)
     t_render_end = time.perf_counter()
 
-    print(f"  Saved: {out_path} ({composite.width}×{composite.height} px, "
-          f"{t_render_end - t_render_start:.1f}s)")
+    print(
+        f"  Saved: {out_path} ({composite.width}×{composite.height} px, "
+        f"{t_render_end - t_render_start:.1f}s)"
+    )
 
     # ════════════════ Summary ════════════════
     t_total = time.perf_counter() - t_start

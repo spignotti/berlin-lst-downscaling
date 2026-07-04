@@ -30,10 +30,14 @@ from berlin_lst_downscaling.data.ard.contract import Contract, contract_for_sour
 from berlin_lst_downscaling.data.ard.idempotency import reconcile
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
 from berlin_lst_downscaling.data.ard.masking import mask_landsat, mask_s2
-from berlin_lst_downscaling.data.ard.paths import cog_path, stac_path
+from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.reports import qa_report
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
-from berlin_lst_downscaling.data.ard.writer import write_cog_atomic, write_stac_atomic
+from berlin_lst_downscaling.data.ard.writer import (
+    write_cog_atomic,
+    write_flag_cog_atomic,
+    write_stac_atomic,
+)
 
 # ── main entry ───────────────────────────────────────────────────────
 
@@ -67,7 +71,7 @@ def run(cfg: DictConfig) -> int:
     )
     _log(cfg, run_id, "qa_report", report)
 
-    led.write()
+    # Note: ledger persists per-transition via upsert — no batch write needed
     return 0 if failed_count == 0 else 1
 
 
@@ -196,6 +200,7 @@ def _run_scene(
     t0 = time.perf_counter()
 
     # Mark as exporting (crash recovery entry)
+    # Note: attempts is auto-managed by upsert (increments from existing)
     ledger.upsert(
         LedgerRow(
             scene_id=scene_id,
@@ -203,7 +208,6 @@ def _run_scene(
             year=year,
             status="exporting",
             run_id=run_id,
-            attempts=1,
         )
     )
 
@@ -229,7 +233,8 @@ def _run_scene(
                 items=items,
             )
             # Solar position for directional cloud-shadow projection
-            az, el = _solar_for_scene(source, ds, cfg)
+            # S2 uses NOAA computation (PC items lack view:sun_*)
+            az, el = _solar_for_scene(ds, cfg)
             masked = mask_s2(ds, cfg, az, el)
 
         else:
@@ -242,16 +247,31 @@ def _run_scene(
                 f"Date {effective_date!r} or bbox may not cover the requested scene."
             )
 
-        # ── WRITE COG ──
+        # ── WRITE MAIN COG ──
         _log(cfg, run_id, "scene_writing", {"scene_id": scene_id, "source": source})
         root = Path(cfg.output_root)
         cog_dst = cog_path(root, source, year, scene_id)
-        write_cog_atomic(masked, cog_dst, contract, overwrite=True)
+
+        # Split data bands from flag band
+        flag_da: xr.DataArray | None = masked.get("flag")
+        data_bands = [v for v in masked.data_vars if v != "flag"]
+        if data_bands:
+            ds_data = masked[data_bands]
+        else:
+            ds_data = masked
+
+        write_cog_atomic(ds_data, cog_dst, contract, overwrite=True)
+
+        # ── WRITE FLAG COG (separate uint8 file) ──
+        flag_dst = flag_path(root, source, year, scene_id)
+        if flag_da is not None and contract.flag_mode == "separate":
+            write_flag_cog_atomic(flag_da, flag_dst, contract, overwrite=True)
 
         # ── BUILD + WRITE STAC ──
         stac_dst = stac_path(root, source, year, scene_id)
         stac_item = _build_stac_item(
             scene_id, source, year, masked, contract, cog_dst, cfg,
+            flag_dst=flag_dst if contract.flag_mode == "separate" else None,
         )
         write_stac_atomic(stac_item, stac_dst, overwrite=True)
 
@@ -271,20 +291,25 @@ def _run_scene(
                 updated_at=datetime.now(UTC),
             )
         )
+        _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
         _log(cfg, run_id, "scene_done", {
             "scene_id": scene_id,
             "source": source,
+            "attempts": _attempts,
             "elapsed_s": round(elapsed, 2),
         })
 
     except Exception as exc:
         elapsed = time.perf_counter() - t0
+        _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
         _log(cfg, run_id, "scene_failed", {
             "scene_id": scene_id,
             "source": source,
+            "attempts": _attempts,
             "error": str(exc),
             "elapsed_s": round(elapsed, 2),
         })
+        # Note: attempts is auto-managed by upsert
         ledger.upsert(
             LedgerRow(
                 scene_id=scene_id,
@@ -293,7 +318,6 @@ def _run_scene(
                 status="failed",
                 last_error=str(exc),
                 run_id=run_id,
-                attempts=1,
                 updated_at=datetime.now(UTC),
             )
         )
@@ -303,16 +327,31 @@ def _run_scene(
 # ── solar position ───────────────────────────────────────────────────
 
 
-def _solar_for_scene(source: str, ds: xr.Dataset, cfg: DictConfig) -> tuple[float, float]:
-    """Return ``(azimuth_deg, elevation_deg)`` for the scene."""
-    # Extract the actual acquisition time from the dataset time coordinate
+def _solar_for_scene(
+    ds: xr.Dataset,
+    cfg: DictConfig,
+    stac_properties: dict | None = None,
+) -> tuple[float, float]:
+    """Return ``(azimuth_deg, elevation_deg)`` for the scene.
+
+    When ``stac_properties`` are provided and contain
+    ``view:sun_azimuth`` / ``view:sun_elevation``, those values
+    are used directly (no NOAA computation).
+    """
+    from berlin_lst_downscaling.data.ard.solar_position import extract_solar_from_stac
+
+    # Try STAC properties first (used by Landsat which has view:sun_*)
+    if stac_properties:
+        solar = extract_solar_from_stac(stac_properties)
+        if solar is not None:
+            return solar
+
+    # Fall back to NOAA computation from acquisition time
     try:
         dt64 = ds.time.values[0]
-        # numpy datetime64 → datetime
         ts = dt64.astype("datetime64[us]").tolist()
         dt = datetime.fromtimestamp(ts.timestamp(), tz=UTC)
     except (IndexError, AttributeError, ValueError):
-        # Fallback: use scene_date at 10:00 UTC (approximate overpass)
         date_str = cfg.scene_date
         dt = datetime.fromisoformat(date_str).replace(
             hour=10, minute=0, second=0, tzinfo=UTC,
@@ -366,8 +405,17 @@ def _build_stac_item(
     contract: Contract,
     cog_path_rel: Path,
     cfg: DictConfig,
+    flag_dst: Path | None = None,
 ) -> dict[str, Any]:
-    """Build a minimal STAC item describing one ARD COG."""
+    """Build a minimal STAC item describing one ARD COG.
+
+    Parameters
+    ----------
+    flag_dst :
+        Path to the separate flag COG (``.flag.tif``). When provided and
+        ``contract.flag_mode == "separate"``, a ``flag`` asset is added
+        pointing to this file.
+    """
     from rasterio.transform import array_bounds
     from rasterio.warp import transform_bounds
 
@@ -386,20 +434,40 @@ def _build_stac_item(
     )
 
     assets: dict[str, Any] = {}
-    var_names = [str(k) for k in masked.data_vars]
-    for var_name, spec in zip(var_names, contract.output_bands, strict=True):
-        assets[var_name] = {
+    # Data bands from contract.output_bands (flag is separate)
+    for spec in contract.output_bands:
+        # NaN nodata → None in JSON (STAC spec compatibility)
+        nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
+        assets[spec.name] = {
             "href": str(cog_path_rel),
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
             "title": spec.description,
             "raster:bands": [
                 {
                     "data_type": spec.dtype,
-                    "nodata": spec.nodata,
+                    "nodata": nodata,
                     "spatial_resolution": resolution,
                 }
             ],
         }
+
+    # Flag band as separate asset
+    if flag_dst is not None and contract.flag_mode == "separate":
+        assets["flag"] = {
+            "href": str(flag_dst),
+            "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+            "title": "Quality flag (bitmask: fill, cloudy, shadow, cirrus, saturated)",
+            "raster:bands": [
+                {
+                    "data_type": "uint8",
+                    "nodata": None,
+                    "spatial_resolution": resolution,
+                }
+            ],
+        }
+
+    # Real acquisition datetime from dataset (T11)
+    acq_dt = _acquisition_datetime(masked, cfg, year)
 
     item: dict[str, Any] = {
         "stac_version": "1.0.0",
@@ -419,7 +487,11 @@ def _build_stac_item(
             ],
         },
         "properties": {
-            "datetime": f"{cfg.get('scene_date', str(year))}T00:00:00Z",
+            "datetime": (
+                acq_dt.isoformat()
+                if acq_dt
+                else f"{cfg.get('scene_date', str(year))}T00:00:00Z"
+            ),
             "crs": str(crs),
             "proj:epsg": crs.to_epsg(),
             "proj:shape": [height, width],
@@ -434,6 +506,32 @@ def _build_stac_item(
     }
 
     return item
+
+
+# ── STAC helpers ─────────────────────────────────────────────────────
+
+
+def _acquisition_datetime(
+    masked: xr.Dataset,
+    cfg: DictConfig,
+    year: int,
+) -> datetime | None:
+    """Extract the real acquisition datetime from the dataset.
+
+    Returns ``None`` if the dataset has no ``time`` coordinate or it
+    cannot be parsed (caller should fall back to config date).
+    """
+    try:
+        dt64 = masked.time.values[0]
+        ts = dt64.astype("datetime64[us]").tolist()
+        return datetime.fromtimestamp(ts.timestamp(), tz=UTC)
+    except (IndexError, AttributeError, ValueError):
+        return None
+
+
+def _is_nan(val: float) -> bool:
+    """Check if a float is NaN without importing math."""
+    return val != val
 
 
 # ── logging ──────────────────────────────────────────────────────────

@@ -46,17 +46,28 @@ def qa_report(
             else:
                 stac_missing += 1
 
+        # Flag COG existence (optional — no ledger field yet)
+        flag_missing = 0
+        for r in rows:
+            if r.status != "done" or not r.path_cog:
+                continue
+            flag_path = Path(r.path_cog).with_suffix(".flag.tif")
+            if not flag_path.exists():
+                flag_missing += 1
+
         per_source[src] = {
             "total": len(rows),
             **counts,
             "cog_exists": cog_ok,
             "cog_missing": cog_missing,
+            "flag_missing": flag_missing,
             "stac_exists": stac_ok,
             "stac_missing": stac_missing,
         }
 
     failed = sum(
-        per_source[s].get("failed", 0) for s in (sources or per_source)
+        per_source[s].get("failed", 0) + per_source[s].get("cog_missing", 0)
+        for s in (sources or per_source)
         if s in per_source
     )
 

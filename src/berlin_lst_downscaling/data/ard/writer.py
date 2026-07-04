@@ -2,12 +2,21 @@
 
 ``write_cog_atomic`` and ``write_stac_atomic`` each write to a
 temporary path first, then ``os.replace`` to the final location.
+
+The COG writer uses a 2-pass procedure:
+1. Write all bands with final compression (deflate) to a temp file.
+2. Build overviews in-place.
+3. ``os.replace`` to the destination.
+
+This avoids the data-loss window of writing directly to the destination
+and saves the expensive recompress pass (pass 3 eliminated).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -16,11 +25,10 @@ import numpy as np
 import rasterio
 import xarray as xr
 from rasterio.enums import Resampling
-from rasterio.shutil import copy as rio_copy
 
 from berlin_lst_downscaling.data.ard.contract import Contract
 
-# ── COG write ────────────────────────────────────────────────────────
+# ── COG write (main band file, float32) ──────────────────────────────
 
 
 def write_cog_atomic(
@@ -40,8 +48,8 @@ def write_cog_atomic(
     ----------
     ds :
         Dataset whose variables are bands to write.  Each variable must
-        be a 2D (or 3D with singleton ``time``) ``float32`` or
-        ``uint8`` DataArray carrying CRS and transform via ``rio``.
+        be a 2D (or 3D with singleton ``time``) ``float32`` DataArray
+        carrying CRS and transform via ``rio``.
     dst :
         Final output path (e.g. ``…/<scene_id>.tif``).
     contract :
@@ -65,7 +73,7 @@ def write_cog_atomic(
     arrays: list[tuple[str, np.ndarray]] = []
     h = w = 0
     crs = None
-    transform = None
+    geo_transform = None
 
     for name in bands:
         arr = ds[name].values.squeeze()
@@ -73,66 +81,111 @@ def write_cog_atomic(
         if len(arrays) == 0:
             h, w = arr_2d.shape
             crs = ds[name].rio.crs
-            transform = ds[name].rio.transform()
+            geo_transform = ds[name].rio.transform()
         arrays.append((name, arr_2d))
 
-    # resolve per-band dtypes
     dtypes = [ds[name].values.squeeze().dtype for name in bands]
-
-    # Unique dtype — COG is single-dtype per file.  Use common if
-    # mixed; plan normally keeps landsat st (float32) + flag (uint8)
-    # in one file → cast uint8 up to float32.
     common_dtype = _common_dtype(dtypes)
 
-    profile = {
-        "driver": "GTiff",
-        "dtype": common_dtype,
-        "count": len(bands),
-        "width": w,
-        "height": h,
-        "crs": crs,
-        "transform": transform,
-        "tiled": True,
-        "blockxsize": contract.tiling.blocksize,
-        "blockysize": contract.tiling.blocksize,
-        "compress": contract.tiling.compress,
-        "predictor": contract.tiling.predictor,
-        "BIGTIFF": "IF_SAFER",
-    }
+    profile = _build_profile(
+        dst=dst,
+        common_dtype=common_dtype,
+        n_bands=len(bands),
+        h=h,
+        w=w,
+        crs=crs,
+        transform=geo_transform,
+        contract=contract,
+    )
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst_tmp = dst.parent / ".tmp" / f"_{dst.name}.cog"
+    # Clear stale temp files
+    tmp_dir = dst.parent / ".tmp"
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dst_tmp = tmp_dir / f"_{dst.name}.cog"
 
-    # --- pass 1: write to temp without overviews, weak compression ---
-    dst_tmp.parent.mkdir(parents=True, exist_ok=True)
-    pass1_profile = {**profile, "compress": "none"}
-    with rasterio.open(dst_tmp, "w", **pass1_profile) as tmp:
-        for i, (name, arr) in enumerate(arrays, 1):
-            out_arr = arr.astype(common_dtype, copy=False)
-            tmp.write(out_arr, i)
-            tmp.set_band_description(i, name)
+    try:
+        # --- pass 1: write with final compression ---
+        with rasterio.open(dst_tmp, "w", **profile) as tmp:
+            for i, (name, arr) in enumerate(arrays, 1):
+                out_arr = arr.astype(common_dtype, copy=False)
+                tmp.write(out_arr, i)
+                tmp.set_band_description(i, name)
+                # Set nodata for float bands
+                if "float" in str(out_arr.dtype):
+                    tmp.write_nodata(float("nan"), i)
 
-    # --- pass 2: add overviews ---
-    ov_levels = list(contract.tiling.overviews)
-    if ov_levels:
-        with rasterio.open(dst_tmp, "r+") as tmp:
-            tmp.build_overviews(ov_levels, Resampling.average)
+        # --- pass 2: build overviews in-place ---
+        ov_levels = list(contract.tiling.overviews)
+        if ov_levels:
+            with rasterio.open(dst_tmp, "r+") as tmp:
+                tmp.build_overviews(ov_levels, Resampling.average)
+                # Re-apply nodata (overview construction can clear it)
+                for i in range(1, len(bands) + 1):
+                    if "float" in common_dtype:
+                        tmp.write_nodata(float("nan"), i)
 
-    # --- pass 3: copy with final compression / COG layout ---
-    rio_opts: dict[str, object] = {
-        k: profile[k]
-        for k in (
-            "tiled",
-            "blockxsize",
-            "blockysize",
-            "compress",
-            "predictor",
-        )
-    }
-    rio_copy(dst_tmp, dst, copy_src_overviews=True, **rio_opts)
+        # Atomic replace
+        os.replace(str(dst_tmp), str(dst))
 
-    # clean up temp
-    dst_tmp.unlink(missing_ok=True)
+    except BaseException:
+        # Clean up temp files on any error
+        dst_tmp.unlink(missing_ok=True)
+        raise
+
+    return dst
+
+
+# ── COG write (flag band, uint8) ─────────────────────────────────────
+
+
+def write_flag_cog_atomic(
+    flag_da: xr.DataArray,
+    dst: Path,
+    contract: Contract,
+    overwrite: bool = False,
+) -> Path:
+    """Write a single-band uint8 flag COG atomically.
+
+    The flag band stores a bitmask (fill, cloudy, shadow, cirrus,
+    saturated).  It is written as a separate COG to avoid promoting
+    uint8 to float32 in the multi-band COG.
+    """
+    if dst.exists() and not overwrite:
+        raise FileExistsError(str(dst))
+
+    arr = flag_da.values.squeeze()
+    arr_2d: np.ndarray = arr if arr.ndim == 2 else arr[0]  # type: ignore[assignment]
+    h, w = arr_2d.shape
+    crs = flag_da.rio.crs
+    geo_transform = flag_da.rio.transform()
+
+    profile = _build_profile(
+        dst=dst,
+        common_dtype="uint8",
+        n_bands=1,
+        h=h,
+        w=w,
+        crs=crs,
+        transform=geo_transform,
+        contract=contract,
+    )
+    profile["compress"] = "lz4"  # fast for uint8 lookups
+    profile["predictor"] = 1  # no prediction for integer data
+
+    tmp_dir = dst.parent / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dst_tmp = tmp_dir / f"_{dst.name}"
+
+    try:
+        with rasterio.open(dst_tmp, "w", **profile) as tmp:
+            tmp.write(arr_2d, 1)
+            tmp.set_band_description(1, "flag")
+
+        os.replace(str(dst_tmp), str(dst))
+    except BaseException:
+        dst_tmp.unlink(missing_ok=True)
+        raise
 
     return dst
 
@@ -181,6 +234,33 @@ def write_stac_atomic(
 # ── helpers ──────────────────────────────────────────────────────────
 
 
+def _build_profile(
+    dst: Path,
+    common_dtype: str,
+    n_bands: int,
+    h: int,
+    w: int,
+    crs: Any,
+    transform: Any,
+    contract: Contract,
+) -> dict[str, Any]:
+    return {
+        "driver": "GTiff",
+        "dtype": common_dtype,
+        "count": n_bands,
+        "width": w,
+        "height": h,
+        "crs": crs,
+        "transform": transform,
+        "tiled": True,
+        "blockxsize": contract.tiling.blocksize,
+        "blockysize": contract.tiling.blocksize,
+        "compress": contract.tiling.compress,
+        "predictor": contract.tiling.predictor,
+        "BIGTIFF": "IF_SAFER",
+    }
+
+
 def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
     """Return a single dtype string that all bands can be cast to."""
     dt_set = set(str(d) for d in dtypes)
@@ -197,5 +277,6 @@ def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
 
 __all__ = [
     "write_cog_atomic",
+    "write_flag_cog_atomic",
     "write_stac_atomic",
 ]

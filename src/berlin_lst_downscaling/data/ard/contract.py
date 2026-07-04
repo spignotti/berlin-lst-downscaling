@@ -52,6 +52,7 @@ class Contract:
     output_bands: tuple[BandSpec, ...]
     tiling: TilingSpec
     schema_version: int
+    flag_mode: str = "separate"  # "separate" (own COG), "inline" (Phase A), or "none"
 
     # ── canonical flag-band bit layout (shared across sources) ──────
     FLAG_FILL: ClassVar[int] = 1 << 0
@@ -80,6 +81,7 @@ class Contract:
         parts.append(f"ov={'/'.join(str(o) for o in self.tiling.overviews)}")
         parts.append(f"cmp={self.tiling.compress}")
         parts.append(f"prd={self.tiling.predictor}")
+        parts.append(f"fm={self.flag_mode}")
         parts.append(f"v{self.schema_version}")
         raw = "::".join(parts).encode("utf-8")
         return blake3.blake3(raw).hexdigest()
@@ -109,9 +111,10 @@ def contract_for_source(source: str) -> Contract:
     return Contract(
         source=source,
         target_crs="EPSG:25833",
-        output_bands=_bands + (_FLAG_BAND_SPEC,),
+        output_bands=_bands,  # flag band is separate (own uint8 COG)
         tiling=TilingSpec(),
-        schema_version=1,
+        schema_version=2,
+        flag_mode="separate",
     )
 
 

@@ -34,6 +34,14 @@ def stac_path(root: str | Path, source: str, year: int, scene_id: str) -> Path:
     return scene_dir(root, source, year, scene_id) / f"{scene_id}.stac.json"
 
 
+def flag_path(root: str | Path, source: str, year: int, scene_id: str) -> Path:
+    """Return the output path for the scene's flag COG (uint8 bitmask).
+
+    Example: ``<root>/sentinel-2-l2a/2024/…/…flag.tif``
+    """
+    return scene_dir(root, source, year, scene_id) / f"{scene_id}.flag.tif"
+
+
 def tmp_dir(root: str | Path, source: str, year: int, scene_id: str) -> Path:
     """Return the temporary directory for atomic writes.
 
@@ -46,6 +54,7 @@ def tmp_dir(root: str | Path, source: str, year: int, scene_id: str) -> Path:
 __all__ = [
     "scene_dir",
     "cog_path",
+    "flag_path",
     "stac_path",
     "tmp_dir",
 ]

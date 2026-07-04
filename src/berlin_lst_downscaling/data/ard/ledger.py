@@ -2,10 +2,15 @@
 
 The ledger tracks the status of every scene processed by the ARD
 pipeline.  Idempotency, resume, and QA reporting all depend on it.
+
+Every ``upsert`` immediately persists to disk via atomic temp-file
+write (``os.replace``).  This ensures crash consistency — there is no
+batch write at the end of the pipeline run.
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -138,29 +143,63 @@ class Ledger:
     # ── mutations ───────────────────────────────────────────────
 
     def upsert(self, row: LedgerRow) -> None:
-        """Insert or update a row identified by ``scene_id + source``."""
+        """Insert or update a row identified by ``scene_id + source``.
+
+        Persists immediately via atomic temp-file write.
+        """
+        # Auto-increment attempts from existing row (H4 fix)
+        existing = self.get(row.scene_id, row.source)
+        if existing is not None:
+            row.attempts = min(existing.attempts + 1, 999)
+        else:
+            row.attempts = 1  # first attempt
+
         new_row = pa.Table.from_pylist(
             [_row_to_dict(row)], schema=_SCHEMA
         )
 
         if self._table.num_rows == 0:
             self._table = new_row
-            return
+        else:
+            existing_mask = pc_and(
+                pc_equal(self._table.column("scene_id"), row.scene_id),
+                pc_equal(self._table.column("source"), row.source),
+            )
+            self._table = pa.concat_tables(
+                [self._table.filter(pc_invert(existing_mask)), new_row]
+            )
 
-        existing_mask = pc_and(
-            pc_equal(self._table.column("scene_id"), row.scene_id),
-            pc_equal(self._table.column("source"), row.source),
-        )
-        self._table = pa.concat_tables(
-            [self._table.filter(pc_invert(existing_mask)), new_row]
-        )
+        # Per-transition atomic write (H3 fix)
+        self._write_atomic()
 
     # ── persistence ─────────────────────────────────────────────
 
-    def write(self) -> Path:
-        """Persist the ledger to its Parquet path."""
-        pq.write_table(self._table, str(self._path))
+    def _write_atomic(self) -> Path:
+        """Persist ledger to a temp file, then ``os.replace`` to final path.
+
+        This ensures the on-disk file is never in a partially-written
+        state — either the full write succeeds, or the old file remains.
+        """
+        tmp_dir = self._path.parent / ".tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        dst_tmp = tmp_dir / f"_{self._path.name}.ledger"
+
+        try:
+            pq.write_table(self._table, str(dst_tmp))
+            os.replace(str(dst_tmp), str(self._path))
+        except BaseException:
+            dst_tmp.unlink(missing_ok=True)
+            raise
+
         return self._path
+
+    def write(self) -> Path:
+        """Persist the ledger to its Parquet path (batch convenience).
+
+        With per-transition atomic writes enabled, this is a no-op
+        unless called after manual ``self._table`` modification.
+        """
+        return self._write_atomic()
 
     def status_counts(self, source: str | None = None) -> dict[str, int]:
         """Return ``{status: count}``, optionally filtered by source."""

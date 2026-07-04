@@ -51,39 +51,19 @@ def solar_position(
     return _noaa_solar_position(dt, lat, lon)
 
 
-def solar_position_from_stac(
+def extract_solar_from_stac(
     properties: dict,
-    dt: datetime | None = None,
-    centroid: tuple[float, float] | None = None,
-) -> tuple[float, float]:
-    """Try STAC view:sun_azimuth / view:sun_elevation, fall back to computation.
+) -> tuple[float, float] | None:
+    """Extract ``(azimuth_deg, elevation_deg)`` from STAC properties.
 
-    Parameters
-    ----------
-    properties :
-        STAC item ``properties`` dict.
-    dt :
-        Acquisition datetime (UTC) for fallback.  Required when STAC
-        properties are missing.
-    centroid :
-        ``(lat, lon)`` for fallback.  Defaults to Berlin centroid.
-
-    Returns
-    -------
-    tuple[float, float]
-        ``(azimuth_deg, elevation_deg)``.
+    Returns ``None`` if either property is missing (caller should fall
+    back to NOAA computation).
     """
     az = properties.get("view:sun_azimuth")
     el = properties.get("view:sun_elevation")
-
     if az is not None and el is not None:
         return (float(az), float(el))
-
-    if dt is None:
-        raise ValueError("STAC view:sun_* not available — provide a datetime for computed fallback")
-
-    lat, lon = centroid if centroid else _AOI_CENTROID
-    return solar_position(dt, lat, lon)
+    return None
 
 
 # ── NOAA solar position algorithm (simplified) ───────────────────────
@@ -151,5 +131,5 @@ def _noaa_solar_position(dt: datetime, lat_deg: float, lon_deg: float) -> tuple[
 
 __all__ = [
     "solar_position",
-    "solar_position_from_stac",
+    "extract_solar_from_stac",
 ]

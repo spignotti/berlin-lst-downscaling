@@ -16,7 +16,6 @@ sources: ["landsat-c2-l2", "sentinel-2-l2a"]
 # Cloud masking
 cloud_dilation_px: 2                # morphological dilation radius for cloud buffer
 s2cloudless_threshold: 40           # s2cloudless probability threshold
-solar_position_source: "stac"       # "stac" | "computed" (fallback)
 
 # Cloud-shadow projection (S2 directional offset)
 cloud_base_height_m: 1000           # assumed cloud base height for shadow offset
