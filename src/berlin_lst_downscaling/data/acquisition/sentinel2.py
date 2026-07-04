@@ -20,6 +20,7 @@ def load_s2_scene(
     bbox: tuple[float, float, float, float] | None = None,
     bands: Sequence[str] | None = None,
     max_items: int | None = 3,
+    resolution: int | None = None,
     **odc_kw: Any,
 ) -> tuple[xr.Dataset, list[str]]:
     """Search Planetary Computer for Sentinel-2 L2A scenes and load them.
@@ -45,14 +46,18 @@ def load_s2_scene(
     bands :
         Band asset keys to load. Defaults to ``_S2_BANDS``
         (native S2 names: ``B02``, ``B03``, ``B04``, ``B08``, ``SCL``).
+    resolution :
+        Target resolution in meters.  Defaults to
+        ``settings.target_resolution``.  The ARD pipeline typically
+        passes 10 m.
     **odc_kw :
         Additional keyword arguments forwarded to ``odc.stac.load``.
 
     Returns
     -------
     tuple[xr.Dataset, list[str]]
-        Loaded scene on ``settings.target_crs`` at
-        ``settings.target_resolution``, and the STAC item IDs.
+        Loaded scene on ``settings.target_crs`` at the chosen
+        resolution, and the STAC item IDs.
 
     Raises
     ------
@@ -62,6 +67,7 @@ def load_s2_scene(
     date = date or settings.default_date
     bbox = bbox or settings.berlin_bbox
     bands = list(bands) if bands is not None else _S2_BANDS
+    res = resolution if resolution is not None else settings.target_resolution
 
     catalog = get_catalog()
     search = catalog.search(
@@ -74,9 +80,7 @@ def load_s2_scene(
 
     items = list(search.items())
     if not items:
-        raise RuntimeError(
-            f"No Sentinel-2 scene found for date={date} bbox={bbox}"
-        )
+        raise RuntimeError(f"No Sentinel-2 scene found for date={date} bbox={bbox}")
 
     item_ids = [it.id for it in items]
 
@@ -84,7 +88,7 @@ def load_s2_scene(
         items=items,
         bands=bands,
         crs=settings.target_crs,
-        resolution=settings.target_resolution,
+        resolution=res,
         bbox=bbox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
