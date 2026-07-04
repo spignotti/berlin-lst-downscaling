@@ -1,4 +1,4 @@
-"""Load an ECOSTRESS L2T granule from local/AppEEARS-export COGs.
+"""Load an ECOSTRESS L2T granule from local or GCS COGs.
 
 ECOSTRESS L2T (ECO_L2T_LSTE.002) is distributed as per-layer COG files,
 not as a single HDF5. Each granule provides:
@@ -7,6 +7,16 @@ not as a single HDF5. Each granule provides:
     {granule_id}_cloud.tif      uint8    0=clear / 1=cloud / 255=fill
     {granule_id}_water.tif      uint8    0=dry  / 1=water / 255=fill
     {granule_id}_QC.tif         uint8    mandatory QA bitmask (see below)
+
+``raw_dir`` accepts any URI scheme supported by :mod:`rasterio`:
+
+==============  ===========================================================
+Scheme          Notes
+==============  ===========================================================
+Local POSIX     ``/path/to/stage/`` or ``data/stage/``
+GCS             ``gs://bucket/path`` — rasterio opens via /vsigs/
+Mounted FUSE    ``~/.mnt/bucket/path`` — same as local POSIX
+==============  ===========================================================
 
 Native grid: MGRS UTM tiles, 1568 × 1568 px at 70 m.  The pipeline
 reprojects to EPSG:25833 (ETRS89 / UTM zone 33N, Berlin) before masking.
@@ -25,7 +35,6 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -70,7 +79,7 @@ def load_ecostress_scene(
     bbox: tuple[float, float, float, float] | None = None,
     resolution: int = 70,
 ) -> tuple[xr.Dataset, list[str]]:
-    """Load an ECOSTRESS L2T granule from local COGs.
+    """Load an ECOSTRESS L2T granule from local or GCS COGs.
 
     Parameters
     ----------
@@ -78,7 +87,9 @@ def load_ecostress_scene(
         Granule identifier, e.g.
         ``ECOv002_L2T_LSTE_00372_010_33UVU_20180730T180010_0712_01``.
     raw_dir :
-        Root directory containing per-granule sub-directories.
+        Root URI containing per-granule sub-directories.
+        Accepted schemes: local POSIX path, ``gs://bucket/path`` (opened
+        via rasterio /vsigs/), or ``~/.mnt/bucket/path`` (FUSE mount).
         Expected layout: ``{raw_dir}/{granule_id}/{granule_id}_{layer}.tif``.
     bbox :
         WGS84 bounding box ``(minx, miny, maxx, maxy)``. When provided,
@@ -102,24 +113,19 @@ def load_ecostress_scene(
     RuntimeError
         If the granule ID cannot be parsed for datetime metadata.
     """
-    granule_dir = Path(raw_dir) / granule_id
-
     layers = ["LST", "cloud", "water", "QC"]
-    files: dict[str, Path] = {}
+    tif_paths: dict[str, str] = {}
     for layer in layers:
-        tif_path = granule_dir / f"{granule_id}_{layer}.tif"
-        if not tif_path.exists():
-            raise FileNotFoundError(
-                f"Expected ECOSTRESS L2T layer not found: {tif_path}"
-            )
-        files[layer] = tif_path
+        tif_uri = _resolve_granule_uri(raw_dir, granule_id, layer)
+        _assert_granule_layer_exists(tif_uri)
+        tif_paths[layer] = tif_uri
 
     # Load all four layers as xr.DataArrays
     data_vars: dict[str, xr.DataArray] = {}
     src_crs: str | None = None
 
-    for layer, path in files.items():
-        with rasterio.open(path) as src:
+    for layer, uri in tif_paths.items():
+        with rasterio.open(uri) as src:
             band = src.read(1)
             # Track CRS, transform and dimensions from the first opened file
             if src_crs is None:
@@ -190,6 +196,45 @@ def load_ecostress_scene(
     return ds_out, [granule_id]
 
 
+# ── internal helpers ──────────────────────────────────────────────────
+
+
+def _resolve_granule_uri(raw_dir: str, granule_id: str, layer: str) -> str:
+    """Return the URI string for a granule layer TIF.
+
+    Handles local POSIX paths, ``gs://`` (converted to /vsigs/ for rasterio),
+    and FUSE mount paths (``~/.mnt/...``).
+    """
+    import os
+
+    granule_leaf = f"{granule_id}_{layer}.tif"
+    raw_str = str(raw_dir).rstrip("/")
+
+    if raw_str.startswith("gs://"):
+        # Convert gs://bucket/key → /vsigs/bucket/key for rasterio
+        path = raw_str.removeprefix("gs://")
+        bucket, key = path.split("/", 1)
+        return f"/vsigs/{bucket}/{key}/{granule_id}/{granule_leaf}"
+    elif raw_str.startswith("~/"):
+        # Expand FUSE mount home
+        return f"{os.path.expanduser(raw_str)}/{granule_id}/{granule_leaf}"
+    else:
+        # Local POSIX
+        return f"{raw_str}/{granule_id}/{granule_leaf}"
+
+
+def _assert_granule_layer_exists(uri: str) -> None:
+    """Raise FileNotFoundError if the URI cannot be opened by rasterio."""
+    try:
+        with rasterio.open(uri):
+            pass
+    except Exception as exc:  # rasterio raises RasterioIOError on 404 / ENOENT on missing
+        raise FileNotFoundError(
+            f"ECOSTRESS L2T layer not found or not readable: {uri}"
+        ) from exc
+
+
 __all__ = [
     "load_ecostress_scene",
 ]
+

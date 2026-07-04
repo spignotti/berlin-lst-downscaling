@@ -32,7 +32,7 @@ data/logs/
 data/tmp/
 .tmp/
 
-# ECOSTRESS fixture data (seeded via download_ecostress_fixture.py)
+# ECOSTRESS raw inputs (AppEEARS export for full-mode)
 data/ecostress/
 
 # Ephemeral run logs

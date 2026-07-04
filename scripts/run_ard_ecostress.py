@@ -7,8 +7,11 @@
 
 Usage
 -----
-    # Smoke (requires fixture — run scripts/download_ecostress_fixture.py first)
+    # Smoke (auto-stages raw L2T to data/tmp/)
     uv run python scripts/run_ard_ecostress.py --config-name smoke
+
+    # Cloud (auto-stages raw L2T to gs://bucket/_staging/)
+    uv run python scripts/run_ard_ecostress.py --config-name cloud
 
     # Full (requires manifest — run scripts/build_manifest_ecostress.py first)
     uv run python scripts/run_ard_ecostress.py --config-name full
@@ -47,9 +50,10 @@ def main(cfg: DictConfig) -> int:
     print(f"  enabled      : {cfg.ecostress.enabled}", flush=True)
     print("=" * 60, flush=True)
 
+    # ── run pipeline ──────────────────────────────────────────────────
     result = ard_run(cfg)
 
-    # Post-run visualization (smoke mode only)
+    # ── post-run visualization (smoke mode only) ─────────────────────
     if cfg.get("viz", False) and cfg.mode == "smoke":
         from pathlib import Path  # noqa: F401
 

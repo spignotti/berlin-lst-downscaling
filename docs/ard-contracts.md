@@ -143,9 +143,12 @@ Flag band is a separate ``.flag.tif`` COG (bitmask; see below).
 
 - **Spatial resolution:** ~70 m native, reprojected to EPSG:25833 at 70 m.
 - **Native grid:** MGRS UTM tiles, 1568×1568 px per granule.
-- **Acquisition:** AppEEARS async export → GCS bucket (``gs://berlin-lst-data/``); local fixture via ``scripts/download_ecostress_fixture.py``.
+- **Acquisition:** Raw L2T data is **staged** (not permanently stored): NASA Earthdata S3 → local tmp via ``earthaccess`` → upload to stage URI (``local`` or ``gs://``) → pipeline reads → stage deleted after processing.
 - **Granule discovery:** CMR query via ``earthaccess`` (``scripts/build_manifest_ecostress.py``).
-- **Fixture smoke test:** ``data/ecostress/fixtures/{granule_id}/`` with 4 layer COGs.
+- **Staging model:** ``scripts/download_ecostress_fixture.py`` stages raw L2T COGs to a per-run URI (``gs://berlin-lst-data/_staging/ecostress/<run_id>`` or ``data/tmp/ecostress_stage/<run_id>``). The pipeline's ``run_ard_ecostress.py`` cleans up the stage in its ``finally`` block (``persist_stage=false``). Set ``persist_stage=true`` to keep the stage for debugging.
+- **GCS staging ops note:** The ``gs://berlin-lst-data/_staging/`` prefix should have a bucket-level lifecycle policy that auto-deletes objects after 7 days as a safety net.
+- **Local smoke test:** ``nox -s smoke-ecostress`` — stages to ``data/tmp/ecostress_stage/<run_id>/``.
+- **Cloud smoke test:** ``nox -s smoke-ecostress-cloud`` — stages to ``gs://berlin-lst-data/_staging/ecostress/<run_id>/``.
 
 ## Schema Hash
 

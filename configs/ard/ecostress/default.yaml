@@ -10,4 +10,4 @@ target_resolution_low: 70          # ECOSTRESS L2T native 70 m
 ecostress:
   enabled: true
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
-  fixture_path: "data/ecostress/fixtures"
+  persist_stage: false             # clean up stage dir after processing

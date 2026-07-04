@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+# Cloud mode: raw L2T staged to GCS, final COGs written to GCS.
+# The pipeline cleans up the GCS stage after processing.
+mode: full
+output_root: "gs://berlin-lst-data/ard/ecostress"
+
+# Raw L2T stage: set by nox session (--stage-dir) per run.
+# The pipeline sets ecostress.raw_dir to the full stage path and cleans up.
+ecostress:
+  stage_dir: "gs://berlin-lst-data/_staging/ecostress"  # base; nox appends run_id
+  persist_stage: false  # pipeline cleans up stage after processing

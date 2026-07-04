@@ -22,8 +22,8 @@ cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
 ecostress:
   enabled: false
   appeeears_task_id: null
-  raw_dir: "data/ecostress/raw"    # full-mode raw L2T COGs from AppEEARS export
-  fixture_path: "data/ecostress/fixtures"  # smoke-mode fixture directory
+  raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
+  persist_stage: false            # clean up stage dir after processing (set true to keep for debugging)
 
 # Output
 output_root: "data/ard"            # source-specific subdirectory set per source config
