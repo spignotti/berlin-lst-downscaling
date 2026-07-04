@@ -10,16 +10,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from berlin_lst_downscaling.data.selection import CoupledPair, ECOSTRESSMatch
+import pytz
+
 from berlin_lst_downscaling.data.selection.ecostress import (
     search_ecostress,
 )
 
 
 def build_ecostress_subset(
-    pairs: list[CoupledPair],
+    pairs: list[dict],
     cfg,
-) -> dict[str, list[ECOSTRESSMatch]]:
+) -> dict[str, list[dict]]:
     """Find ECOSTRESS granules for each coupled pair.
 
     For each anchor, searches CMR for ECOSTRESS granules on the anchor's
@@ -29,29 +30,27 @@ def build_ecostress_subset(
     Parameters
     ----------
     pairs :
-        List of successfully coupled pairs (with S2).
+        List of successfully coupled pairs (with S2) as dicts.
     cfg :
         Hydra config with ``ecostress.*`` and ``bbox``.
 
     Returns
     -------
-    dict[str, list[ECOSTRESSMatch]]
-        Mapping ``anchor.scene_id`` → list of matched ECOSTRESS granules.
+    dict[str, list[dict]]
+        Mapping ``anchor.scene_id`` → list of matched ECOSTRESS granule dicts.
         Empty list if no granules pass the filters.
     """
-    import pytz
-
     tz = pytz.timezone(cfg.ecostress.local_tz)
     window_hours: int = cfg.ecostress.window_hours
     clear_frac_min: float = cfg.ecostress.clear_frac_min
 
-    result: dict[str, list[ECOSTRESSMatch]] = {}
+    result: dict[str, list[dict]] = {}
 
     for pair in pairs:
-        anchor = pair.anchor
+        anchor = pair["anchor"]
 
         # ── Convert anchor UTC → Berlin local → ±window_hours ─────────────────
-        anchor_utc = anchor.datetime
+        anchor_utc = anchor["datetime"]
         anchor_local = anchor_utc.astimezone(tz)
 
         window_start_local = anchor_local - timedelta(hours=window_hours)
@@ -65,45 +64,67 @@ def build_ecostress_subset(
         end_str = window_end_utc.strftime("%Y-%m-%d")
 
         # ── Search CMR for granules in the narrow time window ───────────────
-        granules = search_ecostress(
-            start=start_str,
-            end=end_str,
-            bbox=tuple(cfg.bbox),
-            version=cfg.ecostress.version,
-        )
+        try:
+            granules = search_ecostress(
+                start=start_str,
+                end=end_str,
+                bbox=tuple(cfg.bbox),
+                version=cfg.ecostress.version,
+            )
+        except RuntimeError:
+            result[anchor["scene_id"]] = []
+            continue
+
+        # ── Convert ECOSTRESSMatch objects to dicts ────────────────────────────
+        granules = [_eco_match_to_dict(g) for g in granules]
 
         # ── Filter and enrich with dt_hours + clear_frac ─────────────────────
-        matches: list[ECOSTRESSMatch] = []
+        matches: list[dict] = []
         for g in granules:
             # dt_hours relative to anchor in local Berlin time
-            g_local = g.datetime.astimezone(tz)
+            g_local = g["datetime"].astimezone(tz)
             dt_hours = abs((g_local - anchor_local).total_seconds()) / 3600.0
-            g.dt_hours = dt_hours
 
             # footprint_overlap already ≥ 0.10 from search_ecostress
-            if g.overlap_frac < cfg.ecostress.overlap_min:
+            if g["overlap_frac"] < cfg.ecostress.overlap_min:
                 continue
 
             # clear_frac: if the granule has a local raw_dir with cloud.tif,
             # compute it; otherwise leave as None (scan mode)
-            if clear_frac_min > 0 and hasattr(cfg, "ecostress") and cfg.ecostress.get("raw_dir"):
+            if clear_frac_min > 0 and cfg.ecostress.get("raw_dir"):
                 try:
-                    g.clear_frac = _compute_ecostress_clear_frac(
-                        g.granule_id,
+                    g["clear_frac"] = _compute_ecostress_clear_frac(
+                        g["granule_id"],
                         cfg.ecostress.raw_dir,
                         tuple(cfg.bbox),
                     )
-                    if g.clear_frac is not None and g.clear_frac < clear_frac_min:
+                    if g["clear_frac"] is not None and g["clear_frac"] < clear_frac_min:
                         continue
                 except Exception as exc:
                     import warnings
-                    warnings.warn(f"clear_frac failed for {g.granule_id}: {exc}", stacklevel=2)
+                    warnings.warn(f"clear_frac failed for {g['granule_id']}: {exc}", stacklevel=2)
 
+            g["dt_hours"] = dt_hours
             matches.append(g)
 
-        result[anchor.scene_id] = matches
+        result[anchor["scene_id"]] = matches
 
     return result
+
+
+def _eco_match_to_dict(g) -> dict:
+    """Convert an ECOSTRESSMatch dataclass to a plain dict."""
+    return {
+        "granule_id": g.granule_id,
+        "source": g.source,
+        "year": g.year,
+        "datetime": g.datetime,
+        "date": g.date,
+        "dt_hours": g.dt_hours,
+        "mgrs_tile": g.mgrs_tile,
+        "overlap_frac": g.overlap_frac,
+        "clear_frac": g.clear_frac,
+    }
 
 
 def _compute_ecostress_clear_frac(
@@ -120,7 +141,9 @@ def _compute_ecostress_clear_frac(
 
     import numpy as np
     import rasterio
+    from rasterio.mask import mask as rio_mask
     from rasterio.warp import transform_bounds
+    from shapely.geometry import box
 
     layer_path = Path(str(raw_dir).rstrip("/")) / granule_id / f"{granule_id}_cloud.tif"
 
@@ -132,20 +155,11 @@ def _compute_ecostress_clear_frac(
         target_crs = "EPSG:25833"
         minx, miny, maxx, maxy = transform_bounds("EPSG:4326", target_crs, *bbox)
 
-        # Read AOI mask from staged granule area (rough proxy — just clip to bbox)
-        # For accurate clear_frac we'd need the Berlin AOI mask reprojected.
-        # Here we approximate by clipping the cloud layer to the bbox + counting.
-        # This is a fast approximation used only for granule filtering.
-
-        # Load the cloud layer clipped to the bbox in source CRS
-        from rasterio.mask import mask as rio_mask
-        from shapely.geometry import box
-
         geom = [box(minx, miny, maxx, maxy).__geo_interface__]
         with rasterio.open(layer_path) as src:
             clipped_cloud, _ = rio_mask(src, geom, crop=True)
-        cloud_clipped = clipped_cloud[0]
 
+        cloud_clipped = clipped_cloud[0]
         total = cloud_clipped.size
         if total == 0:
             return None

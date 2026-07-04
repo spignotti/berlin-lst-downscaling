@@ -12,8 +12,6 @@ from datetime import datetime
 
 import earthaccess
 
-from berlin_lst_downscaling.data.selection import ECOSTRESSMatch
-
 # Compiled granule-ID regex (same pattern as in acquisition/ecostress.py)
 _RE_GRANULE = re.compile(
     r"^ECO"
@@ -37,7 +35,7 @@ def search_ecostress(
     end: str,
     bbox: tuple[float, float, float, float] | None = None,
     version: str = "002",
-) -> list[ECOSTRESSMatch]:
+) -> list[dict]:
     """Query CMR for ECO_L2T_LSTE.002 granules covering bbox in [start, end].
 
     Parameters
@@ -74,7 +72,7 @@ def search_ecostress(
     except Exception as exc:
         raise RuntimeError(f"CMR query failed: {exc}") from exc
 
-    matches: list[ECOSTRESSMatch] = []
+    matches: list[dict] = []
     for granule in results:
         granule_id: str = granule["meta"]["native-id"]
 
@@ -87,21 +85,19 @@ def search_ecostress(
         if overlap < 0.10:
             continue
 
-        matches.append(
-            ECOSTRESSMatch(
-                granule_id=granule_id,
-                source="ecostress",
-                year=dt.year,
-                datetime=dt,
-                date=dt.strftime("%Y-%m-%d"),
-                dt_hours=0.0,  # caller must fill relative to anchor
-                mgrs_tile=mgrs,
-                overlap_frac=overlap,
-                clear_frac=None,  # computed later in ecostress_subset
-            )
-        )
+        matches.append({
+            "granule_id": granule_id,
+            "source": "ecostress",
+            "year": dt.year,
+            "datetime": dt,
+            "date": dt.strftime("%Y-%m-%d"),
+            "dt_hours": 0.0,  # caller must fill relative to anchor
+            "mgrs_tile": mgrs,
+            "overlap_frac": overlap,
+            "clear_frac": None,  # computed later in ecostress_subset
+        })
 
-    matches.sort(key=lambda m: m.datetime)
+    matches.sort(key=lambda m: m["datetime"])
     return matches
 
 

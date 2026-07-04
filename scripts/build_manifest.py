@@ -51,7 +51,6 @@ import sys
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.selection import (
-    Anchor,
     build_anchors,
     couple_all,
     match_s2_candidates_with_clear_frac,
@@ -65,11 +64,13 @@ from berlin_lst_downscaling.data.selection.scan import run_scan
 
 def _run_couple(cfg: DictConfig) -> None:
     """Run full pixel-coupled manifest generation."""
+    from omegaconf import OmegaConf
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     print(json.dumps({
         "mode": "couple",
-        "years": cfg.years,
-        "months": cfg.months,
-        "bbox": cfg.bbox,
+        "years": cfg_dict.get("years"),
+        "months": cfg_dict.get("months"),
+        "bbox": cfg_dict.get("bbox"),
     }), file=sys.stderr)
 
     # ── 1. Build Landsat anchors ─────────────────────────────────────────────
@@ -91,10 +92,10 @@ def _run_couple(cfg: DictConfig) -> None:
 
         # Get L8 items for this anchor (reuse across candidates)
         l8_items = _resolve_landsat_items(anchor, cfg)
-        l8_items_cache[anchor.scene_id] = l8_items
+        l8_items_cache[anchor["scene_id"]] = l8_items
 
         candidates = match_s2_candidates_with_clear_frac(anchor, l8_items, cfg)
-        s2_by_anchor[anchor.scene_id] = candidates
+        s2_by_anchor[anchor["scene_id"]] = candidates
 
     print(f"  [2/5] Done — processed {len(anchors)} anchors", file=sys.stderr)
 
@@ -128,15 +129,15 @@ def _run_couple(cfg: DictConfig) -> None:
           f"Dropped: {result.n_dropped} | ECOSTRESS: {result.n_ecostress}")
 
 
-def _resolve_landsat_items(anchor: Anchor, cfg) -> list:
+def _resolve_landsat_items(anchor: dict, cfg) -> list:
     """Resolve STAC items for one Landsat anchor by date (± 1 day tolerance)."""
     from datetime import timedelta
 
     from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 
     cat = get_catalog()
-    day_start = anchor.datetime - timedelta(days=1)
-    day_end = anchor.datetime + timedelta(days=1)
+    day_start = anchor["datetime"] - timedelta(days=1)
+    day_end = anchor["datetime"] + timedelta(days=1)
 
     search = cat.search(
         collections=[cfg.landsat.collection],
@@ -152,10 +153,12 @@ def _resolve_landsat_items(anchor: Anchor, cfg) -> list:
 
 def _run_scan(cfg: DictConfig) -> None:
     """Run metadata-only volume scan."""
+    from omegaconf import OmegaConf
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     print(json.dumps({
         "mode": "scan",
-        "years": cfg.years,
-        "months": cfg.months,
+        "years": cfg_dict.get("years"),
+        "months": cfg_dict.get("months"),
     }), file=sys.stderr)
 
     print("  [scan] Running metadata-only volume scan ...", file=sys.stderr)

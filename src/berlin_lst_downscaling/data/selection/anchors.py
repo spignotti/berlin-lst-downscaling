@@ -5,10 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
-from berlin_lst_downscaling.data.selection import Anchor
 
 
-def build_anchors(cfg) -> list[Anchor]:
+def build_anchors(cfg) -> list:
     """Return Landsat C2 L2 scenes as coupling anchors.
 
     Queries PC STAC for all scenes intersecting the configured bbox within
@@ -30,7 +29,7 @@ def build_anchors(cfg) -> list[Anchor]:
         query={"eo:cloud_cover": {"lt": cfg.landsat.cloud_cover_max}},
     )
 
-    anchors: list[Anchor] = []
+    anchors: list = []
     for item in search.items():
         dt_utc = _parse_item_datetime(item)
         if dt_utc is None:
@@ -52,22 +51,20 @@ def build_anchors(cfg) -> list[Anchor]:
         # For mode=full the pipeline re-resolves via date; we store item.id only.
         item_href = item.get_self_href() if hasattr(item, "get_self_href") else None
 
-        anchors.append(
-            Anchor(
-                scene_id=item.id,
-                source="landsat-c2-l2",
-                year=dt_utc.year,
-                datetime=dt_utc,
-                date=dt_utc.strftime("%Y-%m-%d"),
-                cloud_cover=cloud_cover,
-                sun_azimuth=sun_az,
-                sun_elevation=sun_el,
-                item_href=item_href,
-            )
-        )
+        anchors.append({
+            "scene_id": item.id,
+            "source": "landsat-c2-l2",
+            "year": dt_utc.year,
+            "datetime": dt_utc,
+            "date": dt_utc.strftime("%Y-%m-%d"),
+            "cloud_cover": cloud_cover,
+            "sun_azimuth": sun_az,
+            "sun_elevation": sun_el,
+            "item_href": item_href,
+        })
 
     # Sort chronologically
-    anchors.sort(key=lambda a: a.datetime)
+    anchors.sort(key=lambda a: a["datetime"])
     return anchors
 
 

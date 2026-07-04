@@ -16,21 +16,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
-from berlin_lst_downscaling.data.selection import Anchor, S2Candidate
-from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac
 
 
-def match_s2_candidates(anchor: Anchor, cfg) -> list[S2Candidate]:
+def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     """Return S2 L2A candidates within ±window_days of anchor's acquisition.
 
     Lightweight metadata-only search — no pixel loads.
-    Used by ``run_scan`` for volume estimation.
+    Returns list of candidate dicts with keys: scene_id, source, year,
+    datetime, date, dt_days, cloud_cover, clear_frac, item_href.
     """
     cat = get_catalog()
     window_days: int = cfg.sentinel2.window_days
 
-    start_dt = anchor.datetime - timedelta(days=window_days)
-    end_dt = anchor.datetime + timedelta(days=window_days)
+    anchor_dt = anchor["datetime"]
+    start_dt = anchor_dt - timedelta(days=window_days)
+    end_dt = anchor_dt + timedelta(days=window_days)
 
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str = end_dt.strftime("%Y-%m-%d")
@@ -42,41 +42,40 @@ def match_s2_candidates(anchor: Anchor, cfg) -> list[S2Candidate]:
         query={"eo:cloud_cover": {"lt": cfg.sentinel2.cloud_cover_max}},
     )
 
-    candidates: list[S2Candidate] = []
+    candidates: list[dict] = []
     for item in search.items():
         dt_utc = _parse_item_datetime(item)
         if dt_utc is None:
             continue
 
-        dt_days = abs((dt_utc - anchor.datetime).total_seconds()) / 86400.0
+        dt_days = abs((dt_utc - anchor_dt).total_seconds()) / 86400.0
         if dt_days > window_days + 1e-6:
             continue
 
         cloud_cover = item.properties.get("eo:cloud_cover")
         item_href = item.get_self_href() if hasattr(item, "get_self_href") else None
 
-        candidates.append(
-            S2Candidate(
-                scene_id=item.id,
-                source="sentinel-2-l2a",
-                year=dt_utc.year,
-                datetime=dt_utc,
-                date=dt_utc.strftime("%Y-%m-%d"),
-                dt_days=dt_days,
-                cloud_cover=cloud_cover,
-                item_href=item_href,
-            )
-        )
+        candidates.append({
+            "scene_id": item.id,
+            "source": "sentinel-2-l2a",
+            "year": dt_utc.year,
+            "datetime": dt_utc,
+            "date": dt_utc.strftime("%Y-%m-%d"),
+            "dt_days": dt_days,
+            "cloud_cover": cloud_cover,
+            "clear_frac": None,  # filled by _with_clear_frac variant
+            "item_href": item_href,
+        })
 
-    candidates.sort(key=lambda c: c.dt_days)
+    candidates.sort(key=lambda c: c["dt_days"])
     return candidates
 
 
 def match_s2_candidates_with_clear_frac(
-    anchor: Anchor,
+    anchor: dict,
     l8_items: list,
     cfg,
-) -> list[S2Candidate]:
+) -> list[dict]:
     """Return S2 candidates with pixel-wise clear_frac pre-computed.
 
     Loads Landsat + S2 via odc.stac and computes clear_frac per candidate.
@@ -87,23 +86,22 @@ def match_s2_candidates_with_clear_frac(
         return candidates
 
     # Resolve S2 items for the candidates (search by date ± 1 day tolerance)
-    s2_items_map = _resolve_s2_items([c.datetime for c in candidates], cfg)
+    s2_items_map = _resolve_s2_items([c["datetime"] for c in candidates], cfg)
 
     for c in candidates:
-        s2_items = s2_items_map.get(c.datetime)
+        s2_items = s2_items_map.get(c["datetime"])
         if s2_items is None:
-            c.clear_frac = None
+            c["clear_frac"] = None
             continue
         try:
-            c.clear_frac = compute_clear_frac(
+            c["clear_frac"] = _compute_clear_frac_for_pair(
                 l8_items=l8_items,
                 s2_items=s2_items,
                 anchor_bbox=tuple(cfg.bbox),
                 aoi_mask_path=f"{cfg.aoi.mask_base}/aoi_10m.tif",
-                resolution=10,
             )
         except Exception:
-            c.clear_frac = None
+            c["clear_frac"] = None
 
     return candidates
 
@@ -117,7 +115,6 @@ def _resolve_s2_items(
     Returns dict mapping UTC datetime → list of pystac Item.
     Since odc.stac.load uses groupby="solar_day", we search per date.
     """
-
     cat = get_catalog()
     result: dict = {}
 
@@ -136,6 +133,23 @@ def _resolve_s2_items(
             result[dt] = items
 
     return result
+
+
+def _compute_clear_frac_for_pair(
+    l8_items: list,
+    s2_items: list,
+    anchor_bbox: tuple,
+    aoi_mask_path: str,
+) -> float:
+    """Compute clear_frac for a (Landsat, S2) pair on the 10-m canonical grid."""
+    from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac
+    return compute_clear_frac(
+        l8_items=l8_items,
+        s2_items=s2_items,
+        anchor_bbox=anchor_bbox,
+        aoi_mask_path=aoi_mask_path,
+        resolution=10,
+    )
 
 
 def _parse_item_datetime(item) -> datetime | None:

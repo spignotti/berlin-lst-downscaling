@@ -12,23 +12,19 @@ Status values (per schema spec):
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from berlin_lst_downscaling.data.selection import (
-    CoupledPair,
-    DroppedPair,
-    ECOSTRESSMatch,
-    ManifestResult,
-)
+from berlin_lst_downscaling.data.selection import ManifestResult
 
 
 def write_manifest(
-    coupled: list[CoupledPair],
-    dropped: list[DroppedPair],
-    ecostress_by_anchor: dict[str, list[ECOSTRESSMatch]],
+    coupled: list[dict],
+    dropped: list[dict],
+    ecostress_by_anchor: dict[str, list[dict]],
     output_path: str,
 ) -> ManifestResult:
     """Write the ARD manifest Parquet and return a summary.
@@ -40,47 +36,47 @@ def write_manifest(
 
     # ── Coupled Landsat anchors (with S2 match) ─────────────────────────────
     for pair in coupled:
-        anchor = pair.anchor
-        s2 = pair.s2
-        eco_list = ecostress_by_anchor.get(anchor.scene_id, [])
+        anchor = pair["anchor"]
+        s2 = pair["s2"]
+        eco_list = ecostress_by_anchor.get(anchor["scene_id"], [])
 
         # Primary status: "validated" if ECOSTRESS also matched, else "coupled"
         status = "validated" if eco_list else "coupled"
 
         rows.append({
-            "scene_id": anchor.scene_id,
+            "scene_id": anchor["scene_id"],
             "source": "landsat-c2-l2",
-            "year": anchor.year,
+            "year": anchor["year"],
             "status": status,
-            "coupled_s2_id": s2.scene_id,
-            "ecostress_id": eco_list[0].granule_id if eco_list else None,
-            "paired_at": _naive_to_utc(s2.datetime),
-            "clear_frac": pair.clear_frac,
-            "dt_days": s2.dt_days,
+            "coupled_s2_id": s2["scene_id"],
+            "ecostress_id": eco_list[0]["granule_id"] if eco_list else None,
+            "paired_at": _naive_to_utc(s2["datetime"]),
+            "clear_frac": pair.get("clear_frac"),
+            "dt_days": s2["dt_days"],
             # v2 columns
-            "date": anchor.date,
-            "item_href": anchor.item_href,
-            "acquisition_datetime": _naive_to_utc(anchor.datetime),
-            "cloud_cover": anchor.cloud_cover,
-            "solar_azimuth": anchor.sun_azimuth,
-            "solar_elevation": anchor.sun_elevation,
+            "date": anchor["date"],
+            "item_href": anchor.get("item_href"),
+            "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
+            "cloud_cover": anchor.get("cloud_cover"),
+            "solar_azimuth": anchor.get("sun_azimuth"),
+            "solar_elevation": anchor.get("sun_elevation"),
         })
 
         # S2 partner row
         rows.append({
-            "scene_id": s2.scene_id,
+            "scene_id": s2["scene_id"],
             "source": "sentinel-2-l2a",
-            "year": s2.year,
+            "year": s2["year"],
             "status": status,
             "coupled_s2_id": None,
             "ecostress_id": None,
-            "paired_at": _naive_to_utc(s2.datetime),
-            "clear_frac": pair.clear_frac,
-            "dt_days": s2.dt_days,
-            "date": s2.date,
-            "item_href": s2.item_href,
-            "acquisition_datetime": _naive_to_utc(s2.datetime),
-            "cloud_cover": s2.cloud_cover,
+            "paired_at": _naive_to_utc(s2["datetime"]),
+            "clear_frac": pair.get("clear_frac"),
+            "dt_days": s2["dt_days"],
+            "date": s2["date"],
+            "item_href": s2.get("item_href"),
+            "acquisition_datetime": _naive_to_utc(s2["datetime"]),
+            "cloud_cover": s2.get("cloud_cover"),
             "solar_azimuth": None,
             "solar_elevation": None,
         })
@@ -88,18 +84,18 @@ def write_manifest(
         # ECOSTRESS rows (may be 0, 1, or more per anchor)
         for eco in eco_list:
             rows.append({
-                "scene_id": eco.granule_id,
+                "scene_id": eco["granule_id"],
                 "source": "ecostress",
-                "year": eco.year,
+                "year": eco["year"],
                 "status": status,
                 "coupled_s2_id": None,
                 "ecostress_id": None,
-                "paired_at": _naive_to_utc(eco.datetime),
-                "clear_frac": eco.clear_frac,
-                "dt_days": eco.dt_hours / 24.0,  # convert hours → days for schema compat
-                "date": eco.date,
+                "paired_at": _naive_to_utc(eco["datetime"]),
+                "clear_frac": eco.get("clear_frac"),
+                "dt_days": eco.get("dt_hours", 0.0) / 24.0,  # convert hours → days
+                "date": eco["date"],
                 "item_href": None,
-                "acquisition_datetime": _naive_to_utc(eco.datetime),
+                "acquisition_datetime": _naive_to_utc(eco["datetime"]),
                 "cloud_cover": None,
                 "solar_azimuth": None,
                 "solar_elevation": None,
@@ -107,30 +103,29 @@ def write_manifest(
 
     # ── Orphaned Landsat anchors (no S2 above threshold) ────────────────────
     for pair in dropped:
-        anchor = pair.anchor
+        anchor = pair["anchor"]
         rows.append({
-            "scene_id": anchor.scene_id,
+            "scene_id": anchor["scene_id"],
             "source": "landsat-c2-l2",
-            "year": anchor.year,
+            "year": anchor["year"],
             "status": "orphaned",
             "coupled_s2_id": None,
             "ecostress_id": None,
             "paired_at": None,
             "clear_frac": None,
             "dt_days": None,
-            "date": anchor.date,
-            "item_href": anchor.item_href,
-            "acquisition_datetime": _naive_to_utc(anchor.datetime),
-            "cloud_cover": anchor.cloud_cover,
-            "solar_azimuth": anchor.sun_azimuth,
-            "sun_elevation": anchor.sun_elevation,  # typo in older schema; we use sun_elevation
+            "date": anchor["date"],
+            "item_href": anchor.get("item_href"),
+            "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
+            "cloud_cover": anchor.get("cloud_cover"),
+            "solar_azimuth": anchor.get("sun_azimuth"),
+            "solar_elevation": anchor.get("sun_elevation"),
         })
 
     # ── Write Parquet ────────────────────────────────────────────────────────
     table = pa.Table.from_pylist(rows, schema=_MANIFEST_SCHEMA)
-    out_dir = "/".join(output_path.split("/")[:-1])
+    out_dir = os.path.dirname(output_path)
     if out_dir:
-        import os
         os.makedirs(out_dir, exist_ok=True)
     pq.write_table(table, output_path)
 
@@ -153,20 +148,20 @@ def _naive_to_utc(dt: datetime) -> datetime:
 
 _MANIFEST_SCHEMA = pa.schema([
     # v1 core
-    pa.field("scene_id",       pa.string(),  nullable=False),
-    pa.field("source",          pa.string(),  nullable=False),
-    pa.field("year",            pa.int32(),   nullable=False),
-    pa.field("status",          pa.string(),  nullable=False),
-    pa.field("coupled_s2_id",   pa.string(),  nullable=True),
-    pa.field("ecostress_id",    pa.string(),  nullable=True),
-    pa.field("paired_at",       pa.timestamp("us", tz="UTC"), nullable=True),
-    pa.field("clear_frac",      pa.float32(), nullable=True),
-    pa.field("dt_days",         pa.float32(), nullable=True),
+    pa.field("scene_id",           pa.string(),  nullable=False),
+    pa.field("source",            pa.string(),  nullable=False),
+    pa.field("year",             pa.int32(),   nullable=False),
+    pa.field("status",           pa.string(),  nullable=False),
+    pa.field("coupled_s2_id",    pa.string(),  nullable=True),
+    pa.field("ecostress_id",     pa.string(),  nullable=True),
+    pa.field("paired_at",        pa.timestamp("us", tz="UTC"), nullable=True),
+    pa.field("clear_frac",       pa.float32(), nullable=True),
+    pa.field("dt_days",          pa.float32(), nullable=True),
     # v2 optional
     pa.field("date",                    pa.string(),  nullable=True),
     pa.field("item_href",               pa.string(),  nullable=True),
     pa.field("acquisition_datetime",    pa.timestamp("us", tz="UTC"), nullable=True),
-    pa.field("cloud_cover",             pa.float32(), nullable=True),
-    pa.field("solar_azimuth",           pa.float32(), nullable=True),
+    pa.field("cloud_cover",            pa.float32(), nullable=True),
+    pa.field("solar_azimuth",          pa.float32(), nullable=True),
     pa.field("solar_elevation",         pa.float32(), nullable=True),
 ])

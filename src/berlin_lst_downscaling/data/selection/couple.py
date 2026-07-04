@@ -2,43 +2,23 @@
 
 from __future__ import annotations
 
-from berlin_lst_downscaling.data.selection import (
-    Anchor,
-    CoupledPair,
-    DroppedPair,
-    S2Candidate,
-)
-
 
 def couple_all(
-    anchors: list[Anchor],
-    s2_candidates_by_anchor: dict[str, list[S2Candidate]],
+    anchors: list[dict],
+    s2_candidates_by_anchor: dict[str, list[dict]],
     cfg,
-) -> tuple[list[CoupledPair], list[DroppedPair]]:
+) -> tuple[list[dict], list[dict]]:
     """Couple all anchors with their S2 candidates.
 
-    Parameters
-    ----------
-    anchors :
-        All Landsat anchors (from ``build_anchors``).
-    s2_candidates_by_anchor :
-        Dict mapping ``anchor.scene_id`` → list of S2 candidates.
-    cfg :
-        Hydra config with ``sentinel2.score.lambda`` and
-        ``sentinel2.min_clear_frac``.
-
-    Returns
-    -------
-    tuple[list[CoupledPair], list[DroppedPair]]
-        (coupled pairs, dropped pairs).
+    Returns (coupled_pairs, dropped_pairs) as lists of dicts.
     """
-    coupled: list[CoupledPair] = []
-    dropped: list[DroppedPair] = []
+    coupled: list[dict] = []
+    dropped: list[dict] = []
 
     for anchor in anchors:
-        candidates = s2_candidates_by_anchor.get(anchor.scene_id, [])
+        candidates = s2_candidates_by_anchor.get(anchor["scene_id"], [])
         result = couple_one_anchor(anchor, candidates, cfg)
-        if isinstance(result, CoupledPair):
+        if result["status"] == "coupled":
             coupled.append(result)
         else:
             dropped.append(result)
@@ -47,10 +27,10 @@ def couple_all(
 
 
 def couple_one_anchor(
-    anchor: Anchor,
-    s2_candidates: list[S2Candidate],
+    anchor: dict,
+    s2_candidates: list[dict],
     cfg,
-) -> CoupledPair | DroppedPair:
+) -> dict:
     """Apply score + tie-break to select best S2 or drop the anchor.
 
     Score formula (per Notion spec):
@@ -61,44 +41,54 @@ def couple_one_anchor(
     the anchor is dropped.
     """
     if not s2_candidates:
-        return DroppedPair(
-            anchor=anchor,
-            reason="no_s2_in_window",
-            max_clear_frac=0.0,
-        )
+        return {
+            "status": "dropped",
+            "anchor": anchor,
+            "reason": "no_s2_in_window",
+            "max_clear_frac": 0.0,
+            "s2": None,
+            "clear_frac": None,
+            "score": None,
+            "ecostress": [],
+        }
 
-    lam = getattr(cfg.sentinel2.score, "lambda", 0.1)  # lambda is a reserved keyword; use getattr
+    lam = getattr(cfg.sentinel2.score, "lambda", 0.1)
     min_cf = cfg.sentinel2.min_clear_frac
 
     # Score each candidate (clear_frac pre-computed and stored on the candidate)
-    scored: list[tuple[S2Candidate, float]] = []
+    scored: list[tuple[dict, float]] = []
     for c in s2_candidates:
-        # clear_frac may be NaN if computation failed
-        cf = getattr(c, "clear_frac", None)
+        cf = c.get("clear_frac")
         if cf is None or cf != cf:  # NaN guard
             cf = 0.0
-        score = cf - lam * (c.dt_days / 3.0)
+        score = cf - lam * (c["dt_days"] / 3.0)
         scored.append((c, score))
 
     # Sort: descending score, then ascending dt_days (tie-break)
-    scored.sort(key=lambda x: (-x[1], x[0].dt_days))
+    scored.sort(key=lambda x: (-x[1], x[0]["dt_days"]))
     best_candidate, best_score = scored[0]
 
     max_clear_frac = max(
-        (getattr(c, "clear_frac", 0.0) or 0.0) for c, _ in scored
+        (c.get("clear_frac") or 0.0) for c, _ in scored
     )
 
     if max_clear_frac < min_cf:
-        return DroppedPair(
-            anchor=anchor,
-            reason="no_s2_above_threshold",
-            max_clear_frac=max_clear_frac,
-        )
+        return {
+            "status": "dropped",
+            "anchor": anchor,
+            "reason": "no_s2_above_threshold",
+            "max_clear_frac": max_clear_frac,
+            "s2": None,
+            "clear_frac": None,
+            "score": None,
+            "ecostress": [],
+        }
 
-    return CoupledPair(
-        anchor=anchor,
-        s2=best_candidate,
-        clear_frac=getattr(best_candidate, "clear_frac", 0.0) or 0.0,
-        score=best_score,
-        ecostress=[],  # filled in by ecostress_subset step
-    )
+    return {
+        "status": "coupled",
+        "anchor": anchor,
+        "s2": best_candidate,
+        "clear_frac": best_candidate.get("clear_frac") or 0.0,
+        "score": best_score,
+        "ecostress": [],  # filled in by ecostress_subset step
+    }
