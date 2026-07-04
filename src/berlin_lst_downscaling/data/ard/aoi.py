@@ -61,6 +61,7 @@ def compute_aoi_metrics(
         ``aoi_clear_px``, ``aoi_cloudy_px``, ``aoi_shadow_px``,
         ``aoi_cirrus_px``, ``aoi_saturated_px``, ``aoi_fill_px``,
         ``aoi_total_px`` (non-fill, non-no-data pixels inside AOI),
+        ``aoi_overlap_px`` (all pixels inside COG∩AOI, including fill),
         ``aoi_clear_frac`` (clear / total inside AOI, NaN if total=0).
     """
     # ── load flag COG ────────────────────────────────────────────────
@@ -127,6 +128,11 @@ def compute_aoi_metrics(
     # Total AOI pixels that are not fill (usable area)
     aoi_total_px = aoi_clear_px + aoi_cloudy_px + aoi_shadow_px + aoi_cirrus_px + aoi_saturated_px
 
+    # All pixels in the COG∩AOI intersection (including fill) — used to detect
+    # scenes whose valid data only covers a tiny fraction of the overlap area
+    # (e.g. off-target swaths where the COG covers AOI but all LST pixels are NaN).
+    aoi_overlap_px = int(np.sum(inside))
+
     aoi_clear_frac = float(aoi_clear_px) / float(aoi_total_px) if aoi_total_px > 0 else float("nan")
 
     return {
@@ -137,6 +143,7 @@ def compute_aoi_metrics(
         "aoi_saturated_px": aoi_saturated_px,
         "aoi_fill_px": aoi_fill_px,
         "aoi_total_px": aoi_total_px,
+        "aoi_overlap_px": aoi_overlap_px,
         "aoi_clear_frac": aoi_clear_frac,
     }
 

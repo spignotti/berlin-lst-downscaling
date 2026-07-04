@@ -34,6 +34,7 @@ qa_dir: "${output_root}"           # QA reports
 aoi:
   mask_base: "data/boundaries"     # base path for aoi_10m.tif and aoi_100m.tif
   enabled: true                    # compute AOI metrics per scene (default-on)
+  min_overlap_px: 50               # warn if COG∩AOI < this many pixels (catches off-target swaths)
 
 # Hydra overrides (suppress run dir and cwd changes)
 hydra:

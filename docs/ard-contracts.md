@@ -166,13 +166,14 @@ Idempotency check: if the stored hash matches the current contract's hash, the C
 
 ## Schema Version
 
-Current: `3` (AOI metrics — Berlin boundary pixel counts per scene).
+Current: `4` (AOI overlap field added).
 
 | Version | Change |
-|---|---|
+|---|---|---|
 | 1 | Initial Phase A. Flag band inline in main COG (uint8→float32 promotion). Compression LZ4. |
 | 2 | Flag band split into separate ``.flag.tif`` (uint8, ZSTD). Main COG uses deflate. Schema hash includes ``flag_mode`` field. |
 | 3 | AOI metrics added to ledger: ``aoi_clear_px``, ``aoi_cloudy_px``, ``aoi_shadow_px``, ``aoi_cirrus_px``, ``aoi_saturated_px``, ``aoi_fill_px``, ``aoi_total_px``, ``aoi_clear_frac``. Flag COG compression ZSTD. |
+| 4 | ``aoi_overlap_px`` added: count of all pixels (including fill) in the COG∩AOI intersection. Enables detection of off-target swaths where the COG covers the AOI bbox but LST data is absent. |
 
 The `schema_version` column in the ledger is `int` and fields start at `1`. Never mutate in place — increment for breaking changes and document the delta in this file.
 
@@ -190,7 +191,7 @@ All writers (``write_cog_atomic``, ``write_flag_cog_atomic``, ``write_stac_atomi
 
 Smoke tests always write locally (``data/tmp/smoke_ard_<date>``). Production runs targeting GCS must set ``output_root: gs://berlin-lst-data/ard/`` in the config.
 
-## AOI Metrics (Schema v3)
+## AOI Metrics (Schema v4)
 
 Per-scene AOI pixel counts are computed by intersecting the flag COG with a pre-rasterized Berlin Landesgrenze mask (``aoi_10m.tif``, ``aoi_100m.tif``). Fields stored in the ledger:
 
@@ -202,7 +203,8 @@ Per-scene AOI pixel counts are computed by intersecting the flag COG with a pre-
 | ``aoi_cirrus_px`` | int | Cirrus pixels inside Berlin |
 | ``aoi_saturated_px`` | int | Saturated pixels inside Berlin |
 | ``aoi_fill_px`` | int | Fill (no-data / dilated buffer) pixels inside Berlin |
-| ``aoi_total_px`` | int | All non-fill pixels inside Berlin |
+| ``aoi_total_px`` | int | All non-fill pixels inside Berlin (sum of above six categories) |
+| ``aoi_overlap_px`` | int | **All** pixels in COG∩AOI intersection (including fill) — detects off-target swaths |
 | ``aoi_clear_frac`` | float | ``aoi_clear_px / aoi_total_px`` (NaN if ``aoi_total_px == 0``) |
 
 The mask COGs (``data/boundaries/aoi_10m.tif``, ``data/boundaries/aoi_100m.tif``) are pre-baked by ``scripts/build_aoi.py`` from ``berlin_landesgrenze.geojson`` (EPSG:25833). They must be in the same CRS as the flag COG; reprojection to the scene grid is performed at metrics time if needed.

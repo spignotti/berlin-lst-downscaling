@@ -113,7 +113,7 @@ def contract_for_source(source: str) -> Contract:
         target_crs="EPSG:25833",
         output_bands=_bands,  # flag band is separate (own uint8 COG)
         tiling=TilingSpec(),
-        schema_version=3,
+        schema_version=4,
         flag_mode="separate",
     )
 

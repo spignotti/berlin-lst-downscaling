@@ -396,6 +396,8 @@ def _run_scene(
                 aoi_fill_px = None if _v is None else int(_v)
                 _v = _raw["aoi_total_px"]
                 aoi_total_px = None if _v is None else int(_v)
+                _v = _raw["aoi_overlap_px"]
+                aoi_overlap_px = None if _v is None else int(_v)
                 _v = _raw["aoi_clear_frac"]
                 aoi_clear_frac = None if _v is None else float(_v)
             except Exception as _exc:
@@ -407,11 +409,21 @@ def _run_scene(
                 })
                 aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
                 aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
-                aoi_total_px = aoi_clear_frac = None
+                aoi_total_px = aoi_overlap_px = aoi_clear_frac = None
         else:
             aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
             aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
-            aoi_total_px = aoi_clear_frac = None
+            aoi_total_px = aoi_overlap_px = aoi_clear_frac = None
+
+        # Low-overlap warning: valid data covers a small fraction of the AOI intersection.
+        # This catches off-target swaths where the COG covers the AOI bbox but LST is NaN.
+        min_overlap = cfg.get("aoi", {}).get("min_overlap_px", None)
+        if aoi_overlap_px is not None and min_overlap is not None and aoi_overlap_px < min_overlap:
+            _log(cfg, run_id, "low_aoi_overlap", {
+                "scene_id": scene_id,
+                "aoi_overlap_px": aoi_overlap_px,
+                "min_overlap_px": min_overlap,
+            })
 
         # ── BUILD + WRITE STAC ──
         stac_dst = stac_path(root, source, year, scene_id)
@@ -442,6 +454,7 @@ def _run_scene(
                 aoi_saturated_px=aoi_saturated_px,
                 aoi_fill_px=aoi_fill_px,
                 aoi_total_px=aoi_total_px,
+                aoi_overlap_px=aoi_overlap_px,
                 aoi_clear_frac=aoi_clear_frac,
             )
         )

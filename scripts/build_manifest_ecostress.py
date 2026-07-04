@@ -7,15 +7,17 @@
 
 Queries NASA CMR (LP DAAC) via ``earthaccess`` for
 ``ECO_L2T_LSTE.002`` granules covering the Berlin AOI within a
-date range, then writes a manifest Parquet for the ARD pipeline
+date range, filters out granules whose footprint overlaps Berlin by
+<10%, then writes a manifest Parquet for the ARD pipeline
 (``mode=full``).
 
 Output schema (Parquet)
 -----------------------
-scene_id : str   Granule ID, e.g. ECOv002_L2T_LSTE_00372_009_32UQC_20180730T175918_0712_01
-source   : str   Always "ecostress"
-year     : int   Acquisition year
-date     : str   Acquisition date "YYYY-MM-DD"
+scene_id  : str   Granule ID, e.g. ECOv002_L2T_LSTE_00372_010_33UVU_20180730T180010_0712_01
+source    : str   Always "ecostress"
+year      : int   Acquisition year
+date      : str   Acquisition date "YYYY-MM-DD"
+mgrs_tile : str   MGRS tile, e.g. 33UVU
 
 Usage
 -----
@@ -100,7 +102,7 @@ def main(
             version="002",
             bounding_box=(minx, miny, maxx, maxy),
             temporal=(start, end),
-            count=100,
+            count=500,
         )
     except Exception as exc:
         typer.echo(f"ERROR: CMR query failed: {exc}", err=True)
@@ -109,14 +111,19 @@ def main(
     typer.echo(f"  Found      : {len(results)} granules")
 
     if not results:
-        typer.echo("No granules found for the given parameters.")
+        typer.echo("No granules found for this date/bbox.")
         raise typer.Exit(0)
 
-    # Build manifest rows
+    # Build manifest rows, filtering by Berlin footprint overlap
     rows: list[dict] = []
+    dropped = 0
     for granule in results:
         granule_id: str = granule["meta"]["native-id"]
-        # granule_id example: ECOv002_L2T_LSTE_00372_009_32UQC_20180730T175918_0712_01
+        mgrs_tile = _extract_tile(granule_id)
+        overlap = _footprint_overlap(granule)
+        if overlap < 0.10:
+            dropped += 1
+            continue
         date_str = _extract_date(granule_id)
         year = int(date_str[:4]) if date_str else None
 
@@ -126,8 +133,12 @@ def main(
                 "source": "ecostress",
                 "year": year,
                 "date": date_str,
+                "mgrs_tile": mgrs_tile,
             }
         )
+
+    if dropped:
+        typer.echo(f"  Dropped    : {dropped} (Berlin overlap < 10%)")
 
     # Sort by scene_id (chronologically stable)
     rows.sort(key=lambda r: r["scene_id"])
@@ -159,12 +170,47 @@ def _extract_date(granule_id: str) -> str | None:
         return None
 
 
+def _extract_tile(granule_id: str) -> str | None:
+    """Extract MGRS tile from a granule ID (e.g. 33UVU from the 6th underscore-separated field)."""
+    parts = granule_id.split("_")
+    if len(parts) >= 6:
+        return parts[5]  # e.g. 33UVU
+    return None
+
+
+def _footprint_overlap(granule) -> float:
+    """Return fraction [0,1] of Berlin bbox overlapped by granule's CMR footprint."""
+    BERLIN_BBOX = (13.08, 52.34, 13.76, 52.68)
+    BERLIN_AREA = (BERLIN_BBOX[2] - BERLIN_BBOX[0]) * (BERLIN_BBOX[3] - BERLIN_BBOX[1])
+    try:
+        rects = (
+            granule["umm"]
+            .get("SpatialExtent", {})
+            .get("HorizontalSpatialDomain", {})
+            .get("Geometry", {})
+            .get("BoundingRectangles", [])
+        )
+        if not rects:
+            return 1.0  # permissive on missing metadata
+        r = rects[0]
+        iw = max(r["WestBoundingCoordinate"], BERLIN_BBOX[0])
+        ie = min(r["EastBoundingCoordinate"], BERLIN_BBOX[2])
+        is_ = max(r["SouthBoundingCoordinate"], BERLIN_BBOX[1])
+        in_ = min(r["NorthBoundingCoordinate"], BERLIN_BBOX[3])
+        if iw >= ie or is_ >= in_:
+            return 0.0
+        return (ie - iw) * (in_ - is_) / BERLIN_AREA
+    except Exception:
+        return 1.0
+
+
 MANIFEST_SCHEMA = pa.schema(
     [
         ("scene_id", pa.string()),
         ("source", pa.string()),
         ("year", pa.int32()),
         ("date", pa.string()),
+        ("mgrs_tile", pa.string()),
     ]
 )
 

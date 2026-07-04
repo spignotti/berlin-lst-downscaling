@@ -45,7 +45,7 @@ def pc_invert(a: Any) -> Any:
 
 _STATUSES = {"pending", "exporting", "done", "failed", "skipped"}
 
-_SCHEMA_V3 = pa.schema([
+_SCHEMA = pa.schema([
     pa.field("scene_id", pa.string(), nullable=False),
     pa.field("source", pa.string(), nullable=False),
     pa.field("year", pa.int32(), nullable=False),
@@ -67,17 +67,19 @@ _SCHEMA_V3 = pa.schema([
     pa.field("aoi_fill_px", pa.int32()),
     pa.field("aoi_total_px", pa.int32()),
     pa.field("aoi_clear_frac", pa.float64()),
+    # AOI overlap (schema v4): all pixels in COG∩AOI (including fill)
+    pa.field("aoi_overlap_px", pa.int32()),
 ])
 
 # Current schema version
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ── row type ─────────────────────────────────────────────────────────
 
 
 @dataclass
 class LedgerRow:
-    """A single row in the ARD processing ledger (schema v3)."""
+    """A single row in the ARD processing ledger (schema v4)."""
 
     scene_id: str
     source: str
@@ -100,6 +102,8 @@ class LedgerRow:
     aoi_fill_px: int | None = None
     aoi_total_px: int | None = None
     aoi_clear_frac: float | None = None
+    # AOI overlap (schema v4): all pixels in COG∩AOI (including fill)
+    aoi_overlap_px: int | None = None
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -136,9 +140,9 @@ class Ledger:
             if len(raw) > 0:
                 table = pq.read_table(io.BytesIO(raw))
             else:
-                table = pa.Table.from_pylist([], schema=_SCHEMA_V3)
+                table = pa.Table.from_pylist([], schema=_SCHEMA)
         else:
-            table = pa.Table.from_pylist([], schema=_SCHEMA_V3)
+            table = pa.Table.from_pylist([], schema=_SCHEMA)
         table = _legacy_schema_fill(table)
         return cls(path, table)
 
@@ -180,7 +184,7 @@ class Ledger:
             row.attempts = 1  # first attempt
 
         new_row = pa.Table.from_pylist(
-            [_row_to_dict(row)], schema=_SCHEMA_V3
+            [_row_to_dict(row)], schema=_SCHEMA
         )
 
         if self._table.num_rows == 0:
@@ -273,6 +277,7 @@ def _row_to_dict(row: LedgerRow) -> dict:
         "aoi_fill_px": row.aoi_fill_px,
         "aoi_total_px": row.aoi_total_px,
         "aoi_clear_frac": row.aoi_clear_frac,
+        "aoi_overlap_px": row.aoi_overlap_px,
     }
 
 
@@ -304,15 +309,16 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
                 aoi_fill_px=_opt_int(d, "aoi_fill_px"),
                 aoi_total_px=_opt_int(d, "aoi_total_px"),
                 aoi_clear_frac=_opt_float(d, "aoi_clear_frac"),
+                aoi_overlap_px=_opt_int(d, "aoi_overlap_px"),
             )
         )
     return rows
 
 
 def _legacy_schema_fill(tbl: pa.Table) -> pa.Table:
-    """Add missing AOI columns with nulls for pre-v3 rows."""
+    """Add missing AOI columns with nulls for pre-v4 rows."""
     existing_names = {f.name for f in tbl.schema}
-    missing = [f for f in _SCHEMA_V3 if f.name not in existing_names]
+    missing = [f for f in _SCHEMA if f.name not in existing_names]
     if not missing:
         return tbl
     for field in missing:

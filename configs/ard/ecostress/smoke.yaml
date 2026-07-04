@@ -4,8 +4,9 @@ defaults:
   - _self_
 
 mode: smoke
-scene_date: "2018-07-30"          # matches fixture granule
+scene_date: "2018-07-30"          # matches fixture granule (tile 33UUU on this date)
 output_root: "data/tmp/smoke_ecostress_2018-07-30"
 viz: true
 ecostress:
   raw_dir: "data/ecostress/fixtures"
+  tile: "33UUU"                 # MGRS tile covering western Berlin (~88% overlap)

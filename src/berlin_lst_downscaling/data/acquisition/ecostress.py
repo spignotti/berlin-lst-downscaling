@@ -76,7 +76,7 @@ def load_ecostress_scene(
     ----------
     granule_id :
         Granule identifier, e.g.
-        ``ECOv002_L2T_LSTE_00372_009_32UQC_20180730T175918_0712_01``.
+        ``ECOv002_L2T_LSTE_00372_010_33UVU_20180730T180010_0712_01``.
     raw_dir :
         Root directory containing per-granule sub-directories.
         Expected layout: ``{raw_dir}/{granule_id}/{granule_id}_{layer}.tif``.
@@ -177,15 +177,15 @@ def load_ecostress_scene(
     ds_out = xr.Dataset(reproj_vars)
     ds_out = ds_out.assign_coords(crs=target_crs)
 
-    # Optionally clip to bbox (best-effort — only trims off-tile areas)
-    # Rasterio/rioxarray raises Exception if bbox doesn't intersect the grid.
-    # We silently continue with the full granule in that case.
+    # Clip to bbox (WGS84) after reprojection to target CRS.
+    # transform_bounds converts WGS84 → target CRS so clip_box gets valid metres.
     if bbox is not None:
-        minx, miny, maxx, maxy = bbox
-        try:
-            ds_out = ds_out.rio.clip_box(minx=minx, miny=miny, maxx=maxx, maxy=maxy)
-        except Exception:  # best-effort bbox trim; full tile used on failure  # noqa: S110
-            pass
+        from rasterio.warp import transform_bounds
+
+        minx, miny, maxx, maxy = transform_bounds("EPSG:4326", target_crs, *bbox)
+        ds_out = ds_out.rio.clip_box(
+            minx=minx, miny=miny, maxx=maxx, maxy=maxy,
+        )
 
     return ds_out, [granule_id]
 

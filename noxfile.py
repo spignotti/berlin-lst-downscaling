@@ -1,5 +1,7 @@
 """Validation sessions for the berlin-lst-downscaling project."""
 
+from pathlib import Path
+
 import nox
 
 nox.options.sessions = ["lint", "typecheck"]
@@ -77,14 +79,34 @@ def smoke_sentinel2(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none", name="smoke-ecostress")
 def smoke_ecostress(session: nox.Session) -> None:
-    """Run the ECOSTRESS ARD pipeline in smoke mode (local fixture).
+    """Run the ECOSTRESS ARD pipeline in smoke mode.
 
-    Requires ``scripts/download_ecostress_fixture.py`` to be run first
-    to download the fixture granule to ``data/ecostress/fixtures/``.
+    Self-contained: downloads the fixture granule (if missing) then runs
+    the pipeline and visualises the output.
 
-    Produces COGs, STAC items, ledger, and visualisation PNGs
-    under ``data/tmp/smoke_ecostress_<date>/``.
+    Uses tile 33UUU (western Berlin, ~88% footprint overlap on 2018-07-30,
+    ~293k valid LST pixels inside Berlin bbox).
+    Override with HYDRA_OVERRIDE env, e.g.:
+        HYDRA_OVERRIDE="ecostress.tile=33UVU" nox -s smoke-ecostress
     """
+    # Step 1: ensure fixture is present (download if missing or incomplete)
+    fixture_root = Path("data/ecostress/fixtures")
+    granule_id = "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01"
+    granule_dir = fixture_root / granule_id
+    required_layers = {"LST", "cloud", "water", "QC"}
+    fixture_complete = (
+        granule_dir.is_dir()
+        and required_layers.issubset({p.stem.split("_")[-1] for p in granule_dir.glob("*.tif")})
+    )
+    if not fixture_complete:
+        session.run(
+            "uv", "run", "python", "scripts/download_ecostress_fixture.py",
+            "--tile", "33UUU", "--date", "2018-07-30",
+            "--out", str(fixture_root),
+            external=True,
+        )
+
+    # Step 2: run the pipeline
     session.run(
         "uv", "run", "python", "scripts/run_ard_ecostress.py", "--config-name", "smoke",
         external=True,

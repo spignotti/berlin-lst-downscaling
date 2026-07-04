@@ -56,16 +56,20 @@ def qa_report(
             if not exists(flag_uri):
                 flag_missing += 1
 
-        # AOI aggregate metrics (schema v3 — only for done scenes with metrics)
+        # AOI aggregate metrics (schema v4 — only for done scenes with metrics)
         done_with_aoi = [r for r in rows if r.status == "done" and r.aoi_clear_frac is not None]
         aoi_stats: dict[str, Any] = {}
         if done_with_aoi:
             fracs: list[float] = [r.aoi_clear_frac for r in done_with_aoi]  # type: ignore[list-item]
+            overlaps: list[int] = [  # type: ignore[assignment]
+                r.aoi_overlap_px for r in done_with_aoi if r.aoi_overlap_px is not None
+            ]
             aoi_stats = {
                 "aoi_scenes": len(fracs),
                 "aoi_mean_clear_frac": round(sum(fracs) / len(fracs), 4),
                 "aoi_min_clear_frac": round(min(fracs), 4),
                 "aoi_max_clear_frac": round(max(fracs), 4),
+                "aoi_total_overlap_px": sum(overlaps) if overlaps else None,
             }
 
         per_source[src] = {
