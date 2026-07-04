@@ -40,6 +40,7 @@ interactively once to cache credentials.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +48,7 @@ import earthaccess
 import pyarrow as pa
 import pyarrow.parquet as pq
 import typer
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 # Berlin bounding box (WGS84) — loosely covers the full city
 DEFAULT_BBOX = (13.08, 52.32, 13.76, 52.68)
@@ -117,12 +119,23 @@ def main(
     # Build manifest rows, filtering by Berlin footprint overlap
     rows: list[dict] = []
     dropped = 0
+    failed = 0
     for granule in results:
         granule_id: str = granule["meta"]["native-id"]
-        mgrs_tile = _extract_tile(granule_id)
-        overlap = _footprint_overlap(granule)
+        try:
+            mgrs_tile = _extract_tile(granule_id)
+            overlap = _footprint_overlap(granule)
+        except Exception as exc:
+            typer.echo(
+                f"  WARNING: Failed to process granule {granule_id}: {exc}",
+                err=True,
+            )
+            failed += 1
+            time.sleep(0.5)
+            continue
         if overlap < 0.10:
             dropped += 1
+            time.sleep(0.5)
             continue
         date_str = _extract_date(granule_id)
         year = int(date_str[:4]) if date_str else None
@@ -136,9 +149,16 @@ def main(
                 "mgrs_tile": mgrs_tile,
             }
         )
+        time.sleep(0.5)
 
     if dropped:
         typer.echo(f"  Dropped    : {dropped} (Berlin overlap < 10%)")
+    if failed:
+        typer.echo(f"  Failed     : {failed} (metadata errors)")
+
+    if not rows:
+        typer.echo("No granules passed filtering (all dropped or failed).")
+        raise typer.Exit(0)
 
     # Sort by scene_id (chronologically stable)
     rows.sort(key=lambda r: r["scene_id"])
@@ -178,6 +198,12 @@ def _extract_tile(granule_id: str) -> str | None:
     return None
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, max=4),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
 def _footprint_overlap(granule) -> float:
     """Return fraction [0,1] of Berlin bbox overlapped by granule's CMR footprint."""
     BERLIN_BBOX = (13.08, 52.34, 13.76, 52.68)

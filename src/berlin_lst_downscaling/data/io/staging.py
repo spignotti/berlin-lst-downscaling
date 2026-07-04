@@ -51,6 +51,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from berlin_lst_downscaling.data.io.storage import OutputLocation
 
 if TYPE_CHECKING:
@@ -146,6 +148,11 @@ class StageManager:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(local_path, dst)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, max=4),
+        reraise=True,
+    )
     def _put_gcs(self, local_path: Path, key: str) -> None:
         """Upload a local file to a GCS stage prefix."""
         bucket_name, prefix = _parse_gs_uri(self.uri.uri)
@@ -225,6 +232,11 @@ class StageManager:
         if root.is_dir():
             shutil.rmtree(root)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, max=4),
+        reraise=True,
+    )
     def _cleanup_gcs(self) -> None:
         """Delete all objects under the GCS stage prefix."""
         bucket_name, object_prefix = _parse_gs_uri(self.uri.uri)

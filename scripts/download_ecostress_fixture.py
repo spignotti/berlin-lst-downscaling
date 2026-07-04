@@ -47,6 +47,7 @@ from pathlib import Path
 import earthaccess
 import typer
 from earthaccess.store import Store
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from berlin_lst_downscaling.data.io.staging import StageManager
 
@@ -126,6 +127,8 @@ def main(
     typer.echo(f"Scheme     : {stage.uri.scheme}")
 
     total_staged = 0
+    total_skipped = 0
+    total_failed = 0
 
     for tile_id, date_str in zip(tile, date, strict=True):
         typer.echo(f"\nProcessing tile={tile_id} date={date_str} ...")
@@ -148,28 +151,54 @@ def main(
         typer.echo(f"  Berlin overlap: {overlap:.1%}")
         if overlap < MIN_OVERLAP_FRAC:
             typer.echo(
-                f"  ERROR: Granule overlaps Berlin by {overlap:.1%}"
+                f"  SKIP: Granule overlaps Berlin by {overlap:.1%}"
                 f" (< {MIN_OVERLAP_FRAC:.0%} threshold).",
-                err=True,
             )
-            raise typer.Exit(1)
+            total_skipped += 1
+            continue
 
         # 3. Download from Earthdata S3 to a local tmp dir (earthaccess limitation)
         tmp_dir = Path("/var/folders/7r/mzy_klsd1mn9xrh7fln8mt2m0000gn/T")
         typer.echo("  Downloading to local tmp ...")
-        local_paths = _download_to_tmp(granule, tmp_dir, auth)
+        try:
+            local_paths = _download_to_tmp(granule, tmp_dir, auth)
+        except Exception as exc:
+            typer.echo(
+                f"  ERROR: Download failed (after retries): {exc}",
+                err=True,
+            )
+            total_failed += 1
+            continue
 
         # 4. Upload into stage
         typer.echo(f"  Staging to {stage.uri} ...")
-        for local_path in local_paths:
-            # Determine layer from filename suffix
-            key = f"{granule_id}/{local_path.name}"
-            stage.put(local_path, key)
+        try:
+            for local_path in local_paths:
+                # Determine layer from filename suffix
+                key = f"{granule_id}/{local_path.name}"
+                stage.put(local_path, key)
+        except Exception as exc:
+            typer.echo(f"  ERROR: Stage upload failed: {exc}", err=True)
+            total_failed += 1
+            # Clean up downloaded files before continuing
+            for local_path in local_paths:
+                local_path.unlink(missing_ok=True)
+            continue
+
         total_staged += 1
 
         # Clean up local tmp
         for local_path in local_paths:
             local_path.unlink(missing_ok=True)
+
+    typer.echo("\nSummary:")
+    typer.echo(f"  Staged  : {total_staged}")
+    typer.echo(f"  Skipped : {total_skipped} (footprint < {MIN_OVERLAP_FRAC:.0%})")
+    typer.echo(f"  Failed  : {total_failed}")
+
+    if total_staged == 0:
+        typer.secho("No granules staged — check errors above.", err=True, fg=typer.colors.RED)
+        raise typer.Exit(1)
 
     typer.secho(
         f"\nDone — {total_staged} granule(s) staged to {stage.uri}",
@@ -225,6 +254,11 @@ def _footprint_overlap(granule) -> float:
         return 1.0
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, max=30),
+    reraise=True,
+)
 def _download_to_tmp(granule, tmp_dir: Path, auth) -> list[Path]:
     """Download one granule's 4 layer COGs into a local tmp directory.
 
