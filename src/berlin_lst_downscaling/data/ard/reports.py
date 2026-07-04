@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,8 +19,9 @@ def qa_report(
 ) -> dict[str, Any]:
     """Generate a QA report from the ledger state and COG/STAC file checks.
 
-    Returns a dict with per-source counts and overall status. Writes a
-    JSON report to ``cfg.qa_dir / f"qa_{run_id}.json"``.
+    Returns a dict with per-source counts and overall status.
+    The report is emitted as a structured log line (event ``qa_report``)
+    by the pipeline; no JSON file is written.
     """
     sources: list[str] = list(cfg.get("sources", []))
 
@@ -92,13 +92,6 @@ def qa_report(
         "total_failed": failed,
         "success": failed == 0,
     }
-
-    # Write to file
-    qa_dir = Path(cfg.get("qa_dir", cfg.output_root))
-    qa_dir.mkdir(parents=True, exist_ok=True)
-    qa_path = qa_dir / f"qa_{run_id}.json"
-    with open(qa_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2, default=str)
 
     return report
 

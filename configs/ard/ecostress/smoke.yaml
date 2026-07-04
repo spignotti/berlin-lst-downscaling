@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+mode: smoke
+scene_date: "2018-07-30"          # matches fixture granule
+output_root: "data/tmp/smoke_ecostress_2018-07-30"
+viz: true
+# raw_dir from default (fixture_path) — point at fixtures for smoke

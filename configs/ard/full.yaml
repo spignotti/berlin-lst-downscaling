@@ -1,9 +1,0 @@
-# @package _global_
-defaults:
-  - default
-  - _self_
-
-mode: full
-sources: ["landsat-c2-l2", "sentinel-2-l2a"]
-ecostress:
-  enabled: false      # remains disabled until Phase B

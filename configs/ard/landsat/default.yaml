@@ -1,0 +1,8 @@
+# @package _global_
+# Extends configs/ard/_base.yaml which provides all shared defaults.
+defaults:
+  - ../_base
+  - _self_
+
+sources: ["landsat-c2-l2"]
+output_root: "data/ard/landsat"

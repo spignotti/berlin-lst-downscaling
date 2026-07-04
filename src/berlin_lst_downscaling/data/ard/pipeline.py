@@ -7,8 +7,10 @@ The outer :func:`run` dispatches by ``cfg.mode``:
 * **full** — read a manifest of scenes, reconcile against ledger, process
   only scenes that need work (new, failed, interrupted, schema-changed).
 
-Per-scene logic is in :func:`_run_scene`: load → mask → write COG → write
-STAC → update ledger.
+Per-scene logic is in per-source runner functions registered in
+:data:`_RUNNERS`: load → mask → write COG → write STAC → update ledger.
+
+Supported sources: ``landsat-c2-l2``, ``sentinel-2-l2a``, ``ecostress``.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import io
 import json
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,97 @@ from berlin_lst_downscaling.data.ard.writer import (
     write_flag_cog_atomic,
     write_stac_atomic,
 )
+
+# ── per-source runner registry ───────────────────────────────────────
+
+
+def _run_landsat_scene(
+    scene_id: str,
+    source: str,
+    year: int,
+    contract: Contract,
+    cfg: DictConfig,
+    ledger: Ledger,
+    run_id: str,
+    items: list[Any] | None = None,
+    scene_date: str | None = None,
+) -> xr.Dataset:
+    """Load + mask a Landsat C2 L2 scene."""
+    effective_date = scene_date or cfg.scene_date
+    bbox = tuple(cfg.bbox)
+    ds, loaded_ids = load_landsat_scene(
+        date=effective_date,
+        bbox=bbox,
+        resolution=int(cfg.target_resolution_low),
+        items=items,
+    )
+    if scene_id not in loaded_ids:
+        raise RuntimeError(
+            f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
+            f"Date {effective_date!r} or bbox may not cover the requested scene."
+        )
+    masked = mask_landsat(ds, cfg)
+    return masked
+
+
+def _run_sentinel2_scene(
+    scene_id: str,
+    source: str,
+    year: int,
+    contract: Contract,
+    cfg: DictConfig,
+    ledger: Ledger,
+    run_id: str,
+    items: list[Any] | None = None,
+    scene_date: str | None = None,
+) -> xr.Dataset:
+    """Load + mask a Sentinel-2 L2A scene."""
+    effective_date = scene_date or cfg.scene_date
+    bbox = tuple(cfg.bbox)
+    ds, loaded_ids = load_s2_scene(
+        date=effective_date,
+        bbox=bbox,
+        resolution=int(cfg.target_resolution_high),
+        bands=["B02", "B03", "B04", "B08", "SCL"],
+        items=items,
+    )
+    if scene_id not in loaded_ids:
+        raise RuntimeError(
+            f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
+            f"Date {effective_date!r} or bbox may not cover the requested scene."
+        )
+    # Solar position for directional cloud-shadow projection
+    # S2 uses NOAA computation (PC items lack view:sun_*)
+    az, el = _solar_for_scene(ds, cfg)
+    masked = mask_s2(ds, cfg, az, el)
+    return masked
+
+
+def _run_ecostress_scene(
+    scene_id: str,
+    source: str,
+    year: int,
+    contract: Contract,
+    cfg: DictConfig,
+    ledger: Ledger,
+    run_id: str,
+    items: list[Any] | None = None,
+    scene_date: str | None = None,
+) -> xr.Dataset:
+    """Load + mask an ECOSTRESS L2T granule (Phase B — not yet wired)."""
+    raise NotImplementedError(
+        "ECOSTRESS Phase B is not yet wired. "
+        "Set ecostress.enabled=true and use run_ard_ecostress.py."
+    )
+
+
+# Registry maps source key → per-source runner function.
+# Each runner returns a masked xr.Dataset ready for COG writing.
+_RUNNERS: dict[str, Callable[..., Any]] = {
+    "landsat-c2-l2": _run_landsat_scene,
+    "sentinel-2-l2a": _run_sentinel2_scene,
+    "ecostress": _run_ecostress_scene,
+}
 
 # ── main entry ───────────────────────────────────────────────────────
 
@@ -215,41 +309,23 @@ def _run_scene(
         )
     )
 
-    bbox = tuple(cfg.bbox)
-
     try:
-        # ── LOAD & MASK ──
-        if source == "landsat-c2-l2":
-            ds, loaded_ids = load_landsat_scene(
-                date=effective_date,
-                bbox=bbox,
-                resolution=int(cfg.target_resolution_low),
-                items=items,
-            )
-            masked = mask_landsat(ds, cfg)
-
-        elif source == "sentinel-2-l2a":
-            ds, loaded_ids = load_s2_scene(
-                date=effective_date,
-                bbox=bbox,
-                resolution=int(cfg.target_resolution_high),
-                bands=["B02", "B03", "B04", "B08", "SCL"],
-                items=items,
-            )
-            # Solar position for directional cloud-shadow projection
-            # S2 uses NOAA computation (PC items lack view:sun_*)
-            az, el = _solar_for_scene(ds, cfg)
-            masked = mask_s2(ds, cfg, az, el)
-
-        else:
+        # ── LOAD & MASK via per-source runner ──
+        runner = _RUNNERS.get(source)
+        if runner is None:
             raise ValueError(f"Unknown source: {source}")
 
-        # Assert that the requested scene_id was actually loaded
-        if scene_id not in loaded_ids:
-            raise RuntimeError(
-                f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
-                f"Date {effective_date!r} or bbox may not cover the requested scene."
-            )
+        masked = runner(
+            scene_id=scene_id,
+            source=source,
+            year=year,
+            contract=contract,
+            cfg=cfg,
+            ledger=ledger,
+            run_id=run_id,
+            items=items,
+            scene_date=scene_date,
+        )
 
         # ── WRITE MAIN COG ──
         _log(cfg, run_id, "scene_writing", {"scene_id": scene_id, "source": source})

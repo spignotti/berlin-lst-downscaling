@@ -1,0 +1,42 @@
+# @package _global_
+# Shared base config for all ARD pipelines.
+# Each source-specific config extends this via Hydra defaults.
+
+mode: full
+
+# Acquisition
+scene_date: null                    # ISO date string (smoke overrides with specific date)
+bbox: [13.08, 52.34, 13.76, 52.68] # WGS84 Berlin bbox
+target_crs: "EPSG:25833"
+target_resolution_low: 100          # Landsat LST native; ECOSTRESS uses 70m (overridden per source)
+target_resolution_high: 10          # S2 and other bands
+
+# Cloud masking
+cloud_dilation_px: 2              # morphological dilation radius for cloud buffer
+s2cloudless_threshold: 40           # s2cloudless probability threshold
+
+# Cloud-shadow projection (S2 directional offset)
+cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
+
+# ECOSTRESS (disabled in default; enabled per ecostress source config)
+ecostress:
+  enabled: false
+  appeeears_task_id: null
+  raw_dir: "data/ecostress/raw"    # full-mode raw L2T COGs from AppEEARS export
+  fixture_path: "data/ecostress/fixtures"  # smoke-mode fixture directory
+
+# Output
+output_root: "data/ard"            # source-specific subdirectory set per source config
+logging_dir: "${output_root}/logs"  # structured JSON logs
+qa_dir: "${output_root}"           # QA reports
+
+# AOI (Berlin boundary)
+aoi:
+  mask_base: "data/boundaries"     # base path for aoi_10m.tif and aoi_100m.tif
+  enabled: true                    # compute AOI metrics per scene (default-on)
+
+# Hydra overrides (suppress run dir and cwd changes)
+hydra:
+  output_subdir: null
+  job:
+    chdir: false

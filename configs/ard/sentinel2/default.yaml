@@ -1,0 +1,8 @@
+# @package _global_
+# Extends configs/ard/_base.yaml which provides all shared defaults.
+defaults:
+  - ../_base
+  - _self_
+
+sources: ["sentinel-2-l2a"]
+output_root: "data/ard/sentinel2"

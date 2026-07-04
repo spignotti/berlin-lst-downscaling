@@ -1,0 +1,9 @@
+# @package _global_
+defaults:
+  - default
+  - _self_
+
+mode: smoke
+scene_date: "2024-06-29"
+output_root: "data/tmp/smoke_sentinel2_2024-06-29"
+viz: true
