@@ -3,5 +3,21 @@
 Phase A: Landsat C2-L2 + Sentinel-2 L2A via PC STAC (ECOSTRESS Phase B).
 """
 
-# Submodules are imported as they are created (Tasks 2–6).
-# No forward imports here — they'd break lint/typecheck before modules exist.
+from berlin_lst_downscaling.data.ard.contract import (
+    BandSpec,
+    Contract,
+    TilingSpec,
+    contract_for_source,
+)
+from berlin_lst_downscaling.data.ard.paths import cog_path, scene_dir, stac_path, tmp_dir
+
+__all__ = [
+    "BandSpec",
+    "Contract",
+    "TilingSpec",
+    "contract_for_source",
+    "scene_dir",
+    "cog_path",
+    "stac_path",
+    "tmp_dir",
+]
