@@ -72,7 +72,7 @@ class LedgerRow:
     attempts: int = 0
     last_error: str | None = None
     run_id: str | None = None
-    updated_at: datetime = None  # type: ignore[assignment]
+    updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -240,12 +240,14 @@ def _opt_str(d: dict, key: str) -> str | None:
     return None if val is None else str(val)
 
 
-def _opt_dt(d: dict, key: str):
+def _opt_dt(d: dict, key: str) -> datetime | None:
     val = d[key][0]
     if val is None:
         return None
     # PyArrow 24's to_pydict returns datetime objects directly
-    return val.as_py() if hasattr(val, "as_py") else val
+    if hasattr(val, "as_py"):
+        val = val.as_py()
+    return val  # type: ignore[return-value]
 
 
 __all__ = [
