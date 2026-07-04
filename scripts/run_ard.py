@@ -6,33 +6,35 @@
 
 Usage
 -----
-    uv run python scripts/run_ard.py --config-name default
     uv run python scripts/run_ard.py --config-name smoke
-    uv run python scripts/run_ard.py --config-name full
     uv run python scripts/run_ard.py --config-name smoke scene_date=2024-07-15
+    uv run python scripts/run_ard.py --config-name full
 
 """
+
 from __future__ import annotations
 
 import hydra
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.ard.pipeline import run as ard_run
+
 
 @hydra.main(config_path="../configs/ard", config_name="default", version_base=None)
 def main(cfg: DictConfig) -> int:
-    """Hydra entry point — print resolved config and dispatch."""
-    print("=" * 60)
-    print(f"ARD Pipeline — mode={cfg.mode}")
-    print(f"  sources      : {cfg.sources}")
-    print(f"  scene_date   : {cfg.scene_date}")
-    print(f"  bbox         : {cfg.bbox}")
-    print(f"  target_crs   : {cfg.target_crs}")
-    print(f"  output_root  : {cfg.output_root}")
-    print(f"  ecostress    : enabled={cfg.ecostress.enabled}")
-    print(f"  cloud_dilation_px : {cfg.cloud_dilation_px}")
-    print(f"  cloud_base_height_m: {cfg.cloud_base_height_m}")
-    print("=" * 60)
-    return 0
+    """Hydra entry point — print config summary, then dispatch."""
+    print("=" * 60, flush=True)
+    print(f"ARD Pipeline — mode={cfg.mode}", flush=True)
+    print(f"  sources      : {cfg.sources}", flush=True)
+    print(f"  scene_date   : {cfg.scene_date}", flush=True)
+    print(f"  bbox         : {cfg.bbox}", flush=True)
+    print(f"  output_root  : {cfg.output_root}", flush=True)
+    print(f"  ecostress    : enabled={cfg.ecostress.enabled}", flush=True)
+    print(f"  dilation     : {cfg.cloud_dilation_px} px", flush=True)
+    print(f"  cloud_base   : {cfg.cloud_base_height_m} m", flush=True)
+    print("=" * 60, flush=True)
+
+    return ard_run(cfg)
 
 
 if __name__ == "__main__":
