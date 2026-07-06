@@ -30,17 +30,30 @@ from numpy.testing import assert_allclose  # noqa: I001
 
 
 def _landsat_is_clear(qa: np.ndarray) -> np.ndarray:
-    """QA_PIXEL bits: fill=1, cloud=2, shadow=4, cirrus=64."""
-    fill = (qa & 1) != 0
-    cloud = (qa & 4) != 0
-    shadow = (qa & 8) != 0
-    cirrus = (qa & 64) != 0
-    return ~fill & ~cloud & ~shadow & ~cirrus
+    """Landsat C2 L2 QA_PIXEL bits: fill=0, cirrus=2, cloud=3, shadow=4.
+
+    Cloud with confidence ≥ medium (bits 8-9 ≥ 2) is the canonical "cloud".
+    Bit 1 (dilated cloud) is not included — dilation is ARD-only.
+    Snow (bit 6) and water (clear-water) are clear.
+    """
+    cloud_raw = (qa >> 3) & 1
+    cloud_conf = (qa >> 8) & 0b11
+    cloudy = (cloud_raw != 0) & (cloud_conf >= 2)
+    cirrus = (qa >> 2) & 1
+    shadow = (qa >> 4) & 1
+    fill = qa & 1
+    return ~(fill.astype(bool) | cloudy | shadow.astype(bool) | cirrus.astype(bool))
+
+
+_S2_CLOUD_CLASSES = {0, 1, 8, 9, 10, 11}  # fill, saturated, cloud, cirrus, snow
 
 
 def _s2_is_clear(scl: np.ndarray) -> np.ndarray:
-    """SCL classes 4 (veg), 5 (bare), 6 (water) are clear."""
-    return np.isin(scl, [4, 5, 6])
+    """Inverted SCL: anything NOT in cloudy set is clear.
+
+    Includes class 7 (unclassified/urban) as clear.
+    """
+    return ~np.isin(scl, list(_S2_CLOUD_CLASSES))
 
 
 def _compute_clear_frac(l8_clear: np.ndarray, s2_clear: np.ndarray, aoi: np.ndarray) -> float:
@@ -122,20 +135,71 @@ def test_no_l8_clear():
 
 
 def test_landsat_is_clear_bits():
-    """Verify bit interpretation for QA_PIXEL."""
-    # All-clear scene: qa_pixel = 0
-    qa = np.zeros((2, 2), dtype=np.uint16)
-    assert np.all(_landsat_is_clear(qa))  # noqa: S101
-    print("PASS: landsat_is_clear — all-zero qa_pixel is clear")
+    """Verify bit interpretation for QA_PIXEL.
+
+    Landsat C2 L2 QA pixel bit field:
+      bit 0 (1)  — Fill
+      bit 1 (2)  — Dilated cloud (excluded from coupling clear)
+      bit 2 (4)  — Cirrus (high confidence)
+      bit 3 (8)  — Cloud (raw)
+      bit 4 (16) — Cloud shadow
+      bit 6 (64) — Snow / Ice (clear for coupling)
+      bits 8-9   — Cloud confidence (0-3)
+    """
+    cases = [
+        # (qa_value, expected_clear, description)
+        (0,      True,  "all-zero = clear"),
+        (4,      False, "bit2(cirrus) → not clear"),
+        (8,      True,  "bit3(cloud, conf=0) → clear (confidence too low)"),
+        (10,     True,  "bit3(cloud, conf=0) → clear"),
+        # qa=520: bit3=cloud, bits8-9=conf=2 → ≥2 → NOT clear
+        (520,    False, "bit3(cloud, conf=2) → not clear"),
+        (16,     False, "bit4(cloud-shadow) → not clear"),
+        (64,     True,  "bit6(snow) → clear"),
+        (192,    True,  "clear water (128+64) → clear"),
+        (128,    True,  "clear land → clear"),
+        (255,    False, "everything-set → not clear"),
+        (1,      False, "bit0(fill) → not clear"),
+        (7,      False, "bits 0+1+2 (fill+dilated+cirrus) → not clear"),
+    ]
+    for qa_val, expected, desc in cases:
+        qa = np.array([[qa_val]], dtype=np.uint16)
+        result = bool(np.all(_landsat_is_clear(qa)))
+        assert result == expected, (  # noqa: S101
+            f"landsat_is_clear(qa={qa_val}) = {result}, expected {expected} — {desc}"
+        )
+    print("PASS: landsat_is_clear — all bit-pattern cases")
 
 
 def test_s2_is_clear_classes():
-    """Verify SCL class interpretation."""
-    scl = np.array([[4, 5, 6, 0], [8, 9, 10, 1]], dtype=np.uint8)
-    expected = np.array([[True, True, True, False], [False, False, False, False]], dtype=bool)
+    """Verify SCL class interpretation.
+
+    Sen2Cor SCL classes:
+      0 fill / nodata  → not clear
+      1 saturated      → not clear
+      2 dark pixels    → clear
+      3 cloud shadow   → clear (shadow pixels can still be used for LST)
+      4 vegetation     → clear
+      5 bare soil      → clear
+      6 water          → clear
+      7 unclassified   → clear (includes urban impervious — critical for Berlin)
+      8 cloud med prob → not clear
+      9 cloud high     → not clear
+      10 thin cirrus    → not clear
+      11 snow          → not clear
+    """
+    scl = np.array(
+        [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]], dtype=np.uint8
+    )
+    expected = np.array(
+        [[False, False, True, True, True, True, True, True, False, False, False, False]],
+        dtype=bool,
+    )
     result = _s2_is_clear(scl)
-    assert np.array_equal(result, expected)  # noqa: S101
-    print("PASS: s2_is_clear — classes 4/5/6 clear, others not")
+    assert np.array_equal(result, expected), (  # noqa: S101
+        f"s2_is_clear mismatch:\n  got:      {result}\n  expected: {expected}"
+    )
+    print("PASS: s2_is_clear — class 7 (urban) is clear, 0/1/8/9/10/11 not clear")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
