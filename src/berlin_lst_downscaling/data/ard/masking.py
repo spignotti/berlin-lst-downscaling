@@ -23,6 +23,32 @@ _LS_ST_SCALE = 0.00341802  # USGS Collection 2 Level-2 ST scale
 _LS_ST_OFFSET = 149.0  # K
 
 
+def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
+    """Return boolean array — True = pixel is clear of cloud/shadow/cirrus/fill.
+
+    Landsat C2 L2 QA_PIXEL bits used:
+      bit 0 (1)  — Fill (designated nodata)
+      bit 2 (4)  — Cirrus (high confidence)
+      bit 3 (8)  — Cloud (raw flag)
+      bit 4 (16) — Cloud shadow
+    Cloud with confidence ≥ medium (bits 8–9 ≥ 2) is the canonical
+    "cloud" interpretation; lower-confidence hints are ignored.
+    Bit 1 (dilated cloud) is not included — it is handled separately
+    as an ARD-only dilation buffer.
+
+    Snow (bit 6, value 64) and water (clear-water QA=192) are *clear*
+    by this function — water bodies are common in the AOI and must not
+    be excluded from coupling.
+    """
+    cloud_raw = (qa >> 3) & 1
+    cloud_conf = (qa >> 8) & 0b11
+    cloudy = (cloud_raw != 0) & (cloud_conf >= 2)
+    cirrus = (qa >> 2) & 1
+    shadow = (qa >> 4) & 1
+    fill = qa & 1
+    return ~(fill.astype(bool) | cloudy | shadow.astype(bool) | cirrus.astype(bool))
+
+
 def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """Apply Landsat ARD masking: ST (Kelvin) + flag band.
 
@@ -44,28 +70,29 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     qa = ds["qa_pixel"].values.squeeze().astype(np.uint16)
     flag = np.zeros(qa.shape, dtype=np.uint8)
 
-    # bit 0: fill
-    flag[(qa & 0b1) != 0] |= contract.FLAG_FILL
+    # Verify that the per-bit breakdown below is consistent with the shared helper.
+    landsat_qa_to_clear_bits(qa)  # asserted by the equivalent coupling code
 
-    # cloud: bit 3 with confidence ≥ medium (bits 8-9 ≥ 2)
+    # Per-bit breakdown for per-flag-type attribution
     cloud_raw = (qa >> 3) & 1
     cloud_conf = (qa >> 8) & 0b11
     cloudy = (cloud_raw != 0) & (cloud_conf >= 2)
-    flag[cloudy] |= contract.FLAG_CLOUDY
+    shadow = (qa >> 4) & 1
+    cirrus = (qa >> 2) & 1
 
-    # apply additional dilation to the cloud mask
+    # Set per-type flags
+    flag[(qa & 1) != 0] |= contract.FLAG_FILL
+    flag[cloudy] |= contract.FLAG_CLOUDY
+    flag[shadow.astype(bool)] |= contract.FLAG_SHADOW
+    flag[cirrus.astype(bool)] |= contract.FLAG_CIRRUS
+
+    # apply additional dilation to the cloud mask (ARD-only buffer)
     dilate_px = cfg.get("cloud_dilation_px", 2)
     if dilate_px > 0 and cloudy.any():
         struct = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), dtype=bool)
         buffered = binary_dilation(cloudy, structure=struct)
         # dilated buffer → fill bit
         flag[buffered & ~cloudy] |= contract.FLAG_FILL
-
-    # cloud shadow: bit 4
-    flag[((qa >> 4) & 1) != 0] |= contract.FLAG_SHADOW
-
-    # cirrus: bit 2 (UA cirrus flag in Collection 2)
-    flag[((qa >> 2) & 1) != 0] |= contract.FLAG_CIRRUS
 
     # --- ST band ---
     raw = ds["lwir11"].values.squeeze().astype(np.float32)
@@ -348,6 +375,7 @@ def _contract(source: str) -> Contract:
 _FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated"
 
 __all__ = [
+    "landsat_qa_to_clear_bits",
     "mask_landsat",
     "mask_s2",
     "mask_ecostress",
