@@ -144,6 +144,21 @@ def smoke_selection(session: nox.Session) -> None:
     )
 
 
+@nox.session(venv_backend="none", name="smoke-selection-2024")
+def smoke_selection_2024(session: nox.Session) -> None:
+    """Run Szenen-Selektion coupling on Mai–Sep 2024.
+
+    Validates the coupling logic across the full configured season.
+    Writes ``data/tmp/manifest_smoke_2024.parquet``.
+    """
+    session.run(
+        "uv", "run", "python", "scripts/build_manifest.py",
+        "--config-dir", "configs/selection",
+        "--config-name", "smoke_2024_mai_sep",
+        external=True,
+    )
+
+
 @nox.session(venv_backend="none", name="selection-scan")
 def selection_scan(session: nox.Session) -> None:
     """Run full metadata-only volume scan (2017–2025, Mai–Sep).

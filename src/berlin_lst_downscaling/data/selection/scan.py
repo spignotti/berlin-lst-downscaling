@@ -66,7 +66,7 @@ def run_scan(cfg) -> ScanReport:
     # Without pixel loads we use the assumed coupling rate (configurable).
     # In scan mode the real coupling rate is unknown; in couple mode the
     # manifest already gives us the observed count after the fact.
-    coupling_rate = float(getattr(cfg.scan, "assumed_coupling_rate", 0.65))
+    coupling_rate = float(getattr(getattr(cfg, "scan", None) or {}, "assumed_coupling_rate", 0.65))
     n_landsat_coupled = int(n_landsat_total * coupling_rate)
     n_landsat_dropped = n_landsat_total - n_landsat_coupled
 

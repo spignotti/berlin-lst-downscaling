@@ -75,8 +75,8 @@ def build_ecostress_subset(
             result[anchor["scene_id"]] = []
             continue
 
-        # ── Convert ECOSTRESSMatch objects to dicts ────────────────────────────
-        granules = [_eco_match_to_dict(g) for g in granules]
+        # search_ecostress already returns dicts — no conversion needed
+        granules = list(granules)
 
         # ── Filter and enrich with dt_hours + clear_frac ─────────────────────
         matches: list[dict] = []
