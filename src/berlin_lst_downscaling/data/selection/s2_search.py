@@ -107,6 +107,7 @@ def match_s2_candidates_with_clear_frac(
                 s2_items=s2_items,
                 anchor_bbox=tuple(cfg.bbox),
                 aoi_mask_path=f"{cfg.aoi.mask_base}/aoi_10m.tif",
+                anchor_dt=anchor["datetime"],
             )
             c["clear_frac"] = cf
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
