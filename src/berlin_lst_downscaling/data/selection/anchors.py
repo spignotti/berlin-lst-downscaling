@@ -10,7 +10,7 @@ import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
-from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask
+from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
 
 
 def build_anchors(cfg) -> tuple[list, dict]:
@@ -171,7 +171,8 @@ def compute_anchor_clear_frac(
     except Exception:
         return None
 
-    qa = ds["qa_pixel"].values[0].astype(np.uint16)  # (y, x)
+    qa_ds = select_time_slice(ds, anchor["datetime"])
+    qa = qa_ds["qa_pixel"].values[0].astype(np.uint16)  # (y, x)
 
     # Use the production-tested shared helper (no dilation — coupling only)
     l8_clear = landsat_qa_to_clear_bits(qa)

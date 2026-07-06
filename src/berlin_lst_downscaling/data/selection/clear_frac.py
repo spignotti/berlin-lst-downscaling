@@ -15,12 +15,14 @@ this function.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import numpy as np
 import odc.stac
 import xarray as xr
 
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
-from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask
+from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
 
 
 def compute_clear_frac(
@@ -29,6 +31,7 @@ def compute_clear_frac(
     anchor_bbox: tuple[float, float, float, float],
     aoi_mask_path: str = "data/boundaries/aoi_10m.tif",
     resolution: int = 10,
+    anchor_dt: datetime | None = None,
 ) -> float:
     """Compute clear_frac for a (Landsat, S2) pair on the 10 m canonical grid.
 
@@ -76,8 +79,8 @@ def compute_clear_frac(
     )
 
     # ── build boolean clear masks ───────────────────────────────────────────
-    l8_clear = _landsat_is_clear(l8_ds)
-    s2_clear = _s2_is_clear(s2_ds)
+    l8_clear = _landsat_is_clear(l8_ds, anchor_dt)
+    s2_clear = _s2_is_clear(s2_ds, anchor_dt)
 
     # ── AOI mask (reproject to the scene grid) ──────────────────────────────
     aoi = load_aoi_mask(aoi_mask_path, l8_ds)
@@ -97,6 +100,7 @@ def compute_clear_frac_with_counts(
     anchor_bbox: tuple[float, float, float, float],
     aoi_mask_path: str = "data/boundaries/aoi_10m.tif",
     resolution: int = 10,
+    anchor_dt: datetime | None = None,
 ) -> tuple[float, dict]:
     """Same as compute_clear_frac but also returns intermediate pixel counts.
 
@@ -129,8 +133,8 @@ def compute_clear_frac_with_counts(
     )
 
     # ── build boolean clear masks ───────────────────────────────────────────
-    l8_clear = _landsat_is_clear(l8_ds)
-    s2_clear = _s2_is_clear(s2_ds)
+    l8_clear = _landsat_is_clear(l8_ds, anchor_dt)
+    s2_clear = _s2_is_clear(s2_ds, anchor_dt)
 
     # ── AOI mask (reproject to the scene grid) ──────────────────────────────
     aoi = load_aoi_mask(aoi_mask_path, l8_ds)
@@ -175,13 +179,18 @@ def _empty_counts() -> dict:
     }
 
 
-def _landsat_is_clear(ds: xr.Dataset) -> np.ndarray:
+def _landsat_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.ndarray:
     """Return boolean array where True = clear according to QA_PIXEL.
 
     Uses the production-tested ``landsat_qa_to_clear_bits`` from the ARD
     masking module (bits 0 fill, 2 cirrus, 3 cloud w/ conf≥2, 4 shadow).
     No dilation — dilation is ARD-only.
+
+    When ``anchor_dt`` is provided, selects the solar-day slice matching the
+    anchor's date rather than ``values[0]`` (first chronological slice).
     """
+    if anchor_dt is not None:
+        ds = select_time_slice(ds, anchor_dt)
     qa = ds["qa_pixel"].values[0].astype(np.uint16)
     return landsat_qa_to_clear_bits(qa)
 
@@ -189,7 +198,7 @@ def _landsat_is_clear(ds: xr.Dataset) -> np.ndarray:
 _S2_CLOUD_CLASSES = {0, 1, 8, 9, 10, 11}  # fill, saturated, cloud, cirrus, snow
 
 
-def _s2_is_clear(ds: xr.Dataset) -> np.ndarray:
+def _s2_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.ndarray:
     """Return boolean array where True = clear according to SCL.
 
     Inverts the SCL cloud classification: any class NOT in the cloudy set
@@ -197,7 +206,12 @@ def _s2_is_clear(ds: xr.Dataset) -> np.ndarray:
     covers urban impervious surfaces over Berlin — these should not be
     excluded from coupling even though Sen2Cor does not classify them
     as vegetation/bare/water.
+
+    When ``anchor_dt`` is provided, selects the solar-day slice matching the
+    anchor's date rather than ``values[0]`` (first chronological slice).
     """
+    if anchor_dt is not None:
+        ds = select_time_slice(ds, anchor_dt)
     scl = ds["SCL"].values[0].astype(np.uint8)
     return ~np.isin(scl, list(_S2_CLOUD_CLASSES))
 

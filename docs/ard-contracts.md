@@ -211,3 +211,16 @@ Per-scene AOI pixel counts are computed by intersecting the flag COG with a pre-
 | ``aoi_clear_frac`` | float | ``aoi_clear_px / aoi_total_px`` (NaN if ``aoi_total_px == 0``) |
 
 The mask COGs (``data/boundaries/aoi_10m.tif``, ``data/boundaries/aoi_100m.tif``) are pre-baked by ``scripts/build_aoi.py`` from ``berlin_landesgrenze.geojson`` (EPSG:25833). They must be in the same CRS as the flag COG; reprojection to the scene grid is performed at metrics time if needed.
+
+## ECOSTRESS Time-of-Day Constraints
+
+ECOSTRESS aboard the ISS has a sun-synchronous-like orbit with precessing overpass times.
+For Berlin (52°N), ECOSTRESS overpasses in summer (Mai–Sep) occur at **01–03 UTC** (pre-dawn)
+and **20–23 UTC** (post-sunset). Landsat 8/9 descending nodes over Berlin pass at **≈10:00 UTC** (midday).
+
+Consequently, for the Mai–Sep window:
+- **±2 h around Landsat's 10:00 UTC yields 0 ECOSTRESS matches** — by physical geometry, not by config error.
+- **±12 h around 10:00 UTC captures pre-dawn and post-sunset passes, but these are not co-temporal for LST validation** (different sun angle, different atmospheric state).
+- ECOSTRESS-Landsat LST coupling is only physically feasible around the **equinoxes (March/September)** when ISS orbit precession brings ECOSTRESS closer to mid-day, or in **winter months** when the overpass time aligns with daylight hours.
+
+The coupling pipeline runs ECOSTRESS as an informational subset (``ecostress_subset``) regardless of window width. The manifest records the ECOSTRESS count per coupled pair. In summer smoke runs, this count will be 0 — this is expected and correct.

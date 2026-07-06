@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import numpy as np
+import pandas as pd
 import rasterio
 import rasterio.warp as rwarp
 import rioxarray  # noqa: F401  — registers rio accessor on xr.Dataset
+import xarray as xr
 
 
 def load_aoi_mask(
@@ -51,3 +55,39 @@ def load_aoi_mask(
         resampling=rwarp.Resampling.nearest,
     )
     return destination.astype(bool)
+
+
+def select_time_slice(
+    ds: xr.Dataset,
+    target_dt: datetime | pd.Timestamp,
+) -> xr.Dataset:
+    """Select the time-slice whose UTC date matches target_dt's date.
+
+    When a dataset contains multiple solar-day slices (e.g. from a ±1-day
+    search), ``values[0]`` would pick the first chronological slice — which
+    may not correspond to the anchor's date.  This function finds the slice
+    whose UTC date matches ``target_dt`` and returns that slice.
+
+    Parameters
+    ----------
+    ds :
+        xarray Dataset with a ``time`` dimension.
+    target_dt :
+        Datetime of the anchor (UTC). The date part is used for matching.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset sliced to the matching time index. If the dataset has no
+        ``time`` dimension (single slice), returns it unchanged.
+    """
+    if "time" not in ds.dims:
+        return ds  # scalar — already a single slice
+
+    time_vals = pd.to_datetime(ds["time"].values)
+    target_ts = pd.Timestamp(target_dt)
+    # Convert to days-since-epoch via numpy datetime64 (pyright-safe)
+    time_days = time_vals.to_numpy().astype("datetime64[D]").astype(np.int64)
+    target_day = target_ts.to_numpy().astype("datetime64[D]").astype(np.int64)
+    idx = int(np.argmin(np.abs(time_days - target_day)))
+    return ds.isel(time=idx)
