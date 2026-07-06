@@ -6,11 +6,11 @@ from datetime import datetime
 
 import numpy as np
 import odc.stac
-import rasterio
-import rasterio.warp as rwarp
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
+from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
+from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask
 
 
 def build_anchors(cfg) -> tuple[list, dict]:
@@ -171,17 +171,13 @@ def compute_anchor_clear_frac(
     except Exception:
         return None
 
-    qa = ds["qa_pixel"].values[0]  # (y, x)
+    qa = ds["qa_pixel"].values[0].astype(np.uint16)  # (y, x)
 
-    # QA_PIXEL bits: fill=bit0, cloud=bit2, shadow=bit3, cirrus=bit6
-    fill   = (qa & 1) != 0
-    cloud  = (qa & 4) != 0
-    shadow = (qa & 8) != 0
-    cirrus = (qa & 64) != 0
-    l8_clear = ~fill & ~cloud & ~shadow & ~cirrus
+    # Use the production-tested shared helper (no dilation — coupling only)
+    l8_clear = landsat_qa_to_clear_bits(qa)
 
     # AOI mask
-    aoi = _load_aoi_mask(
+    aoi = load_aoi_mask(
         f"{cfg.aoi.mask_base}/aoi_10m.tif",
         ds,
     )
@@ -191,32 +187,6 @@ def compute_anchor_clear_frac(
         return None
     numer = int(np.sum(aoi & l8_clear))
     return numer / denom
-
-
-def _load_aoi_mask(aoi_path: str, target_ds) -> np.ndarray:
-    """Load and reproject the Berlin AOI mask to match the target dataset grid."""
-    with rasterio.open(aoi_path) as aoi_src:
-        aoi_data = aoi_src.read(1).astype(bool)
-        aoi_crs = aoi_src.crs
-        aoi_transform = aoi_src.transform
-
-    target_transform = target_ds.rio.transform()
-    target_crs = target_ds.rio.crs
-    target_height, target_width = target_ds.dims["y"], target_ds.dims["x"]
-
-    destination = np.empty((target_height, target_width), dtype=np.uint8)
-    rwarp.reproject(
-        source=aoi_data.astype(np.uint8),
-        src_crs=aoi_crs,
-        src_transform=aoi_transform,
-        src_width=aoi_src.width,
-        src_height=aoi_src.height,
-        destination=destination,
-        dst_crs=target_crs,
-        dst_transform=target_transform,
-        resampling=rwarp.Resampling.nearest,
-    )
-    return destination.astype(bool)
 
 
 def _parse_item_datetime(item) -> datetime | None:
