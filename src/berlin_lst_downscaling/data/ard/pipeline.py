@@ -28,6 +28,7 @@ from uuid import uuid4
 import xarray as xr
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.acquisition.ecostress import load_ecostress_scene
 from berlin_lst_downscaling.data.acquisition.landsat import load_landsat_scene
 from berlin_lst_downscaling.data.acquisition.sentinel2 import load_s2_scene
@@ -39,6 +40,7 @@ from berlin_lst_downscaling.data.ard.masking import mask_ecostress, mask_landsat
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.reports import qa_report
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
+from berlin_lst_downscaling.data.ard.validate import validate_cog, validate_flag_cog
 from berlin_lst_downscaling.data.ard.writer import (
     write_cog_atomic,
     write_flag_cog_atomic,
@@ -401,6 +403,32 @@ def _run_scene(
         flag_dst = flag_path(root, source, year, scene_id)
         if flag_da is not None and contract.flag_mode == "separate":
             write_flag_cog_atomic(flag_da, flag_dst, contract, overwrite=True)
+
+        # ── COG STRUCTURAL VALIDATION ──
+        # Determine expected canonical grid from source resolution
+        if source == "landsat-c2-l2":
+            expected_grid = canon_grid_for_resolution(100)
+        elif source == "sentinel-2-l2a":
+            expected_grid = canon_grid_for_resolution(10)
+        elif source == "ecostress":
+            expected_grid = canon_grid_for_resolution(70)
+        else:
+            expected_grid = canon_grid_for_resolution(10)
+
+        vig = validate_cog(cog_dst, contract, expected_grid)
+        if vig.ok:
+            _log(cfg, run_id, "cog_validated", {"scene_id": scene_id, "source": source})
+        else:
+            raise RuntimeError(
+                f"COG validation failed: {'; '.join(vig.errors)}"
+            )
+
+        if flag_da is not None and contract.flag_mode == "separate":
+            vif = validate_flag_cog(flag_dst, expected_grid)
+            if not vif.ok:
+                raise RuntimeError(
+                    f"Flag COG validation failed: {'; '.join(vif.errors)}"
+                )
 
         # ── COMPUTE AOI METRICS ──
         if flag_da is not None and contract.flag_mode == "separate":
