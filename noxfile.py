@@ -40,8 +40,12 @@ def smoke_primary(session: nox.Session) -> None:
     ECOSTRESS fixture, then runs the ARD pipeline.  Final COGs land in
     ``data/tmp/smoke_primary/ard/``.
     """
+    import os
     import uuid
     from datetime import UTC, datetime
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     run_id = f"sp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     stage_root = "data/tmp/ecostress_stage"
@@ -49,10 +53,6 @@ def smoke_primary(session: nox.Session) -> None:
     manifest_dir = "data/tmp/smoke_primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
     output_root = f"{manifest_dir}/ard"
-
-    # Step 1: Build 3-row smoke manifest
-    import pyarrow as pa
-    import pyarrow.parquet as pq
 
     rows = [
         {
@@ -70,15 +70,13 @@ def smoke_primary(session: nox.Session) -> None:
             "date": "2024-06-29",
         },
         {
-            "scene_id": "ECOv002_L2T_LSTE_00372_010_33UUU_20180730T180010_0712_01",
+            "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
             "source": "ecostress",
             "year": 2018,
             "status": "coupled",
             "date": "2018-07-30",
         },
     ]
-    import os
-
     os.makedirs(manifest_dir, exist_ok=True)
     schema = pa.schema([
         pa.field("scene_id", pa.string(), nullable=False),
@@ -174,8 +172,12 @@ def cloud_pilot(session: nox.Session) -> None:
     Requires ``GOOGLE_APPLICATION_CREDENTIALS`` to be set, or runs under
     a GCP Workload Identity in Cloud Run.
     """
+    import os
     import uuid
     from datetime import UTC, datetime
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     run_id = f"cp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     stage_base = "gs://berlin-lst-data/_staging/ecostress"
@@ -196,10 +198,6 @@ def cloud_pilot(session: nox.Session) -> None:
     )
 
     # Step 1: Build 3-row smoke manifest
-    import os
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     rows = [
         {
@@ -217,7 +215,7 @@ def cloud_pilot(session: nox.Session) -> None:
             "date": "2024-06-29",
         },
         {
-            "scene_id": "ECOv002_L2T_LSTE_00372_010_33UUU_20180730T180010_0712_01",
+            "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
             "source": "ecostress",
             "year": 2018,
             "status": "coupled",
@@ -276,7 +274,7 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
             "bucket = client.get_bucket('berlin-lst-data'); "
             "prefix = 'ard/smoke/smoke_primary/'; "
             "blobs = list(bucket.list_blobs(prefix=prefix)); "
-            f"print(f'Final COGs: {{len(blobs)}} blob(s) under gs://berlin-lst-data/{{prefix}}'); "
+            "print(f'Final COGs: {len(blobs)} blob(s) under gs://berlin-lst-data/{prefix}'); "
             "for b in blobs[:6]: print(' ', b.name)"
         ),
         external=True,
