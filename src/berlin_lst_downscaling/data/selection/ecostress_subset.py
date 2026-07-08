@@ -113,21 +113,6 @@ def build_ecostress_subset(
     return result
 
 
-def _eco_match_to_dict(g) -> dict:
-    """Convert an ECOSTRESSMatch dataclass to a plain dict."""
-    return {
-        "granule_id": g.granule_id,
-        "source": g.source,
-        "year": g.year,
-        "datetime": g.datetime,
-        "date": g.date,
-        "dt_hours": g.dt_hours,
-        "mgrs_tile": g.mgrs_tile,
-        "overlap_frac": g.overlap_frac,
-        "clear_frac": g.clear_frac,
-    }
-
-
 def _compute_ecostress_clear_frac(
     granule_id: str,
     raw_dir: str,

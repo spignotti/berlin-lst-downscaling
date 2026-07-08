@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from omegaconf import DictConfig
@@ -52,7 +51,9 @@ def qa_report(
         for r in rows:
             if r.status != "done" or not r.path_cog:
                 continue
-            flag_uri = str(Path(r.path_cog).with_suffix(".flag.tif"))
+            # Path-based suffix replacement breaks for gs:// URIs (Path strips double slash).
+            # Flag path always follows deterministic naming: cog.tif → cog.flag.tif
+            flag_uri = r.path_cog.replace(".tif", ".flag.tif")
             if not exists(flag_uri):
                 flag_missing += 1
 

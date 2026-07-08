@@ -13,7 +13,6 @@ target_resolution_high: 10          # S2 and other bands
 
 # Cloud masking
 cloud_dilation_px: 2              # morphological dilation radius for cloud buffer
-s2cloudless_threshold: 40           # s2cloudless probability threshold
 
 # Cloud-shadow projection (S2 directional offset)
 cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
@@ -26,6 +25,7 @@ ecostress:
   persist_stage: false            # clean up stage dir after processing (set true to keep for debugging)
 
 # Output
+manifest_uri: null                  # explicit manifest path (or resolved from output_root)
 output_root: "data/ard"            # source-specific subdirectory set per source config
 logging_dir: "${output_root}/logs"  # structured JSON logs
 qa_dir: "${output_root}"           # QA reports

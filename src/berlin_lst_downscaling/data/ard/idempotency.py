@@ -6,8 +6,6 @@ the subset of scenes that actually need processing.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from berlin_lst_downscaling.data.ard.contract import Contract
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
 
@@ -80,10 +78,14 @@ def _files_exist(row: LedgerRow) -> bool:
 
     Returns ``True`` if all files are present, ``False`` if any are
     missing (which triggers reprocessing).
+    Uses ``exists`` from ``berlin_lst_downscaling.data.io`` which
+    dispatches by URI scheme (local, GCS, mounted).
     """
-    if row.path_cog and not Path(row.path_cog).exists():
+    from berlin_lst_downscaling.data.io import exists
+
+    if row.path_cog and not exists(row.path_cog):
         return False
-    if row.path_stac and not Path(row.path_stac).exists():
+    if row.path_stac and not exists(row.path_stac):
         return False
     return True
 

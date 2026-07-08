@@ -185,24 +185,6 @@ def _resolve_s2_items(
     return result
 
 
-def _compute_clear_frac_for_pair(
-    l8_items: list,
-    s2_items: list,
-    anchor_bbox: tuple,
-    aoi_mask_path: str,
-) -> float:
-    """Compute clear_frac for a (Landsat, S2) pair on the 10-m canonical grid."""
-    from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac
-
-    return compute_clear_frac(
-        l8_items=l8_items,
-        s2_items=s2_items,
-        anchor_bbox=anchor_bbox,
-        aoi_mask_path=aoi_mask_path,
-        resolution=10,
-    )
-
-
 def _parse_item_datetime(item) -> datetime | None:
     """Extract UTC datetime from a STAC item."""
     dt_str = item.properties.get("datetime")

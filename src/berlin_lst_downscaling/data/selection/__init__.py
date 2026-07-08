@@ -107,7 +107,6 @@ class ManifestResult:
 # noqa: E402 — submodules return dicts; dataclasses defined here to break import cycle
 
 from berlin_lst_downscaling.data.selection.anchors import build_anchors  # noqa: E402
-from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac  # noqa: E402
 from berlin_lst_downscaling.data.selection.couple import couple_all  # noqa: E402
 from berlin_lst_downscaling.data.selection.ecostress import search_ecostress  # noqa: E402
 from berlin_lst_downscaling.data.selection.ecostress_subset import (  # noqa: E402
@@ -127,14 +126,10 @@ __all__ = [
     "match_s2_candidates_with_clear_frac",
     "couple_all",
     "build_ecostress_subset",
-    "compute_clear_frac",
     "write_manifest",
     "run_scan",
     "search_ecostress",
     # Dataclasses
-    "Anchor",
-    "S2Candidate",
-    "ECOSTRESSMatch",
     "ScanReport",
     "ManifestResult",
 ]

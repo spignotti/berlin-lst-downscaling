@@ -1,0 +1,11 @@
+# @package _global_
+# Manifest-driven smoke test — all 3 sources, output to local tmp.
+# Builds a 3-row manifest then runs mode=full through it.
+defaults:
+  - _base
+  - _self_
+
+sources: ["landsat-c2-l2", "sentinel-2-l2a", "ecostress"]
+mode: full
+scene_date: null
+output_root: "data/tmp/smoke_primary/ard"

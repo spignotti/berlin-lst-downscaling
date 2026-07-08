@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-04T20:43:56.337548",
+  "generated_at": "2026-07-06T13:44:33.866105",
   "config": {
     "years": "[2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]",
     "months": "[5, 6, 7, 8, 9]",
@@ -7,21 +7,22 @@
     "s2_window_days": 3,
     "s2_score_lambda": 0.1,
     "s2_min_clear_frac": 0.3,
-    "ecoftresst_window_hours": 2
+    "ecoftresst_window_hours": 2,
+    "assumed_coupling_rate": 0.65
   },
   "counts": {
-    "landsat_total": 220,
-    "landsat_may_sep": 220,
-    "s2_candidates": 2640,
-    "landsat_coupled": 143,
-    "landsat_dropped": 77,
+    "landsat_total": 873,
+    "landsat_may_sep": 873,
+    "s2_candidates": 10476,
+    "landsat_coupled": 567,
+    "landsat_dropped": 306,
     "ecostress_matches": 249
   },
   "volume_gb": {
-    "landsat": 11.0,
-    "s2": 528.0,
+    "landsat": 28.35,
+    "s2": 113.4,
     "ecostress": 1.25,
-    "total": 540.25
+    "total": 143.0
   },
   "assumptions": {
     "landsat_per_scene_gb": 0.05,

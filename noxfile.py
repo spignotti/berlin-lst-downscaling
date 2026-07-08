@@ -29,119 +29,108 @@ def typecheck(session: nox.Session) -> None:
     session.run("uv", "run", "pyright", external=True)
 
 
-# ── smoke tests (per-source) ─────────────────────────────────────────
+# ── manifest-driven smoke test ────────────────────────────────────────
 
 
-@nox.session(venv_backend="none", name="smoke")
-def smoke(session: nox.Session) -> None:
-    """Run Landsat + Sentinel-2 smoke tests in sequence.
+@nox.session(venv_backend="none", name="smoke-primary")
+def smoke_primary(session: nox.Session) -> None:
+    """Run manifest-driven smoke test for all 3 sources locally.
 
-    Use ``smoke-landsat`` or ``smoke-sentinel2`` to run a single source.
-    Use ``smoke-ecostress`` for the ECOSTRESS fixture (after downloading it).
-    """
-    session.run(
-        "uv", "run", "python", "scripts/run_ard_landsat.py", "--config-name", "smoke",
-        external=True,
-    )
-    session.run(
-        "uv", "run", "python", "scripts/run_ard_sentinel2.py", "--config-name", "smoke",
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none", name="smoke-landsat")
-def smoke_landsat(session: nox.Session) -> None:
-    """Run the Landsat ARD pipeline in smoke mode (local disk).
-
-    Produces COGs, STAC items, ledger, and RGB visualisation PNGs
-    under ``data/tmp/smoke_landsat_<date>/``.
-    """
-    session.run(
-        "uv", "run", "python", "scripts/run_ard_landsat.py", "--config-name", "smoke",
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none", name="smoke-sentinel2")
-def smoke_sentinel2(session: nox.Session) -> None:
-    """Run the Sentinel-2 ARD pipeline in smoke mode (local disk).
-
-    Produces COGs, STAC items, ledger, and RGB visualisation PNGs
-    under ``data/tmp/smoke_sentinel2_<date>/``.
-    """
-    session.run(
-        "uv", "run", "python", "scripts/run_ard_sentinel2.py", "--config-name", "smoke",
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none", name="smoke-ecostress")
-def smoke_ecostress(session: nox.Session) -> None:
-    """Run the ECOSTRESS ARD pipeline in smoke mode.
-
-    Self-contained: stages the raw L2T granule to a local tmp directory,
-    runs the pipeline, then deletes the stage.  Final COGs land in
-    ``data/tmp/smoke_ecostress_<date>/``.
-
-    Uses tile 33UUU (western Berlin, ~88% footprint overlap on 2018-07-30,
-    ~293k valid LST pixels inside Berlin bbox).
+    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), stages the
+    ECOSTRESS fixture, then runs the ARD pipeline.  Final COGs land in
+    ``data/tmp/smoke_primary/ard/``.
     """
     import uuid
     from datetime import UTC, datetime
 
-    run_id = f"eco-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    stage_base = "data/tmp/ecostress_stage"
-    raw_dir = f"{stage_base}/{run_id}"
+    run_id = f"sp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    stage_root = "data/tmp/ecostress_stage"
+    eco_stage = f"{stage_root}/{run_id}"
+    manifest_dir = "data/tmp/smoke_primary"
+    manifest_path = f"{manifest_dir}/manifest.parquet"
+    output_root = f"{manifest_dir}/ard"
 
-    # Download + stage
+    # Step 1: Build 3-row smoke manifest
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    rows = [
+        {
+            "scene_id": "LC09_L2SP_193024_20240629_02_T1",
+            "source": "landsat-c2-l2",
+            "year": 2024,
+            "status": "coupled",
+            "date": "2024-06-29",
+        },
+        {
+            "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+            "source": "sentinel-2-l2a",
+            "year": 2024,
+            "status": "coupled",
+            "date": "2024-06-29",
+        },
+        {
+            "scene_id": "ECOv002_L2T_LSTE_00372_010_33UUU_20180730T180010_0712_01",
+            "source": "ecostress",
+            "year": 2018,
+            "status": "coupled",
+            "date": "2018-07-30",
+        },
+    ]
+    import os
+
+    os.makedirs(manifest_dir, exist_ok=True)
+    schema = pa.schema([
+        pa.field("scene_id", pa.string(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("year", pa.int32(), nullable=False),
+        pa.field("status", pa.string(), nullable=False),
+        pa.field("date", pa.string(), nullable=True),
+    ])
+    table = pa.Table.from_pylist(rows, schema=schema)
+    pq.write_table(table, manifest_path)
+    print(f"Manifest written: {manifest_path}")
+
+    # Step 2: Stage ECOSTRESS fixture
     session.run(
         "uv", "run", "python", "scripts/download_ecostress_fixture.py",
         "--tile", "33UUU",
         "--date", "2018-07-30",
-        "--stage-dir", stage_base,
+        "--stage-dir", stage_root,
         "--run-id", run_id,
         external=True,
     )
 
-    # Pipeline reads from stage; cleanup handled by nox session StageSession
+    # Step 3: Run the unified ARD pipeline
+    # ECOSTRESS raw_dir is set to the staged fixture path.
+    # Stage cleanup is handled by run_ard.py (pipeline-internal via StageSession).
     session.run(
-        "uv", "run", "python", "scripts/run_ard_ecostress.py",
-        "--config-name", "smoke",
-        f"ecostress.raw_dir={raw_dir}",
-        "ecostress.persist_stage=true",  # pipeline does NOT clean; nox owns cleanup
+        "uv", "run", "python", "scripts/run_ard.py",
+        "--config-name", "smoke_primary",
+        f"manifest_uri={manifest_path}",
+        f"output_root={output_root}",
+        f"ecostress.raw_dir={eco_stage}",
+        "ecostress.persist_stage=true",  # nox own cleanup runs after
         external=True,
     )
 
-    # Always clean up stage — even if pipeline fails, the nox session always
-    # reaches the last step. StageSession is idempotent (no-op if already gone).
+    # Step 4: Clean up the ECOSTRESS fixture stage
     session.run(
         "uv", "run", "python", "-c",
         f"""
 import sys; sys.path.insert(0, 'src')
 from berlin_lst_downscaling.data.io.staging import StageSession
-with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
+with StageSession('{stage_root}', run_id='{run_id}', persist=False) as stage:
     print(f'Stage cleaned up: {{stage.uri}}')
 """,
         external=True,
     )
 
+    print(f"\nSmoke-primary output: {output_root}/ledger.parquet")
+    print("Expected: 3 scenes with status=done")
+
 
 # ── Szenen-Selektion ─────────────────────────────────────────────────
-
-
-@nox.session(venv_backend="none", name="smoke-selection")
-def smoke_selection(session: nox.Session) -> None:
-    """Run Szenen-Selektion coupling on a single month (July 2024).
-
-    Validates the coupling logic before running the full volume scan.
-    Writes ``data/tmp/manifest_smoke.parquet``.
-    """
-    session.run(
-        "uv", "run", "python", "scripts/build_manifest.py",
-        "--config-dir", "configs/selection",
-        "--config-name", "smoke_jul2024",
-        external=True,
-    )
 
 
 @nox.session(venv_backend="none", name="smoke-selection-2024")
@@ -149,7 +138,7 @@ def smoke_selection_2024(session: nox.Session) -> None:
     """Run Szenen-Selektion coupling on Mai–Sep 2024.
 
     Validates the coupling logic across the full configured season.
-    Uses ``sentinel2.cloud_mask="s2cloudless"`` (the new default).
+    Uses SCL-based cloud detection (the only method).
     Writes ``data/tmp/manifest_smoke_2024.parquet``.
     """
     session.run(
@@ -175,44 +164,24 @@ def selection_scan(session: nox.Session) -> None:
     )
 
 
-# ── cloud smoke tests ─────────────────────────────────────────────────
+# ── cloud pilot ──────────────────────────────────────────────────────
 
 
-@nox.session(venv_backend="none", name="smoke-cloud")
-def smoke_cloud(session: nox.Session) -> None:
-    """Run Landsat + Sentinel-2 smoke tests targeting GCS (requires rclone mount).
+@nox.session(venv_backend="none", name="cloud-pilot")
+def cloud_pilot(session: nox.Session) -> None:
+    """Run smoke-primary targeting GCS (requires ADC / Workload Identity).
 
-    Mount the bucket first (``rclone mount``) or ensure Application Default
-    Credentials are configured.
-    """
-    session.run(
-        "uv", "run", "python", "scripts/run_ard_landsat.py",
-        "--config-name", "smoke",
-        "output_root=gs://berlin-lst-data/ard/smoke/landsat",
-        "viz=true",
-        external=True,
-    )
-    session.run(
-        "uv", "run", "python", "scripts/run_ard_sentinel2.py",
-        "--config-name", "smoke",
-        "output_root=gs://berlin-lst-data/ard/smoke/sentinel2",
-        "viz=true",
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none", name="smoke-ecostress-cloud")
-def smoke_ecostress_cloud(session: nox.Session) -> None:
-    """Run ECOSTRESS smoke test targeting GCS.
-
-    Pre-flight: verifies GCS bucket is reachable and ADC are configured.
-    Stages raw L2T granule to ``gs://berlin-lst-data/_staging/ecostress/<run_id>/``,
-    runs the pipeline, then deletes the stage.
-
-    Requires ``GOOGLE_APPLICATION_CREDENTIALS`` to be set (service account JSON key).
+    Requires ``GOOGLE_APPLICATION_CREDENTIALS`` to be set, or runs under
+    a GCP Workload Identity in Cloud Run.
     """
     import uuid
     from datetime import UTC, datetime
+
+    run_id = f"cp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    stage_base = "gs://berlin-lst-data/_staging/ecostress"
+    eco_stage = f"{stage_base}/{run_id}"
+    manifest_path = f"data/tmp/cloud_pilot_{run_id}/manifest.parquet"
+    output_root = "gs://berlin-lst-data/ard/smoke"
 
     # ── pre-flight: GCS reachable ─────────────────────────────────────
     session.run(
@@ -226,10 +195,46 @@ def smoke_ecostress_cloud(session: nox.Session) -> None:
         external=True,
     )
 
-    run_id = f"eco-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    stage_base = "gs://berlin-lst-data/_staging/ecostress"
-    raw_dir = f"{stage_base}/{run_id}"
+    # Step 1: Build 3-row smoke manifest
+    import os
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    rows = [
+        {
+            "scene_id": "LC09_L2SP_193024_20240629_02_T1",
+            "source": "landsat-c2-l2",
+            "year": 2024,
+            "status": "coupled",
+            "date": "2024-06-29",
+        },
+        {
+            "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+            "source": "sentinel-2-l2a",
+            "year": 2024,
+            "status": "coupled",
+            "date": "2024-06-29",
+        },
+        {
+            "scene_id": "ECOv002_L2T_LSTE_00372_010_33UUU_20180730T180010_0712_01",
+            "source": "ecostress",
+            "year": 2018,
+            "status": "coupled",
+            "date": "2018-07-30",
+        },
+    ]
+    schema = pa.schema([
+        pa.field("scene_id", pa.string(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("year", pa.int32(), nullable=False),
+        pa.field("status", pa.string(), nullable=False),
+        pa.field("date", pa.string(), nullable=True),
+    ])
+    table = pa.Table.from_pylist(rows, schema=schema)
+    pq.write_table(table, manifest_path)
+
+    # Step 2: Stage ECOSTRESS fixture to GCS
     session.run(
         "uv", "run", "python", "scripts/download_ecostress_fixture.py",
         "--tile", "33UUU",
@@ -239,18 +244,18 @@ def smoke_ecostress_cloud(session: nox.Session) -> None:
         external=True,
     )
 
-    # Pipeline reads from GCS stage; pipeline does NOT clean (nox owns cleanup)
+    # Step 3: Run the unified ARD pipeline (reads ECOSTRESS from GCS stage)
     session.run(
-        "uv", "run", "python", "scripts/run_ard_ecostress.py",
-        "--config-name", "cloud",
-        f"ecostress.raw_dir={raw_dir}",
-        "output_root=gs://berlin-lst-data/ard/smoke/ecostress",
-        "viz=true",
+        "uv", "run", "python", "scripts/run_ard.py",
+        "--config-name", "smoke_primary",
+        f"manifest_uri={manifest_path}",
+        f"output_root={output_root}/smoke_primary",
+        f"ecostress.raw_dir={eco_stage}",
         "ecostress.persist_stage=true",
         external=True,
     )
 
-    # Cleanup: always run even on failure
+    # Step 4: Clean up ECOSTRESS GCS stage
     session.run(
         "uv", "run", "python", "-c",
         f"""
@@ -262,17 +267,17 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
         external=True,
     )
 
-    # Verify final COGs landed
+    # Step 5: Verify final COGs landed in GCS
     session.run(
         "uv", "run", "python", "-c",
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
             "bucket = client.get_bucket('berlin-lst-data'); "
-            "prefix = 'ard/smoke/ecostress/2018/'; "
+            "prefix = 'ard/smoke/smoke_primary/'; "
             "blobs = list(bucket.list_blobs(prefix=prefix)); "
-            "print(f'Final COGs: {len(blobs)} blob(s) under gs://berlin-lst-data/{prefix}'); "
-            "for b in blobs[:5]: print(' ', b.name)"
+            f"print(f'Final COGs: {{len(blobs)}} blob(s) under gs://berlin-lst-data/{{prefix}}'); "
+            "for b in blobs[:6]: print(' ', b.name)"
         ),
         external=True,
     )

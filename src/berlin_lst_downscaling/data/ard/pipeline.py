@@ -163,7 +163,11 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 
 
 def run(cfg: DictConfig) -> int:
-    """Execute the ARD pipeline in ``cfg.mode``.
+    """Execute the ARD pipeline — manifest-driven only (mode=full).
+
+    Smoke mode was removed in favor of manifest-driven smoke using
+    ``smoke_primary`` config which builds a 3-row manifest then runs
+    ``mode=full``.
 
     Returns 0 on success, 1 if any scene failed.
     """
@@ -177,11 +181,7 @@ def run(cfg: DictConfig) -> int:
 
     for source in sources:
         contract = contract_for_source(source)
-
-        if cfg.mode == "smoke":
-            _process_smoke(source, contract, cfg, led, run_id)
-        else:
-            _process_manifest(source, contract, cfg, led, run_id)
+        _process_manifest(source, contract, cfg, led, run_id)
 
     # Final QA report
     report = qa_report(led, cfg, run_id)
@@ -194,43 +194,6 @@ def run(cfg: DictConfig) -> int:
     return 0 if failed_count == 0 else 1
 
 
-# ── mode dispatchers ─────────────────────────────────────────────────
-
-
-def _process_smoke(
-    source: str,
-    contract: Contract,
-    cfg: DictConfig,
-    ledger: Ledger,
-    run_id: str,
-) -> None:
-    """Process a single scene per source (mode=smoke)."""
-    _log(cfg, run_id, "smoke_discover", {"source": source})
-
-    scene_ids = _discover_ids(source, cfg)
-    if not scene_ids:
-        _log(cfg, run_id, "smoke_skip", {"source": source, "reason": "no scenes found"})
-        return
-
-    scene_id = scene_ids[0]
-    year = _extract_year(source, scene_id, cfg)
-    _log(cfg, run_id, "smoke_found", {
-        "source": source,
-        "scene_id": scene_id,
-        "year": year,
-    })
-
-    todo = reconcile([(scene_id, source, year)], ledger, contract)
-    if not todo:
-        _log(cfg, run_id, "smoke_skip", {
-            "source": source,
-            "reason": "already done and schema_hash matches",
-        })
-        return
-
-    _run_scene(scene_id, source, year, contract, cfg, ledger, run_id)
-
-
 def _process_manifest(
     source: str,
     contract: Contract,
@@ -241,7 +204,7 @@ def _process_manifest(
     """Process scenes listed in a manifest Parquet (mode=full)."""
     from berlin_lst_downscaling.data.io import exists
 
-    manifest_uri = f"{cfg.output_root}/manifest.parquet"
+    manifest_uri = cfg.get("manifest_uri") or f"{cfg.output_root}/manifest.parquet"
     if not exists(manifest_uri):
         raise FileNotFoundError(
             f"mode=full requires a manifest at {manifest_uri}. "
@@ -265,6 +228,7 @@ def _process_manifest(
     # Collect manifest rows per source — always carry scene_id + year
     scenes: list[tuple[str, str, int]] = []
     scene_dates: dict[str, str | None] = {}  # scene_id → date (optional)
+    scene_hrefs: dict[str, str | None] = {}  # scene_id → item_href (optional)
     for i in range(rows.num_rows):
         r = rows.slice(i, 1).to_pydict()
         sid = str(r["scene_id"][0])
@@ -272,6 +236,9 @@ def _process_manifest(
         # Optional date column (forward-compatible schema extension)
         _dt = r.get("date", [None])[0]
         scene_dates[sid] = str(_dt) if _dt is not None else None
+        # Optional item_href (bypasses STAC search)
+        _href = r.get("item_href", [None])[0]
+        scene_hrefs[sid] = str(_href) if _href else None
 
     todo = reconcile(scenes, ledger, contract)
     _log(cfg, run_id, "manifest_todo", {
@@ -284,6 +251,7 @@ def _process_manifest(
         _run_scene(
             scene_id, source, year, contract, cfg, ledger, run_id,
             scene_date=scene_dates.get(scene_id),
+            item_href=scene_hrefs.get(scene_id),
         )
 
 
@@ -300,6 +268,7 @@ def _run_scene(
     run_id: str,
     items: list[Any] | None = None,
     scene_date: str | None = None,
+    item_href: str | None = None,
 ) -> None:
     """Process one scene: load → mask → write COG+STAC → update ledger.
 
@@ -312,12 +281,17 @@ def _run_scene(
     scene_date :
         Overrides ``cfg.scene_date`` for this scene. Used by
         ``mode=full`` where each manifest row carries its own date.
+    item_href :
+        Direct STAC item URL from the manifest. When provided, the
+        runner can bypass STAC search (future optimization; currently
+        falls back to date-based search).
     """
     effective_date = scene_date or cfg.scene_date
     _log(cfg, run_id, "scene_start", {
         "scene_id": scene_id,
         "source": source,
         "scene_date": effective_date,
+        "item_href": item_href,
     })
     t0 = time.perf_counter()
 
@@ -524,77 +498,6 @@ def _solar_for_scene(
             hour=10, minute=0, second=0, tzinfo=UTC,
         )
     return solar_position(dt)
-
-
-# ── helpers ──────────────────────────────────────────────────────────
-
-
-def _discover_ids(source: str, cfg: DictConfig) -> list[str]:
-    """Return item IDs for the scene date, without loading pixel data."""
-    if source == "ecostress":
-        # ECOSTRESS has no STAC — list granules from the raw/fixture directory
-        return _discover_ecostress_ids(cfg)
-
-    from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
-
-    cat = get_catalog()
-    bbox = tuple(cfg.bbox)
-    date = cfg.scene_date
-
-    collection_map = {
-        "landsat-c2-l2": "landsat-c2-l2",
-        "sentinel-2-l2a": "sentinel-2-l2a",
-    }
-    col = collection_map.get(source)
-    if col is None:
-        return []
-
-    search = cat.search(collections=[col], bbox=bbox, datetime=date)
-    return [item.id for item in search.items()]
-
-
-def _discover_ecostress_ids(cfg: DictConfig) -> list[str]:
-    """List ECOSTRESS granule IDs from the raw/fixture directory.
-
-    The directory is expected to contain one sub-directory per granule,
-    each named with the granule ID (e.g. ``ECOv002_L2T_LSTE_00372_...``).
-    """
-    raw_dir = cfg.ecostress.raw_dir
-    try:
-        root = Path(raw_dir)
-        if not root.exists():
-            return []
-        granule_ids = [
-            d.name for d in root.iterdir()
-            if d.is_dir() and d.name.startswith("ECO")
-        ]
-        return sorted(granule_ids)
-    except Exception:
-        return []
-
-
-def _extract_year(source: str, scene_id: str, cfg: DictConfig) -> int:
-    """Extract year from a scene ID, falling back to config scene_date."""
-    # Landsat IDs: LC08_L1TP_193024_20240629_20240705_02_T1
-    # S2 IDs: S2B_MSIL1C_20240629T095029_N0510_R079_T33UUU_20240629T121424
-    # ECOSTRESS IDs: ECOv002_L2T_LSTE_<orbit>_<scene>_<MGRS>_<YYYYMMDDThhmmss>_...
-    if source == "ecostress":
-        from berlin_lst_downscaling.data.acquisition.ecostress import (
-            _parse_granule_datetime,
-        )
-
-        dt = _parse_granule_datetime(scene_id)
-        if dt is not None:
-            return dt.year
-        # Fallback
-        return int(cfg.scene_date.split("-")[0])
-
-    parts = scene_id.split("_")
-    for part in parts:
-        if len(part) == 8 and part.isdigit():
-            return int(part[:4])
-    # Fallback to config date
-    return int(cfg.scene_date.split("-")[0])
 
 
 # ── STAC item builder ────────────────────────────────────────────────

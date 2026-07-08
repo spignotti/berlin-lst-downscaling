@@ -1,24 +1,24 @@
 # Szenen-Selektion — Volumen-Scan
 
-**Datum:** 2026-07-04 20:43
+**Datum:** 2026-07-06 13:44
 **Zeitraum:** 2017/2018/2019/2020/2021/2022/2023/2024/2025 | Monate [5, 6, 7, 8, 9]
 
 ## Counts
 
-- Landsat-Anker total: **220**
-  - Gekoppelt (geschätzt): **143**  (Rate ≈ 65%)
-  - Verworfen (geschätzt): **77**
-- S2-Kandidaten (Summe): **2640**
+- Landsat-Anker total: **873**
+  - Gekoppelt (geschätzt): **567**  (Rate ≈ 65%)
+  - Verworfen (geschätzt): **306**
+- S2-Kandidaten (Summe): **10476**
 - ECOSTRESS-Granules: **249**
 
 ## Volumen-Schätzung (GB)
 
 | Quelle | Szenen | GB/Szene | Gesamt GB |
 |--------|--------|-----------|-----------|
-| Landsat | 220 | 0.05 | 11.0 |
-| Sentinel-2 | 2640 | 0.2 | 528.0 |
+| Landsat | 873 | 0.05 | 28.4 |
+| Sentinel-2 | 10476 | 0.2 | 113.4 |
 | ECOSTRESS | 249 | 0.005 | 1.25 |
-| **Total** | | | **540.2** |
+| **Total** | | | **143.0** |
 
 ## Anmerkungen
 

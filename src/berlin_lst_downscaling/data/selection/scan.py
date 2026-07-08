@@ -173,15 +173,3 @@ def run_scan(cfg) -> ScanReport:
     )
 
 
-def _estimate_coupling_rate(cfg) -> float:
-    """Estimate Landsat-S2 coupling rate without pixel loads.
-
-    Uses the Notion-observed fact: median Δt = 1 day, λ = 0.1.
-    Score = clear_frac − λ·(Δt/3). With median Δt = 1:
-      score ≈ clear_frac − 0.033
-    Assume median clear_frac ≈ 0.45 (conservative, based on prior smoke runs).
-
-    If threshold = 0.30: score ≈ 0.45 − 0.033 = 0.417 > 0.30 → coupled.
-    Conservative estimate: 65% coupling rate.
-    """
-    return 0.65

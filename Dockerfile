@@ -19,5 +19,9 @@ COPY configs/ configs/
 COPY scripts/ scripts/
 
 # ── Entrypoint ──
-# Override Hydra output dir to /tmp (avoid writing to container filesystem)
-ENTRYPOINT ["uv", "run", "python", "scripts/ard_process.py", "hydra.run.dir=/tmp/ard_outputs"]
+# Run the unified ARD pipeline.  Override Hydra output dir to /tmp.
+# Usage:
+#   uv run python scripts/run_ard.py --config-name cloud_pilot \
+#     manifest_uri=gs://berlin-lst-data/manifests/manifest.parquet \
+#     output_root=gs://berlin-lst-data/ard/
+ENTRYPOINT ["uv", "run", "python", "scripts/run_ard.py", "hydra.run.dir=/tmp/ard_outputs"]
