@@ -1,11 +1,9 @@
-"""Output contract per sensor: band specs, tiling, schema-hash."""
+"""Output contract per sensor: band specs, tiling, schema version."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import ClassVar
-
-import blake3  # type: ignore[import-untyped]
 
 # ── helpers ──────────────────────────────────────────────────────────
 
@@ -64,27 +62,9 @@ class Contract:
 
     # ── helpers ─────────────────────────────────────────────────────
 
-    def schema_hash(self) -> str:
-        """BLAKE3 over a stable representation of this contract.
-
-        Changing any field produces a different hash.  This hash is
-        stored in the STAC ``properties.ard:schema_hash`` field and in
-        the ledger.  Idempotency checks compare hash equality.
-        """
-        parts = [
-            self.source,
-            self.target_crs,
-        ]
-        for b in self.output_bands:
-            parts.append(f"{b.name}|{b.dtype}|{b.nodata!s}")
-        parts.append(f"bs={self.tiling.blocksize}")
-        parts.append(f"ov={'/'.join(str(o) for o in self.tiling.overviews)}")
-        parts.append(f"cmp={self.tiling.compress}")
-        parts.append(f"prd={self.tiling.predictor}")
-        parts.append(f"fm={self.flag_mode}")
-        parts.append(f"v{self.schema_version}")
-        raw = "::".join(parts).encode("utf-8")
-        return blake3.blake3(raw).hexdigest()
+    def schema_version_str(self) -> str:
+        """Return schema version as a string for ledger/STAC storage."""
+        return str(self.schema_version)
 
 
 # ── flag-band shared spec ────────────────────────────────────────────

@@ -8,9 +8,8 @@ Per the Szenen-Selektion spec:
 
 from __future__ import annotations
 
-from datetime import timedelta
-
-import pytz
+from datetime import UTC, timedelta
+from zoneinfo import ZoneInfo
 
 from berlin_lst_downscaling.data.selection.ecostress import (
     search_ecostress,
@@ -40,7 +39,7 @@ def build_ecostress_subset(
         Mapping ``anchor.scene_id`` → list of matched ECOSTRESS granule dicts.
         Empty list if no granules pass the filters.
     """
-    tz = pytz.timezone(cfg.ecostress.local_tz)
+    tz = ZoneInfo(cfg.ecostress.local_tz)
     window_hours: int = cfg.ecostress.window_hours
     clear_frac_min: float = cfg.ecostress.clear_frac_min
 
@@ -57,8 +56,8 @@ def build_ecostress_subset(
         window_end_local = anchor_local + timedelta(hours=window_hours)
 
         # Convert bounds back to UTC for CMR query
-        window_start_utc = window_start_local.astimezone(pytz.UTC)
-        window_end_utc = window_end_local.astimezone(pytz.UTC)
+        window_start_utc = window_start_local.astimezone(UTC)
+        window_end_utc = window_end_local.astimezone(UTC)
 
         start_str = window_start_utc.strftime("%Y-%m-%d")
         end_str = window_end_utc.strftime("%Y-%m-%d")
@@ -85,7 +84,7 @@ def build_ecostress_subset(
             # Map ECOSTRESS datetime from UTC string via the granule_id parser
             # (search_ecostress returns dicts with naive datetimes)
             if g["datetime"].tzinfo is None:
-                g_dt_utc = g["datetime"].replace(tzinfo=pytz.UTC)
+                g_dt_utc = g["datetime"].replace(tzinfo=UTC)
             else:
                 g_dt_utc = g["datetime"]
             g_local = g_dt_utc.astimezone(tz)

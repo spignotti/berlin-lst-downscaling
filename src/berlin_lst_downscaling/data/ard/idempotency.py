@@ -27,7 +27,7 @@ def reconcile(
     **and** confirmed file existence are excluded (skip).
     """
     result: list[tuple[str, str, int, str]] = []
-    contract_hash = contract.schema_hash()
+    version = contract.schema_version
 
     for scene_id, source, year in scenes:
         row = ledger.get(scene_id, source)
@@ -37,7 +37,7 @@ def reconcile(
             result.append((scene_id, source, year, "new"))
             continue
 
-        if row.status == "done" and row.schema_hash == contract_hash:
+        if row.status == "done" and row.schema_version == version:
             # Verify output files actually exist (T8)
             if _files_exist(row):
                 continue
@@ -45,7 +45,7 @@ def reconcile(
             result.append((scene_id, source, year, "interrupted"))
             continue
 
-        if row.status == "done" and row.schema_hash != contract_hash:
+        if row.status == "done" and row.schema_version != version:
             # Contract changed → force reprocessing
             result.append((scene_id, source, year, "schema_changed"))
 
