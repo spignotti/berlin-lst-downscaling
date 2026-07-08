@@ -286,33 +286,8 @@ class StageSession(StageManager):
         self.cleanup()
 
 
-# ── helpers ──────────────────────────────────────────────────────────
-
-
-def stage_path(base_uri: UriLike, run_id: str) -> OutputLocation:
-    """Construct a stage root URI for a given run.
-
-    Parameters
-    ----------
-    base_uri :
-        Stage root, e.g. ``data/tmp/ecostress_stage`` or
-        ``gs://bucket/_staging/ecostress``.
-    run_id :
-        Unique run identifier.
-
-    Returns
-    -------
-    OutputLocation
-        Stage URI with run_id appended, e.g.
-        ``data/tmp/ecostress_stage/abc123``.
-    """
-    loc = OutputLocation(str(base_uri))
-    return loc / run_id
-
-
 __all__ = [
     "StageManager",
     "StageSession",
-    "stage_path",
     "UriLike",
 ]

@@ -20,59 +20,6 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Literal
-
-# ── dataclasses defined FIRST (before submodule imports to avoid circular imports) ──
-
-__all__ = [
-    # Core entry-points (filled after submodule imports)
-]
-
-
-@dataclass
-class Anchor:
-    """A Landsat scene used as coupling anchor."""
-
-    scene_id: str
-    source: Literal["landsat-c2-l2"]
-    year: int
-    datetime: datetime  # UTC acquisition datetime
-    date: str  # ISO date string "YYYY-MM-DD"
-    cloud_cover: float | None  # eo:cloud_cover from STAC
-    sun_azimuth: float | None
-    sun_elevation: float | None
-    item_href: str | None  # signed PC asset URL (for mode=full pipeline)
-
-
-@dataclass
-class S2Candidate:
-    """A Sentinel-2 L2A scene within ±window_days of an anchor."""
-
-    scene_id: str
-    source: Literal["sentinel-2-l2a"]
-    year: int
-    datetime: datetime  # UTC acquisition datetime
-    date: str  # ISO date string "YYYY-MM-DD"
-    dt_days: float  # |s2.datetime − anchor.datetime| in days
-    cloud_cover: float | None
-    item_href: str | None
-    clear_frac: float | None = None  # computed after pixel load
-
-
-@dataclass
-class ECOSTRESSMatch:
-    """An ECOSTRESS granule matched to a Landsat anchor day."""
-
-    granule_id: str
-    source: Literal["ecostress"]
-    year: int
-    datetime: datetime  # UTC acquisition datetime
-    date: str  # ISO date string
-    dt_hours: float  # |ecostress.datetime − anchor.datetime| in hours (local)
-    mgrs_tile: str | None
-    overlap_frac: float  # fraction of Berlin bbox overlapped
-    clear_frac: float | None  # fraction of cloud==0 inside Berlin; None if not computed
 
 
 @dataclass

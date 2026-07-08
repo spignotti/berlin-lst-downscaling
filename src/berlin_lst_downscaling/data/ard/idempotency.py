@@ -68,9 +68,6 @@ def reconcile(
     return result
 
 
-def status_summary(ledger: Ledger, source: str) -> dict[str, int]:
-    """Return ``{status: count}`` for a given source."""
-    return ledger.status_counts(source)
 
 
 def _files_exist(row: LedgerRow) -> bool:
@@ -92,5 +89,4 @@ def _files_exist(row: LedgerRow) -> bool:
 
 __all__ = [
     "reconcile",
-    "status_summary",
 ]

@@ -5,7 +5,6 @@ from berlin_lst_downscaling.data.io.storage import (
     atomic_write,
     exists,
     read_bytes,
-    read_text,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "atomic_write",
     "exists",
     "read_bytes",
-    "read_text",
 ]

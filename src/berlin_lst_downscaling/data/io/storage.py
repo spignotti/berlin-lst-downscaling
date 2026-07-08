@@ -105,11 +105,6 @@ def read_bytes(uri: UriLike) -> bytes:
     return _resolve_local(loc.uri).read_bytes()
 
 
-def read_text(uri: UriLike, encoding: str = "utf-8") -> str:
-    """Read the full content at the URI into str."""
-    return read_bytes(uri).decode(encoding)
-
-
 def atomic_write(
     uri: UriLike,
     data: bytes | BinaryIO | str,
@@ -230,5 +225,4 @@ __all__ = [
     "atomic_write",
     "exists",
     "read_bytes",
-    "read_text",
 ]

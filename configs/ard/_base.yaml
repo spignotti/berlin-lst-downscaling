@@ -19,15 +19,12 @@ cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
 
 # ECOSTRESS (disabled in default; enabled per ecostress source config)
 ecostress:
-  enabled: false
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
   stage_base: "data/smoke/ecostress_stage"  # manifest-driven staging root (local), overridden to gs:// for cloud
 
 # Output
 manifest_uri: null                  # explicit manifest path (or resolved from output_root)
 output_root: "data/ard"            # source-specific subdirectory set per source config
-logging_dir: "${output_root}/logs"  # structured JSON logs
-qa_dir: "${output_root}"           # QA reports
 
 # AOI (Berlin boundary)
 aoi:

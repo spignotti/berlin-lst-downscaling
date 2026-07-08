@@ -25,20 +25,6 @@ _FLAG_CIRRUS = 1 << 3  # 8
 _FLAG_SATURATED = 1 << 4  # 16
 
 
-def load_aoi_mask(aoi_uri: str) -> tuple[np.ndarray, dict]:
-    """Load an AOI mask COG (uint8, 1=inside, 0=outside).
-
-    Returns ``(mask, profile)`` where *mask* is a 2D uint8 numpy array
-    and *profile* is the rasterio profile dict.
-
-    Raises ``FileNotFoundError`` if the AOI COG does not exist.
-    """
-    with rasterio.open(aoi_uri) as src:
-        data = src.read(1)  # single band
-        profile = src.profile.copy()
-    return data, profile
-
-
 def compute_aoi_metrics(
     flag_uri: str,
     aoi_uri: str,
@@ -149,6 +135,5 @@ def compute_aoi_metrics(
 
 
 __all__ = [
-    "load_aoi_mask",
     "compute_aoi_metrics",
 ]
