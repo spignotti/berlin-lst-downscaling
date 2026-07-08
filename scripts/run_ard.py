@@ -12,7 +12,7 @@ Usage
 -----
     # Smoke test (manifest-driven, all sources)
     uv run python scripts/run_ard.py --config-name smoke_primary \
-        manifest_uri=data/tmp/smoke_primary/manifest.parquet
+        manifest_uri=data/smoke/primary/manifest.parquet
 
     # Single-source run (e.g. Landsat full)
     uv run python scripts/run_ard.py --config-name landsat/default \

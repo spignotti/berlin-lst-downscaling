@@ -21,7 +21,7 @@ cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
 ecostress:
   enabled: false
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
-  stage_base: "data/tmp/ecostress_stage"  # manifest-driven staging root (local), overridden to gs:// for cloud
+  stage_base: "data/smoke/ecostress_stage"  # manifest-driven staging root (local), overridden to gs:// for cloud
 
 # Output
 manifest_uri: null                  # explicit manifest path (or resolved from output_root)

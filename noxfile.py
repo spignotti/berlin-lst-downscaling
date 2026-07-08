@@ -38,7 +38,7 @@ def smoke_primary(session: nox.Session) -> None:
 
     Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), stages the
     ECOSTRESS fixture, then runs the ARD pipeline.  Final COGs land in
-    ``data/tmp/smoke_primary/ard/``.
+    ``data/smoke/primary/ard/``.
     """
     import os
     import uuid
@@ -48,9 +48,8 @@ def smoke_primary(session: nox.Session) -> None:
     import pyarrow.parquet as pq
 
     run_id = f"sp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    stage_root = "data/tmp/ecostress_stage"
-    eco_stage = f"{stage_root}/{run_id}"
-    manifest_dir = "data/tmp/smoke_primary"
+    stage_root = "data/smoke/ecostress_stage"
+    manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
     output_root = f"{manifest_dir}/ard"
 
@@ -137,7 +136,7 @@ def smoke_selection_2024(session: nox.Session) -> None:
 
     Validates the coupling logic across the full configured season.
     Uses SCL-based cloud detection (the only method).
-    Writes ``data/tmp/manifest_smoke_2024.parquet``.
+    Writes ``data/smoke/manifest_2024.parquet``.
     """
     session.run(
         "uv", "run", "python", "scripts/build_manifest.py",
@@ -182,7 +181,7 @@ def cloud_pilot(session: nox.Session) -> None:
     run_id = f"cp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     stage_base = "gs://berlin-lst-data/_staging/ecostress"
     eco_stage = f"{stage_base}/{run_id}"
-    manifest_path = f"data/tmp/cloud_pilot_{run_id}/manifest.parquet"
+    manifest_path = f"data/smoke/cloud_pilot_{run_id}/manifest.parquet"
     output_root = "gs://berlin-lst-data/ard/smoke"
 
     # ── pre-flight: GCS reachable ─────────────────────────────────────

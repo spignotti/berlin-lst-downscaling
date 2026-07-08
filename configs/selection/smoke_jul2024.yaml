@@ -8,4 +8,4 @@ defaults:
 mode: couple
 years: [2024]
 months: [7]
-manifest_out: "data/tmp/manifest_smoke.parquet"
+manifest_out: "data/smoke/manifest_jul2024.parquet"

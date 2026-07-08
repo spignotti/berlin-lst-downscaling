@@ -17,7 +17,7 @@ Usage
     # Stage locally (smoke test)
     uv run python scripts/download_ecostress_fixture.py \
         --tile 33UUU --date 2018-07-30 \
-        --stage-dir data/tmp/ecostress_stage/abc123
+        --stage-dir data/smoke/ecostress_stage/abc123
 
     # Stage to GCS (cloud run)
     uv run python scripts/download_ecostress_fixture.py \

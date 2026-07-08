@@ -8,4 +8,4 @@ defaults:
 sources: ["landsat-c2-l2", "sentinel-2-l2a", "ecostress"]
 mode: full
 scene_date: null
-output_root: "data/tmp/smoke_primary/ard"
+output_root: "data/smoke/primary/ard"

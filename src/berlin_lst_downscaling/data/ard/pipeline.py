@@ -284,7 +284,7 @@ def _process_ecostress_todo(
     )
     from berlin_lst_downscaling.data.io.staging import StageSession
 
-    stage_base = cfg.get("ecostress.stage_base", "data/tmp/ecostress_stage")
+    stage_base = cfg.get("ecostress.stage_base", "data/smoke/ecostress_stage")
     with StageSession(stage_base, run_id=run_id) as stage:
         for scene_id, _src, year, _reason in todo:
             try:
