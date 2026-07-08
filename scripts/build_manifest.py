@@ -72,6 +72,7 @@ def _run_couple(cfg: DictConfig) -> None:
     import logging
     logging.getLogger("rasterio._err").setLevel(logging.ERROR)
     logging.getLogger("odc.loader._rio").setLevel(logging.ERROR)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 
     print(json.dumps({
         "mode": "couple",
