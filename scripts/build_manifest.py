@@ -81,21 +81,35 @@ def _run_couple(cfg: DictConfig) -> None:
         print("ERROR: No Landsat anchors found for the configured range.", file=sys.stderr)
         raise SystemExit(1)
 
-    # ── 2. Search S2 candidates per anchor + compute clear_frac ──────────────
+    # ── 2. Search S2 candidates per anchor + compute clear_frac (parallel) ──
     print("  [2/5] Searching S2 candidates + computing clear_frac ...", file=sys.stderr)
     s2_by_anchor: dict[str, list] = {}
-    l8_items_cache: dict[str, list] = {}
 
-    for i, anchor in enumerate(anchors):
-        if (i + 1) % 20 == 0:
-            print(f"  [2/5] Progress: {i + 1}/{len(anchors)} anchors processed", file=sys.stderr)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Get L8 items for this anchor (reuse across candidates)
-        l8_items = _resolve_landsat_items(anchor, cfg)
-        l8_items_cache[anchor["scene_id"]] = l8_items
+    def _process_one_anchor(anchor: dict) -> tuple[str, list]:
+        """Resolve Landsat items + compute S2 candidates for one anchor."""
+        try:
+            l8_items = _resolve_landsat_items(anchor, cfg)
+            candidates = match_s2_candidates_with_clear_frac(anchor, l8_items, cfg)
+            return anchor["scene_id"], candidates
+        except Exception as exc:
+            print(f"  [2/5] ERROR anchor {anchor.get('scene_id', '???')}: {exc}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return anchor["scene_id"], []
 
-        candidates = match_s2_candidates_with_clear_frac(anchor, l8_items, cfg)
-        s2_by_anchor[anchor["scene_id"]] = candidates
+    n_total = len(anchors)
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_process_one_anchor, a): a for a in anchors}
+        for future in as_completed(futures):
+            scene_id, candidates = future.result()
+            s2_by_anchor[scene_id] = candidates
+            done_count += 1
+            if done_count % 10 == 0 or done_count == n_total:
+                print(f"  [2/5] Progress: {done_count}/{n_total} anchors processed"
+                      f" (last: {scene_id})", file=sys.stderr)
 
     print(f"  [2/5] Done — processed {len(anchors)} anchors", file=sys.stderr)
 
