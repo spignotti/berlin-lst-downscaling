@@ -8,7 +8,7 @@ Per the Szenen-Selektion spec:
 
 from __future__ import annotations
 
-from datetime import UTC, timedelta
+from datetime import UTC
 from zoneinfo import ZoneInfo
 
 from berlin_lst_downscaling.data.selection.ecostress import (
@@ -26,6 +26,10 @@ def build_ecostress_subset(
     acquisition date within ±window_hours of local Berlin time, then
     filters by Berlin footprint overlap and (optionally) clear-pixel fraction.
 
+    Performance: queries CMR *once* for the full date range of all coupled
+    pairs, then filters in-memory per anchor (avoids 500+ individual CMR
+    queries).
+
     Parameters
     ----------
     pairs :
@@ -39,9 +43,24 @@ def build_ecostress_subset(
         Mapping ``anchor.scene_id`` → list of matched ECOSTRESS granule dicts.
         Empty list if no granules pass the filters.
     """
+    if not pairs:
+        return {}
+
     tz = ZoneInfo(cfg.ecostress.local_tz)
     window_hours: int = cfg.ecostress.window_hours
     clear_frac_min: float = cfg.ecostress.clear_frac_min
+
+    # ── Query CMR once for full date range of all coupled anchors ────────
+    min_year = min(p["anchor"]["year"] for p in pairs)
+    max_year = max(p["anchor"]["year"] for p in pairs)
+    all_granules = search_ecostress(
+        start=f"{min_year}-01-01",
+        end=f"{max_year}-12-31",
+        bbox=tuple(cfg.bbox),
+        version=cfg.ecostress.version,
+    )
+    print(f"  [4/5] CMR returned {len(all_granules)} ECOSTRESS granules "
+          f"({min_year}-{max_year}), filtering per anchor ...", file=__import__("sys").stderr)
 
     result: dict[str, list[dict]] = {}
 
@@ -52,37 +71,10 @@ def build_ecostress_subset(
         anchor_utc = anchor["datetime"]
         anchor_local = anchor_utc.astimezone(tz)
 
-        window_start_local = anchor_local - timedelta(hours=window_hours)
-        window_end_local = anchor_local + timedelta(hours=window_hours)
-
-        # Convert bounds back to UTC for CMR query
-        window_start_utc = window_start_local.astimezone(UTC)
-        window_end_utc = window_end_local.astimezone(UTC)
-
-        start_str = window_start_utc.strftime("%Y-%m-%d")
-        end_str = window_end_utc.strftime("%Y-%m-%d")
-
-        # ── Search CMR for granules in the narrow time window ───────────────
-        try:
-            granules = search_ecostress(
-                start=start_str,
-                end=end_str,
-                bbox=tuple(cfg.bbox),
-                version=cfg.ecostress.version,
-            )
-        except RuntimeError:
-            result[anchor["scene_id"]] = []
-            continue
-
-        # search_ecostress already returns dicts — no conversion needed
-        granules = list(granules)
-
-        # ── Filter and enrich with dt_hours + clear_frac ─────────────────────
+        # ── Filter cached granules by time window ─────────────────────────
         matches: list[dict] = []
-        for g in granules:
+        for g in all_granules:
             # dt_hours relative to anchor in local Berlin time
-            # Map ECOSTRESS datetime from UTC string via the granule_id parser
-            # (search_ecostress returns dicts with naive datetimes)
             if g["datetime"].tzinfo is None:
                 g_dt_utc = g["datetime"].replace(tzinfo=UTC)
             else:
@@ -111,7 +103,6 @@ def build_ecostress_subset(
                         continue
                 except Exception as exc:
                     import warnings
-
                     warnings.warn(f"clear_frac failed for {g['granule_id']}: {exc}", stacklevel=2)
 
             g["dt_hours"] = dt_hours
