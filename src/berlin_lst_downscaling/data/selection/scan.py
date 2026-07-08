@@ -12,7 +12,7 @@ GB estimates (per scene, approximate):
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from berlin_lst_downscaling.data.selection import ScanReport
@@ -30,8 +30,13 @@ def run_scan(cfg) -> ScanReport:
     Scans the full configured year/season range without loading pixels.
     Returns a ScanReport and writes the full report to disk.
     """
-    # ── Landsat anchors (full range) ─────────────────────────────────────────
+    # ── Landsat anchors (full range) — skip pixel filter in scan mode ─────
+    # Temporarily set min_clear_frac=0 so build_anchors returns all STAC
+    # scenes without pixel-level QA_PIXEL loads. Scan mode is metadata-only.
+    _orig_min_cf = cfg.landsat.anchor.min_clear_frac
+    cfg.landsat.anchor.min_clear_frac = 0.0
     anchors, anchor_stats = build_anchors(cfg)
+    cfg.landsat.anchor.min_clear_frac = _orig_min_cf  # restore
     # n_landsat_total: all scenes from STAC before pixel fitness gate
     n_landsat_total = anchor_stats["n_total"]
 
@@ -87,7 +92,7 @@ def run_scan(cfg) -> ScanReport:
     md_path = out_dir / "scan_report.md"
 
     report_data = {
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "config": {
             "years": cfg.years,
             "months": cfg.months,
@@ -95,7 +100,7 @@ def run_scan(cfg) -> ScanReport:
             "s2_window_days": cfg.sentinel2.window_days,
             "s2_score_lambda": getattr(cfg.sentinel2.score, "lambda", 0.1),
             "s2_min_clear_frac": cfg.sentinel2.min_clear_frac,
-            "ecoftresst_window_hours": cfg.ecostress.window_hours,
+            "ecostress_window_hours": cfg.ecostress.window_hours,
             "assumed_coupling_rate": coupling_rate,
         },
         "counts": {
@@ -127,7 +132,7 @@ def run_scan(cfg) -> ScanReport:
     md_lines = [
         "# Szenen-Selektion — Volumen-Scan",
         "",
-        f"**Datum:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
+        f"**Datum:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M')}",
         f"**Zeitraum:** {'/'.join(str(y) for y in cfg.years)} | Monate {cfg.months}",
         "",
         "## Counts",
