@@ -34,12 +34,16 @@ Cloud semantics (Collection 2, ``cloud`` layer):
 from __future__ import annotations
 
 import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
+import earthaccess
 import numpy as np
 import rasterio
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 import xarray as xr
+from earthaccess.store import Store
 from rasterio.enums import Resampling
 
 from berlin_lst_downscaling.common.config import settings
@@ -234,7 +238,119 @@ def _assert_granule_layer_exists(uri: str) -> None:
         ) from exc
 
 
+def download_and_stage_granule(
+    granule_id: str,
+    stage_uri: str,
+) -> str:
+    """Download one ECOSTRESS L2T granule from NASA Earthdata → stage.
+
+    Searches CMR by granule ID, downloads the 4 layer COGs (LST, cloud,
+    water, QC) to a temporary directory, then uploads them to the stage
+    via ``StageManager``.
+
+    Parameters
+    ----------
+    granule_id :
+        Full granule ID, e.g.
+        ``ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01``.
+    stage_uri :
+        Stage root URI, e.g. ``data/tmp/ecostress_stage/<run_id>`` or
+        ``gs://bucket/_staging/ecostress/<run_id>``.
+
+    Returns
+    -------
+    str
+        The ``raw_dir`` URI within the stage where the granule's COGs
+        were uploaded (``{stage_uri}/{granule_id}``).
+    """
+    from berlin_lst_downscaling.data.io.staging import StageManager
+
+    # ── Parse granule ID for CMR search ─────────────────────────────────
+    dt = _parse_granule_datetime(granule_id)
+    if dt is None:
+        raise ValueError(f"Cannot parse datetime from granule ID: {granule_id}")
+    date_compact = dt.strftime("%Y%m%d")
+    mgrs = _parse_granule_mgrs(granule_id)
+    if mgrs is None:
+        raise ValueError(f"Cannot parse MGRS tile from granule ID: {granule_id}")
+
+    # ── Login to Earthdata ──────────────────────────────────────────────
+    auth = earthaccess.login()
+
+    # ── CMR search by granule_name pattern ──────────────────────────────
+    results = earthaccess.search_data(
+        short_name="ECO_L2T_LSTE",
+        version="002",
+        granule_name=f"ECOv002_L2T_LSTE_*_{mgrs}_{date_compact}T*",
+        count=5,
+    )
+    granule = next(
+        (g for g in results if g["meta"]["native-id"] == granule_id),
+        None,
+    )
+    if granule is None:
+        raise FileNotFoundError(
+            f"ECOSTRESS granule {granule_id!r} not found in CMR. "
+            f"Searched for pattern: ECOv002_L2T_LSTE_*_{mgrs}_{date_compact}T*"
+        )
+
+    # ── Download to temporary directory ─────────────────────────────────
+    tmp_dir = Path(tempfile.gettempdir()) / f"eco_dl_{granule_id[-12:]}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    downloaded = _download_to_tmp(granule, tmp_dir, auth)
+
+    # ── Upload into stage ───────────────────────────────────────────────
+    stage = StageManager(uri=stage_uri, run_id=None, persist=True)
+    try:
+        for local_path in downloaded:
+            key = f"{granule_id}/{local_path.name}"
+            stage.put(local_path, key)
+    finally:
+        # Clean up local tmp files
+        for local_path in downloaded:
+            local_path.unlink(missing_ok=True)
+        tmp_dir.rmdir() if tmp_dir.exists() else None
+
+    raw_dir = f"{stage.uri.uri}/{granule_id}"
+    return raw_dir
+
+
+def _download_to_tmp(
+    granule: dict,
+    tmp_dir: Path,
+    auth: earthaccess.auth.Auth,
+) -> list[Path]:
+    """Download one granule's 4 layer COGs to a local temp directory.
+
+    Uses ``earthaccess.Store.get()`` which always downloads locally.
+    Retries up to 3 times with exponential backoff.
+    """
+    store = Store(auth=auth)
+    for attempt in range(3):
+        try:
+            downloaded = store.get([granule], local_path=str(tmp_dir), threads=4)  # type: ignore[arg-type]
+            return [Path(p) for p in downloaded if p]
+        except Exception as exc:
+            if attempt < 2:
+                import time as _time
+                _time.sleep(2 ** attempt)
+            else:
+                raise RuntimeError(
+                    f"Download failed after 3 attempts for {granule['meta']['native-id']}: {exc}"
+                ) from exc
+    raise RuntimeError("Unreachable — download retry loop exhausted.")
+
+
+def _parse_granule_mgrs(granule_id: str) -> str | None:
+    """Extract MGRS tile from a granule ID (e.g. 33UUU)."""
+    parts = granule_id.split("_")
+    if len(parts) >= 6:
+        return parts[5]
+    return None
+
+
 __all__ = [
     "load_ecostress_scene",
+    "download_and_stage_granule",
 ]
 

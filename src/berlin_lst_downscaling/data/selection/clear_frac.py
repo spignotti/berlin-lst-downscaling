@@ -161,7 +161,7 @@ def _landsat_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.n
     return landsat_qa_to_clear_bits(qa)
 
 
-_S2_CLOUD_CLASSES = {0, 1, 8, 9, 10, 11}  # fill, saturated, cloud, cirrus, snow
+_S2_CLOUD_CLASSES = {0, 1, 3, 8, 9, 10, 11}  # fill, saturated, shadow, cloud, cirrus, snow
 
 
 def _s2_is_clear(

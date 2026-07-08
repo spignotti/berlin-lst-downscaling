@@ -39,7 +39,6 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
         collections=[cfg.sentinel2.collection],
         bbox=tuple(cfg.bbox),
         datetime=f"{start_str}/{end_str}",
-        query={"eo:cloud_cover": {"lt": cfg.sentinel2.cloud_cover_max}},
     )
 
     candidates: list[dict] = []
@@ -176,7 +175,6 @@ def _resolve_s2_items(
             collections=[cfg.sentinel2.collection],
             bbox=tuple(cfg.bbox),
             datetime=f"{start_date}/{end_date}",
-            query={"eo:cloud_cover": {"lt": cfg.sentinel2.cloud_cover_max}},
         )
         items = list(search.items())
         if items:

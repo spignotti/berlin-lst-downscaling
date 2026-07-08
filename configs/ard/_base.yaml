@@ -20,9 +20,8 @@ cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
 # ECOSTRESS (disabled in default; enabled per ecostress source config)
 ecostress:
   enabled: false
-  appeeears_task_id: null
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
-  persist_stage: false            # clean up stage dir after processing (set true to keep for debugging)
+  stage_base: "data/tmp/ecostress_stage"  # manifest-driven staging root (local), overridden to gs:// for cloud
 
 # Output
 manifest_uri: null                  # explicit manifest path (or resolved from output_root)
@@ -39,5 +38,7 @@ aoi:
 # Hydra overrides (suppress run dir and cwd changes)
 hydra:
   output_subdir: null
+  run:
+    dir: .
   job:
     chdir: false

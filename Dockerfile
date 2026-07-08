@@ -17,11 +17,15 @@ RUN uv sync --frozen --no-dev
 COPY src/ src/
 COPY configs/ configs/
 COPY scripts/ scripts/
+COPY data/boundaries/ data/boundaries/   # AOI masks (aoi_10m.tif, aoi_100m.tif)
 
 # ── Entrypoint ──
-# Run the unified ARD pipeline.  Override Hydra output dir to /tmp.
-# Usage:
-#   uv run python scripts/run_ard.py --config-name cloud_pilot \
-#     manifest_uri=gs://berlin-lst-data/manifests/manifest.parquet \
-#     output_root=gs://berlin-lst-data/ard/
+# Usage examples:
+#   docker run <image> --config-name smoke_primary \
+#     manifest_uri=gs://bucket/manifest.parquet \
+#     output_root=gs://bucket/ard/
+#
+#   docker run <image> --config-name smoke_primary \
+#     manifest_uri=gs://bucket/manifest.parquet \
+#     output_root=gs://bucket/ard/ ecostress.stage_base=gs://bucket/_staging/ecostress
 ENTRYPOINT ["uv", "run", "python", "scripts/run_ard.py", "hydra.run.dir=/tmp/ard_outputs"]

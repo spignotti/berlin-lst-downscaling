@@ -82,8 +82,18 @@ def build_ecostress_subset(
         matches: list[dict] = []
         for g in granules:
             # dt_hours relative to anchor in local Berlin time
-            g_local = g["datetime"].astimezone(tz)
+            # Map ECOSTRESS datetime from UTC string via the granule_id parser
+            # (search_ecostress returns dicts with naive datetimes)
+            if g["datetime"].tzinfo is None:
+                g_dt_utc = g["datetime"].replace(tzinfo=pytz.UTC)
+            else:
+                g_dt_utc = g["datetime"]
+            g_local = g_dt_utc.astimezone(tz)
             dt_hours = abs((g_local - anchor_local).total_seconds()) / 3600.0
+
+            # Enforce ±window_hours filter
+            if dt_hours > window_hours:
+                continue
 
             # footprint_overlap already ≥ 0.10 from search_ecostress
             if g["overlap_frac"] < cfg.ecostress.overlap_min:

@@ -17,7 +17,6 @@ from berlin_lst_downscaling.data.ard.paths import (
     flag_path,
     scene_dir,
     stac_path,
-    tmp_dir,
 )
 from berlin_lst_downscaling.data.ard.pipeline import run as ard_run
 from berlin_lst_downscaling.data.ard.reports import qa_report
@@ -40,7 +39,6 @@ __all__ = [
     "cog_path",
     "flag_path",
     "stac_path",
-    "tmp_dir",
     "mask_landsat",
     "mask_s2",
     "solar_position",

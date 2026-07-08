@@ -58,6 +58,7 @@ def _run_landsat_scene(
     run_id: str,
     items: list[Any] | None = None,
     scene_date: str | None = None,
+    ecostress_raw_dir: str | None = None,  # unused by Landsat
 ) -> xr.Dataset:
     """Load + mask a Landsat C2 L2 scene."""
     effective_date = scene_date or cfg.scene_date
@@ -87,6 +88,7 @@ def _run_sentinel2_scene(
     run_id: str,
     items: list[Any] | None = None,
     scene_date: str | None = None,
+    ecostress_raw_dir: str | None = None,  # unused by S2
 ) -> xr.Dataset:
     """Load + mask a Sentinel-2 L2A scene."""
     effective_date = scene_date or cfg.scene_date
@@ -120,17 +122,18 @@ def _run_ecostress_scene(
     run_id: str,
     items: list[Any] | None = None,
     scene_date: str | None = None,
+    ecostress_raw_dir: str | None = None,
 ) -> xr.Dataset:
     """Load + mask an ECOSTRESS L2T granule from local COGs.
 
-    No STAC search — scene_id comes from the manifest (mode=full) or
-    from listing the fixture directory (mode=smoke).  The raw_dir
-    (``cfg.ecostress.raw_dir``) is expected to contain one sub-directory
-    per granule, each with ECO_L2T_LSTE layer COGs.
+    No STAC search — scene_id comes from the manifest.  The raw_dir
+    (``cfg.ecostress.raw_dir`` or ``ecostress_raw_dir`` override) is
+    expected to contain one sub-directory per granule, each with
+    ECO_L2T_LSTE layer COGs.
     """
     bbox = tuple(cfg.bbox) if cfg.get("bbox") else None
     resolution = int(cfg.get("target_resolution_low", 70))
-    raw_dir = str(cfg.ecostress.raw_dir)
+    raw_dir = ecostress_raw_dir or str(cfg.ecostress.raw_dir)
 
     ds, loaded_ids = load_ecostress_scene(
         granule_id=scene_id,
@@ -247,12 +250,60 @@ def _process_manifest(
         "n_todo": len(todo),
     })
 
-    for scene_id, _source, year, _reason in todo:
-        _run_scene(
-            scene_id, source, year, contract, cfg, ledger, run_id,
-            scene_date=scene_dates.get(scene_id),
-            item_href=scene_hrefs.get(scene_id),
+    if source == "ecostress":
+        _process_ecostress_todo(
+            todo, source, contract, cfg, ledger, run_id,
+            scene_dates, scene_hrefs,
         )
+    else:
+        for scene_id, _source, year, _reason in todo:
+            _run_scene(
+                scene_id, source, year, contract, cfg, ledger, run_id,
+                scene_date=scene_dates.get(scene_id),
+                item_href=scene_hrefs.get(scene_id),
+            )
+
+
+def _process_ecostress_todo(
+    todo: list[tuple[str, str, int, str]],
+    source: str,
+    contract: Contract,
+    cfg: DictConfig,
+    ledger: Ledger,
+    run_id: str,
+    scene_dates: dict[str, str | None],
+    scene_hrefs: dict[str, str | None],
+) -> None:
+    """Process ECOSTRESS scenes with pipeline-internal staging.
+
+    For each scene: download granule from NASA Earthdata → stage →
+    process → cleanup.  Stage lifecycle is managed by ``StageSession``.
+    """
+    from berlin_lst_downscaling.data.acquisition.ecostress import (
+        download_and_stage_granule,
+    )
+    from berlin_lst_downscaling.data.io.staging import StageSession
+
+    stage_base = cfg.get("ecostress.stage_base", "data/tmp/ecostress_stage")
+    with StageSession(stage_base, run_id=run_id) as stage:
+        for scene_id, _src, year, _reason in todo:
+            try:
+                granule_raw_dir = download_and_stage_granule(scene_id, stage.uri.uri)
+            except Exception as exc:
+                _log(cfg, run_id, "scene_failed", {
+                    "scene_id": scene_id,
+                    "source": source,
+                    "error": f"Stage download failed: {exc}",
+                })
+                continue
+
+            _run_scene(
+                scene_id, source, year, contract, cfg, ledger, run_id,
+                scene_date=scene_dates.get(scene_id),
+                item_href=scene_hrefs.get(scene_id),
+                ecostress_raw_dir=granule_raw_dir,
+            )
+        # Stage cleaned up automatically on StageSession.__exit__
 
 
 # ── per-scene processing ─────────────────────────────────────────────
@@ -269,6 +320,7 @@ def _run_scene(
     items: list[Any] | None = None,
     scene_date: str | None = None,
     item_href: str | None = None,
+    ecostress_raw_dir: str | None = None,
 ) -> None:
     """Process one scene: load → mask → write COG+STAC → update ledger.
 
@@ -285,6 +337,10 @@ def _run_scene(
         Direct STAC item URL from the manifest. When provided, the
         runner can bypass STAC search (future optimization; currently
         falls back to date-based search).
+    ecostress_raw_dir :
+        Per-scene override for ECOSTRESS raw_dir. Used by the
+        manifest-driven ECOSTRESS pipeline where each granule is
+        downloaded and staged on demand.
     """
     effective_date = scene_date or cfg.scene_date
     _log(cfg, run_id, "scene_start", {
@@ -323,6 +379,7 @@ def _run_scene(
             run_id=run_id,
             items=items,
             scene_date=scene_date,
+            ecostress_raw_dir=ecostress_raw_dir,
         )
 
         # ── WRITE MAIN COG ──

@@ -42,6 +42,7 @@ expects.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import earthaccess
@@ -158,7 +159,7 @@ def main(
             continue
 
         # 3. Download from Earthdata S3 to a local tmp dir (earthaccess limitation)
-        tmp_dir = Path("/var/folders/7r/mzy_klsd1mn9xrh7fln8mt2m0000gn/T")
+        tmp_dir = Path(tempfile.gettempdir())
         typer.echo("  Downloading to local tmp ...")
         try:
             local_paths = _download_to_tmp(granule, tmp_dir, auth)

@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def _resolve(root: str, source: str, year: int, scene_id: str) -> str:
-    return str(Path(root) / source / str(year) / scene_id)
+    """Join root/source/year/scene_id preserving URI schemes like gs://.
+
+    ``pathlib.Path`` would strip the double slash from ``gs://bucket/...``
+    to ``gs:/bucket/...``, breaking GCS paths.
+    """
+    return f"{root.rstrip('/')}/{source}/{year}/{scene_id}"
 
 
 def scene_dir(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the output directory for a scene.
 
-    ``root`` is typically ``cfg.output_root`` (``data/ard`` or
-    ``data/tmp/smoke_ard_<date>`` or ``gs://bucket/prefix``).
+    ``root`` is typically ``cfg.output_root`` (``data/ard``,
+    ``data/smoke/primary/ard``, or ``gs://bucket/prefix``).
     """
     return _resolve(root, source, year, scene_id)
 
@@ -42,19 +45,9 @@ def flag_path(root: str, source: str, year: int, scene_id: str) -> str:
     return f"{scene_dir(root, source, year, scene_id)}/{scene_id}.flag.tif"
 
 
-def tmp_dir(root: str, source: str, year: int, scene_id: str) -> str:
-    """Return the temporary directory path for atomic writes.
-
-    Files are written here first, then atomically moved to the target
-    path.  Aborted runs leave only temp files, never half-baked COGs.
-    """
-    return f"{_resolve(root, source, year, scene_id)}/.tmp"
-
-
 __all__ = [
     "scene_dir",
     "cog_path",
     "flag_path",
     "stac_path",
-    "tmp_dir",
 ]

@@ -24,7 +24,6 @@ landsat:
 
 # ── Sentinel-2 matching ────────────────────────────────────────────────────────
 sentinel2:
-  cloud_cover_max: 20          # eo:cloud_cover filter
   collection: "sentinel-2-l2a"
   window_days: 3                # search ±N days around anchor acquisition
   score:
@@ -53,5 +52,7 @@ output_root: "data/ard"           # shared root; manifest_out resolved relative 
 # ── Hydra (suppress run dir) ──────────────────────────────────────────────────
 hydra:
   output_subdir: null
+  run:
+    dir: .
   job:
     chdir: false
