@@ -92,7 +92,7 @@ def validate_cog(
         )
 
     # ── 5. Shape ───────────────────────────────────────────────────────────
-    ex, ey = expected_grid.shape
+    ex, ey = expected_grid.shape.x, expected_grid.shape.y
     if width != ex or height != ey:
         result.fail(
             f"Shape mismatch: got ({width}, {height}), "
@@ -158,8 +158,8 @@ def validate_flag_cog(
     if dtype != "uint8":
         result.fail(f"Flag COG dtype: got {dtype!r}, expected 'uint8'")
 
-    # Shape
-    ex, ey = expected_grid.shape
+    # ── 4. Shape ───────────────────────────────────────────────────────────
+    ex, ey = expected_grid.shape.x, expected_grid.shape.y
     if width != ex or height != ey:
         result.fail(
             f"Flag COG shape mismatch: got ({width}, {height}), "

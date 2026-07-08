@@ -36,9 +36,11 @@ def typecheck(session: nox.Session) -> None:
 def smoke_primary(session: nox.Session) -> None:
     """Run manifest-driven smoke test for all 3 sources locally.
 
-    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), stages the
-    ECOSTRESS fixture, then runs the ARD pipeline.  Final COGs land in
-    ``data/smoke/primary/ard/``.
+    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), then runs the
+    ARD pipeline.  The pipeline downloads + stages ECOSTRESS from CMR
+    automatically via ``_process_ecostress_todo``.
+
+    Final COGs land in ``data/smoke/primary/ard/``.
     """
     import os
     import uuid
@@ -47,9 +49,6 @@ def smoke_primary(session: nox.Session) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    run_id = f"sp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    stage_root = "data/smoke/ecostress_stage"
-    eco_stage = f"{stage_root}/{run_id}"
     manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
     output_root = f"{manifest_dir}/ard"
@@ -89,38 +88,14 @@ def smoke_primary(session: nox.Session) -> None:
     pq.write_table(table, manifest_path)
     print(f"Manifest written: {manifest_path}")
 
-    # Step 2: Stage ECOSTRESS fixture
-    session.run(
-        "uv", "run", "python", "scripts/download_ecostress_fixture.py",
-        "--tile", "33UUU",
-        "--date", "2018-07-30",
-        "--stage-dir", stage_root,
-        "--run-id", run_id,
-        external=True,
-    )
-
-    # Step 3: Run the unified ARD pipeline
-    # ECOSTRESS raw_dir is set to the staged fixture path.
-    # Stage cleanup is handled by run_ard.py (pipeline-internal via StageSession).
+    # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
+    # automatically by the pipeline's _process_ecostress_todo path.
     session.run(
         "uv", "run", "python", "scripts/run_ard.py",
         "--config-name", "smoke_primary",
         f"manifest_uri={manifest_path}",
         f"output_root={output_root}",
-        f"ecostress.raw_dir={eco_stage}",
-        "ecostress.persist_stage=true",  # nox own cleanup runs after
-        external=True,
-    )
-
-    # Step 4: Clean up the ECOSTRESS fixture stage
-    session.run(
-        "uv", "run", "python", "-c",
-        f"""
-import sys; sys.path.insert(0, 'src')
-from berlin_lst_downscaling.data.io.staging import StageSession
-with StageSession('{stage_root}', run_id='{run_id}', persist=False) as stage:
-    print(f'Stage cleaned up: {{stage.uri}}')
-""",
+        "+ecostress.persist_stage=true",  # keep stage for inspection
         external=True,
     )
 
@@ -249,7 +224,7 @@ def cloud_pilot(session: nox.Session) -> None:
         f"manifest_uri={manifest_path}",
         f"output_root={output_root}/smoke_primary",
         f"ecostress.raw_dir={eco_stage}",
-        "ecostress.persist_stage=true",
+        "+ecostress.persist_stage=true",
         external=True,
     )
 

@@ -266,9 +266,7 @@ def download_and_stage_granule(
         The ``raw_dir`` URI within the stage where the granule's COGs
         were uploaded (``{stage_uri}/{granule_id}``).
     """
-    from berlin_lst_downscaling.data.io.staging import StageManager
-
-    # ── Parse granule ID for CMR search ─────────────────────────────────
+    import shutil
     dt = _parse_granule_datetime(granule_id)
     if dt is None:
         raise ValueError(f"Cannot parse datetime from granule ID: {granule_id}")
@@ -303,18 +301,18 @@ def download_and_stage_granule(
     downloaded = _download_to_tmp(granule, tmp_dir, auth)
 
     # ── Upload into stage ───────────────────────────────────────────────
-    stage = StageManager(uri=stage_uri, run_id=None, persist=True)
+    granule_dir = Path(str(stage_uri)) / granule_id
+    granule_dir.mkdir(parents=True, exist_ok=True)
     try:
         for local_path in downloaded:
-            key = f"{granule_id}/{local_path.name}"
-            stage.put(local_path, key)
+            shutil.copy2(local_path, granule_dir / local_path.name)
     finally:
         # Clean up local tmp files
         for local_path in downloaded:
             local_path.unlink(missing_ok=True)
         tmp_dir.rmdir() if tmp_dir.exists() else None
 
-    raw_dir = f"{stage.uri.uri}/{granule_id}"
+    raw_dir = str(stage_uri)
     return raw_dir
 
 
