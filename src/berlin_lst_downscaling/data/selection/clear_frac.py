@@ -23,11 +23,11 @@ import logging
 from datetime import datetime
 
 import numpy as np
-import odc.stac
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.warp import transform_bounds
 
+from berlin_lst_downscaling.data.acquisition.pc_client import stac_load
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
 
@@ -82,7 +82,7 @@ def compute_clear_frac_with_counts(
     # has a bug where EPSG:25833 bbox values with Landsat items cause
     # OverflowError: cannot convert float infinity to integer.
     gbox = GeoBox.from_bbox(bbox_25833, crs="EPSG:25833", resolution=resolution)
-    l8_ds = odc.stac.load(
+    l8_ds = stac_load(
         items=l8_items,
         bands=["qa_pixel"],
         geobox=gbox,
@@ -90,7 +90,7 @@ def compute_clear_frac_with_counts(
         groupby="solar_day",
     )
 
-    s2_ds = odc.stac.load(
+    s2_ds = stac_load(
         items=s2_items,
         bands=["SCL"],
         geobox=gbox,

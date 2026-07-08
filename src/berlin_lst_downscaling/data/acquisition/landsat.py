@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-import odc.stac
 import pystac
 import xarray as xr
 
 from berlin_lst_downscaling.common.config import settings
-from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
+from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_load
 
 _LANDSAT_COLLECTION = "landsat-c2-l2"
 _LANDSAT_BANDS = [
@@ -97,7 +96,7 @@ def load_landsat_scene(
     bands = list(bands) if bands is not None else _LANDSAT_BANDS
     res = resolution if resolution is not None else settings.target_resolution
 
-    ds = odc.stac.load(
+    ds = stac_load(
         items=items,
         bands=bands,
         crs=settings.target_crs,
