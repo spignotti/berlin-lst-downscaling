@@ -46,7 +46,9 @@ Usage
 from __future__ import annotations
 
 import json
+import pickle
 import sys
+from pathlib import Path
 
 from omegaconf import DictConfig
 
@@ -64,6 +66,13 @@ from berlin_lst_downscaling.data.selection.scan import run_scan
 
 def _run_couple(cfg: DictConfig) -> None:
     """Run full pixel-coupled manifest generation."""
+    # Suppress transient rasterio CPLE warnings (SAS token expiry, Azure
+    # blob read errors) — the pipeline handles these via retry + graceful
+    # degradation (clear_frac=None on failure, coupling continues).
+    import logging
+    logging.getLogger("rasterio._err").setLevel(logging.ERROR)
+    logging.getLogger("odc.loader._rio").setLevel(logging.ERROR)
+
     print(json.dumps({
         "mode": "couple",
         "years": list(cfg.years),
@@ -84,6 +93,18 @@ def _run_couple(cfg: DictConfig) -> None:
     # ── 2. Search S2 candidates per anchor + compute clear_frac (parallel) ──
     print("  [2/5] Searching S2 candidates + computing clear_frac ...", file=sys.stderr)
     s2_by_anchor: dict[str, list] = {}
+    ckpt_path = "data/ard/couple_checkpoint.pkl"
+
+    # Load checkpoint if exists (resume from partial run)
+    if Path(ckpt_path).exists():
+        try:
+            with open(ckpt_path, "rb") as f:
+                s2_by_anchor = pickle.load(f)  # noqa: S301 — internal checkpoint, not untrusted
+            print(f"  [2/5] Resumed from checkpoint: {len(s2_by_anchor)} anchors already done",
+                  file=sys.stderr)
+        except Exception:
+            print("  [2/5] Checkpoint load failed — starting fresh", file=sys.stderr)
+            s2_by_anchor = {}
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -99,18 +120,26 @@ def _run_couple(cfg: DictConfig) -> None:
             traceback.print_exc(file=sys.stderr)
             return anchor["scene_id"], []
 
+    # Filter anchors already processed in a previous run
+    todo_anchors = [a for a in anchors if a["scene_id"] not in s2_by_anchor]
     n_total = len(anchors)
-    done_count = 0
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {pool.submit(_process_one_anchor, a): a for a in anchors}
+    done_count = len(s2_by_anchor)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {pool.submit(_process_one_anchor, a): a for a in todo_anchors}
         for future in as_completed(futures):
             scene_id, candidates = future.result()
             s2_by_anchor[scene_id] = candidates
             done_count += 1
-            if done_count % 10 == 0 or done_count == n_total:
+            # Save checkpoint every 50 anchors
+            if done_count % 50 == 0 or done_count == n_total:
+                with open(ckpt_path, "wb") as f:
+                    pickle.dump(s2_by_anchor, f)
                 print(f"  [2/5] Progress: {done_count}/{n_total} anchors processed"
-                      f" (last: {scene_id})", file=sys.stderr)
+                      f" (last: {scene_id}) — checkpoint saved", file=sys.stderr)
 
+    # Delete checkpoint on successful completion
+    Path(ckpt_path).unlink(missing_ok=True)
     print(f"  [2/5] Done — processed {len(anchors)} anchors", file=sys.stderr)
 
     # ── 3. Score + Tie-Break + Drop ──────────────────────────────────────────
