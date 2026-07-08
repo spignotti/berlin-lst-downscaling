@@ -49,6 +49,7 @@ def smoke_primary(session: nox.Session) -> None:
 
     run_id = f"sp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     stage_root = "data/smoke/ecostress_stage"
+    eco_stage = f"{stage_root}/{run_id}"
     manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
     output_root = f"{manifest_dir}/ard"
