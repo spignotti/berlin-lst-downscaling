@@ -92,18 +92,22 @@ def match_s2_candidates_with_clear_frac(
     # Resolve S2 items for the candidates (search by date ± 1 day tolerance)
     s2_items_map = _resolve_s2_items([c["datetime"] for c in candidates], cfg)
 
-    candidate_diagnostics = []
-    for c in candidates:
-        s2_items = s2_items_map.get(c["datetime"])
+    # Deduplicate by datetime — all tiles on same overpass share clear_frac.
+    # compute_clear_frac_with_counts loads pixels via odc.stac with
+    # groupby="solar_day", so N tiles on the same date produce 1 result.
+    # This reduces N calls to 1 call per unique datetime (typically 5x fewer loads).
+    from berlin_lst_downscaling.data.selection.clear_frac import (
+        compute_clear_frac_with_counts,
+    )
+
+    unique_dts = {c["datetime"] for c in candidates}
+    cf_by_dt: dict = {}
+    for dt in unique_dts:
+        s2_items = s2_items_map.get(dt)
         if s2_items is None:
-            c["clear_frac"] = None
-            candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
+            cf_by_dt[dt] = None
             continue
         try:
-            from berlin_lst_downscaling.data.selection.clear_frac import (
-                compute_clear_frac_with_counts,
-            )
-
             cf, counts = compute_clear_frac_with_counts(
                 l8_items=l8_items,
                 s2_items=s2_items,
@@ -111,15 +115,29 @@ def match_s2_candidates_with_clear_frac(
                 aoi_mask_path=f"{cfg.aoi.mask_base}/aoi_10m.tif",
                 anchor_dt=anchor["datetime"],
             )
-            c["clear_frac"] = cf
-            candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
+            cf_by_dt[dt] = (cf, counts)
         except Exception as exc:
-            c["clear_frac"] = None
+            cf_by_dt[dt] = None
             import traceback
 
-            print(f"  [clear_frac error] {c['scene_id']}: {exc}", file=sys.stderr)
+            print(
+                f"  [clear_frac error] anchor {anchor.get('scene_id', '?')} "
+                f"dt={dt}: {exc}",
+                file=sys.stderr,
+            )
             traceback.print_exc(file=sys.stderr)
+
+    # Assign clear_frac to all candidates sharing each datetime
+    candidate_diagnostics = []
+    for c in candidates:
+        result = cf_by_dt.get(c["datetime"])
+        if result is None:
+            c["clear_frac"] = None
             candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
+        else:
+            cf, counts = result
+            c["clear_frac"] = cf
+            candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
 
     # Log structured diagnostic event for this anchor
     event = {
@@ -127,6 +145,7 @@ def match_s2_candidates_with_clear_frac(
         "anchor_id": anchor["scene_id"],
         "anchor_date": anchor["date"],
         "n_candidates": len(candidate_diagnostics),
+        "n_unique_dts": len(unique_dts),
         "candidates": candidate_diagnostics,
     }
     print(json.dumps(event), file=sys.stderr)
