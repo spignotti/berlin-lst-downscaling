@@ -28,18 +28,15 @@ Downscale Land Surface Temperature (LST) from Landsat / ECOSTRESS to
 uv sync
 uv run nox                           # lint + typecheck
 
-# ── Phase A (Landsat + Sentinel-2) ────────────────────────────────────
-uv run nox -s smoke                  # smoke test (landsat + sentinel2, local disk)
-uv run nox -s smoke-landsat         # landsat only
-uv run nox -s smoke-sentinel2        # sentinel-2 only
+# ── Manifest-driven ARD smoke test (Landsat + S2 + ECOSTRESS) ────────
+uv run nox -s smoke-primary          # builds 3-row manifest, processes all sources
 
-# ── Phase B (ECOSTRESS) ───────────────────────────────────────────────
-uv run nox -s smoke-ecostress       # local smoke test (stages → processes → cleans up)
-uv run nox -s smoke-ecostress-cloud # GCS smoke test (requires ADC; opt-in)
-
-# ── Phase C (Szenen-Selektion & Kopplung) ────────────────────────────
-uv run nox -s smoke-selection        # coupled manifest smoke test (Juli 2024)
+# ── Szenen-Selektion & Kopplung ──────────────────────────────────────
+uv run nox -s smoke-selection-2024   # coupled manifest Mai–Sep 2024
 uv run nox -s selection-scan         # metadata-only volume scan (Mai–Sep 2017–2025)
+
+# ── Cloud pilot (requires ADC / Workload Identity) ───────────────────
+uv run nox -s cloud-pilot            # smoke-primary targeting GCS
 ```
 
 ## Smoke tests
@@ -47,33 +44,27 @@ uv run nox -s selection-scan         # metadata-only volume scan (Mai–Sep 2017
 Each smoke test is self-contained: it stages raw inputs, runs the pipeline,
 produces COG output and a visualisation, then cleans up the stage.  No manual steps.
 
-| Session | Source | Target | Notes |
-|---------|--------|--------|-------|
-| `smoke-landsat` | Landsat C2-L2 | Local disk | One scene on 2024-06-29 |
-| `smoke-sentinel2` | Sentinel-2 L2A | Local disk | One scene on 2024-06-29 |
-| `smoke-ecostress` | ECOSTRESS L2T | Local disk | Tile 33UUU, 2018-07-30 |
-| `smoke-cloud` | Landsat + S2 | GCS | Requires rclone mount or ADC |
-| `smoke-ecostress-cloud` | ECOSTRESS L2T | GCS | Requires ADC; **opt-in** (API costs) |
-| `smoke-selection` | Landsat + S2 + ECOSTRESS | Manifest | Coupled scene selection, Juli 2024 |
-| `selection-scan` | Landsat + S2 + ECOSTRESS | Scan report | Metadata-only volume scan |
+| Session | What it validates |
+|---------|-------------------|
+| `smoke-primary` | Full ARD pipeline on all 3 sources (manifest-driven) |
+| `smoke-selection-2024` | Scene coupling for Mai–Sep 2024 |
+| `selection-scan` | Metadata-only volume scan (no pixel loads) |
+| `cloud-pilot` | Same as smoke-primary but targeting GCS bucket |
 
 ## Full production run
 
 ```
-Before triggering full-mode:
+Before triggering bulk mode:
   1. uv run nox -s lint typecheck        # code passes gates
-  2. uv run nox -s smoke-ecostress      # local smoke works
-  3. uv run nox -s smoke-ecostress-cloud # cloud smoke works (requires ADC)
-  4. Run a 10-granule pilot, spot-check one COG in QGIS
-  5. THEN: build manifest → run full
+  2. uv run nox -s smoke-primary         # local ARD smoke works for all 3 sources
+  3. uv run nox -s smoke-selection-2024  # coupling produces reasonable results
+  4. uv run nox -s cloud-pilot           # cloud ARD smoke works (requires ADC)
+  5. THEN: build manifest → run bulk
 ```
 
 ### Build the manifest
 
 ```bash
-# Smoke test — coupled manifest for Juli 2024
-uv run nox -s smoke-selection
-
 # Full scan — metadata-only volume assessment (Mai–Sep 2017–2025)
 uv run nox -s selection-scan
 
@@ -84,12 +75,18 @@ uv run python scripts/build_manifest.py \
     mode=couple
 ```
 
-### Run full mode
+### Run bulk mode
 
 ```bash
-uv run python scripts/run_ard_ecostress.py \
-    --config-name full \
-    output_root=gs://berlin-lst-data/ard/ecostress
+uv run python scripts/run_ard.py --config-name full \
+    manifest_uri=data/ard/manifest.parquet \
+    output_root=gs://berlin-lst-data/ard/
+
+# Single-source run:
+uv run python scripts/run_ard.py --config-name full \
+    sources=["ecostress"] \
+    manifest_uri=data/ard/manifest.parquet \
+    output_root=gs://berlin-lst-data/ard/
 ```
 
 ## Staging model
@@ -98,15 +95,14 @@ Raw L2T inputs are **ephemeral**: they exist only for the duration of a
 processing run, then are deleted.  Final artefacts (COGs, STAC items) are
 written to ``output_root`` and are never staged.
 
-Supported URI schemes:
+Supported URI schemes (``output_root``):
 
 | Scheme | Mechanism |
 |--------|-----------|
 | ``local`` | ``pathlib.Path`` + ``shutil`` (POSIX) |
 | ``gcs`` | ``google.cloud.storage`` (bucket → ``/vsigs/`` path for rasterio) |
-| ``mounted`` | ``pathlib.Path`` + ``shutil`` via rclone FUSE mount |
 
-Cloud staging path: NASA S3 → local tmp → GCS stage (``gs://bucket/_staging/``) → rasterio reads via ``/vsigs/`` → nox cleans GCS stage.
+ECOSTRESS staging path: NASA S3 → local tmp → GCS stage (``gs://bucket/_staging/``) → rasterio reads via ``/vsigs/`` → pipeline-internal cleanup.
 
 ## Storage layout
 

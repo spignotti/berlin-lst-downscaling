@@ -3,8 +3,8 @@
 ## Purpose
 
 The manifest is the **scene list** that drives a full pipeline run
-(``mode=full``).  It is produced by a future Szenen-Selektion &
-Kopplung (Task 3) module and consumed by the ARD orchestrator.
+(``mode=full``).  It is produced by the Szenen-Selektion & Kopplung
+module (``scripts/build_manifest.py``) and consumed by the ARD orchestrator.
 
 ## Relation to Ledger
 
@@ -78,13 +78,9 @@ In ``mode=full``:
 4. ``reconcile(scenes, ledger, contract)`` → get subset to process.
 5. Process each scene → update ledger.
 
-## Implementation Status (Phase A)
+## Implementation Status
 
-In Phase A, the manifest does not exist yet — ``mode=full`` emits a
-clear error asking the user to run the Szenen-Selektion task first.
-``smoke`` mode constructs a synthetic one-scene manifest internally.
-
-The pipeline's ``_run_scene`` has been hardened against the case where
-the manifest is absent and falls back to ``cfg.scene_date`` for backward
-compatibility. The ``date``, ``solar_azimuth``, and ``solar_elevation``
+The manifest is produced by ``scripts/build_manifest.py`` and consumed
+by the ARD orchestrator (``scripts/run_ard.py --mode=full``).
+Smoke tests use a hard-coded 3-row manifest (see ``nox -s smoke-primary``).
 columns are parsed if present; the pipeline continues to work if missing.

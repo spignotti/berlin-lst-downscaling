@@ -1,6 +1,6 @@
 # berlin-lst-downscaling
 
-Cloud-native skeleton for Berlin LST downscaling (pre-implementation). Work-in-progress pipeline using Microsoft Planetary Computer STAC for data access, with future DL training via PyTorch/Lightning/TorchGeo.
+Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Computer STAC for Landsat/Sentinel-2 data access and NASA CMR (earthaccess) for ECOSTRESS data. Manifest-driven scene selection, ARD processing (COGs + STAC + ledger), and GCS-native storage.
 
 ## Repository Category
 
@@ -32,11 +32,13 @@ Cloud-native skeleton for Berlin LST downscaling (pre-implementation). Work-in-p
 
 ```
 src/berlin_lst_downscaling/    # main package
-    data/acquisition/          # PC STAC search (placeholder)
-    data/ard/                  # ARD processing (placeholder)
-    common/                    # shared config/utils (placeholder)
-configs/                       # experiment configs (placeholder)
-scripts/spikes/                # throwaway experiments
+    data/acquisition/          # PC STAC loaders + ECOSTRESS CMR
+    data/ard/                  # ARD pipeline (COG write, masking, ledger, STAC)
+    data/selection/            # Szenen-Selektion & Kopplung (anchors, coupling, manifest)
+    data/io/                   # Storage (local + GCS) and ephemeral staging
+    common/                    # Pydantic settings / env config
+configs/                       # Hydra configs (ARD + selection)
+scripts/                       # Entry points (run_ard.py, build_manifest.py, etc.)
 notebooks/                     # EDA notebooks
 ```
 
