@@ -55,17 +55,19 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
         cloud_cover = item.properties.get("eo:cloud_cover")
         item_href = item.get_self_href() if hasattr(item, "get_self_href") else None
 
-        candidates.append({
-            "scene_id": item.id,
-            "source": "sentinel-2-l2a",
-            "year": dt_utc.year,
-            "datetime": dt_utc,
-            "date": dt_utc.strftime("%Y-%m-%d"),
-            "dt_days": dt_days,
-            "cloud_cover": cloud_cover,
-            "clear_frac": None,  # filled by _with_clear_frac variant
-            "item_href": item_href,
-        })
+        candidates.append(
+            {
+                "scene_id": item.id,
+                "source": "sentinel-2-l2a",
+                "year": dt_utc.year,
+                "datetime": dt_utc,
+                "date": dt_utc.strftime("%Y-%m-%d"),
+                "dt_days": dt_days,
+                "cloud_cover": cloud_cover,
+                "clear_frac": None,  # filled by _with_clear_frac variant
+                "item_href": item_href,
+            }
+        )
 
     candidates.sort(key=lambda c: c["dt_days"])
     return candidates
@@ -102,6 +104,7 @@ def match_s2_candidates_with_clear_frac(
             from berlin_lst_downscaling.data.selection.clear_frac import (
                 compute_clear_frac_with_counts,
             )
+
             cf, counts = compute_clear_frac_with_counts(
                 l8_items=l8_items,
                 s2_items=s2_items,
@@ -111,8 +114,12 @@ def match_s2_candidates_with_clear_frac(
             )
             c["clear_frac"] = cf
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
-        except Exception:
+        except Exception as exc:
             c["clear_frac"] = None
+            import traceback
+
+            print(f"  [clear_frac error] {c['scene_id']}: {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
 
     # Log structured diagnostic event for this anchor
@@ -136,12 +143,14 @@ def _cf_diagnostic_entry(candidate: dict, clear_frac: float | None, counts: dict
         "clear_frac": clear_frac,
     }
     if counts is not None:
-        entry.update({
-            "aoi_px": counts["aoi_px"],
-            "l8_clear_px": counts["l8_clear_px"],
-            "s2_clear_px": counts["s2_clear_px"],
-            "intersect_px": counts["intersect_px"],
-        })
+        entry.update(
+            {
+                "aoi_px": counts["aoi_px"],
+                "l8_clear_px": counts["l8_clear_px"],
+                "s2_clear_px": counts["s2_clear_px"],
+                "intersect_px": counts["intersect_px"],
+            }
+        )
     return entry
 
 
@@ -184,6 +193,7 @@ def _compute_clear_frac_for_pair(
 ) -> float:
     """Compute clear_frac for a (Landsat, S2) pair on the 10-m canonical grid."""
     from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac
+
     return compute_clear_frac(
         l8_items=l8_items,
         s2_items=s2_items,

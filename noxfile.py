@@ -149,6 +149,7 @@ def smoke_selection_2024(session: nox.Session) -> None:
     """Run Szenen-Selektion coupling on Mai–Sep 2024.
 
     Validates the coupling logic across the full configured season.
+    Uses ``sentinel2.cloud_mask="s2cloudless"`` (the new default).
     Writes ``data/tmp/manifest_smoke_2024.parquet``.
     """
     session.run(

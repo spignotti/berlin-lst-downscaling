@@ -37,12 +37,12 @@ class Anchor:
     scene_id: str
     source: Literal["landsat-c2-l2"]
     year: int
-    datetime: datetime          # UTC acquisition datetime
-    date: str                 # ISO date string "YYYY-MM-DD"
+    datetime: datetime  # UTC acquisition datetime
+    date: str  # ISO date string "YYYY-MM-DD"
     cloud_cover: float | None  # eo:cloud_cover from STAC
     sun_azimuth: float | None
     sun_elevation: float | None
-    item_href: str | None     # signed PC asset URL (for mode=full pipeline)
+    item_href: str | None  # signed PC asset URL (for mode=full pipeline)
 
 
 @dataclass
@@ -52,9 +52,9 @@ class S2Candidate:
     scene_id: str
     source: Literal["sentinel-2-l2a"]
     year: int
-    datetime: datetime          # UTC acquisition datetime
-    date: str                  # ISO date string "YYYY-MM-DD"
-    dt_days: float            # |s2.datetime − anchor.datetime| in days
+    datetime: datetime  # UTC acquisition datetime
+    date: str  # ISO date string "YYYY-MM-DD"
+    dt_days: float  # |s2.datetime − anchor.datetime| in days
     cloud_cover: float | None
     item_href: str | None
     clear_frac: float | None = None  # computed after pixel load
@@ -67,11 +67,11 @@ class ECOSTRESSMatch:
     granule_id: str
     source: Literal["ecostress"]
     year: int
-    datetime: datetime          # UTC acquisition datetime
-    date: str                  # ISO date string
-    dt_hours: float           # |ecostress.datetime − anchor.datetime| in hours (local)
+    datetime: datetime  # UTC acquisition datetime
+    date: str  # ISO date string
+    dt_hours: float  # |ecostress.datetime − anchor.datetime| in hours (local)
     mgrs_tile: str | None
-    overlap_frac: float         # fraction of Berlin bbox overlapped
+    overlap_frac: float  # fraction of Berlin bbox overlapped
     clear_frac: float | None  # fraction of cloud==0 inside Berlin; None if not computed
 
 
@@ -81,15 +81,15 @@ class ScanReport:
 
     n_landsat_total: int
     n_landsat_may_sep: int
-    n_s2_candidates: int       # sum across all anchor windows (approx)
-    n_landsat_coupled: int    # estimated from median clear_frac
+    n_s2_candidates: int  # sum across all anchor windows (approx)
+    n_landsat_coupled: int  # estimated from median clear_frac
     n_landsat_dropped: int
     n_ecostress_matches: int
     est_landsat_gb: float
     est_s2_gb: float
     est_ecostress_gb: float
     est_total_gb: float
-    metadata_json: str         # path to data/ard/scan_report.json
+    metadata_json: str  # path to data/ard/scan_report.json
 
 
 @dataclass
@@ -100,7 +100,7 @@ class ManifestResult:
     n_coupled: int
     n_dropped: int
     n_ecostress: int
-    manifest_path: str         # path to written Parquet
+    manifest_path: str  # path to written Parquet
 
 
 # ── submodule imports (after dataclasses are defined to avoid circular imports) ──

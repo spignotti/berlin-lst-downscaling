@@ -78,7 +78,9 @@ Flag band is a separate ``.flag.tif`` COG (see §Flag Band above).
 
 - **Spatial resolution:** 10 m.
 - **Cloud mask:** SCL classes 8 (medium probability) and 9 (high probability).
-  ``s2cloudless`` is **not available** on PC Sentinel-2 L2A items.
+  Fill (class 0), saturated (1), cirrus (10), and snow (11) are also excluded.
+  All other classes (2–7) are considered clear, including class 7 (unclassified /
+  urban impervious surfaces).
 - **Cloud-shadow mask:** SCL class 3 (lower bound) augmented by directional-offset
   projection (Option B, see §Cloud-Shadow Projection below). **Not** ray-cast —
   DSM-occluded shadows are deferred to Stage 3 (Sekundärdaten-Pipeline, SVF/Shadow module).

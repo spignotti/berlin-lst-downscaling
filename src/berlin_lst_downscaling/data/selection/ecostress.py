@@ -84,17 +84,19 @@ def search_ecostress(
         if overlap < 0.10:
             continue
 
-        matches.append({
-            "granule_id": granule_id,
-            "source": "ecostress",
-            "year": dt.year,
-            "datetime": dt,
-            "date": dt.strftime("%Y-%m-%d"),
-            "dt_hours": 0.0,  # caller must fill relative to anchor
-            "mgrs_tile": mgrs,
-            "overlap_frac": overlap,
-            "clear_frac": None,  # computed later in ecostress_subset
-        })
+        matches.append(
+            {
+                "granule_id": granule_id,
+                "source": "ecostress",
+                "year": dt.year,
+                "datetime": dt,
+                "date": dt.strftime("%Y-%m-%d"),
+                "dt_hours": 0.0,  # caller must fill relative to anchor
+                "mgrs_tile": mgrs,
+                "overlap_frac": overlap,
+                "clear_frac": None,  # computed later in ecostress_subset
+            }
+        )
 
     matches.sort(key=lambda m: m["datetime"])
     return matches

@@ -29,7 +29,7 @@ sentinel2:
   window_days: 3                # search ±N days around anchor acquisition
   score:
     lambda: 0.1                # weight for temporal delta in score
-  min_clear_frac: 0.30         # drop anchor if no S2 candidate ≥ this threshold
+  min_clear_frac: 0.05         # drop anchor if no S2 candidate ≥ this threshold; permissive (even 5% clear = usable training data)
 
 # ── ECOSTRESS subset ──────────────────────────────────────────────────────────
 ecostress:

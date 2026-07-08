@@ -68,9 +68,7 @@ def couple_one_anchor(
     scored.sort(key=lambda x: (-x[1], x[0]["dt_days"]))
     best_candidate, best_score = scored[0]
 
-    max_clear_frac = max(
-        (c.get("clear_frac") or 0.0) for c, _ in scored
-    )
+    max_clear_frac = max((c.get("clear_frac") or 0.0) for c, _ in scored)
 
     if max_clear_frac < min_cf:
         return {

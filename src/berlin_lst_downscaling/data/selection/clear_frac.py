@@ -7,6 +7,10 @@ The denominator uses Landsat clear as the reference baseline, per the
 Szenen-Selektion spec: "clear_frac immer relativ zur Schnittmenge mit
 klaren Landsat-Pixeln, nicht zur ganzen Szene."
 
+S2 cloud detection uses the Scene Classification Layer (SCL): classes 8-9
+are cloudy; classes 0 (fill), 1 (saturated), 10 (cirrus), 11 (snow) are
+also excluded.  All other classes (2-7) are considered clear.
+
 This function is the expensive part of the coupling (pixel loads).  It is
 called only for the top-N S2 candidates per anchor (N is typically small,
 e.g. 3–7 scenes in a ±3-day window).  The volume-scan mode does NOT call
@@ -15,14 +19,37 @@ this function.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import numpy as np
 import odc.stac
 import xarray as xr
+from odc.geo.geobox import GeoBox
+from rasterio.warp import transform_bounds
 
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
+
+_logger = logging.getLogger(__name__)
+
+
+def _to_epsg25833_bbox(
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Transform WGS84 bbox to EPSG:25833 if needed.
+
+    odc.stac.load interprets bbox coordinates in the target CRS units.  If
+    ``crs="EPSG:25833"`` is set, a WGS84 bbox (values ~13°) is silently
+    misinterpreted as EPSG:25833 coordinates (~13 m) — producing a tiny
+    13×13 m window instead of the intended ~80×50 km Berlin area.
+
+    Detection: WGS84 bboxes have maxx < 100; EPSG:25833 bboxes have
+    maxx > 100000.
+    """
+    if bbox[2] < 100:  # clearly WGS84
+        return transform_bounds("EPSG:4326", "EPSG:25833", *bbox)
+    return bbox  # already EPSG:25833 or similar projected CRS
 
 
 def compute_clear_frac(
@@ -34,6 +61,9 @@ def compute_clear_frac(
     anchor_dt: datetime | None = None,
 ) -> float:
     """Compute clear_frac for a (Landsat, S2) pair on the 10 m canonical grid.
+
+    Uses SCL-based cloud detection (classes 8-9 cloudy; 0 fill, 1 saturated,
+    10 cirrus, 11 snow also excluded).  All other classes are clear.
 
     Parameters
     ----------
@@ -47,6 +77,9 @@ def compute_clear_frac(
         Path to the pre-baked Berlin AOI mask (uint8, 1=inside).
     resolution :
         Target resolution in metres (default 10 m).
+    anchor_dt :
+        UTC datetime of the Landsat anchor.  Used to select the correct
+        solar-day slice from multi-acquisition STAC searches.
 
     Returns
     -------
@@ -57,13 +90,19 @@ def compute_clear_frac(
     if not l8_items or not s2_items:
         return float("nan")
 
+    # Transform WGS84 bbox → EPSG:25833 before passing to odc.stac (otherwise
+    # bbox values ~13° are silently misinterpreted as ~13 m EPSG:25833 coords).
+    bbox_25833 = _to_epsg25833_bbox(anchor_bbox)
+
     # ── load both sources onto the same 10-m EPSG:25833 grid ─────────────────
+    # Use explicit GeoBox instead of (crs, resolution, bbox) tuple — odc.stac
+    # has a bug where EPSG:25833 bbox values with Landsat items cause
+    # OverflowError: cannot convert float infinity to integer.
+    gbox = GeoBox.from_bbox(bbox_25833, crs="EPSG:25833", resolution=resolution)
     l8_ds = odc.stac.load(
         items=l8_items,
         bands=["qa_pixel"],
-        crs="EPSG:25833",
-        resolution=resolution,
-        bbox=anchor_bbox,
+        geobox=gbox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
     )
@@ -71,9 +110,7 @@ def compute_clear_frac(
     s2_ds = odc.stac.load(
         items=s2_items,
         bands=["SCL"],
-        crs="EPSG:25833",
-        resolution=resolution,
-        bbox=anchor_bbox,
+        geobox=gbox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
     )
@@ -104,20 +141,30 @@ def compute_clear_frac_with_counts(
 ) -> tuple[float, dict]:
     """Same as compute_clear_frac but also returns intermediate pixel counts.
 
-    Returns (clear_frac, counts_dict).
-    counts_dict keys: ``aoi_px``, ``l8_clear_px``, ``s2_clear_px``,
-    ``intersect_px``.
+    Uses SCL-based cloud detection.  See ``compute_clear_frac`` for details.
+
+    Returns
+    -------
+    tuple[float, dict]
+        (clear_frac, counts_dict).
+        counts_dict keys: ``aoi_px``, ``l8_clear_px``, ``s2_clear_px``,
+        ``intersect_px``.
     """
     if not l8_items or not s2_items:
         return float("nan"), _empty_counts()
 
+    # Transform WGS84 bbox → EPSG:25833 (see _to_epsg25833_bbox docstring)
+    bbox_25833 = _to_epsg25833_bbox(anchor_bbox)
+
     # ── load both sources onto the same 10-m EPSG:25833 grid ─────────────────
+    # Use explicit GeoBox instead of (crs, resolution, bbox) tuple — odc.stac
+    # has a bug where EPSG:25833 bbox values with Landsat items cause
+    # OverflowError: cannot convert float infinity to integer.
+    gbox = GeoBox.from_bbox(bbox_25833, crs="EPSG:25833", resolution=resolution)
     l8_ds = odc.stac.load(
         items=l8_items,
         bands=["qa_pixel"],
-        crs="EPSG:25833",
-        resolution=resolution,
-        bbox=anchor_bbox,
+        geobox=gbox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
     )
@@ -125,9 +172,7 @@ def compute_clear_frac_with_counts(
     s2_ds = odc.stac.load(
         items=s2_items,
         bands=["SCL"],
-        crs="EPSG:25833",
-        resolution=resolution,
-        bbox=anchor_bbox,
+        geobox=gbox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
     )
@@ -198,14 +243,20 @@ def _landsat_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.n
 _S2_CLOUD_CLASSES = {0, 1, 8, 9, 10, 11}  # fill, saturated, cloud, cirrus, snow
 
 
-def _s2_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.ndarray:
-    """Return boolean array where True = clear according to SCL.
+def _s2_is_clear(
+    ds: xr.Dataset,
+    anchor_dt: datetime | None,
+) -> np.ndarray:
+    """Return boolean array where True = clear according to SCL class.
 
     Inverts the SCL cloud classification: any class NOT in the cloudy set
-    is considered clear sky. This includes class 7 (unclassified), which
-    covers urban impervious surfaces over Berlin — these should not be
-    excluded from coupling even though Sen2Cor does not classify them
-    as vegetation/bare/water.
+    is considered clear sky.  Includes class 7 (unclassified / urban
+    impervious surfaces) as clear — these should not be excluded from
+    coupling even though Sen2Cor does not classify them as vegetation/bare/
+    water.
+
+    Cloudy classes: 0 (fill), 1 (saturated), 8 (cloud medium), 9 (cloud high),
+    10 (cirrus), 11 (snow).  All others (2–7) are clear.
 
     When ``anchor_dt`` is provided, selects the solar-day slice matching the
     anchor's date rather than ``values[0]`` (first chronological slice).
@@ -214,4 +265,3 @@ def _s2_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.ndarra
         ds = select_time_slice(ds, anchor_dt)
     scl = ds["SCL"].values[0].astype(np.uint8)
     return ~np.isin(scl, list(_S2_CLOUD_CLASSES))
-

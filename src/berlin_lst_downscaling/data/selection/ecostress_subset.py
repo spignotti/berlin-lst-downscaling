@@ -102,6 +102,7 @@ def build_ecostress_subset(
                         continue
                 except Exception as exc:
                     import warnings
+
                     warnings.warn(f"clear_frac failed for {g['granule_id']}: {exc}", stacklevel=2)
 
             g["dt_hours"] = dt_hours

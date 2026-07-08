@@ -7,6 +7,8 @@ from datetime import datetime
 import numpy as np
 import odc.stac
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
+from odc.geo.geobox import GeoBox
+from rasterio.warp import transform_bounds
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
@@ -63,17 +65,19 @@ def build_anchors(cfg) -> tuple[list, dict]:
         # For mode=full the pipeline re-resolves via date; we store item.id only.
         item_href = item.get_self_href() if hasattr(item, "get_self_href") else None
 
-        anchors.append({
-            "scene_id": item.id,
-            "source": "landsat-c2-l2",
-            "year": dt_utc.year,
-            "datetime": dt_utc,
-            "date": dt_utc.strftime("%Y-%m-%d"),
-            "cloud_cover": cloud_cover,
-            "sun_azimuth": sun_az,
-            "sun_elevation": sun_el,
-            "item_href": item_href,
-        })
+        anchors.append(
+            {
+                "scene_id": item.id,
+                "source": "landsat-c2-l2",
+                "year": dt_utc.year,
+                "datetime": dt_utc,
+                "date": dt_utc.strftime("%Y-%m-%d"),
+                "cloud_cover": cloud_cover,
+                "sun_azimuth": sun_az,
+                "sun_elevation": sun_el,
+                "item_href": item_href,
+            }
+        )
 
     # ── Pixel-wise anchor fitness gate ─────────────────────────────────────
     min_cf = getattr(cfg.landsat.anchor, "min_clear_frac", 0.0)
@@ -117,12 +121,14 @@ def _filter_by_pixel_clear_frac(
             dropped.append(anchor)
             cf_str = f"{cf:.3f}" if cf is not None else "N/A"
             import sys
+
             print(
                 f"[anchor_filter] dropped {anchor['scene_id']} "
                 f"(clear_frac={cf_str} < {min_clear_frac})",
                 file=sys.stderr,
             )
     import sys
+
     print(
         f"[anchor_filter] kept {len(kept)}/{len(anchors)} anchors "
         f"(min_clear_frac={min_clear_frac})",
@@ -159,12 +165,15 @@ def compute_anchor_clear_frac(
         return None
 
     try:
+        # Use explicit GeoBox — odc.stac has a bug where (crs, resolution, bbox)
+        # with EPSG:25833 coordinates causes OverflowError on Landsat items.
+        bbox_wgs84 = tuple(cfg.bbox)
+        bbox_25833 = transform_bounds("EPSG:4326", "EPSG:25833", *bbox_wgs84)
+        gbox = GeoBox.from_bbox(bbox_25833, crs="EPSG:25833", resolution=10)
         ds = odc.stac.load(
             items=items,
             bands=["qa_pixel"],
-            crs="EPSG:25833",
-            resolution=10,
-            bbox=tuple(cfg.bbox),
+            geobox=gbox,
             chunks={"x": 2048, "y": 2048},
             groupby="solar_day",
         )
