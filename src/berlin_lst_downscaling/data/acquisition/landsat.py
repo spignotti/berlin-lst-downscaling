@@ -9,6 +9,7 @@ import pystac
 import xarray as xr
 
 from berlin_lst_downscaling.common.config import settings
+from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_load
 
 _LANDSAT_COLLECTION = "landsat-c2-l2"
@@ -99,9 +100,7 @@ def load_landsat_scene(
     ds = stac_load(
         items=items,
         bands=bands,
-        crs=settings.target_crs,
-        resolution=res,
-        bbox=bbox,
+        geobox=canon_grid_for_resolution(res),
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
         **odc_kw,

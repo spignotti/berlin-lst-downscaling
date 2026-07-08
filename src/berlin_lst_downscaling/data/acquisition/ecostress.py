@@ -46,7 +46,7 @@ import xarray as xr
 from earthaccess.store import Store
 from rasterio.enums import Resampling
 
-from berlin_lst_downscaling.common.config import settings
+from berlin_lst_downscaling.common.grid import canon_grid_70m
 
 # Compiled granule-ID regex.  Pattern:
 #   ECOv002_L2T_LSTE_<orbit>_<scene>_<MGRS>_<YYYYMMDDThhmmss>_<build>_<rev>
@@ -163,36 +163,39 @@ def load_ecostress_scene(
     ds = xr.Dataset(data_vars)
     ds = ds.assign_coords(crs=src_crs)
 
-    # Reproject to EPSG:25833 (Berlin UTM)
-    target_crs = settings.target_crs  # EPSG:25833
+    # Reproject to EPSG:25833 (Berlin UTM) on the canonical 70m grid
+    gbox = canon_grid_70m()
     reproj_vars: dict[str, xr.DataArray] = {}
     for name, da in ds.data_vars.items():
         key = str(name)  # data_vars keys are Hashable; rioxarray needs str keys
         da_rio = da.rio.write_crs(src_crs)
+        kwargs = dict(
+            dst_crs=gbox.crs,
+            shape=gbox.shape,
+            transform=gbox.transform,
+        )
         if key == "lst":
             # Bilinear for LST (continuous)
             reproj_vars[key] = da_rio.rio.reproject(
-                target_crs,
-                resolution=resolution,
+                **kwargs,
                 resampling=Resampling.bilinear,
             )
         else:
             # Nearest-neighbour for categorical layers
             reproj_vars[key] = da_rio.rio.reproject(
-                target_crs,
-                resolution=resolution,
+                **kwargs,
                 resampling=Resampling.nearest,
             )
 
     ds_out = xr.Dataset(reproj_vars)
-    ds_out = ds_out.assign_coords(crs=target_crs)
+    ds_out = ds_out.assign_coords(crs=gbox.crs)
 
     # Clip to bbox (WGS84) after reprojection to target CRS.
     # transform_bounds converts WGS84 → target CRS so clip_box gets valid metres.
     if bbox is not None:
         from rasterio.warp import transform_bounds
 
-        minx, miny, maxx, maxy = transform_bounds("EPSG:4326", target_crs, *bbox)
+        minx, miny, maxx, maxy = transform_bounds("EPSG:4326", str(gbox.crs), *bbox)
         ds_out = ds_out.rio.clip_box(
             minx=minx, miny=miny, maxx=maxx, maxy=maxy,
         )

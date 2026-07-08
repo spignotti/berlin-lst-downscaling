@@ -6,9 +6,8 @@ from datetime import datetime
 
 import numpy as np
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
-from odc.geo.geobox import GeoBox
-from rasterio.warp import transform_bounds
 
+from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_load
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
@@ -215,11 +214,8 @@ def compute_anchor_clear_frac(
         return None
 
     try:
-        # Use explicit GeoBox — odc.stac has a bug where (crs, resolution, bbox)
-        # with EPSG:25833 coordinates causes OverflowError on Landsat items.
-        bbox_wgs84 = tuple(cfg.bbox)
-        bbox_25833 = transform_bounds("EPSG:4326", "EPSG:25833", *bbox_wgs84)
-        gbox = GeoBox.from_bbox(bbox_25833, crs="EPSG:25833", resolution=10)
+        # Load QA_PIXEL on the canonical 10m grid
+        gbox = canon_grid_10m()
         ds = stac_load(
             items=items,
             bands=["qa_pixel"],

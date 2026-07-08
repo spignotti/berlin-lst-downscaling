@@ -31,6 +31,7 @@ data/logs/
 # Pipeline temporary processing files
 data/tmp/
 data/smoke/
+data/ard/
 .tmp/
 
 # ECOSTRESS raw inputs (AppEEARS export for full-mode)

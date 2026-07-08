@@ -24,32 +24,13 @@ from datetime import datetime
 
 import numpy as np
 import xarray as xr
-from odc.geo.geobox import GeoBox
-from rasterio.warp import transform_bounds
 
+from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.acquisition.pc_client import stac_load
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
 
 _logger = logging.getLogger(__name__)
-
-
-def _to_epsg25833_bbox(
-    bbox: tuple[float, float, float, float],
-) -> tuple[float, float, float, float]:
-    """Transform WGS84 bbox to EPSG:25833 if needed.
-
-    odc.stac.load interprets bbox coordinates in the target CRS units.  If
-    ``crs="EPSG:25833"`` is set, a WGS84 bbox (values ~13°) is silently
-    misinterpreted as EPSG:25833 coordinates (~13 m) — producing a tiny
-    13×13 m window instead of the intended ~80×50 km Berlin area.
-
-    Detection: WGS84 bboxes have maxx < 100; EPSG:25833 bboxes have
-    maxx > 100000.
-    """
-    if bbox[2] < 100:  # clearly WGS84
-        return transform_bounds("EPSG:4326", "EPSG:25833", *bbox)
-    return bbox  # already EPSG:25833 or similar projected CRS
 
 
 def compute_clear_frac_with_counts(
@@ -74,14 +55,8 @@ def compute_clear_frac_with_counts(
     if not l8_items or not s2_items:
         return float("nan"), _empty_counts()
 
-    # Transform WGS84 bbox → EPSG:25833 (see _to_epsg25833_bbox docstring)
-    bbox_25833 = _to_epsg25833_bbox(anchor_bbox)
-
-    # ── load both sources onto the same 10-m EPSG:25833 grid ─────────────────
-    # Use explicit GeoBox instead of (crs, resolution, bbox) tuple — odc.stac
-    # has a bug where EPSG:25833 bbox values with Landsat items cause
-    # OverflowError: cannot convert float infinity to integer.
-    gbox = GeoBox.from_bbox(bbox_25833, crs="EPSG:25833", resolution=resolution)
+    # ── load both sources onto the canonical 10-m EPSG:25833 grid ─────────
+    gbox = canon_grid_10m()
     l8_ds = stac_load(
         items=l8_items,
         bands=["qa_pixel"],
