@@ -10,8 +10,9 @@ __pycache__/
 .env.*
 !.env.example
 
-# Pipeline / transient logs (canonical home: data/logs/)
+# Pipeline / transient logs (canonical home: data/logs/; ./logs/ for GCS output_root)
 *.log
+logs/
 
 # macOS
 .DS_Store

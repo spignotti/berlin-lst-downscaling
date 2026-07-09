@@ -47,6 +47,7 @@ from earthaccess.store import Store
 from rasterio.enums import Resampling
 
 from berlin_lst_downscaling.common.grid import canon_grid_70m
+from berlin_lst_downscaling.data.io.staging import StageManager
 
 # Compiled granule-ID regex.  Pattern:
 #   ECOv002_L2T_LSTE_<orbit>_<scene>_<MGRS>_<YYYYMMDDThhmmss>_<build>_<rev>
@@ -243,30 +244,32 @@ def _assert_granule_layer_exists(uri: str) -> None:
 
 def download_and_stage_granule(
     granule_id: str,
-    stage_uri: str,
+    stage: StageManager,
 ) -> str:
     """Download one ECOSTRESS L2T granule from NASA Earthdata → stage.
 
     Searches CMR by granule ID, downloads the 4 layer COGs (LST, cloud,
-    water, QC) to a temporary directory, then uploads them to the stage
-    via ``StageManager``.
+    water, QC) to a local temp directory, then uploads them into *stage*
+    via :meth:`StageManager.put` (scheme-aware — works for local POSIX,
+    FUSE mounts, and ``gs://``).
 
     Parameters
     ----------
     granule_id :
         Full granule ID, e.g.
         ``ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01``.
-    stage_uri :
-        Stage root URI, e.g. ``data/tmp/ecostress_stage/<run_id>`` or
-        ``gs://bucket/_staging/ecostress/<run_id>``.
+    stage :
+        A :class:`StageManager` (or :class:`StageSession`) pointing at the
+        stage root for the run. Files are uploaded under
+        ``{stage.uri}/{granule_id}/``.
 
     Returns
     -------
     str
-        The ``raw_dir`` URI within the stage where the granule's COGs
-        were uploaded (``{stage_uri}/{granule_id}``).
+        The ``raw_dir`` URI the granule's COGs were uploaded into
+        (``str(stage.uri.uri)``). Pass this to
+        :func:`load_ecostress_scene` as ``raw_dir``.
     """
-    import shutil
     dt = _parse_granule_datetime(granule_id)
     if dt is None:
         raise ValueError(f"Cannot parse datetime from granule ID: {granule_id}")
@@ -295,25 +298,23 @@ def download_and_stage_granule(
             f"Searched for pattern: ECOv002_L2T_LSTE_*_{mgrs}_{date_compact}T*"
         )
 
-    # ── Download to temporary directory ─────────────────────────────────
+    # ── Download to local temporary directory ───────────────────────────
     tmp_dir = Path(tempfile.gettempdir()) / f"eco_dl_{granule_id[-12:]}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    downloaded = _download_to_tmp(granule, tmp_dir, auth)
-
-    # ── Upload into stage ───────────────────────────────────────────────
-    granule_dir = Path(str(stage_uri)) / granule_id
-    granule_dir.mkdir(parents=True, exist_ok=True)
+    downloaded: list[Path] = []
     try:
+        downloaded = _download_to_tmp(granule, tmp_dir, auth)
+
+        # ── Upload into stage (scheme-aware via StageManager.put) ───────
         for local_path in downloaded:
-            shutil.copy2(local_path, granule_dir / local_path.name)
+            stage.put(local_path, f"{granule_id}/{local_path.name}")
     finally:
         # Clean up local tmp files
         for local_path in downloaded:
             local_path.unlink(missing_ok=True)
         tmp_dir.rmdir() if tmp_dir.exists() else None
 
-    raw_dir = str(stage_uri)
-    return raw_dir
+    return str(stage.uri.uri)
 
 
 def _download_to_tmp(

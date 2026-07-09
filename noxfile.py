@@ -43,8 +43,6 @@ def smoke_primary(session: nox.Session) -> None:
     Final COGs land in ``data/smoke/primary/ard/``.
     """
     import os
-    import uuid
-    from datetime import UTC, datetime
 
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -217,7 +215,8 @@ def cloud_pilot(session: nox.Session) -> None:
         external=True,
     )
 
-    # Step 3: Run the unified ARD pipeline (reads ECOSTRESS from GCS stage)
+    # Step 3: Run the unified ARD pipeline (reads ECOSTRESS from GCS stage,
+    # AOI from GCS — exercises the full cloud-read path)
     session.run(
         "uv", "run", "python", "scripts/run_ard.py",
         "--config-name", "smoke_primary",
@@ -225,6 +224,7 @@ def cloud_pilot(session: nox.Session) -> None:
         f"output_root={output_root}/smoke_primary",
         f"ecostress.raw_dir={eco_stage}",
         "+ecostress.persist_stage=true",
+        "aoi.mask_base=gs://berlin-lst-data/boundaries",
         external=True,
     )
 
@@ -244,13 +244,44 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
     session.run(
         "uv", "run", "python", "-c",
         (
-            "from google.cloud import storage; "
-            "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-data'); "
-            "prefix = 'ard/smoke/smoke_primary/'; "
-            "blobs = list(bucket.list_blobs(prefix=prefix)); "
-            "print(f'Final COGs: {len(blobs)} blob(s) under gs://berlin-lst-data/{prefix}'); "
-            "for b in blobs[:6]: print(' ', b.name)"
+            "import sys\n"
+            "from google.cloud import storage\n"
+            "client = storage.Client()\n"
+            "bucket = client.get_bucket('berlin-lst-data')\n"
+            "prefix = 'ard/smoke/smoke_primary/'\n"
+            "blobs = list(bucket.list_blobs(prefix=prefix))\n"
+            "print(f'Final COGs: {len(blobs)} blob(s) under gs://berlin-lst-data/{prefix}')\n"
+            "for b in blobs[:6]:\n"
+            "    print(' ', b.name)\n"
+            "sys.exit(0 if blobs else 1)\n"
         ),
         external=True,
     )
+
+
+@nox.session(venv_backend="none", name="upload-manifest")
+def upload_manifest(session: nox.Session) -> None:
+    """Upload a local manifest.parquet to ``gs://berlin-lst-data/manifests/``.
+
+    Usage::
+
+        uv run nox -s upload-manifest -- data/ard/manifest.parquet
+
+    Prints the GCS URI to pass as ``manifest_uri=...`` for a cloud full run.
+    """
+    from pathlib import Path
+
+    args = session.posargs
+    if not args:
+        session.error(
+            "Provide a local manifest path: "
+            "nox -s upload-manifest -- data/ard/manifest.parquet",
+        )
+    local = Path(args[0])
+    if not local.is_file():
+        session.error(f"Manifest not found: {local}")
+
+    dst = f"gs://berlin-lst-data/manifests/{local.name}"
+    session.run("gcloud", "storage", "cp", str(local), dst, external=True)
+    session.log(f"Uploaded: {dst}")
+    session.log(f"Use: manifest_uri={dst}")
