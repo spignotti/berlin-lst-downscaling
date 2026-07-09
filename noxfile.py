@@ -152,6 +152,10 @@ def cloud_pilot(session: nox.Session) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    # uv ≥0.11 requires explicit opt-in to auto-load .env via UV_ENV_FILE.
+    # Set it here so the cloud-pilot works on both uv 0.7 (auto) and ≥0.11 (opt-in).
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
     run_id = f"cp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     stage_base = "gs://berlin-lst-data/_staging/ecostress"
     eco_stage = f"{stage_base}/{run_id}"
