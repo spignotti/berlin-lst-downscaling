@@ -290,7 +290,8 @@ def _process_ecostress_todo(
     with StageSession(stage_base, run_id=run_id) as stage:
         for scene_id, _src, year, _reason in todo:
             try:
-                granule_raw_dir = download_and_stage_granule(scene_id, stage.uri.uri)
+                download_and_stage_granule(scene_id, stage)
+                granule_raw_dir = str(stage.uri.uri)
             except Exception as exc:
                 _log(cfg, run_id, "scene_failed", {
                     "scene_id": scene_id,
