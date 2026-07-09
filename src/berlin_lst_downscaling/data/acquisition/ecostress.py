@@ -51,7 +51,7 @@ from berlin_lst_downscaling.data.io.staging import StageManager
 
 # Compiled granule-ID regex.  Pattern:
 #   ECOv002_L2T_LSTE_<orbit>_<scene>_<MGRS>_<YYYYMMDDThhmmss>_<build>_<rev>
-_RE_GRANULE = re.compile(
+RE_GRANULE = re.compile(
     r"^ECO"
     r"v(?P<version>\d+)"
     r"_L2T_LSTE_"
@@ -64,9 +64,9 @@ _RE_GRANULE = re.compile(
 )
 
 
-def _parse_granule_datetime(granule_id: str) -> datetime | None:
+def parse_granule_datetime(granule_id: str) -> datetime | None:
     """Extract UTC acquisition datetime from a granule ID, or None if unparseable."""
-    m = _RE_GRANULE.match(granule_id)
+    m = RE_GRANULE.match(granule_id)
     if m is None:
         return None
     try:
@@ -270,11 +270,11 @@ def download_and_stage_granule(
         (``str(stage.uri.uri)``). Pass this to
         :func:`load_ecostress_scene` as ``raw_dir``.
     """
-    dt = _parse_granule_datetime(granule_id)
+    dt = parse_granule_datetime(granule_id)
     if dt is None:
         raise ValueError(f"Cannot parse datetime from granule ID: {granule_id}")
     date_compact = dt.strftime("%Y%m%d")
-    mgrs = _parse_granule_mgrs(granule_id)
+    mgrs = parse_granule_mgrs(granule_id)
     if mgrs is None:
         raise ValueError(f"Cannot parse MGRS tile from granule ID: {granule_id}")
 
@@ -343,7 +343,7 @@ def _download_to_tmp(
     raise RuntimeError("Unreachable — download retry loop exhausted.")
 
 
-def _parse_granule_mgrs(granule_id: str) -> str | None:
+def parse_granule_mgrs(granule_id: str) -> str | None:
     """Extract MGRS tile from a granule ID (e.g. 33UUU)."""
     parts = granule_id.split("_")
     if len(parts) >= 6:
@@ -354,5 +354,7 @@ def _parse_granule_mgrs(granule_id: str) -> str | None:
 __all__ = [
     "load_ecostress_scene",
     "download_and_stage_granule",
+    "parse_granule_datetime",
+    "parse_granule_mgrs",
 ]
 
