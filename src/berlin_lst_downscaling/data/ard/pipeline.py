@@ -233,7 +233,6 @@ def _process_manifest(
     # Collect manifest rows per source — always carry scene_id + year
     scenes: list[tuple[str, str, int]] = []
     scene_dates: dict[str, str | None] = {}  # scene_id → date (optional)
-    scene_hrefs: dict[str, str | None] = {}  # scene_id → item_href (optional)
     for i in range(rows.num_rows):
         r = rows.slice(i, 1).to_pydict()
         sid = str(r["scene_id"][0])
@@ -241,9 +240,6 @@ def _process_manifest(
         # Optional date column (forward-compatible schema extension)
         _dt = r.get("date", [None])[0]
         scene_dates[sid] = str(_dt) if _dt is not None else None
-        # Optional item_href (bypasses STAC search)
-        _href = r.get("item_href", [None])[0]
-        scene_hrefs[sid] = str(_href) if _href else None
 
     todo = reconcile(scenes, ledger, contract)
     _log(cfg, run_id, "manifest_todo", {
@@ -254,15 +250,13 @@ def _process_manifest(
 
     if source == "ecostress":
         _process_ecostress_todo(
-            todo, source, contract, cfg, ledger, run_id,
-            scene_dates, scene_hrefs,
+            todo, source, contract, cfg, ledger, run_id, scene_dates,
         )
     else:
         for scene_id, _source, year, _reason in todo:
             _run_scene(
                 scene_id, source, year, contract, cfg, ledger, run_id,
                 scene_date=scene_dates.get(scene_id),
-                item_href=scene_hrefs.get(scene_id),
             )
 
 
@@ -274,7 +268,6 @@ def _process_ecostress_todo(
     ledger: Ledger,
     run_id: str,
     scene_dates: dict[str, str | None],
-    scene_hrefs: dict[str, str | None],
 ) -> None:
     """Process ECOSTRESS scenes with pipeline-internal staging.
 
@@ -303,7 +296,6 @@ def _process_ecostress_todo(
             _run_scene(
                 scene_id, source, year, contract, cfg, ledger, run_id,
                 scene_date=scene_dates.get(scene_id),
-                item_href=scene_hrefs.get(scene_id),
                 ecostress_raw_dir=granule_raw_dir,
             )
         # Stage cleaned up automatically on StageSession.__exit__
@@ -322,7 +314,6 @@ def _run_scene(
     run_id: str,
     items: list[Any] | None = None,
     scene_date: str | None = None,
-    item_href: str | None = None,
     ecostress_raw_dir: str | None = None,
 ) -> None:
     """Process one scene: load → mask → write COG+STAC → update ledger.
@@ -336,10 +327,6 @@ def _run_scene(
     scene_date :
         Overrides ``cfg.scene_date`` for this scene. Used by
         ``mode=full`` where each manifest row carries its own date.
-    item_href :
-        Direct STAC item URL from the manifest. When provided, the
-        runner can bypass STAC search (future optimization; currently
-        falls back to date-based search).
     ecostress_raw_dir :
         Per-scene override for ECOSTRESS raw_dir. Used by the
         manifest-driven ECOSTRESS pipeline where each granule is
@@ -350,7 +337,6 @@ def _run_scene(
         "scene_id": scene_id,
         "source": source,
         "scene_date": effective_date,
-        "item_href": item_href,
     })
     t0 = time.perf_counter()
 
@@ -557,23 +543,12 @@ def _run_scene(
 def _solar_for_scene(
     ds: xr.Dataset,
     cfg: DictConfig,
-    stac_properties: dict | None = None,
 ) -> tuple[float, float]:
     """Return ``(azimuth_deg, elevation_deg)`` for the scene.
 
-    When ``stac_properties`` are provided and contain
-    ``view:sun_azimuth`` / ``view:sun_elevation``, those values
-    are used directly (no NOAA computation).
+    Computed from the dataset's acquisition time via NOAA.  Falls back to
+    ``cfg.scene_date`` at 10:00 UTC when the dataset has no time coordinate.
     """
-    from berlin_lst_downscaling.data.ard.solar_position import extract_solar_from_stac
-
-    # Try STAC properties first (used by Landsat which has view:sun_*)
-    if stac_properties:
-        solar = extract_solar_from_stac(stac_properties)
-        if solar is not None:
-            return solar
-
-    # Fall back to NOAA computation from acquisition time
     try:
         dt64 = ds.time.values[0]
         ts = dt64.astype("datetime64[us]").tolist()

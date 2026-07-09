@@ -70,9 +70,6 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     qa = ds["qa_pixel"].values.squeeze().astype(np.uint16)
     flag = np.zeros(qa.shape, dtype=np.uint8)
 
-    # Verify that the per-bit breakdown below is consistent with the shared helper.
-    landsat_qa_to_clear_bits(qa)  # asserted by the equivalent coupling code
-
     # Per-bit breakdown for per-flag-type attribution
     cloud_raw = (qa >> 3) & 1
     cloud_conf = (qa >> 8) & 0b11

@@ -8,7 +8,11 @@ from typing import Any
 import pystac
 import xarray as xr
 
-from berlin_lst_downscaling.common.config import settings
+from berlin_lst_downscaling.common.config import (
+    BERLIN_BBOX,
+    DEFAULT_DATE,
+    TARGET_RESOLUTION,
+)
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_load
 
@@ -27,30 +31,25 @@ def load_s2_scene(
 ) -> tuple[xr.Dataset, list[str]]:
     """Search Planetary Computer for Sentinel-2 L2A scenes and load them.
 
-    Loads matching tiles (default: 3 — enough for full Berlin coverage:
-    east+west MGRS tiles plus central strip) and merges onto the shared
-    ``bbox``-aligned GeoBox via ``odc.stac.load``.
-
-    .. note::
-
-       The production pipeline will select the best tile per date using
-       the ``clear_frac - λ·Δt/3`` score rather than loading all
-       intersecting tiles.
+    Loads matching tiles (default: 3 MGRS tiles covering Berlin) and
+    mosaics them onto the shared ``bbox``-aligned GeoBox via
+    ``odc.stac.load(groupby="solar_day")`` (last-item-wins for overlapping
+    pixels).
 
     Parameters
     ----------
     date :
         ISO date string (e.g. ``"2024-07-15"``). Defaults to
-        ``settings.default_date``.  Ignored when ``items`` is provided.
+        ``DEFAULT_DATE``.  Ignored when ``items`` is provided.
     bbox :
         WGS84 bounding box ``(minx, miny, maxx, maxy)``. Defaults to
-        ``settings.berlin_bbox``.
+        ``BERLIN_BBOX``.
     bands :
         Band asset keys to load. Defaults to ``_S2_BANDS``
         (native S2 names: ``B02``, ``B03``, ``B04``, ``B08``, ``SCL``).
     resolution :
         Target resolution in meters.  Defaults to
-        ``settings.target_resolution``.  The ARD pipeline typically
+        ``TARGET_RESOLUTION``.  The ARD pipeline typically
         passes 10 m.
     items :
         Pre-fetched STAC items.  When provided, ``date`` and
@@ -62,7 +61,7 @@ def load_s2_scene(
     Returns
     -------
     tuple[xr.Dataset, list[str]]
-        Loaded scene on ``settings.target_crs`` at the chosen
+        Loaded scene on the configured target CRS at the chosen
         resolution, and the STAC item IDs.
 
     Raises
@@ -73,8 +72,8 @@ def load_s2_scene(
     if items is not None:
         item_ids = [it.id for it in items]
     else:
-        date = date or settings.default_date
-        bbox = bbox or settings.berlin_bbox
+        date = date or DEFAULT_DATE
+        bbox = bbox or BERLIN_BBOX
         catalog = get_catalog()
         search = catalog.search(
             collections=[_S2_COLLECTION],
@@ -89,7 +88,7 @@ def load_s2_scene(
         item_ids = [it.id for it in items]
 
     bands = list(bands) if bands is not None else _S2_BANDS
-    res = resolution if resolution is not None else settings.target_resolution
+    res = resolution if resolution is not None else TARGET_RESOLUTION
 
     ds = stac_load(
         items=items,

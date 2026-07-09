@@ -1,1 +1,1 @@
-"""Shared utilities — config, logging, GCS helpers. Placeholder."""
+"""Shared config constants and canonical grid utilities."""

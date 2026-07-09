@@ -5,15 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-# ── helpers ──────────────────────────────────────────────────────────
-
 _NAN = float("nan")
-
-
-def _pack_version(v: str) -> str:
-    # simple integer version without delimiters → single token
-    return v.replace(".", "")
-
 
 # ── band / tiling specs ──────────────────────────────────────────────
 
@@ -141,7 +133,7 @@ _ECOSTRESS_BANDS = (
         name="lst",
         dtype="float32",
         nodata=_NAN,
-        description=("ECOSTRESS LST; Kelvin (ECO_L2T_LSTE.002 native). Phase B — not yet wired."),
+        description="ECOSTRESS LST; Kelvin (ECO_L2T_LSTE.002 native).",
     ),
 )
 

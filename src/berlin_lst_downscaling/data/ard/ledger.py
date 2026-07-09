@@ -214,14 +214,6 @@ class Ledger:
         atomic_write(self._path, buf.getvalue(), overwrite=True)
         return self._path
 
-    def write(self) -> str:
-        """Persist the ledger to its Parquet path (batch convenience).
-
-        With per-transition atomic writes enabled, this is a no-op
-        unless called after manual ``self._table`` modification.
-        """
-        return self._write_atomic()
-
     def status_counts(self, source: str | None = None) -> dict[str, int]:
         """Return ``{status: count}``, optionally filtered by source."""
         if self._table.num_rows == 0:
