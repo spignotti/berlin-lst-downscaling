@@ -10,6 +10,9 @@ __pycache__/
 .env.*
 !.env.example
 
+# Pipeline / transient logs (canonical home: data/logs/)
+*.log
+
 # macOS
 .DS_Store
 
