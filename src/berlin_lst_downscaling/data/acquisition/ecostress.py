@@ -51,7 +51,7 @@ from berlin_lst_downscaling.data.io.staging import StageManager
 
 # Compiled granule-ID regex.  Pattern:
 #   ECOv002_L2T_LSTE_<orbit>_<scene>_<MGRS>_<YYYYMMDDThhmmss>_<build>_<rev>
-_RE_GRANULE = re.compile(
+RE_GRANULE = re.compile(
     r"^ECO"
     r"v(?P<version>\d+)"
     r"_L2T_LSTE_"
@@ -64,9 +64,9 @@ _RE_GRANULE = re.compile(
 )
 
 
-def _parse_granule_datetime(granule_id: str) -> datetime | None:
+def parse_granule_datetime(granule_id: str) -> datetime | None:
     """Extract UTC acquisition datetime from a granule ID, or None if unparseable."""
-    m = _RE_GRANULE.match(granule_id)
+    m = RE_GRANULE.match(granule_id)
     if m is None:
         return None
     try:
@@ -139,24 +139,12 @@ def load_ecostress_scene(
             # transform = Affine(a, b, c, d, e, f) where a=dx, e=dy, c/f = origin
             x_coords = src.transform.xoff + src.transform.a * (0.5 + np.arange(src.width))
             y_coords = src.transform.yoff + src.transform.e * (0.5 + np.arange(src.height))
-            if layer == "LST":
-                da = xr.DataArray(
-                    band.astype("float32")[np.newaxis, ...],
-                    dims=("band", "y", "x"),
-                    coords={"band": [0], "y": y_coords, "x": x_coords},
-                )
-            elif layer in ("cloud", "water"):
-                da = xr.DataArray(
-                    band.astype("uint8")[np.newaxis, ...],
-                    dims=("band", "y", "x"),
-                    coords={"band": [0], "y": y_coords, "x": x_coords},
-                )
-            else:  # QC
-                da = xr.DataArray(
-                    band.astype("uint8")[np.newaxis, ...],
-                    dims=("band", "y", "x"),
-                    coords={"band": [0], "y": y_coords, "x": x_coords},
-                )
+            dtype = "float32" if layer == "LST" else "uint8"
+            da = xr.DataArray(
+                band.astype(dtype)[np.newaxis, ...],
+                dims=("band", "y", "x"),
+                coords={"band": [0], "y": y_coords, "x": x_coords},
+            )
             da = da.assign_coords(crs=str(src.crs))
             data_vars[layer.lower()] = da
 
@@ -270,11 +258,11 @@ def download_and_stage_granule(
         (``str(stage.uri.uri)``). Pass this to
         :func:`load_ecostress_scene` as ``raw_dir``.
     """
-    dt = _parse_granule_datetime(granule_id)
+    dt = parse_granule_datetime(granule_id)
     if dt is None:
         raise ValueError(f"Cannot parse datetime from granule ID: {granule_id}")
     date_compact = dt.strftime("%Y%m%d")
-    mgrs = _parse_granule_mgrs(granule_id)
+    mgrs = parse_granule_mgrs(granule_id)
     if mgrs is None:
         raise ValueError(f"Cannot parse MGRS tile from granule ID: {granule_id}")
 
@@ -299,20 +287,15 @@ def download_and_stage_granule(
         )
 
     # ── Download to local temporary directory ───────────────────────────
-    tmp_dir = Path(tempfile.gettempdir()) / f"eco_dl_{granule_id[-12:]}"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    downloaded: list[Path] = []
-    try:
+    # TemporaryDirectory is auto-cleaned on exit, even on exception.
+    with tempfile.TemporaryDirectory(prefix=f"eco_dl_{granule_id[-12:]}_") as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
         downloaded = _download_to_tmp(granule, tmp_dir, auth)
 
-        # ── Upload into stage (scheme-aware via StageManager.put) ───────
+        # Upload into stage (scheme-aware via StageManager.put).
+        # Downloaded files are inside tmp_dir which is cleaned up on exit.
         for local_path in downloaded:
             stage.put(local_path, f"{granule_id}/{local_path.name}")
-    finally:
-        # Clean up local tmp files
-        for local_path in downloaded:
-            local_path.unlink(missing_ok=True)
-        tmp_dir.rmdir() if tmp_dir.exists() else None
 
     return str(stage.uri.uri)
 
@@ -343,7 +326,7 @@ def _download_to_tmp(
     raise RuntimeError("Unreachable — download retry loop exhausted.")
 
 
-def _parse_granule_mgrs(granule_id: str) -> str | None:
+def parse_granule_mgrs(granule_id: str) -> str | None:
     """Extract MGRS tile from a granule ID (e.g. 33UUU)."""
     parts = granule_id.split("_")
     if len(parts) >= 6:
@@ -354,5 +337,7 @@ def _parse_granule_mgrs(granule_id: str) -> str | None:
 __all__ = [
     "load_ecostress_scene",
     "download_and_stage_granule",
+    "parse_granule_datetime",
+    "parse_granule_mgrs",
 ]
 

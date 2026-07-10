@@ -28,7 +28,7 @@ Usage
     # Smoke test (1 month, couple mode)
     uv run python scripts/build_manifest.py \
         --config-dir configs/selection \
-        --config-name smoke_jul2024
+        --config-name smoke_2024_mai_sep
 
     # Full volume scan (2017–2025)
     uv run python scripts/build_manifest.py \

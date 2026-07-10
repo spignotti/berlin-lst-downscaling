@@ -8,7 +8,11 @@ from typing import Any
 import pystac
 import xarray as xr
 
-from berlin_lst_downscaling.common.config import settings
+from berlin_lst_downscaling.common.config import (
+    BERLIN_BBOX,
+    DEFAULT_DATE,
+    TARGET_RESOLUTION,
+)
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_load
 
@@ -45,15 +49,15 @@ def load_landsat_scene(
     ----------
     date :
         ISO date string (e.g. ``"2024-07-15"``). Defaults to
-        ``settings.default_date``. Ignored when ``items`` is provided.
+        ``DEFAULT_DATE``. Ignored when ``items`` is provided.
     bbox :
         WGS84 bounding box ``(minx, miny, maxx, maxy)``. Defaults to
-        ``settings.berlin_bbox``.
+        ``BERLIN_BBOX``.
     bands :
         Band asset keys to load. Defaults to ``_LANDSAT_BANDS``.
     resolution :
         Target resolution in meters.  Defaults to
-        ``settings.target_resolution``.  The ARD pipeline typically
+        ``TARGET_RESOLUTION``.  The ARD pipeline typically
         passes 100 m (native LST, anti-leakage).
     items :
         Pre-fetched STAC items.  When provided, ``date`` and
@@ -67,7 +71,7 @@ def load_landsat_scene(
     Returns
     -------
     tuple[xr.Dataset, list[str]]
-        Loaded scene on ``settings.target_crs`` at the chosen
+        Loaded scene on the configured target CRS at the chosen
         resolution, and the STAC item IDs of **every** matching scene.
 
     Raises
@@ -79,8 +83,8 @@ def load_landsat_scene(
         # Skip STAC search — caller provides pre-fetched items
         item_ids = [it.id for it in items]
     else:
-        date = date or settings.default_date
-        bbox = bbox or settings.berlin_bbox
+        date = date or DEFAULT_DATE
+        bbox = bbox or BERLIN_BBOX
         catalog = get_catalog()
         search = catalog.search(
             collections=[_LANDSAT_COLLECTION],
@@ -95,7 +99,7 @@ def load_landsat_scene(
         item_ids = [it.id for it in items]
 
     bands = list(bands) if bands is not None else _LANDSAT_BANDS
-    res = resolution if resolution is not None else settings.target_resolution
+    res = resolution if resolution is not None else TARGET_RESOLUTION
 
     ds = stac_load(
         items=items,

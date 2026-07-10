@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 
-def _resolve(root: str, source: str, year: int, scene_id: str) -> str:
-    """Join root/source/year/scene_id preserving URI schemes like gs://.
-
-    ``pathlib.Path`` would strip the double slash from ``gs://bucket/...``
-    to ``gs:/bucket/...``, breaking GCS paths.
-    """
-    return f"{root.rstrip('/')}/{source}/{year}/{scene_id}"
-
-
 def scene_dir(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the output directory for a scene.
 
     ``root`` is typically ``cfg.output_root`` (``data/ard``,
     ``data/smoke/primary/ard``, or ``gs://bucket/prefix``).
     """
-    return _resolve(root, source, year, scene_id)
+    # NOTE: ``pathlib.Path`` would strip the double slash from
+    # ``gs://bucket/...`` to ``gs:/bucket/...``, breaking GCS paths —
+    # that's why we join with f-strings here.
+    return f"{root.rstrip('/')}/{source}/{year}/{scene_id}"
 
 
 def cog_path(root: str, source: str, year: int, scene_id: str) -> str:

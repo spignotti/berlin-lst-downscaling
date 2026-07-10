@@ -4,9 +4,11 @@
 mask, intersects them, and returns per-category pixel counts for the
 scene's AOI area.
 
-AOI masks (``aoi_10m.tif``, ``aoi_100m.tif``) are pre-baked by
-``scripts/build_aoi.py`` from ``berlin_landesgrenze.geojson`` (EPSG:25833).
-They are uint8, 1 = inside Berlin, 0 = outside.
+AOI masks (``aoi_10m.tif``, ``aoi_100m.tif``) are pre-baked at
+``data/boundaries/`` from ``berlin_landesgrenze.geojson`` (EPSG:25833).
+They are uint8, 1 = inside Berlin, 0 = outside.  In cloud runs the same
+files are mirrored to ``gs://berlin-lst-data/boundaries/`` and the
+pipeline reads them from there.
 """
 
 from __future__ import annotations
@@ -15,14 +17,6 @@ import numpy as np
 import rasterio
 
 from berlin_lst_downscaling.data.ard.contract import Contract
-
-# ── flag bit definitions (must match contract.py) ───────────────────
-
-_FLAG_FILL = 1 << 0  # 1
-_FLAG_CLOUDY = 1 << 1  # 2
-_FLAG_SHADOW = 1 << 2  # 4
-_FLAG_CIRRUS = 1 << 3  # 8
-_FLAG_SATURATED = 1 << 4  # 16
 
 
 def compute_aoi_metrics(
@@ -95,11 +89,11 @@ def compute_aoi_metrics(
     # Cast to bool for masking
     inside = aoi_data == 1
 
-    fill_mask = (flag_data & _FLAG_FILL) != 0
-    cloudy_mask = (flag_data & _FLAG_CLOUDY) != 0
-    shadow_mask = (flag_data & _FLAG_SHADOW) != 0
-    cirrus_mask = (flag_data & _FLAG_CIRRUS) != 0
-    saturated_mask = (flag_data & _FLAG_SATURATED) != 0
+    fill_mask = (flag_data & contract.FLAG_FILL) != 0
+    cloudy_mask = (flag_data & contract.FLAG_CLOUDY) != 0
+    shadow_mask = (flag_data & contract.FLAG_SHADOW) != 0
+    cirrus_mask = (flag_data & contract.FLAG_CIRRUS) != 0
+    saturated_mask = (flag_data & contract.FLAG_SATURATED) != 0
 
     # Clear = not fill, not cloudy, not shadow, not cirrus, not saturated
     clear_mask = ~fill_mask & ~cloudy_mask & ~shadow_mask & ~cirrus_mask & ~saturated_mask

@@ -22,7 +22,8 @@ Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Compu
 - wandb — experiment tracking
 - pydantic-settings — env-based config
 - google-cloud-storage — bucket access
-- _planned (not yet used):_ pystac-client, odc-stac, rioxarray, zarr, PyTorch, Lightning, TorchGeo
+- pystac-client, odc-stac, rioxarray — PC STAC + EO data (in use)
+- _planned (training stack, not yet used):_ zarr, PyTorch, Lightning, TorchGeo
 
 ## Project Type
 

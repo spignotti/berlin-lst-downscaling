@@ -53,32 +53,18 @@ from uuid import uuid4
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from berlin_lst_downscaling.data.io.storage import OutputLocation
+from berlin_lst_downscaling.data.io.storage import (  # noqa: F401  — re-export for internal callers
+    OutputLocation,
+    _gcs_client,
+    _parse_gs_uri,
+)
 
 if TYPE_CHECKING:
-    from google.cloud.storage import Blob, Bucket, Client
+    from google.cloud.storage import Blob, Bucket
 
 # ── URI type alias ────────────────────────────────────────────────────
 
 UriLike = str | Path | OutputLocation
-
-
-# ── GCS helpers ──────────────────────────────────────────────────────
-
-
-def _gcs_client() -> Client:
-    from google.cloud.storage import Client
-
-    return Client()
-
-
-def _parse_gs_uri(uri: str) -> tuple[str, str]:
-    """Return ``(bucket_name, object_key)`` from a ``gs://`` URI."""
-    path = uri.removeprefix("gs://")
-    parts = path.split("/", 1)
-    if len(parts) != 2:
-        raise ValueError(f"Invalid GCS URI: {uri!r}")
-    return parts[0], parts[1]
 
 
 # ── stage manager ────────────────────────────────────────────────────

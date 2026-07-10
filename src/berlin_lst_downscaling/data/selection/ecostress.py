@@ -6,22 +6,11 @@ configured bbox within a date range.
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
-
 import earthaccess
 
-# Compiled granule-ID regex (same pattern as in acquisition/ecostress.py)
-_RE_GRANULE = re.compile(
-    r"^ECO"
-    r"v(?P<version>\d+)"
-    r"_L2T_LSTE_"
-    r"(?P<orbit>\d+)"
-    r"_(?P<scene>\d+)"
-    r"_(?P<mgrs>[\w]+)"
-    r"_(?P<datetime>\d{8}T\d{6})"
-    r"_(?P<build>\d+)"
-    r"_(?P<rev>\d+)$",
+from berlin_lst_downscaling.data.acquisition.ecostress import (
+    parse_granule_datetime,
+    parse_granule_mgrs,
 )
 
 # Berlin bbox (WGS84) for overlap computation
@@ -79,7 +68,7 @@ def search_ecostress(
         if dt is None:
             continue
 
-        mgrs = extract_mgrs_tile(granule_id)
+        mgrs = parse_granule_mgrs(granule_id)
         overlap = _footprint_overlap(granule, bbox)
         if overlap < 0.10:
             continue
@@ -100,25 +89,6 @@ def search_ecostress(
 
     matches.sort(key=lambda m: m["datetime"])
     return matches
-
-
-def parse_granule_datetime(granule_id: str) -> datetime | None:
-    """Extract UTC datetime from a granule ID, or None if unparseable."""
-    m = _RE_GRANULE.match(granule_id)
-    if m is None:
-        return None
-    try:
-        return datetime.strptime(m.group("datetime"), "%Y%m%dT%H%M%S")
-    except ValueError:
-        return None
-
-
-def extract_mgrs_tile(granule_id: str) -> str | None:
-    """Extract MGRS tile from a granule ID (e.g. 33UVU from 6th underscore field)."""
-    parts = granule_id.split("_")
-    if len(parts) >= 6:
-        return parts[5]
-    return None
 
 
 def _footprint_overlap(
@@ -162,3 +132,6 @@ def _ensure_earthdata_login() -> None:
             f"earthaccess.login()'` interactively once to cache credentials. "
             f"Detail: {exc}"
         ) from exc
+
+
+__all__ = ["search_ecostress", "parse_granule_datetime", "parse_granule_mgrs"]

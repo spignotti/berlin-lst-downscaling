@@ -1,6 +1,6 @@
 """ARD processing — write-out pipeline (contracts, masking, COG/STAC, ledger, orchestration).
 
-Phase A: Landsat C2-L2 + Sentinel-2 L2A via PC STAC (ECOSTRESS Phase B).
+Supports Landsat C2-L2, Sentinel-2 L2A, and ECOSTRESS L2T.
 """
 
 from berlin_lst_downscaling.data.ard.contract import (

@@ -10,7 +10,7 @@ Usage::
     from berlin_lst_downscaling.data.selection import build_anchors, run_scan
 
     # smoke test
-    cfg = OmegaConf.load("configs/selection/smoke_jul2024.yaml")
+    cfg = OmegaConf.load("configs/selection/smoke_2024_mai_sep.yaml")
     anchors, anchor_stats = build_anchors(cfg)
 
     # volume scan

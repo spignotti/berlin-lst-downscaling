@@ -56,15 +56,7 @@ def validate_cog(
     """
     result = ValidationResult()
 
-    # ── 1. Openable ────────────────────────────────────────────────────────
-    try:
-        with rasterio.open(uri) as src:
-            pass
-    except Exception as exc:
-        result.fail(f"Could not open COG: {exc}")
-        return result
-
-    # ── 2–6: read metadata ────────────────────────────────────────────────
+    # ── 1. Openable + 2–6: read metadata ─────────────────────────────────
     try:
         with rasterio.open(uri) as src:
             crs = str(src.crs).upper() if src.crs else "None"
@@ -75,7 +67,7 @@ def validate_cog(
             # Sample check for all-NaN — read a few blocks
             _check_nan(src, result)
     except Exception as exc:
-        result.fail(f"Failed to read COG metadata: {exc}")
+        result.fail(f"Could not open or read COG: {exc}")
         return result
 
     # ── 2. CRS ─────────────────────────────────────────────────────────────

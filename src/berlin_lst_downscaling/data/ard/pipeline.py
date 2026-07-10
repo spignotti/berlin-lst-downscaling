@@ -216,16 +216,16 @@ def _process_manifest(
             "Run Szenen-Selektion first."
         )
 
+    import pyarrow.compute as pc  # type: ignore[attr-defined]
     import pyarrow.parquet as pq
 
-    from berlin_lst_downscaling.data.ard.ledger import pc_equal
     from berlin_lst_downscaling.data.io import read_bytes
 
     tbl = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
     if tbl.num_rows == 0:
         return
 
-    mask = pc_equal(tbl.column("source"), source)
+    mask = pc.equal(tbl.column("source"), source)  # type: ignore[attr-defined]
     rows = tbl.filter(mask)
     if rows.num_rows == 0:
         return
@@ -233,7 +233,6 @@ def _process_manifest(
     # Collect manifest rows per source — always carry scene_id + year
     scenes: list[tuple[str, str, int]] = []
     scene_dates: dict[str, str | None] = {}  # scene_id → date (optional)
-    scene_hrefs: dict[str, str | None] = {}  # scene_id → item_href (optional)
     for i in range(rows.num_rows):
         r = rows.slice(i, 1).to_pydict()
         sid = str(r["scene_id"][0])
@@ -241,9 +240,6 @@ def _process_manifest(
         # Optional date column (forward-compatible schema extension)
         _dt = r.get("date", [None])[0]
         scene_dates[sid] = str(_dt) if _dt is not None else None
-        # Optional item_href (bypasses STAC search)
-        _href = r.get("item_href", [None])[0]
-        scene_hrefs[sid] = str(_href) if _href else None
 
     todo = reconcile(scenes, ledger, contract)
     _log(cfg, run_id, "manifest_todo", {
@@ -254,15 +250,13 @@ def _process_manifest(
 
     if source == "ecostress":
         _process_ecostress_todo(
-            todo, source, contract, cfg, ledger, run_id,
-            scene_dates, scene_hrefs,
+            todo, source, contract, cfg, ledger, run_id, scene_dates,
         )
     else:
         for scene_id, _source, year, _reason in todo:
             _run_scene(
                 scene_id, source, year, contract, cfg, ledger, run_id,
                 scene_date=scene_dates.get(scene_id),
-                item_href=scene_hrefs.get(scene_id),
             )
 
 
@@ -274,7 +268,6 @@ def _process_ecostress_todo(
     ledger: Ledger,
     run_id: str,
     scene_dates: dict[str, str | None],
-    scene_hrefs: dict[str, str | None],
 ) -> None:
     """Process ECOSTRESS scenes with pipeline-internal staging.
 
@@ -303,7 +296,6 @@ def _process_ecostress_todo(
             _run_scene(
                 scene_id, source, year, contract, cfg, ledger, run_id,
                 scene_date=scene_dates.get(scene_id),
-                item_href=scene_hrefs.get(scene_id),
                 ecostress_raw_dir=granule_raw_dir,
             )
         # Stage cleaned up automatically on StageSession.__exit__
@@ -322,7 +314,6 @@ def _run_scene(
     run_id: str,
     items: list[Any] | None = None,
     scene_date: str | None = None,
-    item_href: str | None = None,
     ecostress_raw_dir: str | None = None,
 ) -> None:
     """Process one scene: load → mask → write COG+STAC → update ledger.
@@ -336,10 +327,6 @@ def _run_scene(
     scene_date :
         Overrides ``cfg.scene_date`` for this scene. Used by
         ``mode=full`` where each manifest row carries its own date.
-    item_href :
-        Direct STAC item URL from the manifest. When provided, the
-        runner can bypass STAC search (future optimization; currently
-        falls back to date-based search).
     ecostress_raw_dir :
         Per-scene override for ECOSTRESS raw_dir. Used by the
         manifest-driven ECOSTRESS pipeline where each granule is
@@ -350,7 +337,6 @@ def _run_scene(
         "scene_id": scene_id,
         "source": source,
         "scene_date": effective_date,
-        "item_href": item_href,
     })
     t0 = time.perf_counter()
 
@@ -432,6 +418,15 @@ def _run_scene(
                 )
 
         # ── COMPUTE AOI METRICS ──
+        aoi_clear_px: int | None = None
+        aoi_cloudy_px: int | None = None
+        aoi_shadow_px: int | None = None
+        aoi_cirrus_px: int | None = None
+        aoi_saturated_px: int | None = None
+        aoi_fill_px: int | None = None
+        aoi_total_px: int | None = None
+        aoi_overlap_px: int | None = None
+        aoi_clear_frac: float | None = None
         if flag_da is not None and contract.flag_mode == "separate":
             aoi_res = (
                 int(cfg.target_resolution_low)
@@ -442,23 +437,15 @@ def _run_scene(
             aoi_uri = f"{aoi_base}/aoi_{aoi_res}m.tif"
             try:
                 _raw = compute_aoi_metrics(flag_dst, aoi_uri, contract)
-                _v = _raw["aoi_clear_px"]
-                aoi_clear_px = None if _v is None else int(_v)
-                _v = _raw["aoi_cloudy_px"]
-                aoi_cloudy_px = None if _v is None else int(_v)
-                _v = _raw["aoi_shadow_px"]
-                aoi_shadow_px = None if _v is None else int(_v)
-                _v = _raw["aoi_cirrus_px"]
-                aoi_cirrus_px = None if _v is None else int(_v)
-                _v = _raw["aoi_saturated_px"]
-                aoi_saturated_px = None if _v is None else int(_v)
-                _v = _raw["aoi_fill_px"]
-                aoi_fill_px = None if _v is None else int(_v)
-                _v = _raw["aoi_total_px"]
-                aoi_total_px = None if _v is None else int(_v)
-                _v = _raw["aoi_overlap_px"]
-                aoi_overlap_px = None if _v is None else int(_v)
-                _v = _raw["aoi_clear_frac"]
+                # int fields (clear/cloudy/shadow/cirrus/saturated/fill/total/overlap)
+                for _key in (
+                    "aoi_clear_px", "aoi_cloudy_px", "aoi_shadow_px",
+                    "aoi_cirrus_px", "aoi_saturated_px", "aoi_fill_px",
+                    "aoi_total_px", "aoi_overlap_px",
+                ):
+                    _v = _raw.get(_key)
+                    locals()[_key] = None if _v is None else int(_v)
+                _v = _raw.get("aoi_clear_frac")
                 aoi_clear_frac = None if _v is None else float(_v)
             except Exception as _exc:
                 # AOI metrics are best-effort; log and continue without them
@@ -467,9 +454,6 @@ def _run_scene(
                     "aoi_uri": aoi_uri,
                     "error": str(_exc),
                 })
-                aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
-                aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
-                aoi_total_px = aoi_overlap_px = aoi_clear_frac = None
         else:
             aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
             aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
@@ -557,23 +541,12 @@ def _run_scene(
 def _solar_for_scene(
     ds: xr.Dataset,
     cfg: DictConfig,
-    stac_properties: dict | None = None,
 ) -> tuple[float, float]:
     """Return ``(azimuth_deg, elevation_deg)`` for the scene.
 
-    When ``stac_properties`` are provided and contain
-    ``view:sun_azimuth`` / ``view:sun_elevation``, those values
-    are used directly (no NOAA computation).
+    Computed from the dataset's acquisition time via NOAA.  Falls back to
+    ``cfg.scene_date`` at 10:00 UTC when the dataset has no time coordinate.
     """
-    from berlin_lst_downscaling.data.ard.solar_position import extract_solar_from_stac
-
-    # Try STAC properties first (used by Landsat which has view:sun_*)
-    if stac_properties:
-        solar = extract_solar_from_stac(stac_properties)
-        if solar is not None:
-            return solar
-
-    # Fall back to NOAA computation from acquisition time
     try:
         dt64 = ds.time.values[0]
         ts = dt64.astype("datetime64[us]").tolist()
