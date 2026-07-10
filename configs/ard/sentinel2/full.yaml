@@ -3,6 +3,4 @@ defaults:
   - default
   - _self_
 
-mode: full
 manifest_uri: "data/ard/manifest.parquet"
-output_root: "data/ard/sentinel2"

@@ -4,8 +4,8 @@ The ledger tracks the status of every scene processed by the ARD
 pipeline.  Idempotency, resume, and QA reporting all depend on it.
 
 Every ``upsert`` immediately persists via ``atomic_write``.  This
-ensures crash consistency — there is no batch write at the end of
-the pipeline run.
+ensures crash consistency — there is no batch write at the end of the
+pipeline run.
 """
 
 from __future__ import annotations
@@ -13,33 +13,18 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
 
-
-def pc_equal(a: object, b: object) -> Any:
-    """Wrap ``pyarrow.compute.equal`` — avoids pyright stub gaps."""
-    import pyarrow.compute as _pc
-
-    return _pc.equal(a, b)  # type: ignore[attr-defined]
-
-
-def pc_and(a: Any, b: Any) -> Any:
-    """Wrap ``pyarrow.compute.and_``."""
-    import pyarrow.compute as _pc
-
-    return _pc.and_(a, b)  # type: ignore[attr-defined]
-
-
-def pc_invert(a: Any) -> Any:
-    """Wrap ``pyarrow.compute.invert``."""
-    import pyarrow.compute as _pc
-
-    return _pc.invert(a)  # type: ignore[attr-defined]
+# pyarrow.compute stub is incomplete — every `pc.<name>` access needs
+# the type-ignore; aliases keep the call sites short.
+_pceq = pc.equal  # type: ignore[attr-defined]
+_pcan = pc.and_  # type: ignore[attr-defined]
+_pcinv = pc.invert  # type: ignore[attr-defined]
 
 # ── schema ───────────────────────────────────────────────────────────
 
@@ -153,7 +138,7 @@ class Ledger:
         if self._table.num_rows == 0:
             return []
 
-        tbl = self._table.filter(pc_equal(self._table.column("source"), source))
+        tbl = self._table.filter(_pceq(self._table.column("source"), source))
         return _rows_from_table(tbl)
 
     def get(self, scene_id: str, source: str) -> LedgerRow | None:
@@ -161,9 +146,9 @@ class Ledger:
         if self._table.num_rows == 0:
             return None
 
-        mask = pc_and(
-            pc_equal(self._table.column("scene_id"), scene_id),
-            pc_equal(self._table.column("source"), source),
+        mask = _pcan(
+            _pceq(self._table.column("scene_id"), scene_id),
+            _pceq(self._table.column("source"), source),
         )
         tbl = self._table.filter(mask)
         rows = _rows_from_table(tbl)
@@ -190,12 +175,12 @@ class Ledger:
         if self._table.num_rows == 0:
             self._table = new_row
         else:
-            existing_mask = pc_and(
-                pc_equal(self._table.column("scene_id"), row.scene_id),
-                pc_equal(self._table.column("source"), row.source),
+            existing_mask = _pcan(
+                _pceq(self._table.column("scene_id"), row.scene_id),
+                _pceq(self._table.column("source"), row.source),
             )
             self._table = pa.concat_tables(
-                [self._table.filter(pc_invert(existing_mask)), new_row]
+                [self._table.filter(_pcinv(existing_mask)), new_row]
             )
 
         # Per-transition atomic write (H3 fix)
@@ -221,13 +206,13 @@ class Ledger:
 
         tbl = self._table
         if source:
-            tbl = tbl.filter(pc_equal(self._table.column("source"), source))
+            tbl = tbl.filter(_pceq(self._table.column("source"), source))
         if tbl.num_rows == 0:
             return {}
 
         counts: dict[str, int] = {}
         for s in _STATUSES:
-            n = tbl.filter(pc_equal(tbl.column("status"), s)).num_rows
+            n = tbl.filter(_pceq(tbl.column("status"), s)).num_rows
             if n > 0:
                 counts[s] = n
         return counts

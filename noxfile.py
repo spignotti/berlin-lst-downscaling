@@ -13,6 +13,54 @@ def lint(session: nox.Session) -> None:
     session.run("uv", "run", "ruff", "check", ".", external=True)
 
 
+# ── shared helpers ────────────────────────────────────────────────────
+
+
+_SMOKE_ROWS = [
+    {
+        "scene_id": "LC09_L2SP_193024_20240629_02_T1",
+        "source": "landsat-c2-l2",
+        "year": 2024,
+        "status": "coupled",
+        "date": "2024-06-29",
+    },
+    {
+        "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+        "source": "sentinel-2-l2a",
+        "year": 2024,
+        "status": "coupled",
+        "date": "2024-06-29",
+    },
+    {
+        "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
+        "source": "ecostress",
+        "year": 2018,
+        "status": "coupled",
+        "date": "2018-07-30",
+    },
+]
+
+
+def _write_smoke_manifest(manifest_path: str) -> None:
+    """Write the 3-row smoke manifest to *manifest_path* (Parquet)."""
+    import os
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    schema = pa.schema([
+        pa.field("scene_id", pa.string(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("year", pa.int32(), nullable=False),
+        pa.field("status", pa.string(), nullable=False),
+        pa.field("date", pa.string(), nullable=True),
+    ])
+    table = pa.Table.from_pylist(_SMOKE_ROWS, schema=schema)
+    pq.write_table(table, manifest_path)
+    print(f"Manifest written: {manifest_path}")
+
+
 @nox.session(venv_backend="none")
 def format(session: nox.Session) -> None:
     session.run("uv", "run", "ruff", "format", ".", external=True)
@@ -42,49 +90,11 @@ def smoke_primary(session: nox.Session) -> None:
 
     Final COGs land in ``data/smoke/primary/ard/``.
     """
-    import os
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
     manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
     output_root = f"{manifest_dir}/ard"
 
-    rows = [
-        {
-            "scene_id": "LC09_L2SP_193024_20240629_02_T1",
-            "source": "landsat-c2-l2",
-            "year": 2024,
-            "status": "coupled",
-            "date": "2024-06-29",
-        },
-        {
-            "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
-            "source": "sentinel-2-l2a",
-            "year": 2024,
-            "status": "coupled",
-            "date": "2024-06-29",
-        },
-        {
-            "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
-            "source": "ecostress",
-            "year": 2018,
-            "status": "coupled",
-            "date": "2018-07-30",
-        },
-    ]
-    os.makedirs(manifest_dir, exist_ok=True)
-    schema = pa.schema([
-        pa.field("scene_id", pa.string(), nullable=False),
-        pa.field("source", pa.string(), nullable=False),
-        pa.field("year", pa.int32(), nullable=False),
-        pa.field("status", pa.string(), nullable=False),
-        pa.field("date", pa.string(), nullable=True),
-    ])
-    table = pa.Table.from_pylist(rows, schema=schema)
-    pq.write_table(table, manifest_path)
-    print(f"Manifest written: {manifest_path}")
+    _write_smoke_manifest(manifest_path)
 
     # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
     # automatically by the pipeline's _process_ecostress_todo path.
@@ -145,12 +155,8 @@ def cloud_pilot(session: nox.Session) -> None:
     Requires ``GOOGLE_APPLICATION_CREDENTIALS`` to be set, or runs under
     a GCP Workload Identity in Cloud Run.
     """
-    import os
     import uuid
     from datetime import UTC, datetime
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
 
     # uv ≥0.11 requires explicit opt-in to auto-load .env via UV_ENV_FILE.
     # Set it here so the cloud-pilot works on both uv 0.7 (auto) and ≥0.11 (opt-in).
@@ -175,39 +181,7 @@ def cloud_pilot(session: nox.Session) -> None:
     )
 
     # Step 1: Build 3-row smoke manifest
-    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-    rows = [
-        {
-            "scene_id": "LC09_L2SP_193024_20240629_02_T1",
-            "source": "landsat-c2-l2",
-            "year": 2024,
-            "status": "coupled",
-            "date": "2024-06-29",
-        },
-        {
-            "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
-            "source": "sentinel-2-l2a",
-            "year": 2024,
-            "status": "coupled",
-            "date": "2024-06-29",
-        },
-        {
-            "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
-            "source": "ecostress",
-            "year": 2018,
-            "status": "coupled",
-            "date": "2018-07-30",
-        },
-    ]
-    schema = pa.schema([
-        pa.field("scene_id", pa.string(), nullable=False),
-        pa.field("source", pa.string(), nullable=False),
-        pa.field("year", pa.int32(), nullable=False),
-        pa.field("status", pa.string(), nullable=False),
-        pa.field("date", pa.string(), nullable=True),
-    ])
-    table = pa.Table.from_pylist(rows, schema=schema)
-    pq.write_table(table, manifest_path)
+    _write_smoke_manifest(manifest_path)
 
     # Step 2: Stage ECOSTRESS fixture to GCS
     session.run(

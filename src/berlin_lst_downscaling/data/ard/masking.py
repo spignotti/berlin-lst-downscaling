@@ -14,7 +14,7 @@ import xarray as xr
 from omegaconf import DictConfig
 from scipy.ndimage import binary_dilation
 
-from berlin_lst_downscaling.data.ard.contract import Contract
+from berlin_lst_downscaling.data.ard.contract import contract_for_source
 
 # ── Landsat ─────────────────────────────────────────────────────────##
 
@@ -64,7 +64,7 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     -------
     xr.Dataset with bands ``st`` (float32, Kelvin) and ``flag`` (uint8).
     """
-    contract = _contract("landsat-c2-l2")
+    contract = contract_for_source("landsat-c2-l2")
 
     # --- derive flag from qa_pixel ---
     qa = ds["qa_pixel"].values.squeeze().astype(np.uint16)
@@ -153,7 +153,7 @@ def mask_s2(
     xr.Dataset with bands ``B02, B03, B04, B08`` (float32 0-1) and
     ``flag`` (uint8).
     """
-    contract = _contract("sentinel-2-l2a")
+    contract = contract_for_source("sentinel-2-l2a")
 
     # --- flag from SCL (Scene Classification Layer) ---
     # SCL comes as float32 from odc.stac.load; round to int for class values
@@ -308,7 +308,7 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     -------
     xr.Dataset with bands ``lst`` (float32 Kelvin) and ``flag`` (uint8).
     """
-    contract = _contract("ecostress")
+    contract = contract_for_source("ecostress")
 
     lst_arr = ds["lst"].values.astype(np.float32)
     cloud_arr = ds["cloud"].values.astype(np.uint8)
@@ -358,15 +358,6 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
         out[var].rio.write_transform(ds.rio.transform(), inplace=True)
 
     return out
-
-
-# ── contract helper ──────────────────────────────────────────────────##
-
-
-def _contract(source: str) -> Contract:
-    from berlin_lst_downscaling.data.ard.contract import contract_for_source as _cf
-
-    return _cf(source)
 
 
 _FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated"

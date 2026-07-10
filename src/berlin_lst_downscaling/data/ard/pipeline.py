@@ -216,16 +216,16 @@ def _process_manifest(
             "Run Szenen-Selektion first."
         )
 
+    import pyarrow.compute as pc  # type: ignore[attr-defined]
     import pyarrow.parquet as pq
 
-    from berlin_lst_downscaling.data.ard.ledger import pc_equal
     from berlin_lst_downscaling.data.io import read_bytes
 
     tbl = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
     if tbl.num_rows == 0:
         return
 
-    mask = pc_equal(tbl.column("source"), source)
+    mask = pc.equal(tbl.column("source"), source)  # type: ignore[attr-defined]
     rows = tbl.filter(mask)
     if rows.num_rows == 0:
         return
@@ -418,6 +418,15 @@ def _run_scene(
                 )
 
         # ── COMPUTE AOI METRICS ──
+        aoi_clear_px: int | None = None
+        aoi_cloudy_px: int | None = None
+        aoi_shadow_px: int | None = None
+        aoi_cirrus_px: int | None = None
+        aoi_saturated_px: int | None = None
+        aoi_fill_px: int | None = None
+        aoi_total_px: int | None = None
+        aoi_overlap_px: int | None = None
+        aoi_clear_frac: float | None = None
         if flag_da is not None and contract.flag_mode == "separate":
             aoi_res = (
                 int(cfg.target_resolution_low)
@@ -428,23 +437,15 @@ def _run_scene(
             aoi_uri = f"{aoi_base}/aoi_{aoi_res}m.tif"
             try:
                 _raw = compute_aoi_metrics(flag_dst, aoi_uri, contract)
-                _v = _raw["aoi_clear_px"]
-                aoi_clear_px = None if _v is None else int(_v)
-                _v = _raw["aoi_cloudy_px"]
-                aoi_cloudy_px = None if _v is None else int(_v)
-                _v = _raw["aoi_shadow_px"]
-                aoi_shadow_px = None if _v is None else int(_v)
-                _v = _raw["aoi_cirrus_px"]
-                aoi_cirrus_px = None if _v is None else int(_v)
-                _v = _raw["aoi_saturated_px"]
-                aoi_saturated_px = None if _v is None else int(_v)
-                _v = _raw["aoi_fill_px"]
-                aoi_fill_px = None if _v is None else int(_v)
-                _v = _raw["aoi_total_px"]
-                aoi_total_px = None if _v is None else int(_v)
-                _v = _raw["aoi_overlap_px"]
-                aoi_overlap_px = None if _v is None else int(_v)
-                _v = _raw["aoi_clear_frac"]
+                # int fields (clear/cloudy/shadow/cirrus/saturated/fill/total/overlap)
+                for _key in (
+                    "aoi_clear_px", "aoi_cloudy_px", "aoi_shadow_px",
+                    "aoi_cirrus_px", "aoi_saturated_px", "aoi_fill_px",
+                    "aoi_total_px", "aoi_overlap_px",
+                ):
+                    _v = _raw.get(_key)
+                    locals()[_key] = None if _v is None else int(_v)
+                _v = _raw.get("aoi_clear_frac")
                 aoi_clear_frac = None if _v is None else float(_v)
             except Exception as _exc:
                 # AOI metrics are best-effort; log and continue without them
@@ -453,9 +454,6 @@ def _run_scene(
                     "aoi_uri": aoi_uri,
                     "error": str(_exc),
                 })
-                aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
-                aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
-                aoi_total_px = aoi_overlap_px = aoi_clear_frac = None
         else:
             aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
             aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None

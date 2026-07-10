@@ -13,7 +13,7 @@ The COG writer uses a 2-pass procedure on a local temp file:
 from __future__ import annotations
 
 import json
-import shutil
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -99,13 +99,10 @@ def write_cog_atomic(
         nodata=nodata,
     )
 
-    # Write to local temp file (2-pass: write + overviews)
-    tmp_dir = Path(".tmp")
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    dst_tmp = tmp_dir / f"_{Path(dst).name}.cog"
-
-    try:
+    # Write to local temp file (2-pass: write + overviews). The temp
+    # directory is auto-cleaned on exit; no leftover state in the repo.
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        dst_tmp = Path(tmp_dir_str) / f"_{Path(dst).name}.cog"
         with rasterio.open(dst_tmp, "w", **profile) as tmp:
             for i, (name, arr) in enumerate(arrays, 1):
                 out_arr = arr.astype(common_dtype, copy=False)
@@ -120,10 +117,6 @@ def write_cog_atomic(
         # Read bytes and push via atomic_write
         cog_bytes = dst_tmp.read_bytes()
         atomic_write(dst, cog_bytes, overwrite=overwrite)
-
-    except BaseException:
-        dst_tmp.unlink(missing_ok=True)
-        raise
 
     return dst
 
@@ -164,21 +157,14 @@ def write_flag_cog_atomic(
     profile["compress"] = "zstd"
     profile["predictor"] = 1
 
-    tmp_dir = Path(".tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    dst_tmp = tmp_dir / f"_{Path(dst).name}"
-
-    try:
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        dst_tmp = Path(tmp_dir_str) / f"_{Path(dst).name}"
         with rasterio.open(dst_tmp, "w", **profile) as tmp:
             tmp.write(arr_2d, 1)
             tmp.set_band_description(1, "flag")
 
         cog_bytes = dst_tmp.read_bytes()
         atomic_write(dst, cog_bytes, overwrite=overwrite)
-
-    except BaseException:
-        dst_tmp.unlink(missing_ok=True)
-        raise
 
     return dst
 
