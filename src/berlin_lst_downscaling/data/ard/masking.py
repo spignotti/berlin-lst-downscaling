@@ -93,6 +93,8 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
 
     # --- ST band ---
     raw = ds["lwir11"].values.squeeze().astype(np.float32)
+    # DN=0 is fill in USGS C2 L2 ST; not always caught by QA_PIXEL bit 0
+    flag[raw == 0] |= contract.FLAG_FILL
     st_kelvin = raw * _LS_ST_SCALE + _LS_ST_OFFSET
     st_kelvin[(flag & contract.FLAG_FILL) != 0] = float("nan")
 
