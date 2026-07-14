@@ -1,0 +1,1 @@
+"""Secondary-data pipeline — shared foundation for static/dynamic sources."""

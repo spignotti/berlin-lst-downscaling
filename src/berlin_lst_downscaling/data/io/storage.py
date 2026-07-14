@@ -6,12 +6,16 @@ paths this uses ``os.replace`` (POSIX atomic).  For GCS it uses
 ``copy_blob`` + ``delete`` (object-store-renamable, eventually
 consistent — see docstring for caveats).
 
+``atomic_upload`` is the file-based counterpart for large local files:
+it streams the file directly without loading it into memory.
+
 All functions accept ``str | Path | OutputLocation`` as the URI argument.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal, Union
@@ -220,9 +224,105 @@ def _prune_tmp(tmp_dir: Path, max_age_s: int = 3600) -> None:
             p.unlink(missing_ok=True)
 
 
+# ── atomic file upload ────────────────────────────────────────────────
+
+
+def atomic_upload(
+    local_path: Path | str,
+    dst: str,
+    overwrite: bool = True,
+) -> str:
+    """Atomically upload a local file to GCS or copy it locally.
+
+    For **GCS paths** (``gs://``):
+      - Upload to a ``.tmp/_{name}.{uuid}`` object via
+        ``upload_from_filename`` (streaming, no memory load),
+      - ``copy_blob(tmp, bucket, final_key)``,
+      - ``tmp.delete()``.
+
+    For **local paths**:
+      - ``shutil.copy2`` to a ``.tmp/_{name}.{uuid}`` sibling,
+      - ``os.replace`` to the final path,
+      - prune stale temp files.
+
+    Parameters
+    ----------
+    local_path :
+        Path to a local file that exists and is readable.
+    dst :
+        Final output URI (local path or ``gs://...``).
+    overwrite :
+        If ``False`` and *dst* exists, a :class:`FileExistsError` is raised.
+
+    Returns
+    -------
+    str
+        The *dst* URI on success.
+    """
+    loc = _as_loc(dst)
+    src_path = Path(local_path)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"Source file not found: {src_path}")
+
+    if loc.scheme == "gcs":
+        _atomic_upload_gcs(src_path, loc.uri, overwrite)
+    else:
+        _atomic_upload_local(src_path, loc.uri, overwrite)
+
+    return dst
+
+
+def _atomic_upload_local(local_path: Path, dst_uri: str, overwrite: bool) -> None:
+    """Copy a file to a local path atomically."""
+    dst = _resolve_local(dst_uri)
+    if dst.exists() and not overwrite:
+        raise FileExistsError(str(dst))
+
+    tmp_dir = dst.parent / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"_{dst.name}.{uuid4().hex[:8]}"
+
+    try:
+        shutil.copy2(str(local_path), str(tmp_path))
+        os.replace(str(tmp_path), str(dst))
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    _prune_tmp(tmp_dir, max_age_s=3600)
+
+
+def _atomic_upload_gcs(local_path: Path, dst_uri: str, overwrite: bool) -> None:
+    """Upload a file to GCS atomically via temp object + rename."""
+    bucket_name, key = _parse_gs_uri(dst_uri)
+    client = _gcs_client()
+    bucket = client.bucket(bucket_name)
+
+    final_blob = bucket.blob(key)
+    if not overwrite and final_blob.exists():
+        raise FileExistsError(dst_uri)
+
+    tmp_key = (
+        Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}"
+    ).as_posix()
+    tmp_blob = bucket.blob(tmp_key)
+
+    try:
+        tmp_blob.upload_from_filename(str(local_path))
+        bucket.copy_blob(tmp_blob, bucket, key)
+        tmp_blob.delete()
+    except BaseException:
+        try:
+            tmp_blob.delete()
+        except Exception:  # noqa: S110 — best-effort cleanup
+            pass
+        raise
+
+
 __all__ = [
     "OutputLocation",
     "atomic_write",
+    "atomic_upload",
     "exists",
     "read_bytes",
 ]

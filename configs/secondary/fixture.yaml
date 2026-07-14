@@ -1,0 +1,6 @@
+defaults:
+  - _base
+  - _self_
+
+mode: fixture
+output_root: "data/smoke/secondary/fixture"
