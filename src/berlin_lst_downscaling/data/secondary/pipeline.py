@@ -30,6 +30,7 @@ from berlin_lst_downscaling.data.secondary.reports import (
     format_secondary_report,
     secondary_qa_report,
 )
+from berlin_lst_downscaling.data.secondary.validate import validate_secondary_cog
 
 # ── public entry ──────────────────────────────────────────────────────
 
@@ -277,7 +278,7 @@ def _run_imperviousness(
             continue
 
         # Validate output COG
-        vig = validate_cog(qa_payload["output_uri"], contract, grid)
+        vig = validate_secondary_cog(qa_payload["output_uri"], contract, grid)
         if not vig.ok:
             print(f"  imperviousness {vintage} COG validation FAILED: {'; '.join(vig.errors)}")
             led.upsert(SecondaryLedgerRow(

@@ -52,15 +52,6 @@ IMPERVIOUSNESS_URLS: dict[int, str] = {
 
 # ── class-code lookup (verified from actual rasters) ──────────────────
 
-# Verified 16 codes across both vintages:
-#   0   = unsealed
-#   5,15,25,...,95  = sealing classes (value = percent)
-#   100 = fully sealed (non-building)
-#   101 = building-shadow sealed surface
-#   102 = building footprint
-#   103 = rail ballast (classified as sealed in the uncorrected raster)
-#   110 = shadow (treated as sealed)
-#   255 = nodata (explicit in 2021, absent in 2016)
 _LOOKUP: np.ndarray = np.full(256, 100.0, dtype=np.float32)
 _LOOKUP[0] = 0.0
 for _code in range(5, 100, 10):
@@ -69,7 +60,20 @@ _LOOKUP[255] = np.nan
 
 # ── contract ──────────────────────────────────────────────────────────
 
-_CONFIG_HASH_PREFIX = "imperviousness:v1:"
+_CONFIG_HASH_PREFIX = "imperviousness:v2:"
+
+# Verified 15 pixel codes across both vintages:
+#   0   = unsealed
+#   5,15,25,...,95  = sealing classes (value = percent)
+#   100 = fully sealed (non-building)
+#   101 = building-shadow sealed surface
+#   102 = building footprint
+#   103 = rail ballast (classified as sealed in the uncorrected raster)
+#   110 = shadow (treated as sealed)
+# 255 is the documented 2021 nodata code but not present in pixel values.
+_ALLOWED_CODES: frozenset[int] = frozenset(
+    {0, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 100, 101, 102, 103, 110, 255}
+)
 
 
 def contract_for_imperviousness() -> Contract:
@@ -278,21 +282,12 @@ def _extract_tiff(zip_path: Path) -> bytes:
 
 
 def _validate_codes(observed: list[int]) -> None:
-    """Raise ``ValueError`` if any observed code is not in the lookup.
-
-    The lookup covers codes 0–255 (all uint8 values).  Codes that are
-    not in the official Umweltatlas scheme silently map to 100 % via the
-    ``np.full`` default.  If an **unknown** code appears it may indicate
-    a new data edition with a different class scheme — we fail hard.
-    """
-    # All uint8 values are covered by the 256-element lookup.
-    # Unknown codes (codes outside {0,5..95,100,101,102,103,110,255})
-    # silently map to 100 %.  If a code is outside uint8 range the data
-    # may use a different encoding — fail hard.
-    unexpected = [c for c in observed if c < 0 or c > 255]
-    if unexpected:
+    """Raise ``ValueError`` if any observed code is outside the allowed set."""
+    unknown = [code for code in observed if code not in _ALLOWED_CODES]
+    if unknown:
         raise ValueError(
-            f"Observed codes outside uint8 range: {unexpected}. "
+            f"Observed class codes outside the allowed set: {sorted(unknown)}. "
+            f"Allowed: {sorted(_ALLOWED_CODES)}. "
             "This dataset may use a different encoding."
         )
 
