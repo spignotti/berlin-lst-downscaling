@@ -1,7 +1,8 @@
 # Additional Data Sources — Availability & Feature Definitions
 
 Analysis date: 2026-06-18  
-Research update: 2026-06-28 (concrete download feasibility)  
+Research update: 2026-07-14 (post-rebuild decisions after deleted branch, fresh start)  
+Notion context: Sekundärdaten Research Findings + Sekundärdaten Cloud-Workflow  
 Data portal: Berlin Open Data / Geoportal Berlin, DWD CDC, Copernicus CDS, NASA CMR  
 Reference: `docs/data-availability.md` (Landsat, Sentinel-2, ECOSTRESS)  
 Validation scripts: `notebooks/dwd_stations.py`
@@ -18,15 +19,18 @@ Concrete findings per datasource after detailed feasibility check:
 | 2 | Umweltatlas Vegetationshöhe 2020 | `https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/veghoehe_2020.zip` | GeoTIFF | EPSG:25833 | ~785 MB (single file) | `rasterio` (already in deps) | ✅ |
 | 3 | Umweltatlas Versiegelung 2021 | `https://gdi.berlin.de/data/ua_versiegelung_2021/atom/Versiegelung_Raster_2021.zip` (raster); WFS: `wfs/ua_versiegelung_2021` (vector) | GeoTIFF (raster) / GML (WFS) | EPSG:25833 | ~41 MB (raster, single file) | `rasterio` / `geopandas` | ✅ |
 | 4 | DGM 1 m | `https://gdi.berlin.de/data/dgm1/atom/0.atom` (INSPIRE ATOM) | XYZ CSV in ZIP | EPSG:25833, DHHN2016 | ~16 MB/tile compressed, 297 tiles (~4.75 GB) | `pandas` → `rasterio` (XYZ→GeoTIFF via `gdal.Grid()`) | ⚠️ Large volume, auxiliary only |
-| 5 | ERA5-Land | CDS API (`cdsapi` Python) | NetCDF / GRIB | 0.1° lat/lon | ~10 MB (NetCDF, Berlin subset 2017–2025 hourly) | `cdsapi` (needs `pip install`) | ✅ |
-| 6 | SVF | Custom implementation (no maintained Python library found) | Derived from DSM | EPSG:25833 | N/A — compute | Custom numpy + numba (Eigenimplementierung per 28.06. decision) | 🔧 |
-| 7 | Shadow masks | Custom ray-casting (no maintained Python library found) | Derived from DSM + sun position | EPSG:25833 | N/A — compute | Custom numpy + numba + Michalsky-SPA (already implemented) | 🔧 |
+| 5 | ERA5-Land | CDS API (`cdsapi` Python) | **GRIB** | 0.1° lat/lon | ~10 MB (Berlin subset 2017–2025 hourly) | `cdsapi`, `cfgrib` (GRIB preferred post-Apr 2025 NetCDF limit) | ✅ |
+| 6 | SVF | **`xarray-spatial.sky_view_factor()`** | Derived from DSM | EPSG:25833 | N/A — compute | `xarray-spatial>=0.10`, `numba>=0.60,<0.61` (macOS x86_64) | ✅ |
+| 7 | Shadow masks | Custom ray-casting (no PyPI library) | Derived from DSM + sun position | EPSG:25833 | N/A — compute | Custom numpy + numba + Michalsky-SPA (already implemented), UMEP algorithm as ref | 🔧 |
 
 **Key decision changes from original analysis:**
 - Canopy height → Umweltatlas VH 2020 (1 m GeoTIFF, not ETH CHM)
 - DGM 1 m → auxiliary for SVF/shadow only (not Copernicus DEM as primary)
-- SVF → self-implemented in Python (no ready library)
-- Shadow → custom ray-casting with pre-computed horizon maps
+- SVF → **`xarray-spatial`** Zakek 2011 (~21s for Berlin AOI, replaces custom impl)
+- Shadow → custom ray-casting with pre-computed horizon maps (confirmed: no PyPI library available)
+- DWD → **`wetterdienst` v0.90+** (replaces direct URL download)
+- ERA5 → **GRIB format** (CDS NetCDF limits tightened Apr 2025)
+- ERA5 ssrd → accumulation handling: diff consecutive timesteps, ÷3600 for W/m²
 
 ---
 
@@ -151,12 +155,13 @@ Concrete findings per datasource after detailed feasibility check:
 | Source | **Derived** — computed from LoD2 + DGM 1 m |
 | Method | Hemispherical view analysis at 10 m resolution |
 | Search radius | 30 m minimum (Scarano 2017) |
-| **Library research** | |
+| **Library research (update 2026-07-14)** | |
+| **`xarray-spatial` v0.10.16 (PyPI)** | **Preferred.** Production-ready `sky_view_factor()` (Zakek et al. 2011). Numba-backed, multi-backend (numpy/CuPy/Dask). ~21s benchmark for Berlin AOI (12M px, max_radius=3, n_directions=16). |
 | UMEP (QGIS) | Mature urban climate tool, but requires QGIS Python → heavyweight |
 | SAGA GIS `r.skyview` | Available via SAGA Python bindings, but SAGA is Linux-only |
-| PyPI packages | **None found** — `svf`, `horizon`, `pyviewshed`, `richdem` not available on PyPI |
-| **Recommendation** | **Custom numpy/numba implementation.** For each 10 m pixel, sample DSM heights along N azimuth directions (e.g., 36), compute max horizon angle per direction, integrate to SVF. ~150 lines. With numba JIT → feasible for Berlin AOI (~20.7M pixels × 36 directions = ~750M line-of-sight checks). Estimate: ~30–60 min with numba parallel. |
-| **Verdict** | 🔧 **Self-implement.** Use LoD2 rasterized to 10 m for buildings + DGM 1 m for terrain → compute DSM heights → SVF via numpy/numba. |
+| PyPI alternatives | None other than xarray-spatial — `svf`, `horizon`, `pyviewshed`, `richdem` not available on PyPI |
+| **Recommendation** | **`xarray-spatial.sky_view_factor()`** over custom numpy/numba — production-quality, faster, maintained. Pin `numba>=0.60,<0.61` for macOS x86_64 wheel compatibility (llvmlite 0.43.0 has cp312 x86_64 wheel; later versions lack). |
+| **Verdict** | ✅ **`xarray-spatial`.** Use LoD2 rasterized to 10 m for buildings + DGM 1 m for terrain → compute DSM heights → SVF via xarray-spatial. |
 
 ---
 
@@ -202,6 +207,7 @@ Concrete findings per datasource after detailed feasibility check:
 | Format | Hourly ZIP files (CSV) per station + parameter |
 | License | CC-BY (DWD Open Data) |
 | Auth | None (fully open) |
+| **Library (update 2026-07-14)** | **`wetterdienst` v0.90+ (PyPI)** — actively maintained DWD client, wraps `Wetterdienst(provider="dwd", network="observation")`. Handles directory listing, file discovery, caching, parsing, unit conversion. Replaces direct URL download. Fallback (no extra dep): `urllib.request` + `zipfile` against pattern `stundenwerte_{PARAM}_{STATION}_*_hist.zip`. |
 
 **Berlin stations active for 2018–2024:**
 
@@ -242,10 +248,11 @@ No Berlin DWD station measures direct solar radiation. Evaluating three compleme
 | Resolution | 0.1° × 0.1° (~9 km, ~11 × 7 km at Berlin) |
 | Temporal | Hourly, **1950–present** (real-time through present) |
 | Variables | Surface solar radiation downwards (SSRD), 2m temperature (t2m) |
-| API | CDS API via `cdsapi` Python package (free registration) |
-| Query | Bounding box subset: Berlin AOI + 2 km buffer (~0.5° × 0.4°) |
-| Volume estimate | 5 months × 9 years (2017–2025) = 45 months × ~30 days × 24 h = ~32,400 hourly steps. At 0.1° resolution AOI ≈ 5×4 = 20 grid cells. 32,400 × 20 × 2 variables = ~1.3M data points → **<10 MB as NetCDF** (trivially small) |
-| Variables for pipeline | `2m_temperature` (t2m, K), `surface_solar_radiation_downwards` (ssrd, J/m²) |
+| API | CDS API via `cdsapi` Python package (free registration). **Update 2026-07-14:** legacy CDS offline since Sep 2024 — new platform at `cds.climate.copernicus.eu`, `.cdsapirc` now needs `url` + `key` only (no `uid`), token from CDS profile page. |
+| Query | One month per request (1.488 fields, well under 12K limit). Format: `grib` (preferable; CDS tightened NetCDF limits Apr 2025). Convert locally via `cfgrib` + `xarray`. |
+| Volume estimate | 5 months × 9 years (2017–2025) = 45 monthly requests. Each request retrieves 20 grid cells × 31 days × 24 h × 2 vars ≈ 30K fields. Total ~10 MB as GRIB. |
+| Variables for pipeline | `2m_temperature` (t2m, K, instantaneous), `surface_solar_radiation_downwards` (ssrd, J/m², **accumulation** — see below) |
+| **ssrd accumulation handling** | `ssrd` at HH:00 = sum from 00:00 to HH:00; at 00:00 of next day = 24h sum. To get hourly irradiance: `ssrd.diff('time')` then divide by 3600 for W/m². `t2m` is instantaneous — no post-processing. |
 | Antecedent 3-day mean | Rolling 72-hour mean of t2m and ssrd before each scene acquisition time (computed from hourly data) |
 | Resampling to 10 m | Nearest-neighbor: constant value per ERA5 cell (~9 km) → nan for 10 m grid — trivial (`xarray` reproject) |
 | Library | `cdsapi` (not in deps yet — add to pyproject.toml dev/section) |
@@ -327,13 +334,13 @@ Complete feature-to-source mapping for all 5 ablation stages + validation.
 | Canopy height | 2 | **Umweltatlas Vegetationshöhen 2020** (ATOM GeoTIFF) | 1 m → resample 10 m | 2020 | ✅ |
 | DEM / terrain | 2 | **Copernicus DEM GLO-30** (GEE/AWS) — DGM 1 m auxiliary only | 30 m | 2021 | ✅ |
 | Imperviousness | 2 | Umweltatlas Versiegelung 2021 (ATOM GeoTIFF raster, 10 m) | 10 m | 2021 | ✅ |
-| Sky View Factor | 2 | Derived from LoD2+VH DSM (self-implemented numpy/numba) | 10 m | static | 🔧 |
+| Sky View Factor | 2 | Derived from LoD2+VH DSM (**`xarray-spatial`** Zakek 2011) | 10 m | static | ✅ |
 | Sun azimuth / elevation | 3 | Landsat/S2 metadata (GEE) or Michalsky-SPA | per scene | per acquisition | ✅ |
-| Shadow mask | 3 | Derived from DSM + sun position (custom ray-casting) | 10 m | dynamic | 🔧 |
-| Antecedent T | 4 | DWD Berlin-Dahlem or BER (hourly) | point | 1973–present | ✅ |
-| Precip | 4 | DWD Berlin-Dahlem or BER (hourly) | point | 1995–present | ✅ |
-| Wind speed | 4 | DWD Berlin Brandenburg BER (hourly) | point | 1973–present | ✅ |
-| Solar radiation | 4 | ERA5-Land (CDS API, `cdsapi`) | ~9 km grid | 1950–present | ✅ |
+| Shadow mask | 3 | Derived from DSM + sun position (custom ray-casting, UMEP algorithm) | 10 m | dynamic | 🔧 |
+| Antecedent T | 4 | DWD BER or Dahlem (`wetterdienst`) | point | 1973–present | ✅ |
+| Precip | 4 | DWD BER or Dahlem (`wetterdienst`) | point | 1995–present | ✅ |
+| Wind speed | 4 | DWD BER (`wetterdienst`) | point | 1973–present | ✅ |
+| Solar radiation | 4 | ERA5-Land (CDS API, `cdsapi`, **GRIB**) | ~9 km grid | 1950–present | ✅ |
 | Cloud cover | 4 | DWD BER (hourly) | point | 1975–present | ✅ |
 | Surface pressure | 4 | DWD BER (hourly) | point | 1975–present | ✅ |
 | Humidity / dew point | 4 | DWD Dahlem (hourly) | point | 1955–present | ✅ |
@@ -371,6 +378,20 @@ Three emissivity sources were evaluated:
 - **Validation split / Temporal CV:** 2018–2022 train, 2023 val, 2024 test (proposed) — to be finalized.
 - **Dynamic World land cover (GEE):** Available 2015–present at 10 m (`GOOGLE/DYNAMICWORLD/V1`). Not in ablation plan but could replace/supplement imperviousness.
 - **Nighttime ECOSTRESS:** ISS overpass includes ~1,000 night granules over Berlin. Not useful for daytime LST but potentially for diurnal cycle analysis.
+
+---
+
+## Status Update — 2026-07-14 (Post-Rebuild)
+
+Vorheriger Feature-Branch wurde komplett gelöscht. Frischer Start.
+
+### Bucket-Bereinigung
+
+Inhalt von `gs://berlin-lst-data/_raw/secondary/` und `gs://.../ard/static/` wurde am 2026-07-14 vollständig entfernt. Grund: Vorhandene Daten waren unvollständig (3/6 statische COGs hatten schwere Lücken — building: 0,001% valide px, terrain/DSM: 0,2% valide px, ERA5: leeres File 15 Byte).
+
+### Offene Pipeline-Aufgaben
+
+Siehe Notion-Notizen: "Sekundärdaten Cloud-Workflow" + "Sekundärdaten Research Findings". Empfohlene Build-Reihenfolge: Versiegelung+V → ERA5 → DWD → LoD2 → DGM → DSM → SVF → Shadow → Dynamic Meteorology.
 
 ---
 
