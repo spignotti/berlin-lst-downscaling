@@ -72,7 +72,7 @@ execution.  The run will fail preflight if the estimate exceeds the
 configured budget.
 
 Current budget: **20 GB** (VM boot disk).
-Override with `+scratch_budget_gb=50` in the Hydra command line.
+Override with `disk_budget_gb=50` in the Hydra command line.
 Use kachelweises/tilewise scratch cleanup when processing tile-based
 sources (LoD2, DGM 1 m).
 
@@ -84,14 +84,69 @@ uv run nox -s smoke-secondary-fixture
 
 # Cloud fixture (requires ADC)
 uv run nox -s cloud-secondary-fixture
+
+# Imperviousness end-to-end (downloads official ZIPs)
+uv run nox -s smoke-secondary-imperviousness
+
+# Imperviousness on GCS (requires ADC)
+uv run nox -s cloud-secondary-imperviousness
 ```
+
+## Added Sources
+
+### Imperviousness (Versiegelung)
+
+**Vintages:** 2016, 2021 (both processed unconditionally)
+
+**Source:** Umweltatlas Berlin — uncorrected raster (2.5 m, uint8 class codes)
+
+**Processing:**
+1. Download ZIP from official ATOM feed (preserved under `_raw/secondary/imperviousness/{vintage}/`).
+2. Extract GeoTIFF from ZIP.
+3. Convert uint8 class codes to float32 sealing percent using the verified 16-code lookup.
+4. Reproject to canonical 10 m EPSG:25833 grid with `Resampling.average`.
+5. Write COG to `ard/static/morphology/imperviousness/{vintage}/imperviousness_{vintage}.tif`.
+
+**Class codes verified (2026-07-14):**
+| Code | Meaning | Output value |
+|------|---------|-------------|
+| 0 | Unsealed | 0 % |
+| 5, 15, …, 95 | Sealing classes | class value (%) |
+| 100 | Fully sealed (non-building) | 100 % |
+| 101 | Building-shadow sealed | 100 % |
+| 102 | Building footprint | 100 % |
+| 103 | Rail ballast | 100 % |
+| 110 | Shadow | 100 % |
+| 255 | Nodata (2021 only) | NaN |
+
+**Runbook:**
+```bash
+# Local smoke (downloads both vintages)
+uv run python scripts/run_secondary.py --config-name smoke_imperviousness
+
+# With custom output root (local or GCS)
+uv run python scripts/run_secondary.py --config-name imperviousness \
+    output_root=gs://berlin-lst-data/secondary/full_20260714
+
+# Override disk budget on VM
+uv run python scripts/run_secondary.py --config-name imperviousness \
+    output_root=gs://berlin-lst-data/secondary/full_20260714 \
+    disk_budget_gb=50
+```
+
+**Validation gates:**
+- Structural: CRS, shape, origin, band count (reuses ARD `validate_cog`)
+- Value range: all valid pixels ∈ [0, 100] with 0.01 tolerance
+- Code set: hard fail on codes outside the verified 16-code scheme
+- Idempotency: second run processes nothing
 
 ## Adding a New Source
 
 1. Add source-specific band specs in a new contract (see `contract.py`).
-2. Implement a download handler (or reuse `download_to_raw` for HTTP).
-3. Implement a prepare handler: read raw → process → write COG.
-4. Register the source in the pipeline runner (see `pipeline.py`).
+2. Implement a prepare handler: acquire raw → convert → write COG.
+3. Register the source in the pipeline runner (see `pipeline.py`).
+4. Add a config and smoke session.
 
-Each source module should expose a single `prepare(source_id, period, cfg)`
-function that returns `list[SecondaryItem]`, one per period/vintage.
+Each source module should expose a single `prepare()` entry point that
+returns a QA dict.  The pipeline handles reconciliation, ledger, and
+validation.

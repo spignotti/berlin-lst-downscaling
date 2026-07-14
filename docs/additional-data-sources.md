@@ -17,7 +17,7 @@ Concrete findings per datasource after detailed feasibility check:
 |---|--------|---------------|--------|-----|--------|---------|--------|
 | 1 | LoD2 CityGML | `https://gdi.berlin.de/data/a_lod2/atom/` (INSPIRE ATOM) | CityGML v2.0 ZIP | EPSG:25833 | ~830 KB/tile, ~1,850 tiles (~1.5 GB) | CityGML parser needed (no PyPI package — use `pycitygml` GitHub, or fiona/XML) | ✅ |
 | 2 | Umweltatlas Vegetationshöhe 2020 | `https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/veghoehe_2020.zip` | GeoTIFF | EPSG:25833 | ~785 MB (single file) | `rasterio` (already in deps) | ✅ |
-| 3 | Umweltatlas Versiegelung 2021 | `https://gdi.berlin.de/data/ua_versiegelung_2021/atom/Versiegelung_Raster_2021.zip` (raster); WFS: `wfs/ua_versiegelung_2021` (vector) | GeoTIFF (raster) / GML (WFS) | EPSG:25833 | ~41 MB (raster, single file) | `rasterio` / `geopandas` | ✅ |
+| 3 | Umweltatlas Versiegelung 2016 & 2021 | ATOM: `https://gdi.berlin.de/data/ua_versiegelung_{2016,2021}/atom/Versiegelung_Raster_{2016,2021}.zip` (raster); WFS: `wfs/ua_versiegelung_2021` (vector) | GeoTIFF uint8 (raster) / GML (WFS) | EPSG:25833 | ~41 MB each (ZIP), native 2.5 m | `rasterio` (already in deps) | ✅ |
 | 4 | DGM 1 m | `https://gdi.berlin.de/data/dgm1/atom/0.atom` (INSPIRE ATOM) | XYZ CSV in ZIP | EPSG:25833, DHHN2016 | ~16 MB/tile compressed, 297 tiles (~4.75 GB) | `pandas` → `rasterio` (XYZ→GeoTIFF via `gdal.Grid()`) | ⚠️ Large volume, auxiliary only |
 | 5 | ERA5-Land | CDS API (`cdsapi` Python) | **GRIB** | 0.1° lat/lon | ~10 MB (Berlin subset 2017–2025 hourly) | `cdsapi`, `cfgrib` (GRIB preferred post-Apr 2025 NetCDF limit) | ✅ |
 | 6 | SVF | **`xarray-spatial.sky_view_factor()`** | Derived from DSM | EPSG:25833 | N/A — compute | `xarray-spatial>=0.10`, `numba>=0.60,<0.61` (macOS x86_64) | ✅ |
@@ -133,18 +133,19 @@ Concrete findings per datasource after detailed feasibility check:
 | Raster download (ATOM) | `https://gdi.berlin.de/data/ua_versiegelung_2021/atom/Versiegelung_Raster_2021.zip` |
 | WFS (vector) | `https://gdi.berlin.de/services/wfs/ua_versiegelung_2021` (block-level ISU5) |
 | Format | GeoTIFF (raster, uncorrected classification) / GML (WFS, block-level polygons) |
-| Resolution | **10 m raster** (original: Sentinel-2 10 m → classified → per-pixel sealing %) |
+| Resolution | **2.5 m** (Sentinel-2 10 m source → per-pixel sealed class, **not** 10 m as stated in earlier research) |
 | Coverage | Full Berlin |
 | CRS | EPSG:25833 |
-| Volume | ~41 MB (single raster GeoTIFF) |
+| Volume | ~41 MB compressed (ZIP), ~316 MB uncompressed (GeoTIFF uint8 at 2.5 m) |
 | Latest version | **2021** |
 | Earlier editions | 2016, 2011, 2005, 2001, 1990 |
-| Units | Sealing degree in % per pixel (0–100) |
+| Units | uint8 class codes (0=unsealed, 5/15/…/95=sealing classes, 100=full, 101=building-shadow, 102=building, 103=rail, 110=shadow, 255=nodata) |
 | License | dl-de-zero-2.0 |
 | Python library | `rasterio` (already in deps) |
-| **Verdict** | ✅ **Excellent.** Single-file GeoTIFF, 10 m, 41 MB, open license. Directly usable as predictor. No tile assembly needed. |
+| **Pipeline** | Download ZIP → extract GeoTIFF → convert class codes to float32 percent → reproject to canonical 10 m via `Resampling.average` → write COG. Both vintages processed unconditionally; scene-year mapping (≤2020→2016, >2020→2021) applied at training time. |
+| **Verdict** | ✅ **Excellent.** Open license, verified 16-code scheme, pipeline-ready. |
 
-**Note:** Two datasets exist: (a) uncorrected raster (Sentinel-2 classification, pixel-level, 10 m), and (b) block-level WFS (ISU5 statistical blocks, official product). For ML input, the uncorrected raster is more appropriate (pixel-level, no aggregation artifacts). The WFS version is useful for validation or aggregated features.
+**Note:** Two products exist: (a) uncorrected raster (2.5 m, Sentinel-2 classification, pixel-level codes), and (b) block-level WFS (ISU5 statistical blocks, officially corrected). For ML input, the uncorrected raster is more appropriate (pixel-level, no aggregation artifacts). The WFS version is useful for validation.
 
 ### 2.5 Sky View Factor (abgeleitet aus LoD2 + DEM)
 

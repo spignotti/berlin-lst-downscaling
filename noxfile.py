@@ -325,6 +325,89 @@ sys.exit(0 if blobs else 1)
     )
 
 
+# ── imperviousness smoke ─────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-secondary-imperviousness")
+def smoke_secondary_imperviousness(session: nox.Session) -> None:
+    """Run imperviousness 2016 + 2021 end-to-end locally.
+
+    Downloads both official ZIPs, converts class codes to percent,
+    reprojects to the canonical 10 m grid, writes COGs, validates.
+    Then runs again to confirm idempotency.
+    """
+    # First run — download + process both vintages
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_imperviousness",
+        external=True,
+    )
+
+    # Second run — must be idempotent (no processing)
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_imperviousness",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-secondary-imperviousness")
+def cloud_secondary_imperviousness(session: nox.Session) -> None:
+    """Run imperviousness processing targeting GCS.
+
+    Requires ADC / Workload Identity (``GOOGLE_APPLICATION_CREDENTIALS``).
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = (
+        f"sec-imperv-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    output_root = f"gs://berlin-lst-data/secondary/smoke/{run_id}"
+
+    # Pre-flight
+    session.run(
+        "uv", "run", "python", "-c",
+        (
+            "from google.cloud import storage; "
+            "client = storage.Client(); "
+            "bucket = client.get_bucket('berlin-lst-data'); "
+            "print('Bucket reachable:', bucket.name)"
+        ),
+        external=True,
+    )
+
+    # Run imperviousness via smoke config
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_imperviousness",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # Verify outputs
+    session.run(
+        "uv", "run", "python", "-c",
+        f"""import sys
+from google.cloud import storage
+client = storage.Client()
+bucket = client.get_bucket('berlin-lst-data')
+prefix = 'secondary/smoke/{run_id}/'
+blobs = list(bucket.list_blobs(prefix=prefix))
+print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
+print(f'  {{len(blobs)}} blob(s)')
+for b in blobs:
+    print(f'  {{b.name}} ({{b.size}} bytes)')
+sys.exit(0 if blobs else 1)
+""",
+        external=True,
+    )
+
+
 @nox.session(venv_backend="none", name="upload-manifest")
 def upload_manifest(session: nox.Session) -> None:
     """Upload a local manifest.parquet to ``gs://berlin-lst-data/manifests/``.

@@ -13,6 +13,9 @@ output_root: "data/secondary"  # gs://… for cloud smoke or full runs
 # Ledger
 ledger_name: "ledger.parquet"
 
+# Disk budget (peak scratch, GiB)
+peak_scratch_gb: 4
+
 # Hydra overrides (suppress run dir and cwd changes)
 hydra:
   output_subdir: null

@@ -58,8 +58,14 @@ def run(cfg: DictConfig) -> int:
         print(f"  Duration: {elapsed:.1f}s")
         return rc
 
-    print(f"Mode '{cfg.mode}' not yet implemented — no data sources configured.")
-    return 0
+    if cfg.mode == "full":
+        rc = _run_full(led, cfg, run_id, output_root)
+        elapsed = time.perf_counter() - t0
+        print(f"  Duration: {elapsed:.1f}s")
+        return rc
+
+    print(f"Unknown mode '{cfg.mode}'.")
+    return 1
 
 
 # ── fixture ───────────────────────────────────────────────────────────
@@ -170,6 +176,136 @@ def _run_fixture(
     print(format_secondary_report(report))
 
     return 0
+
+
+# ── full mode ─────────────────────────────────────────────────────────
+
+
+def _run_full(
+    led: SecondaryLedger,
+    cfg: DictConfig,
+    run_id: str,
+    output_root: str,
+) -> int:
+    """Run the secondary pipeline with configured sources."""
+    sources: list[str] = list(cfg.get("sources", []))
+    if not sources:
+        print("  No sources configured — nothing to do.")
+        return 0
+
+    peak_scratch_gb = cfg.get("peak_scratch_gb", 999)
+    disk_budget_gb = cfg.get("disk_budget_gb", 20)
+    if peak_scratch_gb > disk_budget_gb:
+        print(
+            f"  DISK BUDGET EXCEEDED: peak_scratch_gb={peak_scratch_gb} > "
+            f"disk_budget_gb={disk_budget_gb}"
+        )
+        return 1
+
+    all_qa: list[dict] = []
+    failed = 0
+
+    for source in sources:
+        if source == "imperviousness":
+            rc, qa = _run_imperviousness(led, cfg, run_id, output_root)
+            if qa:
+                all_qa.extend(qa)
+            failed += rc
+
+    # Final QA report
+    report = secondary_qa_report(led, run_id)
+    print(format_secondary_report(report))
+
+    return 0 if failed == 0 else 1
+
+
+def _run_imperviousness(
+    led: SecondaryLedger,
+    cfg: DictConfig,
+    run_id: str,
+    output_root: str,
+) -> tuple[int, list[dict]]:
+    """Process both imperviousness vintages."""
+    from berlin_lst_downscaling.data.secondary.imperviousness import (
+        config_hash_for_vintage,
+        contract_for_imperviousness,
+        prepare_imperviousness,
+    )
+
+    vintages: list[int] = list(cfg.get("vintages", [2016, 2021]))
+    contract = contract_for_imperviousness()
+    grid = canon_grid_10m()
+
+    all_qa: list[dict] = []
+    failed = 0
+
+    for vintage in vintages:
+        item_id = f"imperviousness_{vintage}"
+        c_hash = config_hash_for_vintage(vintage)
+
+        # Reconcile
+        items = [(item_id, "imperviousness", str(vintage))]
+        todo = reconcile(items, led, c_hash)
+
+        if not todo:
+            print(f"  imperviousness {vintage} already done — skipping.")
+            continue
+
+        # Mark exporting
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="imperviousness",
+            period_or_vintage=str(vintage),
+            status="exporting",
+            run_id=run_id,
+        ))
+
+        try:
+            print(f"  Processing imperviousness {vintage}...")
+            qa_payload = prepare_imperviousness(vintage, output_root, run_id)
+        except Exception as exc:
+            print(f"  imperviousness {vintage} FAILED: {exc}")
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source="imperviousness",
+                period_or_vintage=str(vintage),
+                status="failed",
+                run_id=run_id,
+                last_error=str(exc),
+            ))
+            failed += 1
+            continue
+
+        # Validate output COG
+        vig = validate_cog(qa_payload["output_uri"], contract, grid)
+        if not vig.ok:
+            print(f"  imperviousness {vintage} COG validation FAILED: {'; '.join(vig.errors)}")
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source="imperviousness",
+                period_or_vintage=str(vintage),
+                status="failed",
+                run_id=run_id,
+                last_error="; ".join(vig.errors),
+            ))
+            failed += 1
+            continue
+
+        # Update ledger — done
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="imperviousness",
+            period_or_vintage=str(vintage),
+            status="done",
+            run_id=run_id,
+            config_hash=c_hash,
+            output_uri=qa_payload["output_uri"],
+        ))
+
+        print(f"  imperviousness {vintage} OK — {qa_payload['output_uri']}")
+        all_qa.append(qa_payload)
+
+    return failed, all_qa
 
 
 # ── helpers ───────────────────────────────────────────────────────────
