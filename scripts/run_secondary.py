@@ -14,10 +14,16 @@ Usage
     uv run python scripts/run_secondary.py --config-name fixture \
         output_root=gs://berlin-lst-data/secondary/smoke/my_run
 
-    # Full run (future: real sources enabled)
-    uv run python scripts/run_secondary.py --config-name default \
-        output_root=gs://berlin-lst-data/secondary/full_20240714 \
-        mode=full
+    # Full run — imperviousness (both vintages)
+    uv run python scripts/run_secondary.py --config-name imperviousness \
+        output_root=gs://berlin-lst-data/secondary/full_20260714
+
+    # Full run — vegetation height (2020 only)
+    uv run python scripts/run_secondary.py --config-name vegetation_height \
+        output_root=gs://berlin-lst-data/secondary/full_20260714
+
+    # Cloud smoke — vegetation height
+    uv run nox -s cloud-secondary-vegetation-height
 """
 
 from __future__ import annotations

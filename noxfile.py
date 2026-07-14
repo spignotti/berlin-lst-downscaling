@@ -408,6 +408,88 @@ sys.exit(0 if blobs else 1)
     )
 
 
+# ── vegetation-height smoke ─────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="cloud-secondary-vegetation-height")
+def cloud_secondary_vegetation_height(session: nox.Session) -> None:
+    """Run vegetation-height processing targeting GCS.
+
+    Downloads the official Umweltatlas ZIP (~785 MB), extracts the inner
+    GeoTIFF, reprojects to canonical 10 m, writes the COG, and
+    validates.  Then runs again to confirm ledger idempotency.
+
+    Requires ADC / Workload Identity (``GOOGLE_APPLICATION_CREDENTIALS``).
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = (
+        f"sec-veght-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    output_root = f"gs://berlin-lst-data/secondary/smoke/{run_id}"
+
+    # Pre-flight
+    session.run(
+        "uv", "run", "python", "-c",
+        (
+            "from google.cloud import storage; "
+            "client = storage.Client(); "
+            "bucket = client.get_bucket('berlin-lst-data'); "
+            "print('Bucket reachable:', bucket.name)"
+        ),
+        external=True,
+    )
+
+    # First run
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_vegetation_height",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # Idempotency run
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_vegetation_height",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # Verify outputs (raw ZIP + source.json + COG + ledger)
+    session.run(
+        "uv", "run", "python", "-c",
+        f"""import sys
+from google.cloud import storage
+client = storage.Client()
+bucket = client.get_bucket('berlin-lst-data')
+prefix = 'secondary/smoke/{run_id}/'
+blobs = list(bucket.list_blobs(prefix=prefix))
+print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
+print(f'  {{len(blobs)}} blob(s)')
+for b in blobs:
+    print(f'  {{b.name}} ({{b.size}} bytes)')
+required_suffixes = (
+    'veghoehe_2020.zip',
+    'source.json',
+    'vegetation_height_2020.tif',
+    'ledger.parquet',
+)
+names = [b.name for b in blobs]
+missing = [s for s in required_suffixes if not any(n.endswith(s) for n in names)]
+if missing:
+    print(f'Missing required blobs: {{missing}}')
+    sys.exit(1)
+""",
+        external=True,
+    )
+
+
 @nox.session(venv_backend="none", name="upload-manifest")
 def upload_manifest(session: nox.Session) -> None:
     """Upload a local manifest.parquet to ``gs://berlin-lst-data/manifests/``.

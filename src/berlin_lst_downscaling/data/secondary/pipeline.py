@@ -212,6 +212,14 @@ def _run_full(
             if qa:
                 all_qa.extend(qa)
             failed += rc
+        elif source == "vegetation_height":
+            rc, qa = _run_vegetation_height(led, cfg, run_id, output_root)
+            if qa:
+                all_qa.extend(qa)
+            failed += rc
+        else:
+            print(f"  Unknown source '{source}' — skipping.")
+            failed += 1
 
     # Final QA report
     report = secondary_qa_report(led, run_id)
@@ -310,6 +318,94 @@ def _run_imperviousness(
 
 
 # ── helpers ───────────────────────────────────────────────────────────
+
+
+def _run_vegetation_height(
+    led: SecondaryLedger,
+    cfg: DictConfig,
+    run_id: str,
+    output_root: str,
+) -> tuple[int, list[dict]]:
+    """Process the 2020 vegetation-height vintage."""
+    from berlin_lst_downscaling.data.secondary.vegetation_height import (
+        config_hash_for_vintage,
+        contract_for_vegetation_height,
+        prepare_vegetation_height,
+    )
+
+    vintages: list[int] = list(cfg.get("vintages", [2020]))
+    contract = contract_for_vegetation_height()
+    grid = canon_grid_10m()
+
+    all_qa: list[dict] = []
+    failed = 0
+
+    for vintage in vintages:
+        item_id = f"vegetation_height_{vintage}"
+        c_hash = config_hash_for_vintage(vintage)
+
+        items = [(item_id, "vegetation_height", str(vintage))]
+        todo = reconcile(items, led, c_hash)
+
+        if not todo:
+            print(f"  vegetation_height {vintage} already done — skipping.")
+            continue
+
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="vegetation_height",
+            period_or_vintage=str(vintage),
+            status="exporting",
+            run_id=run_id,
+        ))
+
+        try:
+            print(f"  Processing vegetation_height {vintage}...")
+            qa_payload = prepare_vegetation_height(vintage, output_root, run_id)
+        except Exception as exc:
+            print(f"  vegetation_height {vintage} FAILED: {exc}")
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source="vegetation_height",
+                period_or_vintage=str(vintage),
+                status="failed",
+                run_id=run_id,
+                last_error=str(exc),
+            ))
+            failed += 1
+            continue
+
+        vig = validate_secondary_cog(qa_payload["output_uri"], contract, grid)
+        if not vig.ok:
+            print(
+                f"  vegetation_height {vintage} COG validation FAILED: "
+                f"{'; '.join(vig.errors)}"
+            )
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source="vegetation_height",
+                period_or_vintage=str(vintage),
+                status="failed",
+                run_id=run_id,
+                last_error="; ".join(vig.errors),
+            ))
+            failed += 1
+            continue
+
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="vegetation_height",
+            period_or_vintage=str(vintage),
+            status="done",
+            run_id=run_id,
+            config_hash=c_hash,
+            output_uri=qa_payload["output_uri"],
+        ))
+
+        print(f"  vegetation_height {vintage} OK — {qa_payload['output_uri']}")
+        all_qa.append(qa_payload)
+
+    return failed, all_qa
 
 
 def _banner(cfg: DictConfig, run_id: str, output_root: str) -> None:

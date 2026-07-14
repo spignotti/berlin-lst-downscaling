@@ -13,10 +13,13 @@ from odc.geo.geobox import GeoBox
 from berlin_lst_downscaling.data.ard.contract import Contract
 from berlin_lst_downscaling.data.ard.validate import ValidationResult, validate_cog
 
-# Expected value ranges for known secondary sources
+# Expected value ranges for known secondary sources.
 # Small tolerance for floating-point edge effects in resampling.
+# Vegetation height: 0 is bare ground under vegetation; negative values
+# are invalid.  Upper bound 150 m accommodates tall trees with tolerance.
 _RANGES: dict[str, tuple[float, float]] = {
     "imperviousness": (-0.01, 100.01),
+    "vegetation_height": (-0.01, 150.01),
 }
 
 

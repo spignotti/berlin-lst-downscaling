@@ -1,0 +1,9 @@
+defaults:
+  - _base
+  - _self_
+
+mode: full
+sources: [vegetation_height]
+vintages: [2020]
+output_root: "data/smoke/secondary/vegetation_height"
+peak_scratch_gb: 4

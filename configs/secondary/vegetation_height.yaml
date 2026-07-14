@@ -1,0 +1,8 @@
+defaults:
+  - _base
+  - _self_
+
+mode: full
+sources: [vegetation_height]
+vintages: [2020]
+peak_scratch_gb: 4
