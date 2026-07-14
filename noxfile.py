@@ -237,6 +237,94 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
     )
 
 
+# ── Secondary-data pipeline ──────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-secondary-fixture")
+def smoke_secondary_fixture(session: nox.Session) -> None:
+    """Run secondary-data pipeline fixture locally.
+
+    Writes a dummy COG and validates the full pipeline lifecycle:
+    contract → COG write → validation → ledger → QA report.
+    Then runs again to confirm idempotency (second run = no work).
+    """
+    output_root = "data/smoke/secondary/fixture"
+
+    # First run — should create fixture
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "fixture",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # Second run — must be idempotent
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "fixture",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-secondary-fixture")
+def cloud_secondary_fixture(session: nox.Session) -> None:
+    """Run secondary-data pipeline fixture targeting GCS.
+
+    Requires ADC / Workload Identity (``GOOGLE_APPLICATION_CREDENTIALS``).
+    Creates a unique run prefix on GCS and confirms final outputs.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = (
+        f"sec-fixture-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    output_root = f"gs://berlin-lst-data/secondary/smoke/{run_id}"
+
+    # Pre-flight: GCS reachable
+    session.run(
+        "uv", "run", "python", "-c",
+        (
+            "from google.cloud import storage; "
+            "client = storage.Client(); "
+            "bucket = client.get_bucket('berlin-lst-data'); "
+            "print('Bucket reachable:', bucket.name)"
+        ),
+        external=True,
+    )
+
+    # Run fixture on GCS
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "fixture",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # Verify outputs
+    session.run(
+        "uv", "run", "python", "-c",
+        f"""import sys
+from google.cloud import storage
+client = storage.Client()
+bucket = client.get_bucket('berlin-lst-data')
+prefix = 'secondary/smoke/{run_id}/'
+blobs = list(bucket.list_blobs(prefix=prefix))
+print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
+print(f'  {{len(blobs)}} blob(s)')
+for b in blobs:
+    print(f'  {{b.name}} ({{b.size}} bytes)')
+sys.exit(0 if blobs else 1)
+""",
+        external=True,
+    )
+
+
 @nox.session(venv_backend="none", name="upload-manifest")
 def upload_manifest(session: nox.Session) -> None:
     """Upload a local manifest.parquet to ``gs://berlin-lst-data/manifests/``.
