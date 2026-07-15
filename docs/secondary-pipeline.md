@@ -213,6 +213,77 @@ uv run python scripts/run_secondary.py --config-name imperviousness \
 - Code set: hard fail on codes outside the verified 16-code scheme
 - Idempotency: second run processes nothing
 
+### Terrain Height (DGM 1 m)
+
+**Vintages:** 2021 (ALS acquisition Feb–Mar 2021)
+
+**Source:** Geoportal Berlin — INSPIRE ATOM feed, 297 XYZ CSV tiles
+
+**Processing:**
+1. Parse ATOM feed to discover tiles intersecting the full AOI.
+2. Download each ZIP via `download_to_raw` (streaming SHA-256).
+3. Read XYZ CSV (2000×2000 points at 1 m, EPSG:25833, DHHN2016).
+4. Reproject from native 1 m to canonical 10 m with `Resampling.average`.
+5. Write COG to `ard/static/morphology/terrain_height/{vintage}/`.
+
+**Note:** The 2021 vintage is technically future for scenes 2017–2020.
+See `docs/lod2-vintage-qualification.md` for the temporal policy.
+
+### LoD2 Building Morphology
+
+**Vintages:** Pending qualification (current feed 2026-03-26 is future)
+
+**Source:** Geoportal Berlin — INSPIRE ATOM feed, ~925 CityGML tiles
+
+**Processing:**
+1. Parse ATOM feed to discover tiles.
+2. Download each ZIP and stream-parse CityGML XML.
+3. Extract `Building` elements: `measuredHeight` + `GroundSurface` polygons.
+4. Rasterize footprints at 10 m: accumulate per-cell height sum, sum², count, area.
+5. Compute three morphology bands: `building_height_mean`, `building_height_std`, `building_coverage_ratio`.
+6. Write 3-band COG to `ard/static/morphology/lod2_morphology/{vintage}/`.
+
+**Temporal policy:** No future data for past scenes. Qualified vintages
+must be documented in `docs/lod2-vintage-qualification.md`.
+
+### Digital Surface Models (DSM)
+
+**Keyed by:** input-vintage combination (terrain + LoD2 + VH vintages)
+
+Three derived products per geometry vintage:
+
+| Product | Formula | Description |
+|---------|---------|-------------|
+| `building_dsm` | terrain + LoD2 max height | Terrain with buildings added |
+| `vegetation_dsm` | terrain + VH max height | Terrain with canopy added |
+| `combined_dsm` | max(building_dsm, vegetation_dsm) | Full surface model |
+
+**Source module:** `dsm.py` reads upstream COGs and combines them.
+
+### Horizon Cubes
+
+**Keyed by:** geometry vintage + component (building/vegetation)
+
+36-band COG per component/vintage (0°–350°, 10° steps). Each band
+encodes the maximum elevation angle visible from each cell along that
+azimuth direction, stored as `uint16` centidegrees (×100) with
+nodata=65535.
+
+**Source module:** `horizon.py` — custom NumPy kernel, 200 m search radius.
+
+**Purpose:** Pre-computed horizon enables fast per-scene shadow lookup
+(Stage 3) without re-running the expensive ray-casting.
+
+### Sky View Factor (SVF)
+
+**Keyed by:** geometry vintage
+
+Single-band float32 COG [0, 1] — fraction of sky hemisphere visible
+from each cell. Computed via `xarray-spatial.sky_view_factor()` (Zakek
+2011 algorithm, numba-backed, ~21s for full AOI).
+
+**Source module:** `svf.py`
+
 ## Adding a New Source
 
 Each source adapter produces one **prepared product** per vintage/scene:
