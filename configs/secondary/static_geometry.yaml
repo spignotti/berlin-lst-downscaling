@@ -1,0 +1,20 @@
+defaults:
+  - _base
+  - _self_
+
+# Static geometry pipeline — all morphology/geometry sources.
+# Invoke on the VM with output_root override, e.g.
+#     uv run python scripts/run_secondary.py --config-name static_geometry \
+#         output_root=gs://berlin-lst-data/secondary/full
+#
+# NOTE: do not set a shared ``vintages`` key here — the adapters use
+# their own defaults (imperviousness: 2016, 2021; vegetation_height: 2020;
+# terrain_height: 2021; lod2_morphology: <qualified_vintage>).
+mode: full
+sources:
+  - imperviousness
+  - vegetation_height
+  - terrain_height
+  - lod2_morphology
+peak_scratch_gb: 8
+disk_budget_gb: 20
