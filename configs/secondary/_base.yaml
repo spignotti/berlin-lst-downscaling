@@ -1,7 +1,7 @@
 # @package _global_
 # Shared base config for all secondary-data pipelines.
 
-mode: full                    # fixture | cloud_smoke | full
+mode: full                    # fixture | full
 
 # Canonical CRS and grid (derived from common/grid.py)
 target_crs: "EPSG:25833"

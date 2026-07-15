@@ -11,16 +11,80 @@ All paths are relative to `output_root` (local path or `gs://bucket/prefix`).
 |------|---------|
 | `_raw/secondary/{source}/{period}/` | Raw downloaded archives — one per source and period/vintage |
 | `_staging/secondary/{source}/{run_id}/` | Ephemeral processing scratch space |
-| `ard/static/{category}/{source}/{vintage}/` | Final static COGs (morphology, terrain, SVF) |
-| `qa/secondary/{run_id}/` | Run-specific QA reports |
+| `ard/static/{category}/{source}/{vintage}/` | Final static products (COG + STAC + provenance + completion marker) |
+| `ard/dynamic/meteorology/{scene_id}/` | Future: scene-keyed dynamic products (ERA5, shadows) |
+| `qa/secondary/{run_id}/report.json` | Persisted per-run QA report |
 | `ledger.parquet` | Persistent item-level processing ledger |
+
+## Product Contract
+
+Every secondary product (static or dynamic) produces exactly four
+artifacts under its product directory:
+
+| File | Written when | Purpose |
+|------|-------------|---------|
+| `{source}_{vintage}.tif` | first | Final COG on the canonical 10 m EPSG:25833 grid |
+| `{source}_{vintage}.stac.json` | after COG + range/QA OK | STAC Item with canonical grid, raster band metadata, and links to provenance/COG |
+| `provenance.json` | after COG OK | Source/archive metadata, config hash, QA statistics, retrieval date |
+| `complete.json` | **last** | Publication marker — the product is considered final only after this file exists |
+
+### Canonical Grid
+
+All static products share one grid (see `common/grid.py`):
+
+| Property | Value |
+|----------|-------|
+| CRS | `EPSG:25833` |
+| Resolution | `10 m × 10 m` |
+| Origin (upper-left corner) | `(369190, 5838410)` |
+| Bounding box | `(369190, 5799570, 416180, 5838410)` |
+| Shape | `4699 × 3884` pixels |
+
+### COG Profile
+
+| Parameter | Value |
+|-----------|-------|
+| Dtype | `float32` |
+| NoData | `NaN` |
+| Blocksize | `512 × 512` |
+| Overviews | `2, 4, 8, 16` |
+| Compression | `deflate`, predictor `2` |
+| BigTIFF | `IF_SAFER` |
+
+Source-specific value ranges are enforced by `validate_secondary_cog`.
+
+### STAC Item
+
+Static products use a minimal STAC Item:
+
+- `id`: `{source}-{vintage}` (future dynamic: `{source}-{scene_id}`)
+- `datetime: null` + `start_datetime` / `end_datetime`: nominal vintage interval (not a fabricated acquisition timestamp)
+- `geometry` / `bbox`: canonical-grid footprint in WGS84
+- `proj:code`: `EPSG:25833`, `proj:shape`, `proj:transform` (Projection extension v2.0.0)
+- `raster:bands` with COG dtype and nodata
+- Assets: `data` → COG, `provenance` → provenance.json
+
+### Publication Marker
+
+The `complete.json` file is written **last**. Its absence means the
+product is not considered final by `reconcile()`. This is the only
+mechanism that guards against partial publication; GCS cannot atomically
+publish multiple blobs, so `complete.json` is the visibility gate.
+
+### Future Dynamic Identity
+
+When dynamic sources are added (ERA5-Land, scene-level shadows), the
+same product pattern applies under `ard/dynamic/...` keyed by
+`source + scene_id` instead of `source + vintage`. The per-source
+prepare handler produces a `PreparedSecondaryProduct` payload;
+`product.finalize_secondary_product()` writes the four artifacts and
+the completion marker.
 
 ## Modes
 
 | Mode | Output Root | Purpose |
 |------|-------------|---------|
-| `fixture` | Local `data/smoke/secondary/fixture` | Validate pipeline lifecycle, no real data |
-| `cloud_smoke` | `gs://.../secondary/smoke/{run_id}` | Validate GCS write path |
+| `fixture` | Local `data/smoke/secondary/{name}` | Validate pipeline lifecycle per registered source with small synthetic fixtures |
 | `full` | Configurable | Production runs with real sources |
 
 ## Ledger Semantics
@@ -79,18 +143,27 @@ sources (LoD2, DGM 1 m).
 ## Smoke Tests
 
 ```bash
-# Local fixture (no GCS needed)
-uv run nox -s smoke-secondary-fixture
+# Local fixture smoke — exercises every registered source with
+# small synthetic fixtures, no upstream downloads.
+uv run nox -s smoke-secondary-all
 
-# Cloud fixture (requires ADC)
+# Cloud fixture smoke — fixture pattern on GCS.
 uv run nox -s cloud-secondary-fixture
 
-# Imperviousness end-to-end (downloads official ZIPs)
-uv run nox -s smoke-secondary-imperviousness
+# Cloud full run (VM) — processes every real source against GCS.
+uv run nox -s cloud-secondary-all
 
-# Imperviousness on GCS (requires ADC)
+# Individual-source diagnostics (local, per source):
+uv run nox -s smoke-secondary-imperviousness
+uv run nox -s smoke-secondary-vegetation-height
 uv run nox -s cloud-secondary-imperviousness
+uv run nox -s cloud-secondary-vegetation-height
 ```
+
+The local fixture smoke validates the framework (contract, STAC,
+provenance, completion marker, idempotency, QA report) without
+downloading any full upstream archive. Cloud acceptance runs validate
+real provider inputs against GCS.
 
 ## Added Sources
 
@@ -142,11 +215,18 @@ uv run python scripts/run_secondary.py --config-name imperviousness \
 
 ## Adding a New Source
 
-1. Add source-specific band specs in a new contract (see `contract.py`).
-2. Implement a prepare handler: acquire raw → convert → write COG.
-3. Register the source in the pipeline runner (see `pipeline.py`).
-4. Add a config and smoke session.
+Each source adapter produces one **prepared product** per vintage/scene:
 
-Each source module should expose a single `prepare()` entry point that
-returns a QA dict.  The pipeline handles reconciliation, ledger, and
-validation.
+1. Acquire raw archive, validate native metadata, compute canonical
+   output raster.
+2. Return a `PreparedSecondaryProduct` payload containing the canonical
+   dataset, source metadata, and source-specific QA statistics.
+3. Register the source in the pipeline runner (see `pipeline.py`).
+4. `product.finalize_secondary_product()` writes the four final
+   artifacts (COG, STAC, provenance, completion marker), validates the
+   COG, and returns the artifact URIs for the ledger.
+5. Add a config entry and (optionally) a focused diagnostic nox session.
+
+The local fixture smoke auto-picks up every registered source via
+`fixtures.registry()`; adding a new source should also add a small
+synthetic fixture to keep `smoke-secondary-all` representative.

@@ -11,7 +11,8 @@ Processing
 4. Reproject from native 2.5m grid to the canonical 10m EPSG:25833 grid
    using ``Resampling.average`` — averaging is correct **only** after
    class-code-to-percent conversion.
-5. Write validated COG via ``write_cog_atomic`` (multi-band float32).
+5. Return a :class:`PreparedSecondaryProduct`; the pipeline finaliser
+   writes the four final artifacts (COG + STAC + provenance + complete).
 """
 
 from __future__ import annotations
@@ -19,9 +20,9 @@ from __future__ import annotations
 import io
 import tempfile
 import zipfile
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import rasterio
@@ -34,8 +35,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
-from berlin_lst_downscaling.data.ard.writer import write_cog_atomic
 from berlin_lst_downscaling.data.io.storage import atomic_upload, exists, read_bytes
+from berlin_lst_downscaling.data.secondary.product import (
+    PreparedSecondaryProduct,
+    vintage_interval,
+)
 
 # ── official URLs (verified live 2026-07-14) ──────────────────────────
 
@@ -129,8 +133,8 @@ def prepare_imperviousness(
     vintage: int,
     output_root: str,
     run_id: str,
-) -> dict[str, Any]:
-    """Download, convert, and COG-write an imperviousness vintage.
+) -> PreparedSecondaryProduct:
+    """Download, convert, and reproject an imperviousness vintage.
 
     Parameters
     ----------
@@ -143,13 +147,12 @@ def prepare_imperviousness(
 
     Returns
     -------
-    dict
-        QA payload with keys: ``vintage``, ``raw_checksum``, ``shape``,
-        ``valid_frac``, ``min``, ``max``, ``output_uri``, ``config_hash``.
+    PreparedSecondaryProduct
+        Canonical-grid dataset + source metadata + QA statistics.
+        The pipeline finaliser writes the four final artifacts.
     """
     url = IMPERVIOUSNESS_URLS[vintage]
     raw_uri = _raw_zip_uri(output_root, vintage)
-    dst_uri = _cog_uri(output_root, vintage)
     c_hash = config_hash_for_vintage(vintage)
 
     # ── 1. download / fetch raw ZIP ──────────────────────────────────
@@ -165,8 +168,6 @@ def prepare_imperviousness(
         src_transform = src.transform
 
         observed = sorted(int(v) for v in np.unique(src_uint8))
-        # Fail on unknown codes (codes not in the lookup that would
-        # silently map to 100 %)
         _validate_codes(observed)
 
         src_pct = _LOOKUP[src_uint8].astype(np.float32, copy=False)
@@ -187,7 +188,7 @@ def prepare_imperviousness(
         dst_nodata=np.nan,
     )
 
-    # ── 5. write COG ────────────────────────────────────────────────
+    # ── 5. build canonical xr.Dataset ────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
     ds = xr.Dataset(
@@ -197,23 +198,37 @@ def prepare_imperviousness(
     ds = ds.rio.write_crs(str(grid.crs))
     ds = ds.rio.write_transform(grid.transform)
 
-    contract = contract_for_imperviousness()
-    write_cog_atomic(ds, dst_uri, contract, overwrite=True)
-
-    # ── 6. QA payload ───────────────────────────────────────────────
     valid = dst_arr[~np.isnan(dst_arr)]
-    qa: dict[str, Any] = {
-        "vintage": vintage,
-        "output_uri": dst_uri,
-        "config_hash": c_hash,
-        "raw_checksum": sha256(zip_local.read_bytes()).hexdigest()[:16],
-        "shape": list(dst_arr.shape),
-        "codes_observed": observed,
-        "valid_frac": round(float(len(valid)) / dst_arr.size, 4) if dst_arr.size > 0 else 0.0,
-        "min": float(valid.min()) if len(valid) > 0 else None,
-        "max": float(valid.max()) if len(valid) > 0 else None,
-    }
-    return qa
+    archive_checksum = sha256(zip_local.read_bytes()).hexdigest()[:16]
+    retrieved_at = datetime.now(UTC).isoformat()
+
+    return PreparedSecondaryProduct(
+        source="imperviousness",
+        item_key=str(vintage),
+        category="morphology",
+        dataset=ds,
+        contract=contract_for_imperviousness(),
+        nominal_interval=vintage_interval(vintage),
+        source_metadata={
+            "archive_url": url,
+            "archive_sha256": archive_checksum,
+            "raw_uri": raw_uri,
+            "retrieved_at": retrieved_at,
+            "license": "dl-de/zero-2.0",
+            "native_codes_observed": observed,
+        },
+        qa_stats={
+            "valid_frac": (
+                round(float(len(valid)) / dst_arr.size, 4)
+                if dst_arr.size > 0
+                else 0.0
+            ),
+            "min": float(valid.min()) if len(valid) > 0 else None,
+            "max": float(valid.max()) if len(valid) > 0 else None,
+            "shape": list(dst_arr.shape),
+        },
+        config_hash=c_hash,
+    )
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -224,14 +239,6 @@ def _raw_zip_uri(output_root: str, vintage: int) -> str:
     return (
         f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/"
         f"{vintage}/Versiegelung_Raster_{vintage}.zip"
-    )
-
-
-def _cog_uri(output_root: str, vintage: int) -> str:
-    """Return the final COG URI for a vintage."""
-    return (
-        f"{output_root.rstrip('/')}/ard/static/morphology/"
-        f"imperviousness/{vintage}/imperviousness_{vintage}.tif"
     )
 
 

@@ -16,13 +16,12 @@ Processing
    the canonical grid.
 4. Reproject from 1 m to 10 m using ``Resampling.average`` into a
    float32 destination with NaN nodata.
-5. Write a validated COG via ``write_cog_atomic`` and record provenance
-   in a ``source.json`` sidecar alongside the raw archive.
+5. Return a :class:`PreparedSecondaryProduct`; the pipeline finaliser
+   writes the four final artifacts (COG + STAC + provenance + complete).
 """
 
 from __future__ import annotations
 
-import json
 import tempfile
 import zipfile
 from datetime import UTC, datetime
@@ -39,9 +38,11 @@ from rasterio.warp import reproject
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
-from berlin_lst_downscaling.data.ard.writer import write_cog_atomic
-from berlin_lst_downscaling.data.io.storage import atomic_write
 from berlin_lst_downscaling.data.secondary.download import download_to_raw
+from berlin_lst_downscaling.data.secondary.product import (
+    PreparedSecondaryProduct,
+    vintage_interval,
+)
 
 # ── official URLs (verified live 2026-07-14) ──────────────────────────────
 
@@ -100,8 +101,8 @@ def prepare_vegetation_height(
     vintage: int,
     output_root: str,
     run_id: str,
-) -> dict[str, Any]:
-    """Download, convert, and COG-write a vegetation-height vintage.
+) -> PreparedSecondaryProduct:
+    """Download and reproject a vegetation-height vintage.
 
     Parameters
     ----------
@@ -114,10 +115,9 @@ def prepare_vegetation_height(
 
     Returns
     -------
-    dict
-        QA payload with keys: ``vintage``, ``archive_checksum``, ``shape``,
-        ``valid_frac``, ``min``, ``max``, ``output_uri``, ``config_hash``,
-        ``native_metadata``.
+    PreparedSecondaryProduct
+        Canonical-grid dataset + source metadata + QA statistics.
+        The pipeline finaliser writes the four final artifacts.
     """
     if vintage != 2020:
         raise ValueError(
@@ -126,9 +126,7 @@ def prepare_vegetation_height(
 
     url = VEGETATION_HEIGHT_URLS[vintage]
     raw_uri = _raw_zip_uri(output_root, vintage)
-    dst_uri = _cog_uri(output_root, vintage)
     cache_path = _raw_zip_cache_uri(output_root, vintage)
-    source_json_uri = _source_json_uri(output_root, vintage)
     c_hash = config_hash_for_vintage(vintage)
 
     # ── 1. materialise raw archive (streaming, no full-RAM load) ──────────
@@ -162,7 +160,7 @@ def prepare_vegetation_height(
             dst_nodata=np.nan,
         )
 
-    # ── 4. write COG ────────────────────────────────────────────────────
+    # ── 4. build canonical xr.Dataset ────────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
     ds = xr.Dataset(
@@ -172,42 +170,42 @@ def prepare_vegetation_height(
     ds = ds.rio.write_crs(str(grid.crs))
     ds = ds.rio.write_transform(grid.transform)
 
-    contract = contract_for_vegetation_height()
-    write_cog_atomic(ds, dst_uri, contract, overwrite=True)
-
-    # ── 5. source.json sidecar (provenance) ───────────────────────────────
-    sidecar = {
-        "source": "vegetation_height",
-        "vintage": vintage,
-        "archive_url": url,
-        "atom_feed": VEGETATION_HEIGHT_ATOM_FEED,
-        "csw_record": VEGETATION_HEIGHT_CSW_RECORD,
-        "dataset_identifier": VEGETATION_HEIGHT_DATASET_ID,
-        "license": VEGETATION_HEIGHT_LICENSE,
-        "retrieved_at": datetime.now(UTC).isoformat(),
-        "archive_sha256": receipt.checksum,
-        "archive_bytes": int(
-            archive_path.stat().st_size if archive_path.exists() else 0
-        ),
-        "native_metadata": native_meta,
-    }
-    atomic_write(source_json_uri, json.dumps(sidecar, indent=2), overwrite=True)
-
-    # ── 6. QA payload ───────────────────────────────────────────────────
     valid = dst_arr[~np.isnan(dst_arr)]
-    return {
-        "vintage": vintage,
-        "output_uri": dst_uri,
-        "config_hash": c_hash,
-        "archive_checksum": receipt.checksum,
-        "shape": list(dst_arr.shape),
-        "valid_frac": (
-            round(float(len(valid)) / dst_arr.size, 4) if dst_arr.size > 0 else 0.0
-        ),
-        "min": float(valid.min()) if len(valid) > 0 else None,
-        "max": float(valid.max()) if len(valid) > 0 else None,
-        "native_metadata": native_meta,
-    }
+    retrieved_at = datetime.now(UTC).isoformat()
+
+    return PreparedSecondaryProduct(
+        source="vegetation_height",
+        item_key=str(vintage),
+        category="morphology",
+        dataset=ds,
+        contract=contract_for_vegetation_height(),
+        nominal_interval=vintage_interval(vintage),
+        source_metadata={
+            "archive_url": url,
+            "archive_sha256": receipt.checksum,
+            "archive_bytes": int(
+                archive_path.stat().st_size if archive_path.exists() else 0
+            ),
+            "raw_uri": raw_uri,
+            "retrieved_at": retrieved_at,
+            "license": VEGETATION_HEIGHT_LICENSE,
+            "atom_feed": VEGETATION_HEIGHT_ATOM_FEED,
+            "csw_record": VEGETATION_HEIGHT_CSW_RECORD,
+            "dataset_identifier": VEGETATION_HEIGHT_DATASET_ID,
+            "native_metadata": native_meta,
+        },
+        qa_stats={
+            "valid_frac": (
+                round(float(len(valid)) / dst_arr.size, 4)
+                if dst_arr.size > 0
+                else 0.0
+            ),
+            "min": float(valid.min()) if len(valid) > 0 else None,
+            "max": float(valid.max()) if len(valid) > 0 else None,
+            "shape": list(dst_arr.shape),
+        },
+        config_hash=c_hash,
+    )
 
 
 # ── path helpers ──────────────────────────────────────────────────────────
@@ -230,20 +228,6 @@ def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/vegetation_height_{vintage}.zip"
     return _raw_zip_uri(output_root, vintage)
-
-
-def _cog_uri(output_root: str, vintage: int) -> str:
-    return (
-        f"{output_root.rstrip('/')}/ard/static/morphology/"
-        f"vegetation_height/{vintage}/vegetation_height_{vintage}.tif"
-    )
-
-
-def _source_json_uri(output_root: str, vintage: int) -> str:
-    return (
-        f"{output_root.rstrip('/')}/_raw/secondary/vegetation_height/"
-        f"{vintage}/source.json"
-    )
 
 
 # ── archive helpers ───────────────────────────────────────────────────────

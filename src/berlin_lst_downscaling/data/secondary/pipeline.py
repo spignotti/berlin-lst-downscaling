@@ -1,12 +1,12 @@
 """Secondary-data pipeline — execution orchestration.
 
-Supports three modes:
+Supports two modes:
 
-* ``fixture`` — source-neutral dummy COG, validates the full lifecycle
-  (contract → COG write → validation → ledger → QA report) without
-  downloading any real dataset.
-* ``cloud_smoke`` — same fixture targeting GCS.
-* ``full`` — real source processing (future tasks).
+* ``fixture`` — small synthetic products per registered source,
+  validates the full lifecycle without downloading real datasets.
+* ``full`` — real source processing; produces the four final
+  artifacts (COG, STAC, provenance, completion marker) for each
+  configured source/vintage.
 """
 
 from __future__ import annotations
@@ -26,11 +26,15 @@ from berlin_lst_downscaling.data.ard.writer import write_cog_atomic
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import ledger_path
+from berlin_lst_downscaling.data.secondary.product import (
+    PreparedSecondaryProduct,
+    finalize_secondary_product,
+)
 from berlin_lst_downscaling.data.secondary.reports import (
     format_secondary_report,
+    persist_secondary_report,
     secondary_qa_report,
 )
-from berlin_lst_downscaling.data.secondary.validate import validate_secondary_cog
 
 # ── public entry ──────────────────────────────────────────────────────
 
@@ -221,9 +225,11 @@ def _run_full(
             print(f"  Unknown source '{source}' — skipping.")
             failed += 1
 
-    # Final QA report
+    # Final QA report — printed and persisted under qa/secondary/{run_id}/
     report = secondary_qa_report(led, run_id)
     print(format_secondary_report(report))
+    report_uri = persist_secondary_report(report, output_root)
+    print(f"  QA report  : {report_uri}")
 
     return 0 if failed == 0 else 1
 
@@ -234,25 +240,26 @@ def _run_imperviousness(
     run_id: str,
     output_root: str,
 ) -> tuple[int, list[dict]]:
-    """Process both imperviousness vintages."""
+    """Process both imperviousness vintages.
+
+    Returns ``(failed_count, qa_payloads)``.  The caller is responsible
+    for recording artifact URIs in the ledger and emitting the QA report.
+    """
     from berlin_lst_downscaling.data.secondary.imperviousness import (
         config_hash_for_vintage,
-        contract_for_imperviousness,
         prepare_imperviousness,
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2016, 2021]))
-    contract = contract_for_imperviousness()
     grid = canon_grid_10m()
 
-    all_qa: list[dict] = []
+    qa_payloads: list[dict] = []
     failed = 0
 
     for vintage in vintages:
         item_id = f"imperviousness_{vintage}"
         c_hash = config_hash_for_vintage(vintage)
 
-        # Reconcile
         items = [(item_id, "imperviousness", str(vintage))]
         todo = reconcile(items, led, c_hash)
 
@@ -260,7 +267,7 @@ def _run_imperviousness(
             print(f"  imperviousness {vintage} already done — skipping.")
             continue
 
-        # Mark exporting
+        reason = todo[0][3]
         led.upsert(SecondaryLedgerRow(
             item_id=item_id,
             source="imperviousness",
@@ -270,8 +277,11 @@ def _run_imperviousness(
         ))
 
         try:
-            print(f"  Processing imperviousness {vintage}...")
-            qa_payload = prepare_imperviousness(vintage, output_root, run_id)
+            print(f"  Processing imperviousness {vintage} (reason={reason})...")
+            prepared = prepare_imperviousness(vintage, output_root, run_id)
+            artifacts = finalize_secondary_product(
+                prepared, grid, output_root, run_id,
+            )
         except Exception as exc:
             print(f"  imperviousness {vintage} FAILED: {exc}")
             led.upsert(SecondaryLedgerRow(
@@ -285,22 +295,6 @@ def _run_imperviousness(
             failed += 1
             continue
 
-        # Validate output COG
-        vig = validate_secondary_cog(qa_payload["output_uri"], contract, grid)
-        if not vig.ok:
-            print(f"  imperviousness {vintage} COG validation FAILED: {'; '.join(vig.errors)}")
-            led.upsert(SecondaryLedgerRow(
-                item_id=item_id,
-                source="imperviousness",
-                period_or_vintage=str(vintage),
-                status="failed",
-                run_id=run_id,
-                last_error="; ".join(vig.errors),
-            ))
-            failed += 1
-            continue
-
-        # Update ledger — done
         led.upsert(SecondaryLedgerRow(
             item_id=item_id,
             source="imperviousness",
@@ -308,13 +302,16 @@ def _run_imperviousness(
             status="done",
             run_id=run_id,
             config_hash=c_hash,
-            output_uri=qa_payload["output_uri"],
+            output_uri=artifacts.cog_uri,
+            stac_uri=artifacts.stac_uri,
+            provenance_uri=artifacts.provenance_uri,
+            completion_uri=artifacts.completion_uri,
         ))
 
-        print(f"  imperviousness {vintage} OK — {qa_payload['output_uri']}")
-        all_qa.append(qa_payload)
+        print(f"  imperviousness {vintage} OK — {artifacts.cog_uri}")
+        qa_payloads.append(_qa_payload(prepared))
 
-    return failed, all_qa
+    return failed, qa_payloads
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -329,15 +326,13 @@ def _run_vegetation_height(
     """Process the 2020 vegetation-height vintage."""
     from berlin_lst_downscaling.data.secondary.vegetation_height import (
         config_hash_for_vintage,
-        contract_for_vegetation_height,
         prepare_vegetation_height,
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2020]))
-    contract = contract_for_vegetation_height()
     grid = canon_grid_10m()
 
-    all_qa: list[dict] = []
+    qa_payloads: list[dict] = []
     failed = 0
 
     for vintage in vintages:
@@ -351,6 +346,7 @@ def _run_vegetation_height(
             print(f"  vegetation_height {vintage} already done — skipping.")
             continue
 
+        reason = todo[0][3]
         led.upsert(SecondaryLedgerRow(
             item_id=item_id,
             source="vegetation_height",
@@ -360,8 +356,11 @@ def _run_vegetation_height(
         ))
 
         try:
-            print(f"  Processing vegetation_height {vintage}...")
-            qa_payload = prepare_vegetation_height(vintage, output_root, run_id)
+            print(f"  Processing vegetation_height {vintage} (reason={reason})...")
+            prepared = prepare_vegetation_height(vintage, output_root, run_id)
+            artifacts = finalize_secondary_product(
+                prepared, grid, output_root, run_id,
+            )
         except Exception as exc:
             print(f"  vegetation_height {vintage} FAILED: {exc}")
             led.upsert(SecondaryLedgerRow(
@@ -375,23 +374,6 @@ def _run_vegetation_height(
             failed += 1
             continue
 
-        vig = validate_secondary_cog(qa_payload["output_uri"], contract, grid)
-        if not vig.ok:
-            print(
-                f"  vegetation_height {vintage} COG validation FAILED: "
-                f"{'; '.join(vig.errors)}"
-            )
-            led.upsert(SecondaryLedgerRow(
-                item_id=item_id,
-                source="vegetation_height",
-                period_or_vintage=str(vintage),
-                status="failed",
-                run_id=run_id,
-                last_error="; ".join(vig.errors),
-            ))
-            failed += 1
-            continue
-
         led.upsert(SecondaryLedgerRow(
             item_id=item_id,
             source="vegetation_height",
@@ -399,13 +381,16 @@ def _run_vegetation_height(
             status="done",
             run_id=run_id,
             config_hash=c_hash,
-            output_uri=qa_payload["output_uri"],
+            output_uri=artifacts.cog_uri,
+            stac_uri=artifacts.stac_uri,
+            provenance_uri=artifacts.provenance_uri,
+            completion_uri=artifacts.completion_uri,
         ))
 
-        print(f"  vegetation_height {vintage} OK — {qa_payload['output_uri']}")
-        all_qa.append(qa_payload)
+        print(f"  vegetation_height {vintage} OK — {artifacts.cog_uri}")
+        qa_payloads.append(_qa_payload(prepared))
 
-    return failed, all_qa
+    return failed, qa_payloads
 
 
 def _banner(cfg: DictConfig, run_id: str, output_root: str) -> None:
@@ -416,3 +401,13 @@ def _banner(cfg: DictConfig, run_id: str, output_root: str) -> None:
     print(f"  run_id      : {run_id}", flush=True)
     print(f"  output_root : {output_root}", flush=True)
     print("=" * width, flush=True)
+
+
+def _qa_payload(prepared: PreparedSecondaryProduct) -> dict:
+    """Extract the flat QA payload from a prepared product."""
+    return {
+        "source": prepared.source,
+        "item_key": prepared.item_key,
+        "config_hash": prepared.config_hash,
+        **prepared.qa_stats,
+    }

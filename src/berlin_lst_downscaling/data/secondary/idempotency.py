@@ -2,6 +2,11 @@
 
 ``reconcile`` compares a work-item list against the secondary ledger and
 returns the subset that actually need processing.
+
+A "done" row is considered complete only when its ``completion_uri``
+exists and resolves to a real artifact.  This guards against partial
+publication: GCS cannot publish multiple blobs atomically, so the
+``complete.json`` marker is the final visibility gate.
 """
 
 from __future__ import annotations
@@ -19,10 +24,11 @@ def reconcile(
 
     Each entry in the returned list is ``(item_id, source, period, reason)``
     where ``reason`` is one of ``"new"``, ``"retry"``, ``"interrupted"``,
-    ``"config_changed"``.
+    ``"config_changed"``, or ``"incomplete"``.
 
     Items that already have ``status='done'``, a matching ``config_hash``,
-    **and** a confirmed output file are excluded (skip).
+    a confirmed output file, **and** a confirmed completion marker are
+    excluded (skip).
     """
     result: list[tuple[str, str, str, str]] = []
 
@@ -34,7 +40,16 @@ def reconcile(
             continue
 
         if row.status == "done" and row.config_hash == config_hash:
-            if row.output_uri and exists(row.output_uri):
+            output_ok = row.output_uri and exists(row.output_uri)
+            completion_ok = (
+                row.completion_uri and exists(row.completion_uri)
+            )
+            if output_ok and completion_ok:
+                continue
+            if output_ok and not completion_ok:
+                # COG is present but the publication marker is missing —
+                # the product was not finalised.  Re-finalise it.
+                result.append((item_id, source, period, "incomplete"))
                 continue
             result.append((item_id, source, period, "interrupted"))
             continue

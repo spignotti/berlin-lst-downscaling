@@ -2,7 +2,7 @@
 
 Mirrors ``data.ard.ledger`` with a schema adapted for static/dynamic
 secondary items: no scene-specific fields, but carries ``config_hash``,
-``checksum``, and ``output_uri``.
+``checksum``, ``output_uri``, and final-artifact URIs.
 
 Every ``upsert`` immediately persists via ``atomic_write`` — crash
 consistency is built in.
@@ -29,6 +29,10 @@ _pcinv = pc.invert  # type: ignore[attr-defined]
 
 _STATUSES = {"pending", "exporting", "done", "failed", "skipped"}
 
+# decision: schema v2 adds nullable STAC/provenance/completion URIs so
+# ``reconcile()`` can guard against partial publication.  Existing v1
+# Parquets are auto-migrated at open time by filling nulls for the
+# missing columns.
 _SCHEMA = pa.schema([
     pa.field("item_id", pa.string(), nullable=False),
     pa.field("source", pa.string(), nullable=False),
@@ -39,11 +43,14 @@ _SCHEMA = pa.schema([
     pa.field("config_hash", pa.string()),
     pa.field("checksum", pa.string()),
     pa.field("output_uri", pa.string()),
+    pa.field("stac_uri", pa.string()),
+    pa.field("provenance_uri", pa.string()),
+    pa.field("completion_uri", pa.string()),
     pa.field("last_error", pa.string()),
     pa.field("updated_at", pa.timestamp("us", tz="UTC")),
 ])
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ── row type ─────────────────────────────────────────────────────────
 
@@ -61,6 +68,9 @@ class SecondaryLedgerRow:
     config_hash: str | None = None
     checksum: str | None = None
     output_uri: str | None = None
+    stac_uri: str | None = None
+    provenance_uri: str | None = None
+    completion_uri: str | None = None
     last_error: str | None = None
     updated_at: datetime | None = None
 
@@ -93,16 +103,26 @@ class SecondaryLedger:
 
     @classmethod
     def open(cls, path: str) -> SecondaryLedger:
-        """Open an existing Parquet ledger or create a new empty one."""
+        """Open an existing Parquet ledger or create a new empty one.
+
+        Existing v1 Parquets (without ``stac_uri`` / ``provenance_uri`` /
+        ``completion_uri`` columns) are auto-migrated by filling nulls
+        for the missing columns at read time.
+        """
+        schema_version = 1
         if exists(path):
             raw = read_bytes(path)
             if len(raw) > 0:
                 table = pq.read_table(io.BytesIO(raw))
+                schema_version = 1  # legacy files written before v2
+                table, schema_version = _migrate(table)
             else:
                 table = pa.Table.from_pylist([], schema=_SCHEMA)
+                schema_version = SCHEMA_VERSION
         else:
             table = pa.Table.from_pylist([], schema=_SCHEMA)
-        return cls(path, table)
+            schema_version = SCHEMA_VERSION
+        return cls(path, table, schema_version)
 
     # ── queries ─────────────────────────────────────────────────
 
@@ -211,6 +231,9 @@ def _row_to_dict(row: SecondaryLedgerRow) -> dict:
         "config_hash": row.config_hash,
         "checksum": row.checksum,
         "output_uri": row.output_uri,
+        "stac_uri": row.stac_uri,
+        "provenance_uri": row.provenance_uri,
+        "completion_uri": row.completion_uri,
         "last_error": row.last_error,
         "updated_at": row.updated_at,
     }
@@ -230,10 +253,31 @@ def _rows_from_table(tbl: pa.Table) -> list[SecondaryLedgerRow]:
             config_hash=_opt_str(d, "config_hash"),
             checksum=_opt_str(d, "checksum"),
             output_uri=_opt_str(d, "output_uri"),
+            stac_uri=_opt_str(d, "stac_uri"),
+            provenance_uri=_opt_str(d, "provenance_uri"),
+            completion_uri=_opt_str(d, "completion_uri"),
             last_error=_opt_str(d, "last_error"),
             updated_at=_opt_dt(d, "updated_at"),
         ))
     return rows
+
+
+def _migrate(table: pa.Table) -> tuple[pa.Table, int]:
+    """Add missing v2 columns (stac/provenance/completion URIs) as null.
+
+    Returns ``(table, schema_version)``.  If the table is already v2-
+    compatible, no columns are added.
+    """
+    added = []
+    for name in ("stac_uri", "provenance_uri", "completion_uri"):
+        if name not in table.column_names:
+            added.append(
+                pa.array([None] * table.num_rows, type=pa.string())
+            )
+    if not added:
+        return table, SCHEMA_VERSION
+    new_columns = list(table.columns) + added
+    return pa.Table.from_arrays(new_columns, schema=_SCHEMA), SCHEMA_VERSION
 
 
 def _opt_str(d: dict, key: str) -> str | None:
