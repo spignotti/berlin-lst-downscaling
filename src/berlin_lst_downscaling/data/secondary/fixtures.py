@@ -40,6 +40,8 @@ def registry() -> dict[str, FixtureFactory]:
     return {
         "imperviousness": _fixture_imperviousness,
         "vegetation_height": _fixture_vegetation_height,
+        "terrain_height": _fixture_terrain_height,
+        "lod2_morphology": _fixture_lod2_morphology,
     }
 
 
@@ -87,6 +89,113 @@ def _fixture_vegetation_height(
         config_hash="fixture:vegetation_height:v1",
         nominal_interval=vintage_interval(2020),
         seed=2,
+    )
+
+
+def _fixture_terrain_height(
+    output_root: str, run_id: str,
+) -> PreparedSecondaryProduct:
+    """Fixture product for the terrain_height source.
+
+    Random uniform values in [20, 80] on the canonical 10 m grid.
+    No upstream download.
+    """
+    return _make_fixture(
+        source="terrain_height",
+        item_key="2021",
+        category="morphology",
+        band_name="terrain_height",
+        band_description="Fixture terrain elevation (m, synthetic)",
+        vmin=20.0,
+        vmax=80.0,
+        config_hash="fixture:terrain_height:v1",
+        nominal_interval=vintage_interval(2021),
+        seed=3,
+    )
+
+
+def _fixture_lod2_morphology(
+    output_root: str, run_id: str,
+) -> PreparedSecondaryProduct:
+    """Fixture product for the lod2_morphology source.
+
+    Three-band synthetic: height mean [0, 50], std [0, 10], BCR [0, 1].
+    No upstream download.
+    """
+    from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+
+    grid = canon_grid_10m()
+    rng = np.random.default_rng(4)
+
+    xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
+    ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
+
+    mean_data = rng.uniform(0.0, 50.0, size=(grid.shape.y, grid.shape.x)).astype(
+        np.float32,
+    )
+    std_data = rng.uniform(0.0, 10.0, size=(grid.shape.y, grid.shape.x)).astype(
+        np.float32,
+    )
+    bcr_data = rng.uniform(0.0, 1.0, size=(grid.shape.y, grid.shape.x)).astype(
+        np.float32,
+    )
+
+    ds = xr.Dataset(
+        {
+            "building_height_mean": (("y", "x"), mean_data),
+            "building_height_std": (("y", "x"), std_data),
+            "building_coverage_ratio": (("y", "x"), bcr_data),
+        },
+        coords={"x": xs, "y": ys},
+    )
+    ds = ds.rio.write_crs(str(grid.crs))
+    ds = ds.rio.write_transform(grid.transform)
+
+    contract = Contract(
+        source="lod2_morphology",
+        target_crs="EPSG:25833",
+        output_bands=(
+            BandSpec(
+                name="building_height_mean", dtype="float32",
+                nodata=float("nan"),
+                description="Fixture building height mean (m, synthetic)",
+            ),
+            BandSpec(
+                name="building_height_std", dtype="float32",
+                nodata=float("nan"),
+                description="Fixture building height std (m, synthetic)",
+            ),
+            BandSpec(
+                name="building_coverage_ratio", dtype="float32",
+                nodata=float("nan"),
+                description="Fixture BCR (synthetic)",
+            ),
+        ),
+        tiling=TilingSpec(),
+        schema_version=1,
+        flag_mode="none",
+    )
+
+    return PreparedSecondaryProduct(
+        source="lod2_morphology",
+        item_key="2026",
+        category="morphology",
+        dataset=ds,
+        contract=contract,
+        nominal_interval=vintage_interval(2026),
+        source_metadata={
+            "kind": "synthetic_fixture",
+            "seed": 4,
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "note": "Synthetic fixture — no upstream download.",
+        },
+        qa_stats={
+            "valid_frac": float(np.sum(~np.isnan(mean_data))) / mean_data.size,
+            "min_height": float(np.nanmin(mean_data)),
+            "max_height": float(np.nanmax(mean_data)),
+            "shape": list(mean_data.shape),
+        },
+        config_hash="fixture:lod2_morphology:v1",
     )
 
 

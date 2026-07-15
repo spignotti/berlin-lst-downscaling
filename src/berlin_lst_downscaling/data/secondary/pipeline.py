@@ -175,6 +175,10 @@ def _run_full(
             failed += _run_imperviousness(led, cfg, run_id, output_root)
         elif source == "vegetation_height":
             failed += _run_vegetation_height(led, cfg, run_id, output_root)
+        elif source == "terrain_height":
+            failed += _run_terrain_height(led, cfg, run_id, output_root)
+        elif source == "lod2_morphology":
+            failed += _run_lod2_morphology(led, cfg, run_id, output_root)
         else:
             print(f"  Unknown source '{source}' — skipping.")
             failed += 1
@@ -333,6 +337,152 @@ def _run_vegetation_height(
         ))
 
         print(f"  vegetation_height {vintage} OK — {artifacts.cog_uri}")
+
+    return failed
+
+
+def _run_terrain_height(
+    led: SecondaryLedger,
+    cfg: DictConfig,
+    run_id: str,
+    output_root: str,
+) -> int:
+    """Process DGM terrain height vintage 2021. Returns the failed-count."""
+    from berlin_lst_downscaling.data.secondary.dgm import (
+        config_hash_for_vintage,
+        prepare_terrain_height,
+    )
+
+    vintages: list[int] = list(cfg.get("vintages", [2021]))
+    grid = canon_grid_10m()
+    failed = 0
+
+    for vintage in vintages:
+        item_id = f"terrain_height_{vintage}"
+        c_hash = config_hash_for_vintage(vintage)
+
+        items = [(item_id, "terrain_height", str(vintage))]
+        todo = reconcile(items, led, c_hash)
+
+        if not todo:
+            print(f"  terrain_height {vintage} already done — skipping.")
+            continue
+
+        reason = todo[0][3]
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="terrain_height",
+            period_or_vintage=str(vintage),
+            status="exporting",
+            run_id=run_id,
+        ))
+
+        try:
+            print(f"  Processing terrain_height {vintage} (reason={reason})...")
+            prepared = prepare_terrain_height(vintage, output_root, run_id)
+            artifacts = finalize_secondary_product(
+                prepared, grid, output_root, run_id,
+            )
+        except Exception as exc:
+            print(f"  terrain_height {vintage} FAILED: {exc}")
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source="terrain_height",
+                period_or_vintage=str(vintage),
+                status="failed",
+                run_id=run_id,
+                last_error=str(exc),
+            ))
+            failed += 1
+            continue
+
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="terrain_height",
+            period_or_vintage=str(vintage),
+            status="done",
+            run_id=run_id,
+            config_hash=c_hash,
+            output_uri=artifacts.cog_uri,
+            stac_uri=artifacts.stac_uri,
+            provenance_uri=artifacts.provenance_uri,
+            completion_uri=artifacts.completion_uri,
+        ))
+
+        print(f"  terrain_height {vintage} OK — {artifacts.cog_uri}")
+
+    return failed
+
+
+def _run_lod2_morphology(
+    led: SecondaryLedger,
+    cfg: DictConfig,
+    run_id: str,
+    output_root: str,
+) -> int:
+    """Process LoD2 morphology vintage. Returns the failed-count."""
+    from berlin_lst_downscaling.data.secondary.lod2 import (
+        config_hash_for_vintage,
+        prepare_lod2_morphology,
+    )
+
+    vintages: list[int] = list(cfg.get("vintages", [2026]))
+    grid = canon_grid_10m()
+    failed = 0
+
+    for vintage in vintages:
+        item_id = f"lod2_morphology_{vintage}"
+        c_hash = config_hash_for_vintage(vintage)
+
+        items = [(item_id, "lod2_morphology", str(vintage))]
+        todo = reconcile(items, led, c_hash)
+
+        if not todo:
+            print(f"  lod2_morphology {vintage} already done — skipping.")
+            continue
+
+        reason = todo[0][3]
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="lod2_morphology",
+            period_or_vintage=str(vintage),
+            status="exporting",
+            run_id=run_id,
+        ))
+
+        try:
+            print(f"  Processing lod2_morphology {vintage} (reason={reason})...")
+            prepared = prepare_lod2_morphology(vintage, output_root, run_id)
+            artifacts = finalize_secondary_product(
+                prepared, grid, output_root, run_id,
+            )
+        except Exception as exc:
+            print(f"  lod2_morphology {vintage} FAILED: {exc}")
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source="lod2_morphology",
+                period_or_vintage=str(vintage),
+                status="failed",
+                run_id=run_id,
+                last_error=str(exc),
+            ))
+            failed += 1
+            continue
+
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source="lod2_morphology",
+            period_or_vintage=str(vintage),
+            status="done",
+            run_id=run_id,
+            config_hash=c_hash,
+            output_uri=artifacts.cog_uri,
+            stac_uri=artifacts.stac_uri,
+            provenance_uri=artifacts.provenance_uri,
+            completion_uri=artifacts.completion_uri,
+        ))
+
+        print(f"  lod2_morphology {vintage} OK — {artifacts.cog_uri}")
 
     return failed
 
