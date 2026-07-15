@@ -3,15 +3,8 @@
 
 mode: full                    # fixture | full
 
-# Canonical CRS and grid (derived from common/grid.py)
-target_crs: "EPSG:25833"
-target_resolution: 10
-
 # Output
 output_root: "data/secondary"  # gs://… for cloud smoke or full runs
-
-# Ledger
-ledger_name: "ledger.parquet"
 
 # Disk budget (peak scratch, GiB)
 peak_scratch_gb: 4

@@ -20,10 +20,7 @@ from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import ledger_path
-from berlin_lst_downscaling.data.secondary.product import (
-    PreparedSecondaryProduct,
-    finalize_secondary_product,
-)
+from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
 from berlin_lst_downscaling.data.secondary.reports import (
     format_secondary_report,
     persist_secondary_report,
@@ -171,20 +168,13 @@ def _run_full(
         )
         return 1
 
-    all_qa: list[dict] = []
     failed = 0
 
     for source in sources:
         if source == "imperviousness":
-            rc, qa = _run_imperviousness(led, cfg, run_id, output_root)
-            if qa:
-                all_qa.extend(qa)
-            failed += rc
+            failed += _run_imperviousness(led, cfg, run_id, output_root)
         elif source == "vegetation_height":
-            rc, qa = _run_vegetation_height(led, cfg, run_id, output_root)
-            if qa:
-                all_qa.extend(qa)
-            failed += rc
+            failed += _run_vegetation_height(led, cfg, run_id, output_root)
         else:
             print(f"  Unknown source '{source}' — skipping.")
             failed += 1
@@ -203,12 +193,8 @@ def _run_imperviousness(
     cfg: DictConfig,
     run_id: str,
     output_root: str,
-) -> tuple[int, list[dict]]:
-    """Process both imperviousness vintages.
-
-    Returns ``(failed_count, qa_payloads)``.  The caller is responsible
-    for recording artifact URIs in the ledger and emitting the QA report.
-    """
+) -> int:
+    """Process both imperviousness vintages. Returns the failed-count."""
     from berlin_lst_downscaling.data.secondary.imperviousness import (
         config_hash_for_vintage,
         prepare_imperviousness,
@@ -216,8 +202,6 @@ def _run_imperviousness(
 
     vintages: list[int] = list(cfg.get("vintages", [2016, 2021]))
     grid = canon_grid_10m()
-
-    qa_payloads: list[dict] = []
     failed = 0
 
     for vintage in vintages:
@@ -273,9 +257,8 @@ def _run_imperviousness(
         ))
 
         print(f"  imperviousness {vintage} OK — {artifacts.cog_uri}")
-        qa_payloads.append(_qa_payload(prepared))
 
-    return failed, qa_payloads
+    return failed
 
 
 # ── helpers ───────────────────────────────────────────────────────────
@@ -286,8 +269,8 @@ def _run_vegetation_height(
     cfg: DictConfig,
     run_id: str,
     output_root: str,
-) -> tuple[int, list[dict]]:
-    """Process the 2020 vegetation-height vintage."""
+) -> int:
+    """Process the 2020 vegetation-height vintage. Returns the failed-count."""
     from berlin_lst_downscaling.data.secondary.vegetation_height import (
         config_hash_for_vintage,
         prepare_vegetation_height,
@@ -295,8 +278,6 @@ def _run_vegetation_height(
 
     vintages: list[int] = list(cfg.get("vintages", [2020]))
     grid = canon_grid_10m()
-
-    qa_payloads: list[dict] = []
     failed = 0
 
     for vintage in vintages:
@@ -352,9 +333,8 @@ def _run_vegetation_height(
         ))
 
         print(f"  vegetation_height {vintage} OK — {artifacts.cog_uri}")
-        qa_payloads.append(_qa_payload(prepared))
 
-    return failed, qa_payloads
+    return failed
 
 
 def _banner(cfg: DictConfig, run_id: str, output_root: str) -> None:
@@ -365,13 +345,3 @@ def _banner(cfg: DictConfig, run_id: str, output_root: str) -> None:
     print(f"  run_id      : {run_id}", flush=True)
     print(f"  output_root : {output_root}", flush=True)
     print("=" * width, flush=True)
-
-
-def _qa_payload(prepared: PreparedSecondaryProduct) -> dict:
-    """Extract the flat QA payload from a prepared product."""
-    return {
-        "source": prepared.source,
-        "item_key": prepared.item_key,
-        "config_hash": prepared.config_hash,
-        **prepared.qa_stats,
-    }

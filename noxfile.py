@@ -240,51 +240,18 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
 # ── Secondary-data pipeline ──────────────────────────────────────────
 
 
-@nox.session(venv_backend="none", name="smoke-secondary-all")
-def smoke_secondary_all(session: nox.Session) -> None:
-    """Run source-registered fixtures locally.
-
-    Finalises a synthetic product for every registered source (imperviousness,
-    vegetation_height), then runs again to confirm idempotency.  Validates
-    the full contract: COG + STAC + provenance + completion marker +
-    ledger + QA report.
-    """
-    output_root = "data/smoke/secondary/all"
-
-    # First run — finalise fixtures
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_all",
-        f"output_root={output_root}",
-        external=True,
-    )
-
-    # Second run — must be idempotent
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_all",
-        f"output_root={output_root}",
-        external=True,
-    )
-
-    # Verify artifacts
+def _verify_local_artifacts(
+    session: nox.Session,
+    output_root: str,
+    required_suffixes: tuple[str, ...],
+) -> None:
+    """Check that every required artifact is present under a local root."""
     session.run(
         "uv", "run", "python", "-c",
         f"""import sys
 from pathlib import Path
-required_suffixes = (
-    'imperviousness_2021.tif',
-    'imperviousness_2021.stac.json',
-    'imperviousness/2021/provenance.json',
-    'imperviousness/2021/complete.json',
-    'vegetation_height_2020.tif',
-    'vegetation_height_2020.stac.json',
-    'vegetation_height/2020/provenance.json',
-    'vegetation_height/2020/complete.json',
-    'report.json',
-    'ledger.parquet',
-)
-root = Path('{output_root}')
+required_suffixes = {required_suffixes!r}
+root = Path({output_root!r})
 if not root.exists():
     print(f'Missing output root: {{root}}')
     sys.exit(1)
@@ -311,6 +278,95 @@ print('All required artifacts present.')
     )
 
 
+def _preflight_gcs(session: nox.Session) -> None:
+    """Confirm ADC + the bucket are reachable before a cloud run."""
+    session.run(
+        "uv", "run", "python", "-c",
+        (
+            "from google.cloud import storage; "
+            "client = storage.Client(); "
+            "bucket = client.get_bucket('berlin-lst-data'); "
+            "print('Bucket reachable:', bucket.name)"
+        ),
+        external=True,
+    )
+
+
+def _verify_gcs_artifacts(
+    session: nox.Session,
+    run_id: str,
+    required_suffixes: tuple[str, ...],
+) -> None:
+    """Check that every required blob exists under a GCS run prefix."""
+    session.run(
+        "uv", "run", "python", "-c",
+        f"""import sys
+from google.cloud import storage
+client = storage.Client()
+bucket = client.get_bucket('berlin-lst-data')
+prefix = 'secondary/smoke/{run_id}/'
+blobs = list(bucket.list_blobs(prefix=prefix))
+print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
+print(f'  {{len(blobs)}} blob(s)')
+for b in blobs:
+    print(f'  {{b.name}} ({{b.size}} bytes)')
+required_suffixes = {required_suffixes!r}
+names = [b.name for b in blobs]
+missing = []
+for s in required_suffixes:
+    if s == 'ledger.parquet':
+        if not any(n.endswith('ledger.parquet') for n in names):
+            missing.append(s)
+    elif s == 'report.json':
+        if not any(n.endswith('report.json') for n in names):
+            missing.append(s)
+    elif not any(n.endswith(s) for n in names):
+        missing.append(s)
+if missing:
+    print(f'Missing required blobs: {{missing}}')
+    sys.exit(1)
+""",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="smoke-secondary-all")
+def smoke_secondary_all(session: nox.Session) -> None:
+    """Run source-registered fixtures locally.
+
+    Finalises a synthetic product for every registered source (imperviousness,
+    vegetation_height), then runs again to confirm idempotency.  Validates
+    the full contract: COG + STAC + provenance + completion marker +
+    ledger + QA report.
+    """
+    output_root = "data/smoke/secondary/all"
+
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_secondary.py",
+            "--config-name", "smoke_all",
+            f"output_root={output_root}",
+            external=True,
+        )
+
+    _verify_local_artifacts(
+        session,
+        output_root,
+        required_suffixes=(
+            "imperviousness_2021.tif",
+            "imperviousness_2021.stac.json",
+            "imperviousness/2021/provenance.json",
+            "imperviousness/2021/complete.json",
+            "vegetation_height_2020.tif",
+            "vegetation_height_2020.stac.json",
+            "vegetation_height/2020/provenance.json",
+            "vegetation_height/2020/complete.json",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
 @nox.session(venv_backend="none", name="cloud-secondary-all")
 def cloud_secondary_all(session: nox.Session) -> None:
     """Run every configured secondary source against GCS.
@@ -332,79 +388,35 @@ def cloud_secondary_all(session: nox.Session) -> None:
     )
     output_root = f"gs://berlin-lst-data/secondary/smoke/{run_id}"
 
-    # Pre-flight: GCS reachable
-    session.run(
-        "uv", "run", "python", "-c",
-        (
-            "from google.cloud import storage; "
-            "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-data'); "
-            "print('Bucket reachable:', bucket.name)"
+    _preflight_gcs(session)
+
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_secondary.py",
+            "--config-name", "full_all",
+            f"output_root={output_root}",
+            external=True,
+        )
+
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        required_suffixes=(
+            "imperviousness_2016.tif",
+            "imperviousness_2016.stac.json",
+            "imperviousness/2016/provenance.json",
+            "imperviousness/2016/complete.json",
+            "imperviousness_2021.tif",
+            "imperviousness_2021.stac.json",
+            "imperviousness/2021/provenance.json",
+            "imperviousness/2021/complete.json",
+            "vegetation_height_2020.tif",
+            "vegetation_height_2020.stac.json",
+            "vegetation_height/2020/provenance.json",
+            "vegetation_height/2020/complete.json",
+            "report.json",
+            "ledger.parquet",
         ),
-        external=True,
-    )
-
-    # First run
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "full_all",
-        f"output_root={output_root}",
-        external=True,
-    )
-
-    # Idempotency run
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "full_all",
-        f"output_root={output_root}",
-        external=True,
-    )
-
-    # Verify outputs
-    session.run(
-        "uv", "run", "python", "-c",
-        f"""import sys
-from google.cloud import storage
-client = storage.Client()
-bucket = client.get_bucket('berlin-lst-data')
-prefix = 'secondary/smoke/{run_id}/'
-blobs = list(bucket.list_blobs(prefix=prefix))
-print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
-print(f'  {{len(blobs)}} blob(s)')
-for b in blobs:
-    print(f'  {{b.name}} ({{b.size}} bytes)')
-required_suffixes = (
-    'imperviousness_2016.tif',
-    'imperviousness_2016.stac.json',
-    'imperviousness/2016/provenance.json',
-    'imperviousness/2016/complete.json',
-    'imperviousness_2021.tif',
-    'imperviousness_2021.stac.json',
-    'imperviousness/2021/provenance.json',
-    'imperviousness/2021/complete.json',
-    'vegetation_height_2020.tif',
-    'vegetation_height_2020.stac.json',
-    'vegetation_height/2020/provenance.json',
-    'vegetation_height/2020/complete.json',
-    'report.json',
-    'ledger.parquet',
-)
-names = [b.name for b in blobs]
-missing = []
-for s in required_suffixes:
-    if s == 'ledger.parquet':
-        if not any(n.endswith('ledger.parquet') for n in names):
-            missing.append(s)
-    elif s == 'report.json':
-        if not any(n.endswith('report.json') for n in names):
-            missing.append(s)
-    elif not any(n.endswith(s) for n in names):
-        missing.append(s)
-if missing:
-    print(f'Missing required blobs: {{missing}}')
-    sys.exit(1)
-""",
-        external=True,
     )
 
 
@@ -419,19 +431,14 @@ def smoke_secondary_imperviousness(session: nox.Session) -> None:
     reprojects to the canonical 10 m grid, writes COGs, validates.
     Then runs again to confirm idempotency.
     """
-    # First run — download + process both vintages
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_imperviousness",
-        external=True,
-    )
-
-    # Second run — must be idempotent (no processing)
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_imperviousness",
-        external=True,
-    )
+    output_root = "data/smoke/secondary/imperviousness"
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_secondary.py",
+            "--config-name", "imperviousness",
+            f"output_root={output_root}",
+            external=True,
+        )
 
 
 @nox.session(venv_backend="none", name="cloud-secondary-imperviousness")
@@ -452,58 +459,30 @@ def cloud_secondary_imperviousness(session: nox.Session) -> None:
     )
     output_root = f"gs://berlin-lst-data/secondary/smoke/{run_id}"
 
-    # Pre-flight
-    session.run(
-        "uv", "run", "python", "-c",
-        (
-            "from google.cloud import storage; "
-            "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-data'); "
-            "print('Bucket reachable:', bucket.name)"
-        ),
-        external=True,
-    )
+    _preflight_gcs(session)
 
-    # Run imperviousness via smoke config
     session.run(
         "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_imperviousness",
+        "--config-name", "imperviousness",
         f"output_root={output_root}",
         external=True,
     )
 
-    # Verify outputs
-    session.run(
-        "uv", "run", "python", "-c",
-        f"""import sys
-from google.cloud import storage
-client = storage.Client()
-bucket = client.get_bucket('berlin-lst-data')
-prefix = 'secondary/smoke/{run_id}/'
-blobs = list(bucket.list_blobs(prefix=prefix))
-print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
-print(f'  {{len(blobs)}} blob(s)')
-for b in blobs:
-    print(f'  {{b.name}} ({{b.size}} bytes)')
-required_suffixes = (
-    'imperviousness_2016.tif',
-    'imperviousness_2016.stac.json',
-    'imperviousness/2016/provenance.json',
-    'imperviousness/2016/complete.json',
-    'imperviousness_2021.tif',
-    'imperviousness_2021.stac.json',
-    'imperviousness/2021/provenance.json',
-    'imperviousness/2021/complete.json',
-    'report.json',
-    'ledger.parquet',
-)
-names = [b.name for b in blobs]
-missing = [s for s in required_suffixes if not any(n.endswith(s) for n in names)]
-if missing:
-    print(f'Missing required blobs: {{missing}}')
-    sys.exit(1)
-""",
-        external=True,
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        required_suffixes=(
+            "imperviousness_2016.tif",
+            "imperviousness_2016.stac.json",
+            "imperviousness/2016/provenance.json",
+            "imperviousness/2016/complete.json",
+            "imperviousness_2021.tif",
+            "imperviousness_2021.stac.json",
+            "imperviousness/2021/provenance.json",
+            "imperviousness/2021/complete.json",
+            "report.json",
+            "ledger.parquet",
+        ),
     )
 
 
@@ -514,33 +493,28 @@ if missing:
 def smoke_secondary_vegetation_height(session: nox.Session) -> None:
     """Run vegetation-height processing locally.
 
-    Downloads the official Umweltatlas ZIP (~785 MB), extracts the inner
-    GeoTIFF, reprojects to canonical 10 m, writes the four final
-    artifacts (COG + STAC + provenance + complete), and validates.
-    Then runs again to confirm ledger idempotency.
+    Downloads the official Umweltatlas ZIP (~785 MB), reprojects to
+    canonical 10 m, writes the four final artifacts (COG + STAC +
+    provenance + complete), and validates.  Then runs again to confirm
+    ledger idempotency.
     """
-    # First run
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_vegetation_height",
-        external=True,
-    )
-
-    # Idempotency run
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_vegetation_height",
-        external=True,
-    )
+    output_root = "data/smoke/secondary/vegetation_height"
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_secondary.py",
+            "--config-name", "vegetation_height",
+            f"output_root={output_root}",
+            external=True,
+        )
 
 
 @nox.session(venv_backend="none", name="cloud-secondary-vegetation-height")
 def cloud_secondary_vegetation_height(session: nox.Session) -> None:
     """Run vegetation-height processing targeting GCS.
 
-    Downloads the official Umweltatlas ZIP (~785 MB), extracts the inner
-    GeoTIFF, reprojects to canonical 10 m, writes the COG, and
-    validates.  Then runs again to confirm ledger idempotency.
+    Downloads the official Umweltatlas ZIP (~785 MB), reprojects to
+    canonical 10 m, writes the COG, and validates.  Then runs again to
+    confirm ledger idempotency.
 
     Requires ADC / Workload Identity (``GOOGLE_APPLICATION_CREDENTIALS``).
     """
@@ -556,63 +530,28 @@ def cloud_secondary_vegetation_height(session: nox.Session) -> None:
     )
     output_root = f"gs://berlin-lst-data/secondary/smoke/{run_id}"
 
-    # Pre-flight
-    session.run(
-        "uv", "run", "python", "-c",
-        (
-            "from google.cloud import storage; "
-            "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-data'); "
-            "print('Bucket reachable:', bucket.name)"
+    _preflight_gcs(session)
+
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_secondary.py",
+            "--config-name", "vegetation_height",
+            f"output_root={output_root}",
+            external=True,
+        )
+
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        required_suffixes=(
+            "veghoehe_2020.zip",
+            "vegetation_height_2020.tif",
+            "vegetation_height_2020.stac.json",
+            "vegetation_height/2020/provenance.json",
+            "vegetation_height/2020/complete.json",
+            "report.json",
+            "ledger.parquet",
         ),
-        external=True,
-    )
-
-    # First run
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_vegetation_height",
-        f"output_root={output_root}",
-        external=True,
-    )
-
-    # Idempotency run
-    session.run(
-        "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "smoke_vegetation_height",
-        f"output_root={output_root}",
-        external=True,
-    )
-
-    # Verify outputs (raw ZIP + COG + STAC + provenance + complete + ledger)
-    session.run(
-        "uv", "run", "python", "-c",
-        f"""import sys
-from google.cloud import storage
-client = storage.Client()
-bucket = client.get_bucket('berlin-lst-data')
-prefix = 'secondary/smoke/{run_id}/'
-blobs = list(bucket.list_blobs(prefix=prefix))
-print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
-print(f'  {{len(blobs)}} blob(s)')
-for b in blobs:
-    print(f'  {{b.name}} ({{b.size}} bytes)')
-required_suffixes = (
-    'veghoehe_2020.zip',
-    'vegetation_height_2020.tif',
-    'vegetation_height_2020.stac.json',
-    'vegetation_height/2020/provenance.json',
-    'vegetation_height/2020/complete.json',
-    'report.json',
-    'ledger.parquet',
-)
-names = [b.name for b in blobs]
-missing = [s for s in required_suffixes if not any(n.endswith(s) for n in names)]
-if missing:
-    print(f'Missing required blobs: {{missing}}')
-    sys.exit(1)
-""",
-        external=True,
     )
 
 

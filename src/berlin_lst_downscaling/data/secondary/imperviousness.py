@@ -5,8 +5,9 @@ Each vintage is a single ZIP with a GeoTIFF (EPSG:25833, 2.5m, uint8 class codes
 
 Processing
 ----------
-1. Download ZIP from official URL (if not in raw storage).
-2. Extract the inner GeoTIFF from the ZIP.
+1. Stream the ZIP to raw storage via ``download_to_raw`` (no full-RAM load).
+2. Open the inner GeoTIFF via ``rasterio.band(src, 1)`` over a
+   ``zip://`` VFS path — no extraction step.
 3. Convert uint8 class codes to float32 sealing percent [0, 100], NaN for nodata.
 4. Reproject from native 2.5m grid to the canonical 10m EPSG:25833 grid
    using ``Resampling.average`` — averaging is correct **only** after
@@ -17,25 +18,21 @@ Processing
 
 from __future__ import annotations
 
-import io
-import tempfile
-import zipfile
+import contextlib
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
 import numpy as np
 import rasterio
-import requests
 import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
-from berlin_lst_downscaling.data.io.storage import atomic_upload, exists, read_bytes
+from berlin_lst_downscaling.data.secondary.download import download_to_raw
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     vintage_interval,
@@ -153,16 +150,19 @@ def prepare_imperviousness(
     """
     url = IMPERVIOUSNESS_URLS[vintage]
     raw_uri = _raw_zip_uri(output_root, vintage)
+    cache_path = _raw_zip_cache_uri(output_root, vintage)
     c_hash = config_hash_for_vintage(vintage)
 
-    # ── 1. download / fetch raw ZIP ──────────────────────────────────
-    zip_local = _fetch_zip(url, raw_uri)
+    # ── 1. materialise raw ZIP via shared downloader (no full-RAM load) ──
+    receipt = download_to_raw(
+        url=url,
+        destination=raw_uri,
+        local_cache_path=cache_path,
+    )
+    archive_path = Path(receipt.local_cache_path)  # type: ignore[arg-type]
 
-    # ── 2. extract TIFF from ZIP ─────────────────────────────────────
-    tif_bytes = _extract_tiff(zip_local)
-
-    # ── 3. class codes → float32 percent ─────────────────────────────
-    with rasterio.open(io.BytesIO(tif_bytes)) as src:
+    # ── 2. read TIFF in place over zip:// VFS path ───────────────────
+    with _zip_tiff_open(archive_path) as src:
         src_uint8 = src.read(1)
         src_crs = src.crs
         src_transform = src.transform
@@ -172,7 +172,7 @@ def prepare_imperviousness(
 
         src_pct = _LOOKUP[src_uint8].astype(np.float32, copy=False)
 
-    # ── 4. reproject to canonical 10m grid (average resampling) ──────
+    # ── 3. reproject to canonical 10m grid (average resampling) ──────
     grid = canon_grid_10m()
     dst_arr = np.empty((grid.shape.y, grid.shape.x), dtype=np.float32)
 
@@ -188,7 +188,7 @@ def prepare_imperviousness(
         dst_nodata=np.nan,
     )
 
-    # ── 5. build canonical xr.Dataset ────────────────────────────────
+    # ── 4. build canonical xr.Dataset ────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
     ds = xr.Dataset(
@@ -199,7 +199,6 @@ def prepare_imperviousness(
     ds = ds.rio.write_transform(grid.transform)
 
     valid = dst_arr[~np.isnan(dst_arr)]
-    archive_checksum = sha256(zip_local.read_bytes()).hexdigest()[:16]
     retrieved_at = datetime.now(UTC).isoformat()
 
     return PreparedSecondaryProduct(
@@ -211,7 +210,7 @@ def prepare_imperviousness(
         nominal_interval=vintage_interval(vintage),
         source_metadata={
             "archive_url": url,
-            "archive_sha256": archive_checksum,
+            "archive_sha256": receipt.checksum,
             "raw_uri": raw_uri,
             "retrieved_at": retrieved_at,
             "license": "dl-de/zero-2.0",
@@ -242,50 +241,38 @@ def _raw_zip_uri(output_root: str, vintage: int) -> str:
     )
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, max=10),
-    reraise=True,
-)
-def _fetch_zip(url: str, raw_uri: str) -> Path:
-    """Download ZIP to a local temp file, preserving raw archive.
+def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
+    """Return a writable local cache path even when output_root is GCS.
 
-    If *raw_uri* already exists the download is skipped (idempotent).
-    Returns the path to a local copy of the ZIP.
+    For local ``output_root`` we reuse the raw URI directly.  For
+    ``gs://`` we stage the cache under ``$TMPDIR`` so we never write
+    large archives into the CWD.
     """
-    tmp_dir = Path(tempfile.mkdtemp(prefix="imperviousness_"))
-    local_zip = tmp_dir / "source.zip"
+    import tempfile
 
-    if not exists(raw_uri):
-        resp = requests.get(url, stream=True, timeout=300)
-        resp.raise_for_status()
-        with open(local_zip, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-        # Preserve raw archive at its final location
-        atomic_upload(local_zip, raw_uri)
-    else:
-        raw_bytes = read_bytes(raw_uri)
-        local_zip.write_bytes(raw_bytes)
-
-    return local_zip
+    if output_root.startswith("gs://"):
+        return f"{tempfile.gettempdir()}/berlin_lst/imperviousness_{vintage}.zip"
+    return _raw_zip_uri(output_root, vintage)
 
 
-def _extract_tiff(zip_path: Path) -> bytes:
-    """Extract the GeoTIFF member from a Versiegelung ZIP.
+@contextlib.contextmanager
+def _zip_tiff_open(zip_path: Path):
+    """Open the first GeoTIFF member inside *zip_path* via ``zip://`` VFS."""
+    import zipfile as _zf
 
-    Raises ``ValueError`` if no TIFF member is found.
-    """
-    with zipfile.ZipFile(zip_path) as z:
-        names = z.namelist()
-        tif_names = [n for n in names if n.lower().endswith((".tif", ".tiff"))]
+    with _zf.ZipFile(zip_path) as z:
+        tif_names = [n for n in z.namelist() if n.lower().endswith((".tif", ".tiff"))]
         if not tif_names:
             raise ValueError(
-                f"No GeoTIFF member found in {zip_path}. "
-                f"Members: {names}"
+                f"No GeoTIFF member found in {zip_path}. Members: {z.namelist()}"
             )
-        return z.read(tif_names[0])
+        if len(tif_names) != 1:
+            raise ValueError(
+                f"Expected exactly one GeoTIFF member; got {len(tif_names)}: {tif_names}"
+            )
+        member = tif_names[0]
+    with rasterio.open(f"zip://{zip_path}!/{member}") as src:
+        yield src
 
 
 def _validate_codes(observed: list[int]) -> None:
