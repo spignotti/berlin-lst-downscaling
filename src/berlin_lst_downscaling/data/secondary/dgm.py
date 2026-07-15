@@ -1,0 +1,300 @@
+"""DGM 1 m (terrain height) source adapter for the secondary pipeline.
+
+Official Geoportal Berlin DGM tiles (INSPIRE ATOM feed):
+``https://gdi.berlin.de/data/dgm1/atom/0.atom``
+
+Each tile is a ZIP containing an XYZ CSV file (2000×2000 points at 1 m
+spacing, EPSG:25833, DHHN2016).  All 297 tiles covering the Berlin AOI
+are processed.
+
+Processing
+----------
+1. Parse the ATOM feed to discover tile assets intersecting the AOI.
+2. Download each tile ZIP to raw storage via ``download_to_raw``.
+3. Read the XYZ CSV from the ZIP (``np.loadtxt``).
+4. Validate: regular 2000×2000 grid, correct coordinates, no gaps.
+5. Reproject from native 1 m to canonical 10 m using ``Resampling.average``.
+6. Return a :class:`PreparedSecondaryProduct`; the pipeline finaliser
+   writes the four final artifacts (COG + STAC + provenance + complete).
+"""
+
+from __future__ import annotations
+
+import re
+import tempfile
+import zipfile
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
+
+import numpy as np
+import rioxarray  # noqa: F401 — registers rio accessor
+import xarray as xr
+from odc.geo.geobox import GeoBox
+from rasterio.enums import Resampling
+from rasterio.warp import reproject
+
+from berlin_lst_downscaling.common.grid import canon_grid_10m
+from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.secondary.atom import (
+    AtomAsset,
+    parse_atom_feed,
+)
+from berlin_lst_downscaling.data.secondary.download import DownloadReceipt, download_to_raw
+from berlin_lst_downscaling.data.secondary.product import (
+    PreparedSecondaryProduct,
+    vintage_interval,
+)
+
+# ── constants ──────────────────────────────────────────────────────────
+
+_FEED_URL = "https://gdi.berlin.de/data/dgm1/atom/0.atom"
+_TILE_SIZE_M = 2000  # each tile covers 2 km × 2 km
+_POINTS_PER_TILE = _TILE_SIZE_M * _TILE_SIZE_M  # 4,000,000
+_DGM_VINTAGE = 2021  # ALS acquisition date (Feb–Mar 2021)
+_LICENSE = "dl-de/zero-2.0"
+_DGM_RE = re.compile(r"DGM1_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
+
+# ── contract ───────────────────────────────────────────────────────────
+
+_CONFIG_HASH_PREFIX = "terrain_height:v1:"
+
+
+def contract_for_terrain_height() -> Contract:
+    """Return the output Contract for terrain-height COGs."""
+    return Contract(
+        source="terrain_height",
+        target_crs="EPSG:25833",
+        output_bands=(
+            BandSpec(
+                name="terrain_height",
+                dtype="float32",
+                nodata=float("nan"),
+                description="Terrain elevation in metres above sea level (DHHN2016)",
+                unit="m",
+                valid_range=(-10.0, 200.0),
+            ),
+        ),
+        tiling=TilingSpec(),
+        schema_version=1,
+        flag_mode="none",
+    )
+
+
+def config_hash_for_vintage(vintage: int) -> str:
+    """Return a stable config hash for a given vintage."""
+    raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
+    return sha256(raw.encode()).hexdigest()[:12]
+
+
+# ── prepare ───────────────────────────────────────────────────────────
+
+
+def prepare_terrain_height(
+    vintage: int,
+    output_root: str,
+    run_id: str,
+    smoke_tile_count: int | None = None,
+) -> PreparedSecondaryProduct:
+    """Download, validate, and reproject DGM tiles to the canonical 10 m grid.
+
+    Parameters
+    ----------
+    vintage :
+        Must be ``2021``.
+    output_root :
+        Root URI for all outputs (local path or ``gs://bucket/…``).
+    run_id :
+        Unique run identifier.
+    smoke_tile_count :
+        If set, process only this many tiles (for local smoke testing).
+
+    Returns
+    -------
+    PreparedSecondaryProduct
+        Canonical-grid dataset + source metadata + QA statistics.
+    """
+    if vintage != _DGM_VINTAGE:
+        raise ValueError(f"Only vintage {_DGM_VINTAGE} is available; got {vintage}")
+
+    c_hash = config_hash_for_vintage(vintage)
+    grid = canon_grid_10m()
+
+    # ── 1. discover tiles via ATOM feed ──────────────────────────────
+    manifest = parse_atom_feed(_FEED_URL, _DGM_RE, aoi_grid=grid)
+
+    if smoke_tile_count is not None:
+        manifest.assets = manifest.assets[:smoke_tile_count]
+
+    print(f"  DGM: {len(manifest.assets)} tiles to process")
+
+    # ── 2. download + accumulate on canonical grid ───────────────────
+    dst_arr = np.full((grid.shape.y, grid.shape.x), np.nan, dtype=np.float32)
+    tile_receipts: list[dict] = []
+    all_checksums: list[str] = []
+
+    for i, asset in enumerate(manifest.assets):
+        if (i + 1) % 50 == 0:
+            print(f"    tile {i + 1}/{len(manifest.assets)}...")
+
+        receipt = _process_tile(asset, dst_arr, grid, output_root)
+        tile_receipts.append({
+            "filename": asset.filename,
+            "easting": asset.easting,
+            "northing": asset.northing,
+            "checksum": receipt.checksum,
+            "byte_count": receipt.byte_count,
+        })
+        all_checksums.append(receipt.checksum)
+
+    # ── 3. compute combined checksum ─────────────────────────────────
+    combined_hash = sha256("".join(sorted(all_checksums)).encode()).hexdigest()[:16]
+
+    # ── 4. build canonical xr.Dataset ────────────────────────────────
+    xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
+    ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
+    ds = xr.Dataset(
+        {"terrain_height": (("y", "x"), dst_arr)},
+        coords={"x": xs, "y": ys},
+    )
+    ds = ds.rio.write_crs(str(grid.crs))
+    ds = ds.rio.write_transform(grid.transform)
+
+    valid = dst_arr[~np.isnan(dst_arr)]
+    retrieved_at = datetime.now(UTC).isoformat()
+
+    return PreparedSecondaryProduct(
+        source="terrain_height",
+        item_key=str(vintage),
+        category="morphology",
+        dataset=ds,
+        contract=contract_for_terrain_height(),
+        nominal_interval=vintage_interval(vintage),
+        source_metadata={
+            "feed_url": _FEED_URL,
+            "feed_updated": manifest.feed_updated,
+            "tile_count": len(manifest.assets),
+            "tiles": tile_receipts,
+            "combined_checksum": combined_hash,
+            "retrieved_at": retrieved_at,
+            "license": _LICENSE,
+            "crs": "EPSG:25833",
+            "vertical_datum": "DHHN2016",
+        },
+        qa_stats={
+            "valid_frac": (
+                round(float(len(valid)) / dst_arr.size, 4)
+                if dst_arr.size > 0
+                else 0.0
+            ),
+            "min": float(valid.min()) if len(valid) > 0 else None,
+            "max": float(valid.max()) if len(valid) > 0 else None,
+            "shape": list(dst_arr.shape),
+            "tile_count": len(manifest.assets),
+        },
+        config_hash=c_hash,
+    )
+
+
+# ── tile processing ──────────────────────────────────────────────────
+
+
+def _process_tile(
+    asset: AtomAsset,
+    dst_arr: np.ndarray,
+    grid: GeoBox,
+    output_root: str,
+) -> DownloadReceipt:
+    """Download a single DGM tile and accumulate onto the canonical grid."""
+    from berlin_lst_downscaling.data.secondary.paths import raw_dir
+
+    raw_uri = f"{raw_dir(output_root, 'terrain_height', str(_DGM_VINTAGE))}/{asset.filename}"
+    cache_path = _local_cache_path(output_root, asset.filename)
+
+    receipt = download_to_raw(
+        url=asset.url,
+        destination=raw_uri,
+        local_cache_path=cache_path,
+    )
+    asset.checksum = receipt.checksum
+    asset.byte_count = receipt.byte_count
+
+    # Read XYZ from ZIP, validate, and reproject to canonical 10m grid
+    xyz_path = Path(receipt.local_cache_path) if receipt.local_cache_path else None
+    if xyz_path is None:
+        raise ValueError(f"No local cache for {asset.filename}")
+
+    src_arr, src_transform = _read_xyz_zip(xyz_path, asset)
+    _validate_tile(src_arr, asset)
+
+    # Reproject 1m → 10m using average resampling
+    reproject(
+        source=src_arr.astype(np.float32),
+        destination=dst_arr,
+        src_transform=src_transform,
+        src_crs="EPSG:25833",
+        dst_transform=grid.transform,
+        dst_crs=grid.crs,
+        resampling=Resampling.average,
+        src_nodata=np.nan,
+        dst_nodata=np.nan,
+    )
+
+    return receipt
+
+
+def _read_xyz_zip(
+    zip_path: Path, asset: AtomAsset,
+) -> tuple[np.ndarray, object]:
+    """Read XYZ CSV from a DGM tile ZIP and return a 2000×2000 array."""
+    from rasterio.transform import from_origin
+
+    with zipfile.ZipFile(zip_path) as z:
+        xyz_names = [n for n in z.namelist() if n.endswith(".xyz")]
+        if not xyz_names:
+            raise ValueError(f"No .xyz member in {asset.filename}")
+        with z.open(xyz_names[0]) as f:
+            data = np.loadtxt(f, dtype=np.float64)
+
+    if data.shape[0] != _POINTS_PER_TILE:
+        raise ValueError(
+            f"{asset.filename}: expected {_POINTS_PER_TILE} points, "
+            f"got {data.shape[0]}"
+        )
+
+    # Columns: X Y Z — extract Z and reshape to 2000×2000
+    z_vals = data[:, 2]
+    arr = z_vals.reshape(_TILE_SIZE_M, _TILE_SIZE_M)
+
+    # Build transform: cell centers at +0.5 offset from tile origin
+    origin_x = asset.easting
+    origin_y = asset.northing + _TILE_SIZE_M  # top of tile (northing increases north)
+    transform = from_origin(origin_x, origin_y, 1.0, 1.0)
+
+    return arr, transform
+
+
+def _validate_tile(arr: np.ndarray, asset: AtomAsset) -> None:
+    """Validate a DGM tile's shape and coverage."""
+    if arr.shape != (_TILE_SIZE_M, _TILE_SIZE_M):
+        raise ValueError(
+            f"{asset.filename}: expected shape ({_TILE_SIZE_M}, {_TILE_SIZE_M}), "
+            f"got {arr.shape}"
+        )
+    valid_count = int(np.sum(~np.isnan(arr)))
+    if valid_count == 0:
+        raise ValueError(f"{asset.filename}: all NaN — no valid terrain data")
+
+
+def _local_cache_path(output_root: str, filename: str) -> str:
+    """Return a writable local cache path for a DGM tile."""
+    if output_root.startswith("gs://"):
+        return f"{tempfile.gettempdir()}/berlin_lst/dgm/{filename}"
+    return f"{output_root}/_raw/secondary/terrain_height/2021/{filename}"
+
+
+__all__ = [
+    "config_hash_for_vintage",
+    "contract_for_terrain_height",
+    "prepare_terrain_height",
+]
