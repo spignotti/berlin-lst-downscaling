@@ -14,15 +14,9 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-import numpy as np
-import rioxarray  # noqa: F401 — registers rio accessor
-import xarray as xr
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
-from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
-from berlin_lst_downscaling.data.ard.validate import validate_cog
-from berlin_lst_downscaling.data.ard.writer import write_cog_atomic
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import ledger_path
@@ -82,105 +76,75 @@ def _run_fixture(
     run_id: str,
     output_root: str,
 ) -> int:
-    """Run a source-neutral fixture: write a dummy COG and validate.
+    """Run source-registered synthetic fixtures.
 
-    Exercises the full pipeline lifecycle without downloading any real
-    dataset.  The fixture is idempotent — a second identical run skips
-    all work.
+    Iterates :func:`fixtures.registry` and finalises each product via the
+    same path as real sources.  No upstream downloads.  The smoke run
+    validates the full contract (COG + STAC + provenance + completion
+    marker + ledger + QA report) for every registered source.
     """
-    item_id = "fixture_001"
-    source = "fixture"
-    period = "2024"
+    from berlin_lst_downscaling.data.secondary.fixtures import registry
 
-    contract = Contract(
-        source=source,
-        target_crs="EPSG:25833",
-        output_bands=(
-            BandSpec(
-                name="feature",
-                dtype="float32",
-                nodata=float("nan"),
-                description="Fixture output band (random uniform)",
-            ),
-        ),
-        tiling=TilingSpec(),
-        schema_version=1,
-        flag_mode="none",
-    )
-    config_hash = "v1"
-
-    # ── reconcile ──────────────────────────────────────────────────
-    items = [(item_id, source, period)]
-    todo = reconcile(items, led, config_hash)
-
-    if not todo:
-        print("  Fixture already done — nothing to process.")
-        report = secondary_qa_report(led, run_id, sources=[source])
-        print(format_secondary_report(report))
-        return 0
-
-    # ── generate fixture data on canonical grid ────────────────────
     grid = canon_grid_10m()
-    rng = np.random.default_rng(42)
-    data = rng.random((grid.shape.y, grid.shape.x)).astype(np.float32)
+    failed = 0
 
-    # Create xr.Dataset with spatial references matching the canonical grid
-    # pixel-center coordinates derived from the GeoBox affine transform
-    xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
-    ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
-    ds = xr.Dataset(
-        {"feature": (("y", "x"), data)},
-        coords={"x": xs, "y": ys},
-    )
-    ds = ds.rio.write_crs(str(grid.crs))
-    ds = ds.rio.write_transform(grid.transform)
+    for source, factory in registry().items():
+        item_id = f"fixture_{source}"
+        period = "fixture"
+        c_hash = "fixture"
 
-    # ── mark exporting ──────────────────────────────────────────────
-    led.upsert(SecondaryLedgerRow(
-        item_id=item_id,
-        source=source,
-        period_or_vintage=period,
-        status="exporting",
-        run_id=run_id,
-    ))
+        items = [(item_id, source, period)]
+        todo = reconcile(items, led, c_hash)
+        if not todo:
+            print(f"  fixture[{source}] already done — skipping.")
+            continue
 
-    # ── write COG ──────────────────────────────────────────────────
-    cog_dst = f"{output_root}/fixture/{item_id}.tif"
-    print(f"  Writing {cog_dst}")
-    write_cog_atomic(ds, cog_dst, contract, overwrite=True)
-
-    # ── validate ────────────────────────────────────────────────────
-    vig = validate_cog(cog_dst, contract, grid)
-    if not vig.ok:
         led.upsert(SecondaryLedgerRow(
             item_id=item_id,
             source=source,
             period_or_vintage=period,
-            status="failed",
+            status="exporting",
             run_id=run_id,
-            last_error="; ".join(vig.errors),
         ))
-        print(f"  Fixture FAILED: {'; '.join(vig.errors)}")
-        return 1
 
-    print(f"  Validation OK — {cog_dst}")
+        try:
+            print(f"  Finalising fixture[{source}]...")
+            prepared = factory(output_root, run_id)
+            artifacts = finalize_secondary_product(
+                prepared, grid, output_root, run_id,
+            )
+        except Exception as exc:
+            print(f"  fixture[{source}] FAILED: {exc}")
+            led.upsert(SecondaryLedgerRow(
+                item_id=item_id,
+                source=source,
+                period_or_vintage=period,
+                status="failed",
+                run_id=run_id,
+                last_error=str(exc),
+            ))
+            failed += 1
+            continue
 
-    # ── finalise ledger ─────────────────────────────────────────────
-    led.upsert(SecondaryLedgerRow(
-        item_id=item_id,
-        source=source,
-        period_or_vintage=period,
-        status="done",
-        run_id=run_id,
-        config_hash=config_hash,
-        output_uri=cog_dst,
-    ))
+        led.upsert(SecondaryLedgerRow(
+            item_id=item_id,
+            source=source,
+            period_or_vintage=period,
+            status="done",
+            run_id=run_id,
+            config_hash=c_hash,
+            output_uri=artifacts.cog_uri,
+            stac_uri=artifacts.stac_uri,
+            provenance_uri=artifacts.provenance_uri,
+            completion_uri=artifacts.completion_uri,
+        ))
+        print(f"  fixture[{source}] OK — {artifacts.cog_uri}")
 
-    # ── QA report ──────────────────────────────────────────────────
-    report = secondary_qa_report(led, run_id, sources=[source])
+    report = secondary_qa_report(led, run_id, sources=list(registry().keys()))
     print(format_secondary_report(report))
-
-    return 0
+    report_uri = persist_secondary_report(report, output_root)
+    print(f"  QA report  : {report_uri}")
+    return 0 if failed == 0 else 1
 
 
 # ── full mode ─────────────────────────────────────────────────────────

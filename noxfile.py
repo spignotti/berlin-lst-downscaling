@@ -240,20 +240,21 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
 # ── Secondary-data pipeline ──────────────────────────────────────────
 
 
-@nox.session(venv_backend="none", name="smoke-secondary-fixture")
-def smoke_secondary_fixture(session: nox.Session) -> None:
-    """Run secondary-data pipeline fixture locally.
+@nox.session(venv_backend="none", name="smoke-secondary-all")
+def smoke_secondary_all(session: nox.Session) -> None:
+    """Run source-registered fixtures locally.
 
-    Writes a dummy COG and validates the full pipeline lifecycle:
-    contract → COG write → validation → ledger → QA report.
-    Then runs again to confirm idempotency (second run = no work).
+    Finalises a synthetic product for every registered source (imperviousness,
+    vegetation_height), then runs again to confirm idempotency.  Validates
+    the full contract: COG + STAC + provenance + completion marker +
+    ledger + QA report.
     """
-    output_root = "data/smoke/secondary/fixture"
+    output_root = "data/smoke/secondary/all"
 
-    # First run — should create fixture
+    # First run — finalise fixtures
     session.run(
         "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "fixture",
+        "--config-name", "smoke_all",
         f"output_root={output_root}",
         external=True,
     )
@@ -261,18 +262,63 @@ def smoke_secondary_fixture(session: nox.Session) -> None:
     # Second run — must be idempotent
     session.run(
         "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "fixture",
+        "--config-name", "smoke_all",
         f"output_root={output_root}",
         external=True,
     )
 
+    # Verify artifacts
+    session.run(
+        "uv", "run", "python", "-c",
+        f"""import sys
+from pathlib import Path
+required_suffixes = (
+    'imperviousness_2021.tif',
+    'imperviousness_2021.stac.json',
+    'imperviousness/2021/provenance.json',
+    'imperviousness/2021/complete.json',
+    'vegetation_height_2020.tif',
+    'vegetation_height_2020.stac.json',
+    'vegetation_height/2020/provenance.json',
+    'vegetation_height/2020/complete.json',
+    'report.json',
+    'ledger.parquet',
+)
+root = Path('{output_root}')
+if not root.exists():
+    print(f'Missing output root: {{root}}')
+    sys.exit(1)
+all_paths = [str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()]
+missing = []
+for s in required_suffixes:
+    if s == 'ledger.parquet':
+        if not any(p == s for p in all_paths):
+            missing.append(s)
+    elif s == 'report.json':
+        if not any(p.endswith('/report.json') for p in all_paths):
+            missing.append(s)
+    elif not any(p.endswith(s) for p in all_paths):
+        missing.append(s)
+print(f'Artifacts under {{root}}:')
+for p in sorted(all_paths):
+    print(f'  {{p}}')
+if missing:
+    print(f'Missing required artifacts: {{missing}}')
+    sys.exit(1)
+print('All required artifacts present.')
+""",
+        external=True,
+    )
 
-@nox.session(venv_backend="none", name="cloud-secondary-fixture")
-def cloud_secondary_fixture(session: nox.Session) -> None:
-    """Run secondary-data pipeline fixture targeting GCS.
+
+@nox.session(venv_backend="none", name="cloud-secondary-all")
+def cloud_secondary_all(session: nox.Session) -> None:
+    """Run every configured secondary source against GCS.
 
     Requires ADC / Workload Identity (``GOOGLE_APPLICATION_CREDENTIALS``).
-    Creates a unique run prefix on GCS and confirms final outputs.
+    Creates a unique run prefix on GCS, finalises imperviousness 2016/2021
+    and vegetation height 2020, then verifies all four artifacts per
+    product plus the aggregate QA report.
     """
     import uuid
     from datetime import UTC, datetime
@@ -280,7 +326,7 @@ def cloud_secondary_fixture(session: nox.Session) -> None:
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     run_id = (
-        f"sec-fixture-"
+        f"sec-all-"
         f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
         f"{uuid.uuid4().hex[:6]}"
     )
@@ -298,10 +344,18 @@ def cloud_secondary_fixture(session: nox.Session) -> None:
         external=True,
     )
 
-    # Run fixture on GCS
+    # First run
     session.run(
         "uv", "run", "python", "scripts/run_secondary.py",
-        "--config-name", "fixture",
+        "--config-name", "full_all",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # Idempotency run
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "full_all",
         f"output_root={output_root}",
         external=True,
     )
@@ -319,7 +373,36 @@ print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
 print(f'  {{len(blobs)}} blob(s)')
 for b in blobs:
     print(f'  {{b.name}} ({{b.size}} bytes)')
-sys.exit(0 if blobs else 1)
+required_suffixes = (
+    'imperviousness_2016.tif',
+    'imperviousness_2016.stac.json',
+    'imperviousness/2016/provenance.json',
+    'imperviousness/2016/complete.json',
+    'imperviousness_2021.tif',
+    'imperviousness_2021.stac.json',
+    'imperviousness/2021/provenance.json',
+    'imperviousness/2021/complete.json',
+    'vegetation_height_2020.tif',
+    'vegetation_height_2020.stac.json',
+    'vegetation_height/2020/provenance.json',
+    'vegetation_height/2020/complete.json',
+    'report.json',
+    'ledger.parquet',
+)
+names = [b.name for b in blobs]
+missing = []
+for s in required_suffixes:
+    if s == 'ledger.parquet':
+        if not any(n.endswith('ledger.parquet') for n in names):
+            missing.append(s)
+    elif s == 'report.json':
+        if not any(n.endswith('report.json') for n in names):
+            missing.append(s)
+    elif not any(n.endswith(s) for n in names):
+        missing.append(s)
+if missing:
+    print(f'Missing required blobs: {{missing}}')
+    sys.exit(1)
 """,
         external=True,
     )
@@ -402,13 +485,53 @@ print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
 print(f'  {{len(blobs)}} blob(s)')
 for b in blobs:
     print(f'  {{b.name}} ({{b.size}} bytes)')
-sys.exit(0 if blobs else 1)
+required_suffixes = (
+    'imperviousness_2016.tif',
+    'imperviousness_2016.stac.json',
+    'imperviousness/2016/provenance.json',
+    'imperviousness/2016/complete.json',
+    'imperviousness_2021.tif',
+    'imperviousness_2021.stac.json',
+    'imperviousness/2021/provenance.json',
+    'imperviousness/2021/complete.json',
+    'report.json',
+    'ledger.parquet',
+)
+names = [b.name for b in blobs]
+missing = [s for s in required_suffixes if not any(n.endswith(s) for n in names)]
+if missing:
+    print(f'Missing required blobs: {{missing}}')
+    sys.exit(1)
 """,
         external=True,
     )
 
 
 # ── vegetation-height smoke ─────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-secondary-vegetation-height")
+def smoke_secondary_vegetation_height(session: nox.Session) -> None:
+    """Run vegetation-height processing locally.
+
+    Downloads the official Umweltatlas ZIP (~785 MB), extracts the inner
+    GeoTIFF, reprojects to canonical 10 m, writes the four final
+    artifacts (COG + STAC + provenance + complete), and validates.
+    Then runs again to confirm ledger idempotency.
+    """
+    # First run
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_vegetation_height",
+        external=True,
+    )
+
+    # Idempotency run
+    session.run(
+        "uv", "run", "python", "scripts/run_secondary.py",
+        "--config-name", "smoke_vegetation_height",
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none", name="cloud-secondary-vegetation-height")
@@ -461,7 +584,7 @@ def cloud_secondary_vegetation_height(session: nox.Session) -> None:
         external=True,
     )
 
-    # Verify outputs (raw ZIP + source.json + COG + ledger)
+    # Verify outputs (raw ZIP + COG + STAC + provenance + complete + ledger)
     session.run(
         "uv", "run", "python", "-c",
         f"""import sys
@@ -476,8 +599,11 @@ for b in blobs:
     print(f'  {{b.name}} ({{b.size}} bytes)')
 required_suffixes = (
     'veghoehe_2020.zip',
-    'source.json',
     'vegetation_height_2020.tif',
+    'vegetation_height_2020.stac.json',
+    'vegetation_height/2020/provenance.json',
+    'vegetation_height/2020/complete.json',
+    'report.json',
     'ledger.parquet',
 )
 names = [b.name for b in blobs]
