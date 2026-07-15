@@ -101,10 +101,22 @@ def build_secondary_stac_item(
     bounds_native = array_bounds(height, width, transform)
     bbox_4326 = transform_bounds(str(grid.crs), "EPSG:4326", *bounds_native)
 
-    spec = prepared.contract.output_bands[0]
-    nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
-
     start_dt, end_dt = prepared.nominal_interval
+
+    # Build per-band raster:bands from contract specs
+    raster_bands = []
+    for spec in prepared.contract.output_bands:
+        nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
+        band_entry: dict = {
+            "data_type": spec.dtype,
+            "nodata": nodata,
+            "spatial_resolution": abs(transform.a),
+        }
+        if spec.unit:
+            band_entry["unit"] = spec.unit
+        raster_bands.append(band_entry)
+
+    first_spec = prepared.contract.output_bands[0]
     item: dict = {
         "stac_version": _STAC_VERSION,
         "stac_extensions": [_PROJ_EXT, _RASTER_EXT],
@@ -137,15 +149,9 @@ def build_secondary_stac_item(
             "data": {
                 "href": cog_href,
                 "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-                "title": spec.description or prepared.source,
+                "title": first_spec.description or prepared.source,
                 "roles": ["data"],
-                "raster:bands": [
-                    {
-                        "data_type": spec.dtype,
-                        "nodata": nodata,
-                        "spatial_resolution": abs(transform.a),
-                    }
-                ],
+                "raster:bands": raster_bands,
             },
             "provenance": {
                 "href": provenance_href,

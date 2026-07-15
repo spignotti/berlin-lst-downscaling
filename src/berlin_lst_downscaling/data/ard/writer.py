@@ -24,7 +24,7 @@ import xarray as xr
 from rasterio.enums import Resampling
 
 from berlin_lst_downscaling.data.ard.contract import Contract
-from berlin_lst_downscaling.data.io.storage import atomic_write, exists
+from berlin_lst_downscaling.data.io.storage import atomic_upload, atomic_write, exists
 
 # ── COG write (main band file, float32) ──────────────────────────────
 
@@ -114,9 +114,8 @@ def write_cog_atomic(
             with rasterio.open(dst_tmp, "r+") as tmp:
                 tmp.build_overviews(ov_levels, Resampling.average)
 
-        # Read bytes and push via atomic_write
-        cog_bytes = dst_tmp.read_bytes()
-        atomic_write(dst, cog_bytes, overwrite=overwrite)
+        # Upload via streaming (no full-COG-in-RAM for large multi-band files)
+        atomic_upload(dst_tmp, dst, overwrite=overwrite)
 
     return dst
 
@@ -163,8 +162,7 @@ def write_flag_cog_atomic(
             tmp.write(arr_2d, 1)
             tmp.set_band_description(1, "flag")
 
-        cog_bytes = dst_tmp.read_bytes()
-        atomic_write(dst, cog_bytes, overwrite=overwrite)
+        atomic_upload(dst_tmp, dst, overwrite=overwrite)
 
     return dst
 

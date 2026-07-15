@@ -38,13 +38,52 @@ def validate_secondary_cog(
     if not result.ok:
         return result
 
-    # Source-specific range check
+    # Per-band range validation using contract valid_range
+    _check_all_band_ranges(uri, contract, result)
+
+    # Source-level range check (backwards compat for sources without per-band range)
     source = contract.source
     if source in _RANGES:
         mini, maxi = _RANGES[source]
-        _check_value_range(uri, result, mini, maxi)
+        _check_value_range(uri, result, mini, maxi, band=1)
 
     return result
+
+
+def _check_all_band_ranges(
+    uri: str,
+    contract: Contract,
+    result: ValidationResult,
+) -> None:
+    """Check valid_range for each band that has one defined in the contract."""
+    import rasterio  # noqa: F811
+
+    try:
+        with rasterio.open(uri) as src:
+            for i, spec in enumerate(contract.output_bands, 1):
+                if spec.valid_range is None:
+                    continue
+                vmin, vmax = spec.valid_range
+                band = src.read(i).astype(np.float64)
+                valid_mask = ~np.isnan(band)
+                valid = band[valid_mask]
+                if len(valid) == 0:
+                    result.fail(f"Band {i} ({spec.name}): no valid pixels for range check")
+                    continue
+                actual_min = float(valid.min())
+                actual_max = float(valid.max())
+                if actual_min < vmin:
+                    result.fail(
+                        f"Band {i} ({spec.name}): value below range "
+                        f"[{vmin:.1f}, {vmax:.1f}]: min={actual_min:.4f}"
+                    )
+                if actual_max > vmax:
+                    result.fail(
+                        f"Band {i} ({spec.name}): value above range "
+                        f"[{vmin:.1f}, {vmax:.1f}]: max={actual_max:.4f}"
+                    )
+    except Exception as exc:
+        result.fail(f"Per-band range check failed: {exc}")
 
 
 def _check_value_range(
@@ -52,32 +91,33 @@ def _check_value_range(
     result: ValidationResult,
     vmin: float,
     vmax: float,
+    band: int = 1,
 ) -> None:
-    """Check that all valid (non-NaN) pixels are within [vmin, vmax]."""
+    """Check that all valid (non-NaN) pixels in a band are within [vmin, vmax]."""
     import rasterio  # noqa: F811
 
     try:
         with rasterio.open(uri) as src:
-            band = src.read(1).astype(np.float64)
-            valid_mask = ~np.isnan(band)
-            valid = band[valid_mask]
+            arr = src.read(band).astype(np.float64)
+            valid_mask = ~np.isnan(arr)
+            valid = arr[valid_mask]
             if len(valid) == 0:
-                result.fail("No valid pixels found for range check")
+                result.fail(f"Band {band}: no valid pixels found for range check")
                 return
             actual_min = float(valid.min())
             actual_max = float(valid.max())
             if actual_min < vmin:
                 result.fail(
-                    f"Value below expected range [{vmin:.1f}, {vmax:.1f}]: "
+                    f"Band {band}: value below expected range [{vmin:.1f}, {vmax:.1f}]: "
                     f"min={actual_min:.4f}"
                 )
             if actual_max > vmax:
                 result.fail(
-                    f"Value above expected range [{vmin:.1f}, {vmax:.1f}]: "
+                    f"Band {band}: value above expected range [{vmin:.1f}, {vmax:.1f}]: "
                     f"max={actual_max:.4f}"
                 )
     except Exception as exc:
-        result.fail(f"Range check failed: {exc}")
+        result.fail(f"Range check failed for band {band}: {exc}")
 
 
 __all__ = [

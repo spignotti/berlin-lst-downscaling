@@ -18,6 +18,8 @@ class BandSpec:
     dtype: str
     nodata: float | None
     description: str
+    unit: str = ""
+    valid_range: tuple[float, float] | None = None  # (min, max) inclusive
 
 
 @dataclass(frozen=True)
