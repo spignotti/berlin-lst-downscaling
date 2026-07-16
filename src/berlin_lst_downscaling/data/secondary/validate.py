@@ -66,9 +66,20 @@ def _check_all_band_ranges(
                 if spec.valid_range is None:
                     continue
                 vmin, vmax = spec.valid_range
-                band = src.read(i).astype(np.float64)
-                valid_mask = ~np.isnan(band)
-                valid = band[valid_mask]
+                band = src.read(i)
+                nodata = spec.nodata
+
+                # Determine valid mask: NaN for float, nodata sentinel for int
+                if np.issubdtype(band.dtype, np.floating):
+                    band_f = band.astype(np.float64)
+                    valid_mask = ~np.isnan(band_f)
+                elif nodata is not None:
+                    valid_mask = band != nodata
+                else:
+                    valid_mask = np.ones(band.shape, dtype=bool)
+
+                band_f = band.astype(np.float64)
+                valid = band_f[valid_mask]
                 if len(valid) == 0:
                     result.fail(f"Band {i} ({spec.name}): no valid pixels for range check")
                     continue

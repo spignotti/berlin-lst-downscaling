@@ -681,6 +681,40 @@ def cloud_static_sources(session: nox.Session) -> None:
     )
 
 
+@nox.session(venv_backend="none", name="smoke-static-derived")
+def smoke_static_derived(session: nox.Session) -> None:
+    """Run Pipeline B locally against Pipeline-A smoke output.
+
+    Consumes existing local Pipeline-A smoke products and produces
+    building/vegetation/combined DSMs, horizons, and SVF.
+    Runs twice to confirm idempotency.
+    """
+    output_root = "data/static/derived/smoke"
+
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_static_derived.py",
+            "--config-name", "smoke",
+            f"derived_root={output_root}",
+            external=True,
+        )
+
+    _verify_local_artifacts(
+        session,
+        output_root,
+        required_suffixes=(
+            "building_dsm",
+            "vegetation_dsm",
+            "combined_dsm",
+            "horizon_building",
+            "horizon_vegetation",
+            "svf",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
 @nox.session(venv_backend="none", name="cloud-static-derived")
 def cloud_static_derived(session: nox.Session) -> None:
     """Run Pipeline B (derived geometry) against GCS.
@@ -688,18 +722,23 @@ def cloud_static_derived(session: nox.Session) -> None:
     Consumes finalized Pipeline A source products and produces
     building/vegetation/combined DSMs, horizons, and SVF.
     Requires ADC / Workload Identity.
+
+    Usage:
+        uv run nox -s cloud-static-derived -- \
+            gs://berlin-lst-data/static/sources/smoke/...
     """
     import uuid
     from datetime import UTC, datetime
 
     session.env.setdefault("UV_ENV_FILE", ".env")
 
+    source_root = session.posargs[0] if session.posargs else "gs://berlin-lst-data/static/sources/full"
+
     run_id = (
         f"stat-drv-"
         f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
         f"{uuid.uuid4().hex[:6]}"
     )
-    source_root = "gs://berlin-lst-data/static/sources/full"
     derived_root = f"gs://berlin-lst-data/static/derived/smoke/{run_id}"
 
     _preflight_gcs(session)
@@ -715,6 +754,7 @@ def cloud_static_derived(session: nox.Session) -> None:
     _verify_gcs_artifacts(
         session,
         run_id,
+        prefix=f"static/derived/smoke/{run_id}/",
         required_suffixes=(
             "building_dsm",
             "vegetation_dsm",

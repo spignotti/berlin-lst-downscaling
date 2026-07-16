@@ -86,7 +86,13 @@ def write_cog_atomic(
     dtypes = [ds[name].values.squeeze().dtype for name in bands]
     common_dtype = _common_dtype(dtypes)
 
-    nodata = float("nan") if "float" in common_dtype else None
+    # Derive nodata: float → NaN, integer → contract's first band nodata
+    if "float" in common_dtype:
+        nodata = float("nan")
+    elif contract.output_bands:
+        nodata = contract.output_bands[0].nodata
+    else:
+        nodata = None
 
     profile = _build_profile(
         common_dtype=common_dtype,

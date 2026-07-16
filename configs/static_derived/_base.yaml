@@ -3,28 +3,26 @@
 
 mode: full
 
-# Source products root — must be finalized Pipeline A output on GCS
-source_root: "gs://berlin-lst-data/static/sources/full"
+# Source products root — finalized Pipeline A output (local or GCS).
+# Overridden in leaf configs.
+source_root: "data/static/sources/smoke"
 
-# Derived product root
-derived_root: "data/static/derived"
+# Derived product root — overridden in leaf configs.
+derived_root: "data/static/derived/smoke"
 
-# Source revisions consumed (frozen by Pipeline A)
-source_revisions:
-  imperviousness: "2016,2021"
-  vegetation_height: "2020"
+# Frozen geometry ID for downstream lineage.
+geometry_id: "dgm1-2021__lod2-2024__vh-2020"
+
+# Required upstream sources (source/revision pairs).
+upstream:
   terrain_height: "2021"
+  vegetation_height: "2020"
   lod2_morphology: "2024"
 
 # SVF / horizon parameters
 svf_max_radius: 3
 svf_n_directions: 16
 horizon_max_radius_m: 200
-horizon_n_azimuths: 36
-
-# Disk budget
-peak_scratch_gb: 8
-disk_budget_gb: 20
 
 # Hydra overrides
 hydra:

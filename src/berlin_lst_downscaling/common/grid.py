@@ -77,10 +77,26 @@ def smoke_grid(bbox_wgs84: tuple[float, float, float, float]) -> GeoBox:
     return GeoBox.from_bbox(bbox_native, crs=TARGET_CRS, resolution=TARGET_RESOLUTION)
 
 
+def grid_from_cog(uri: str) -> GeoBox:
+    """Infer the GeoBox from a rasterio-readable COG.
+
+    Parameters
+    ----------
+    uri :
+        Local path or ``gs://…`` URI of the COG.
+    """
+    import rasterio
+
+    with rasterio.open(uri) as src:
+        from odc.geo.geobox import GeoBox as _GB
+        return _GB.from_rio(src)
+
+
 __all__ = [
     "canon_grid_10m",
     "canon_grid_70m",
     "canon_grid_100m",
     "canon_grid_for_resolution",
     "smoke_grid",
+    "grid_from_cog",
 ]

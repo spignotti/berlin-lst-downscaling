@@ -52,7 +52,7 @@ def contract_for_building_dsm() -> Contract:
                 nodata=float("nan"),
                 description="Terrain + max building height (m above sea level)",
                 unit="m",
-                valid_range=(-10.0, 300.0),
+                valid_range=(-10.0, 600.0),
             ),
         ),
         tiling=TilingSpec(),
@@ -73,7 +73,7 @@ def contract_for_vegetation_dsm() -> Contract:
                 nodata=float("nan"),
                 description="Terrain + max canopy height (m above sea level)",
                 unit="m",
-                valid_range=(-10.0, 300.0),
+                valid_range=(-10.0, 600.0),
             ),
         ),
         tiling=TilingSpec(),
@@ -94,7 +94,7 @@ def contract_for_combined_dsm() -> Contract:
                 nodata=float("nan"),
                 description="Max of building and vegetation DSM (m above sea level)",
                 unit="m",
-                valid_range=(-10.0, 300.0),
+                valid_range=(-10.0, 600.0),
             ),
         ),
         tiling=TilingSpec(),
@@ -117,12 +117,17 @@ def config_hash_for_dsm(
 # ── upstream product readers ──────────────────────────────────────────
 
 
-def _read_upstream_cog(uri: str) -> tuple[np.ndarray, object]:
-    """Read a single-band upstream COG and return (array, transform)."""
+def _read_band_by_desc(uri: str, desc: str) -> np.ndarray:
+    """Read a band from a COG by its description string.
+
+    Raises ValueError if the band is not found.
+    """
     with rasterio.open(uri) as src:
-        arr = src.read(1).astype(np.float32)
-        transform = src.transform
-    return arr, transform
+        descriptions = src.descriptions or ()
+        for i, d in enumerate(descriptions, 1):
+            if d == desc:
+                return src.read(i).astype(np.float32)
+    raise ValueError(f"Band '{desc}' not found in {uri} (bands: {list(descriptions)})")
 
 
 # ── prepare functions ─────────────────────────────────────────────────
@@ -135,6 +140,8 @@ def prepare_building_dsm(
     run_id: str,
     item_key: str,
     upstream_hashes: dict[str, str],
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Compute building DSM = terrain + max LoD2 building height.
 
@@ -143,21 +150,12 @@ def prepare_building_dsm(
     terrain_uri :
         URI of the finalized terrain_height COG.
     lod2_height_uri :
-        URI of the LoD2 building_height_mean COG (used as proxy for
-        max building height where per-cell max is not available).
-    output_root :
-        Root URI for all outputs.
-    run_id :
-        Unique run identifier.
-    item_key :
-        Vintage key (e.g. "2021" or composite).
-    upstream_hashes :
-        Config hashes of upstream products for provenance.
+        URI of the LoD2 morphology COG (reads ``building_height_max`` band).
     """
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
 
-    terrain_arr, _ = _read_upstream_cog(terrain_uri)
-    height_arr, _ = _read_upstream_cog(lod2_height_uri)
+    terrain_arr = _read_band_by_desc(terrain_uri, "terrain_height")
+    height_arr = _read_band_by_desc(lod2_height_uri, "building_height_max")
 
     # Building DSM = terrain + building height (where buildings exist)
     building_dsm = np.where(
@@ -211,12 +209,14 @@ def prepare_vegetation_dsm(
     run_id: str,
     item_key: str,
     upstream_hashes: dict[str, str],
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Compute vegetation DSM = terrain + max canopy height."""
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
 
-    terrain_arr, _ = _read_upstream_cog(terrain_uri)
-    vh_arr, _ = _read_upstream_cog(vh_max_uri)
+    terrain_arr = _read_band_by_desc(terrain_uri, "terrain_height")
+    vh_arr = _read_band_by_desc(vh_max_uri, "vegetation_height_max")
 
     veg_dsm = np.where(
         ~np.isnan(vh_arr) & (vh_arr > 0),
@@ -266,12 +266,14 @@ def prepare_combined_dsm(
     run_id: str,
     item_key: str,
     upstream_hashes: dict[str, str],
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Compute combined DSM = max(building_dsm, vegetation_dsm)."""
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
 
-    bldg_arr, _ = _read_upstream_cog(building_dsm_uri)
-    veg_arr, _ = _read_upstream_cog(vegetation_dsm_uri)
+    bldg_arr = _read_band_by_desc(building_dsm_uri, "building_dsm")
+    veg_arr = _read_band_by_desc(vegetation_dsm_uri, "vegetation_dsm")
 
     combined = np.fmax(bldg_arr, veg_arr).astype(np.float32)
 

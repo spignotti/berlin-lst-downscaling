@@ -81,6 +81,8 @@ def prepare_svf(
     upstream_hash: str,
     max_radius: int = 3,
     n_directions: int = 16,
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Compute SVF from the combined DSM.
 
@@ -88,27 +90,12 @@ def prepare_svf(
     ----------
     combined_dsm_uri :
         URI of the finalized combined_dsm COG.
-    output_root :
-        Root URI for all outputs.
-    run_id :
-        Unique run identifier.
-    item_key :
-        Vintage key for the input DSM.
-    upstream_hash :
-        Config hash of the upstream combined_dsm for provenance.
-    max_radius :
-        Maximum search radius in cells (default 3 = 30 m).
-    n_directions :
-        Number of azimuth directions for ray casting (default 16).
-
-    Returns
-    -------
-    PreparedSecondaryProduct
-        Single-band SVF dataset on the canonical 10 m grid.
+    grid :
+        Optional output GeoBox.  Defaults to the full canonical 10 m grid.
     """
     import rasterio
 
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     c_hash = config_hash_for_svf(max_radius, n_directions, upstream_hash)
 
     # Read the combined DSM

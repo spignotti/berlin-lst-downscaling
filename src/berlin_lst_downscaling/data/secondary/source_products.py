@@ -1,15 +1,16 @@
-"""Resolve finalized Pipeline A source products from GCS.
+"""Resolve finalized Pipeline A source products.
 
 Used exclusively by Pipeline B (derived geometry) to ensure it only
 operates on published, validated source products.  Rejects any source
-that lacks complete artifacts, matching contract, or `validation_status=passed`.
+that lacks complete artifacts (COG + STAC + provenance + completion marker).
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
-from berlin_lst_downscaling.data.io.storage import exists
+from berlin_lst_downscaling.data.io.storage import exists, read_bytes
 
 
 @dataclass
@@ -22,7 +23,6 @@ class ResolvedSource:
     stac_uri: str
     provenance_uri: str
     completion_uri: str
-    validation_passed: bool = False
     config_hash: str = ""
 
 
@@ -37,66 +37,34 @@ class ResolutionReport:
     def ok(self) -> bool:
         return len(self.errors) == 0 and len(self.resolved) > 0
 
-    @property
-    def all_passed(self) -> bool:
-        return self.ok and all(r.validation_passed for r in self.resolved)
 
-
-# Expected source artifacts
-_SOURCE_ARTIFACTS = {
-    "imperviousness": {
-        "revisions": ["2016", "2021"],
-        "category": "sources",
-    },
-    "vegetation_height": {
-        "revisions": ["2020"],
-        "category": "sources",
-    },
-    "terrain_height": {
-        "revisions": ["2021"],
-        "category": "sources",
-    },
-    "lod2_morphology": {
-        "revisions": ["2024"],
-        "category": "sources",
-    },
+# Sources consumed by Pipeline B — only geometry-relevant upstreams.
+_REQUIRED_SOURCES: dict[str, list[str]] = {
+    "terrain_height": ["2021"],
+    "vegetation_height": ["2020"],
+    "lod2_morphology": ["2024"],
 }
 
 
 def resolve_source_products(
     source_root: str,
-    sources: list[str] | None = None,
+    sources: dict[str, str] | None = None,
 ) -> ResolutionReport:
-    """Resolve all expected source products under *source_root*.
+    """Resolve required source products under *source_root*.
 
     Parameters
     ----------
     source_root :
-        Root URI of finalized Pipeline A output (must be ``gs://…``).
+        Root URI of finalized Pipeline A output (local or ``gs://…``).
     sources :
-        Optional list of source names to resolve.  If ``None``, resolves
-        all known sources.
-
-    Returns
-    -------
-    ResolutionReport
-        Resolved products and any missing/invalid artifacts.
+        Optional ``{source: revision}`` mapping.  If ``None``, resolves
+        all required sources.
     """
-    if not source_root.startswith("gs://"):
-        return ResolutionReport(errors=[
-            f"source_root must be gs://, got {source_root!r}"
-        ])
-
     report = ResolutionReport()
-    sources_to_check = sources or list(_SOURCE_ARTIFACTS.keys())
+    to_check = sources or _REQUIRED_SOURCES
 
-    for src in sources_to_check:
-        if src not in _SOURCE_ARTIFACTS:
-            report.errors.append(f"Unknown source: {src}")
-            continue
-
-        spec = _SOURCE_ARTIFACTS[src]
-        for rev in spec["revisions"]:
+    for src, revisions in to_check.items():
+        for rev in revisions if isinstance(revisions, list) else [revisions]:
             r = _check_source(source_root, src, rev)
             if r is not None:
                 report.resolved.append(r)
@@ -113,7 +81,7 @@ def _check_source(
     source: str,
     revision: str,
 ) -> ResolvedSource | None:
-    """Check that a source/revision has all four artifacts and completion marker."""
+    """Check that a source/revision has all four artifacts."""
     base = (
         f"{source_root.rstrip('/')}/ard/static/sources"
         f"/{source}/{revision}"
@@ -126,6 +94,14 @@ def _check_source(
     if not all(exists(u) for u in [cog, stac, prov, comp]):
         return None
 
+    # Read config hash from provenance (backward-compatible default)
+    config_hash = ""
+    try:
+        prov_data = json.loads(read_bytes(prov))
+        config_hash = prov_data.get("config_hash", "")
+    except Exception:  # noqa: S110 — best-effort hash read, not critical
+        pass
+
     return ResolvedSource(
         source=source,
         revision=revision,
@@ -133,7 +109,7 @@ def _check_source(
         stac_uri=stac,
         provenance_uri=prov,
         completion_uri=comp,
-        validation_passed=True,  # set by downstream revalidation if needed
+        config_hash=config_hash,
     )
 
 
