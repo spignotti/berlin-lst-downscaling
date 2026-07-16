@@ -1,0 +1,6 @@
+defaults:
+  - _base
+  - _self_
+
+# Derived geometry smoke — produces DSM/SVF/horizon from Pipeline A smoke output.
+derived_root: "data/static/derived/smoke"

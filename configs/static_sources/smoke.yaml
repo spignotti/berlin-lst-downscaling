@@ -1,0 +1,14 @@
+defaults:
+  - _base
+  - _self_
+
+# Local real-data smoke: 2×2 km aligned subset.
+# Both imperviousness vintages, VH 2020, one DGM tile, four intersecting LoD2 tiles.
+mode: full
+source_root: "data/static/sources/smoke"
+sources:
+  - imperviousness
+  - vegetation_height
+  - terrain_height
+  - lod2_morphology
+smoke_tile_count: 1  # DGM: 1 tile; LoD2: limited by bbox intersection

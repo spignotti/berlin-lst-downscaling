@@ -2,21 +2,27 @@
 
 Layout
 ------
-_raw/secondary/{source}/{period}/
-_staging/secondary/{source}/{run_id}/
-ard/static/{category}/{source}/{vintage}/
-  ├─ <source>_<vintage>.tif            # final COG
-  ├─ <source>_<vintage>.stac.json      # STAC Item metadata
-  ├─ provenance.json                   # source/archive provenance
-  └─ complete.json                     # publication marker (written last)
-ard/dynamic/meteorology/{year}/{scene_id}/   # future: scene-keyed products
-qa/secondary/{run_id}/report.json
-ledger.parquet
+Pipeline A (source products):
+  _raw/static/sources/{source}/{revision}/
+  _staging/static/sources/{source}/{revision}/
+  ard/static/sources/{source}/{revision}/
+    ├─ <source>_<revision>.tif            # final COG
+    ├─ <source>_<revision>.stac.json      # STAC Item metadata
+    ├─ provenance.json                   # source/archive provenance
+    └─ complete.json                     # publication marker (written last)
 
-Future dynamic sources (e.g. ERA5, scene-level shadows) use the same
-artifact pattern under ``ard/dynamic/meteorology/{source}/{scene_id}/``.
-The product identity is ``source + scene_id`` for those; the artifact
-helpers below accept a generic ``item_key`` to cover both shapes.
+Pipeline B (derived geometry):
+  ard/static/derived/{category}/{geometry_id}/
+    ├─ <product>_<geometry_id>.tif
+    ├─ <product>_<geometry_id>.stac.json
+    ├─ provenance.json
+    └─ complete.json
+
+QA / state:
+  qa/static/sources/{run_id}/report.json
+  qa/static/derived/{run_id}/report.json
+  _state/static/sources/ledger.parquet
+  _state/static/derived/ledger.parquet
 """
 
 from __future__ import annotations
@@ -138,3 +144,75 @@ __all__ = [
     "qa_report_path",
     "ledger_path",
 ]
+
+
+# ── Pipeline A / B helpers ──────────────────────────────────────────
+
+_SOURCES_ROOT = "ard/static/sources"
+_DERIVED_ROOT = "ard/static/derived"
+_STATE_ROOT = "_state/static"
+
+
+def source_product_dir(root: str, source: str, revision: str) -> str:
+    """Return the Pipeline A source product directory.
+
+    .. code-block:: text
+
+        <root>/ard/static/sources/imperviousness/2016/
+    """
+    return f"{root.rstrip('/')}/{_SOURCES_ROOT}/{source}/{revision}"
+
+
+def source_product_cog(root: str, source: str, revision: str) -> str:
+    """Return the final COG URI for a Pipeline A source product."""
+    return f"{source_product_dir(root, source, revision)}/{source}_{revision}.tif"
+
+
+def source_product_stac(root: str, source: str, revision: str) -> str:
+    """Return the STAC Item URI for a Pipeline A source product."""
+    return f"{source_product_dir(root, source, revision)}/{source}_{revision}.stac.json"
+
+
+def source_product_provenance(root: str, source: str, revision: str) -> str:
+    """Return the provenance URI for a Pipeline A source product."""
+    return f"{source_product_dir(root, source, revision)}/provenance.json"
+
+
+def source_product_completion(root: str, source: str, revision: str) -> str:
+    """Return the completion marker URI for a Pipeline A source product."""
+    return f"{source_product_dir(root, source, revision)}/complete.json"
+
+
+def derived_product_dir(root: str, product: str, geometry_id: str) -> str:
+    """Return the Pipeline B derived product directory.
+
+    .. code-block:: text
+
+        <root>/ard/static/derived/combined_dsm/dgm1-2021__lod2-2024__vh-2020/
+    """
+    return f"{root.rstrip('/')}/{_DERIVED_ROOT}/{product}/{geometry_id}"
+
+
+def derived_product_cog(root: str, product: str, geometry_id: str) -> str:
+    """Return the final COG URI for a Pipeline B derived product."""
+    return f"{derived_product_dir(root, product, geometry_id)}/{product}_{geometry_id}.tif"
+
+
+def derived_ledger_path(root: str) -> str:
+    """Return the Pipeline B ledger path."""
+    return f"{root.rstrip('/')}/{_STATE_ROOT}/derived/ledger.parquet"
+
+
+def source_ledger_path(root: str) -> str:
+    """Return the Pipeline A ledger path."""
+    return f"{root.rstrip('/')}/{_STATE_ROOT}/sources/ledger.parquet"
+
+
+def source_qa_report_path(root: str, run_id: str) -> str:
+    """Return the Pipeline A QA report path."""
+    return f"{root.rstrip('/')}/qa/static/sources/{run_id}/report.json"
+
+
+def derived_qa_report_path(root: str, run_id: str) -> str:
+    """Return the Pipeline B QA report path."""
+    return f"{root.rstrip('/')}/qa/static/derived/{run_id}/report.json"

@@ -1,0 +1,35 @@
+# @package _global_
+# Pipeline B: derived geometry products — base config.
+
+mode: full
+
+# Source products root — must be finalized Pipeline A output on GCS
+source_root: "gs://berlin-lst-data/static/sources/full"
+
+# Derived product root
+derived_root: "data/static/derived"
+
+# Source revisions consumed (frozen by Pipeline A)
+source_revisions:
+  imperviousness: "2016,2021"
+  vegetation_height: "2020"
+  terrain_height: "2021"
+  lod2_morphology: "2024"
+
+# SVF / horizon parameters
+svf_max_radius: 3
+svf_n_directions: 16
+horizon_max_radius_m: 200
+horizon_n_azimuths: 36
+
+# Disk budget
+peak_scratch_gb: 8
+disk_budget_gb: 20
+
+# Hydra overrides
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false
