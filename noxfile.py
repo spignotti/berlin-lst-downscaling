@@ -296,15 +296,17 @@ def _verify_gcs_artifacts(
     session: nox.Session,
     run_id: str,
     required_suffixes: tuple[str, ...],
+    prefix: str = "secondary/smoke/{run_id}/",
 ) -> None:
     """Check that every required blob exists under a GCS run prefix."""
+    prefix = prefix.format(run_id=run_id)
     session.run(
         "uv", "run", "python", "-c",
         f"""import sys
 from google.cloud import storage
 client = storage.Client()
 bucket = client.get_bucket('berlin-lst-data')
-prefix = 'secondary/smoke/{run_id}/'
+prefix = '{prefix}'
 blobs = list(bucket.list_blobs(prefix=prefix))
 print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
 print(f'  {{len(blobs)}} blob(s)')
@@ -609,19 +611,19 @@ def smoke_static_sources(session: nox.Session) -> None:
         output_root,
         required_suffixes=(
             # imperviousness
-            "sources/imperviousness/2016/imperviousness_2016.tif",
-            "sources/imperviousness/2016/complete.json",
-            "sources/imperviousness/2021/imperviousness_2021.tif",
-            "sources/imperviousness/2021/complete.json",
+            "ard/static/sources/imperviousness/2016/imperviousness_2016.tif",
+            "ard/static/sources/imperviousness/2016/complete.json",
+            "ard/static/sources/imperviousness/2021/imperviousness_2021.tif",
+            "ard/static/sources/imperviousness/2021/complete.json",
             # vegetation height
-            "sources/vegetation_height/2020/vegetation_height_2020.tif",
-            "sources/vegetation_height/2020/complete.json",
+            "ard/static/sources/vegetation_height/2020/vegetation_height_2020.tif",
+            "ard/static/sources/vegetation_height/2020/complete.json",
             # terrain height
-            "sources/terrain_height/2021/terrain_height_2021.tif",
-            "sources/terrain_height/2021/complete.json",
+            "ard/static/sources/terrain_height/2021/terrain_height_2021.tif",
+            "ard/static/sources/terrain_height/2021/complete.json",
             # LoD2 morphology
-            "sources/lod2_morphology/2024/lod2_morphology_2024.tif",
-            "sources/lod2_morphology/2024/complete.json",
+            "ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif",
+            "ard/static/sources/lod2_morphology/2024/complete.json",
             # report + ledger
             "report.json",
             "ledger.parquet",
@@ -661,17 +663,18 @@ def cloud_static_sources(session: nox.Session) -> None:
     _verify_gcs_artifacts(
         session,
         run_id,
+        prefix=f"static/sources/smoke/{run_id}/",
         required_suffixes=(
-            "sources/imperviousness/2016/imperviousness_2016.tif",
-            "sources/imperviousness/2016/complete.json",
-            "sources/imperviousness/2021/imperviousness_2021.tif",
-            "sources/imperviousness/2021/complete.json",
-            "sources/vegetation_height/2020/vegetation_height_2020.tif",
-            "sources/vegetation_height/2020/complete.json",
-            "sources/terrain_height/2021/terrain_height_2021.tif",
-            "sources/terrain_height/2021/complete.json",
-            "sources/lod2_morphology/2024/lod2_morphology_2024.tif",
-            "sources/lod2_morphology/2024/complete.json",
+            "ard/static/sources/imperviousness/2016/imperviousness_2016.tif",
+            "ard/static/sources/imperviousness/2016/complete.json",
+            "ard/static/sources/imperviousness/2021/imperviousness_2021.tif",
+            "ard/static/sources/imperviousness/2021/complete.json",
+            "ard/static/sources/vegetation_height/2020/vegetation_height_2020.tif",
+            "ard/static/sources/vegetation_height/2020/complete.json",
+            "ard/static/sources/terrain_height/2021/terrain_height_2021.tif",
+            "ard/static/sources/terrain_height/2021/complete.json",
+            "ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif",
+            "ard/static/sources/lod2_morphology/2024/complete.json",
             "report.json",
             "ledger.parquet",
         ),

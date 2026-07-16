@@ -130,6 +130,8 @@ def prepare_imperviousness(
     vintage: int,
     output_root: str,
     run_id: str,
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Download, convert, and reproject an imperviousness vintage.
 
@@ -141,6 +143,8 @@ def prepare_imperviousness(
         Root URI for all outputs (local path or ``gs://bucket/...``).
     run_id :
         Unique run identifier (for provenance and staging).
+    grid :
+        Optional output GeoBox.  Defaults to the full canonical 10 m grid.
 
     Returns
     -------
@@ -173,7 +177,7 @@ def prepare_imperviousness(
         src_pct = _LOOKUP[src_uint8].astype(np.float32, copy=False)
 
     # ── 3. reproject to canonical 10m grid (average resampling) ──────
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     dst_arr = np.empty((grid.shape.y, grid.shape.x), dtype=np.float32)
 
     reproject(

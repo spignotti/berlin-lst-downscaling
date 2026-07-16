@@ -155,10 +155,17 @@ def config_hash_for_vintage(vintage: int) -> str:
 
 def _detect_citygml_version(content: bytes) -> int:
     """Detect CityGML version from document content."""
-    if b"citygml/building/1.0" in content:
-        return 1
     if b"citygml/building/2.0" in content:
         return 2
+    if b"citygml/building/1.0" in content:
+        return 1
+    # Try root element tag
+    if b"core:CityModel" in content:
+        # Check for any 2.0 namespace
+        if b"/1.0" in content:
+            return 1
+        if b"/2.0" in content:
+            return 2
     return 1  # default to 1.0
 
 
@@ -181,8 +188,19 @@ def _parse_gml_ring(coords_text: str, srs_dim: int = 2) -> list[tuple[float, flo
 
 def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | None:
     """Parse a gml:Polygon element into a Shapely Polygon."""
-    # Detect srsDimension from posList
-    ext_ring = polygon_elem.find(f".//{ns['gml']}:exterior//{ns['gml']}:posList")
+    gml_ns = ns["gml"]
+
+    # Find exterior ring posList
+    ext_ring = None
+    for pos_list in polygon_elem.iter(f"{{{gml_ns}}}posList"):
+        # Check if this posList is inside an exterior ring
+        parent = polygon_elem.find(f".//{{{gml_ns}}}exterior//{{{gml_ns}}}posList")
+        if parent is pos_list or parent is not None:
+            ext_ring = pos_list
+            break
+    if ext_ring is None:
+        # Fallback: find any posList inside the polygon
+        ext_ring = polygon_elem.find(f".//{{{gml_ns}}}posList")
     if ext_ring is None or not ext_ring.text:
         return None
 
@@ -193,8 +211,8 @@ def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | No
 
     # Interior rings (holes)
     holes = []
-    for interior in polygon_elem.findall(f".//{ns['gml']}:interior"):
-        pos_list = interior.find(f".//{ns['gml']}:posList")
+    for interior in polygon_elem.findall(f".//{{{gml_ns}}}interior"):
+        pos_list = interior.find(f".//{{{gml_ns}}}posList")
         if pos_list is not None and pos_list.text:
             srs_dim_i = int(pos_list.get("srsDimension", "2"))
             hole_coords = _parse_gml_ring(pos_list.text, srs_dim_i)
@@ -350,8 +368,8 @@ def _accumulate_buildings(
         footprint_area = bldg.footprint.area
         area_arr[cells] += footprint_area / n_cells  # distribute evenly across touched cells
 
-        # Max height
-        max_arr[cells] = np.maximum(max_arr[cells], h)
+        # Max height — in-place update
+        np.maximum.at(max_arr, cells, h)
 
     return len(buildings)
 
@@ -364,6 +382,8 @@ def prepare_lod2_morphology(
     output_root: str,
     run_id: str,
     smoke_tile_count: int | None = None,
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Download, parse, and rasterize LoD2 buildings to the canonical 10 m grid.
 
@@ -377,6 +397,8 @@ def prepare_lod2_morphology(
         Unique run identifier.
     smoke_tile_count :
         If set, process only this many tiles (for local smoke testing).
+    grid :
+        Optional output GeoBox.  Defaults to the full canonical 10 m grid.
 
     Returns
     -------
@@ -384,7 +406,7 @@ def prepare_lod2_morphology(
         Three-band canonical-grid dataset: mean height, std, BCR.
     """
     c_hash = config_hash_for_vintage(vintage)
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
 
     # ── 1. discover tiles via ATOM feed ──────────────────────────────
     manifest = parse_atom_feed(_FEED_URL, _LOD2_RE, aoi_grid=grid)
@@ -400,7 +422,7 @@ def prepare_lod2_morphology(
     sumsq_arr = np.zeros(shape, dtype=np.float64)
     count_arr = np.zeros(shape, dtype=np.int32)
     area_arr = np.zeros(shape, dtype=np.float64)
-    max_arr = np.full(shape, np.nan, dtype=np.float32)
+    max_arr = np.zeros(shape, dtype=np.float32)
 
     tile_receipts: list[dict] = []
     all_checksums: list[str] = []
@@ -438,6 +460,7 @@ def prepare_lod2_morphology(
     cell_area = 100.0  # 10m × 10m
     bcr_arr = np.where(count_f > 0, area_arr / cell_area, np.nan).astype(np.float32)
     bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
+    max_arr = np.where(count_f > 0, max_arr, np.nan).astype(np.float32)
 
     # ── 4. build canonical xr.Dataset ────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0

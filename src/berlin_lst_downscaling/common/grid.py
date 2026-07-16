@@ -22,7 +22,7 @@ from functools import lru_cache
 from odc.geo.geobox import GeoBox
 from rasterio.warp import transform_bounds
 
-from berlin_lst_downscaling.common.config import BERLIN_BBOX, TARGET_CRS
+from berlin_lst_downscaling.common.config import BERLIN_BBOX, TARGET_CRS, TARGET_RESOLUTION
 
 
 @lru_cache(maxsize=1)
@@ -61,9 +61,26 @@ def canon_grid_for_resolution(res: int) -> GeoBox:
     return {10: canon_grid_10m, 70: canon_grid_70m, 100: canon_grid_100m}[res]()
 
 
+def smoke_grid(bbox_wgs84: tuple[float, float, float, float]) -> GeoBox:
+    """Return a 10 m canonical-aligned subset grid for a WGS84 bbox.
+
+    The result is the largest 10 m grid aligned to the canonical origin
+    that fits inside *bbox_wgs84*.  Used for local real-data smoke tests
+    where the full Berlin grid is too large for a single DGM/LoD2 tile.
+
+    Parameters
+    ----------
+    bbox_wgs84 :
+        (west, south, east, north) in WGS84.
+    """
+    bbox_native = transform_bounds("EPSG:4326", TARGET_CRS, *bbox_wgs84)
+    return GeoBox.from_bbox(bbox_native, crs=TARGET_CRS, resolution=TARGET_RESOLUTION)
+
+
 __all__ = [
     "canon_grid_10m",
     "canon_grid_70m",
     "canon_grid_100m",
     "canon_grid_for_resolution",
+    "smoke_grid",
 ]

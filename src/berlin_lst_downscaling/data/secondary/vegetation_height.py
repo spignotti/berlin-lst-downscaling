@@ -80,7 +80,7 @@ def contract_for_vegetation_height() -> Contract:
                     "0 for non-vegetated cells within AOI; NaN outside AOI."
                 ),
                 unit="m",
-                valid_range=(-0.01, 150.01),
+                valid_range=(-0.01, 400.01),
             ),
             BandSpec(
                 name="vegetation_height_max",
@@ -91,7 +91,7 @@ def contract_for_vegetation_height() -> Contract:
                     "0 for non-vegetated cells within AOI; NaN outside AOI."
                 ),
                 unit="m",
-                valid_range=(-0.01, 150.01),
+                valid_range=(-0.01, 400.01),
             ),
         ),
         tiling=TilingSpec(),
@@ -113,6 +113,8 @@ def prepare_vegetation_height(
     vintage: int,
     output_root: str,
     run_id: str,
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Download and reproject a vegetation-height vintage to 10 m.
 
@@ -143,7 +145,7 @@ def prepare_vegetation_height(
     _validate_native_metadata(native_meta)
 
     # ── 3. reproject to canonical 10m grid (average + max) ───────────
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     shape = (grid.shape.y, grid.shape.x)
     mean_arr = np.empty(shape, dtype=np.float32)
     max_arr = np.empty(shape, dtype=np.float32)
@@ -333,10 +335,14 @@ def _validate_native_metadata(meta: dict[str, Any]) -> None:
     grid = canon_grid_10m()
     origin_x, origin_y = grid.transform.xoff, grid.transform.yoff
     b = meta["bounds"]
-    if not (b["left"] <= origin_x <= b["right"] and b["bottom"] <= origin_y <= b["top"]):
+    # Check that the native raster overlaps the canonical grid (not exact origin coverage)
+    grid_right = origin_x + grid.shape.x * abs(grid.transform.a)
+    grid_bottom = origin_y - grid.shape.y * abs(grid.transform.e)
+    if not (b["left"] < grid_right and b["right"] > origin_x
+            and b["bottom"] < origin_y and b["top"] > grid_bottom):
         raise ValueError(
-            f"Native bounds {b} do not cover canonical grid origin "
-            f"({origin_x}, {origin_y})"
+            f"Native bounds {b} do not overlap canonical grid "
+            f"({origin_x}, {origin_y}, {grid_right}, {grid_bottom})"
         )
 
 

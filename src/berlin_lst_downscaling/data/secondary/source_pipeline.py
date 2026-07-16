@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from omegaconf import DictConfig
 
-from berlin_lst_downscaling.common.grid import canon_grid_10m
+from berlin_lst_downscaling.common.grid import canon_grid_10m, smoke_grid
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import (
@@ -53,19 +53,20 @@ def run_sources(cfg: DictConfig) -> int:
 
     failed = 0
     smoke_count = cfg.get("smoke_tile_count")
+    grid = _resolve_grid(cfg)
 
     for source in sources:
         if source == "imperviousness":
-            failed += _run_imperviousness(led, cfg, run_id, source_root)
+            failed += _run_imperviousness(led, cfg, run_id, source_root, grid)
         elif source == "vegetation_height":
-            failed += _run_vegetation_height(led, cfg, run_id, source_root)
+            failed += _run_vegetation_height(led, cfg, run_id, source_root, grid)
         elif source == "terrain_height":
             failed += _run_terrain_height(
-                led, cfg, run_id, source_root, smoke_count,
+                led, cfg, run_id, source_root, smoke_count, grid,
             )
         elif source == "lod2_morphology":
             failed += _run_lod2_morphology(
-                led, cfg, run_id, source_root, smoke_count,
+                led, cfg, run_id, source_root, smoke_count, grid,
             )
         else:
             print(f"  Unknown source '{source}' — skipping.")
@@ -88,6 +89,7 @@ def _run_imperviousness(
     cfg: DictConfig,
     run_id: str,
     source_root: str,
+    grid=None,
 ) -> int:
     """Process both imperviousness vintages."""
     from berlin_lst_downscaling.data.secondary.imperviousness import (
@@ -96,7 +98,7 @@ def _run_imperviousness(
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2016, 2021]))
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     failed = 0
 
     for vintage in vintages:
@@ -119,7 +121,7 @@ def _run_imperviousness(
 
         try:
             print(f"  Processing imperviousness {vintage} (reason={reason})...")
-            prepared = prepare_imperviousness(vintage, source_root, run_id)
+            prepared = prepare_imperviousness(vintage, source_root, run_id, grid=grid)
             prod_dir = source_product_dir(source_root, "imperviousness", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared, grid, source_root, run_id,
@@ -153,6 +155,7 @@ def _run_vegetation_height(
     cfg: DictConfig,
     run_id: str,
     source_root: str,
+    grid=None,
 ) -> int:
     """Process vegetation-height vintage 2020."""
     from berlin_lst_downscaling.data.secondary.vegetation_height import (
@@ -161,7 +164,7 @@ def _run_vegetation_height(
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2020]))
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     failed = 0
 
     for vintage in vintages:
@@ -184,7 +187,7 @@ def _run_vegetation_height(
 
         try:
             print(f"  Processing vegetation_height {vintage} (reason={reason})...")
-            prepared = prepare_vegetation_height(vintage, source_root, run_id)
+            prepared = prepare_vegetation_height(vintage, source_root, run_id, grid=grid)
             prod_dir = source_product_dir(source_root, "vegetation_height", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared, grid, source_root, run_id,
@@ -219,6 +222,7 @@ def _run_terrain_height(
     run_id: str,
     source_root: str,
     smoke_tile_count: int | None,
+    grid=None,
 ) -> int:
     """Process DGM terrain-height vintage 2021."""
     from berlin_lst_downscaling.data.secondary.dgm import (
@@ -227,7 +231,7 @@ def _run_terrain_height(
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2021]))
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     failed = 0
 
     for vintage in vintages:
@@ -251,7 +255,7 @@ def _run_terrain_height(
         try:
             print(f"  Processing terrain_height {vintage} (reason={reason})...")
             prepared = prepare_terrain_height(
-                vintage, source_root, run_id, smoke_tile_count=smoke_tile_count,
+                vintage, source_root, run_id, smoke_tile_count=smoke_tile_count, grid=grid,
             )
             prod_dir = source_product_dir(source_root, "terrain_height", str(vintage))
             artifacts = finalize_secondary_product(
@@ -287,6 +291,7 @@ def _run_lod2_morphology(
     run_id: str,
     source_root: str,
     smoke_tile_count: int | None,
+    grid=None,
 ) -> int:
     """Process LoD2 morphology vintage 2024."""
     from berlin_lst_downscaling.data.secondary.lod2 import (
@@ -295,7 +300,7 @@ def _run_lod2_morphology(
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2024]))
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
     failed = 0
 
     for vintage in vintages:
@@ -319,7 +324,7 @@ def _run_lod2_morphology(
         try:
             print(f"  Processing lod2_morphology {vintage} (reason={reason})...")
             prepared = prepare_lod2_morphology(
-                vintage, source_root, run_id, smoke_tile_count=smoke_tile_count,
+                vintage, source_root, run_id, smoke_tile_count=smoke_tile_count, grid=grid,
             )
             prod_dir = source_product_dir(source_root, "lod2_morphology", str(vintage))
             artifacts = finalize_secondary_product(
@@ -347,6 +352,21 @@ def _run_lod2_morphology(
         print(f"  lod2_morphology {vintage} OK — {artifacts.cog_uri}")
 
     return failed
+
+
+# ── grid resolution ──────────────────────────────────────────────────
+
+
+def _resolve_grid(cfg: DictConfig):
+    """Return the output grid for this run.
+
+    Uses ``smoke_grid_bbox`` if configured (for local smoke tests with a
+    cropped subset), otherwise the full canonical 10 m Berlin grid.
+    """
+    bbox = cfg.get("smoke_grid_bbox")
+    if bbox is not None:
+        return smoke_grid(tuple(bbox))
+    return canon_grid_10m()
 
 
 # ── banner ───────────────────────────────────────────────────────────

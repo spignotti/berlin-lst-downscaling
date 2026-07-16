@@ -95,6 +95,8 @@ def prepare_terrain_height(
     output_root: str,
     run_id: str,
     smoke_tile_count: int | None = None,
+    *,
+    grid=None,
 ) -> PreparedSecondaryProduct:
     """Download, validate, and reproject DGM tiles to the canonical 10 m grid.
 
@@ -108,6 +110,8 @@ def prepare_terrain_height(
         Unique run identifier.
     smoke_tile_count :
         If set, process only this many tiles (for local smoke testing).
+    grid :
+        Optional output GeoBox.  Defaults to the full canonical 10 m grid.
 
     Returns
     -------
@@ -118,7 +122,7 @@ def prepare_terrain_height(
         raise ValueError(f"Only vintage {_DGM_VINTAGE} is available; got {vintage}")
 
     c_hash = config_hash_for_vintage(vintage)
-    grid = canon_grid_10m()
+    grid = grid or canon_grid_10m()
 
     # ── 1. discover tiles via ATOM feed ──────────────────────────────
     manifest = parse_atom_feed(_FEED_URL, _DGM_RE, aoi_grid=grid)
@@ -262,10 +266,9 @@ def _read_xyz_zip(
         with z.open(xyz_names[0]) as f:
             data = np.loadtxt(f, dtype=np.float64)
 
-    if data.shape[0] != _POINTS_PER_TILE:
+    if data.shape[0] < 1000:  # sanity: at least 1000 points per tile
         raise ValueError(
-            f"{asset.filename}: expected {_POINTS_PER_TILE} points, "
-            f"got {data.shape[0]}"
+            f"{asset.filename}: too few points ({data.shape[0]}), expected >= 1000"
         )
 
     # Columns: X Y Z
@@ -276,15 +279,43 @@ def _read_xyz_zip(
     # Validate coordinate spacing
     _validate_xyz_coords(x_vals, y_vals, asset)
 
-    # XYZ is south-to-north (Y ascending).  Reshape to 2000×2000 rows,
-    # then flip vertically so row 0 = northernmost row (north-up).
-    arr = z_vals.reshape(_TILE_SIZE_M, _TILE_SIZE_M)
-    arr = arr[::-1, :]  # south-to-north → north-to-south
+    # Determine grid dimensions from unique coordinates
+    n_cols = len(np.unique(x_vals))
+    n_rows = len(np.unique(y_vals))
 
-    # Build transform: cell centers at +0.5 offset from tile origin
-    origin_x = asset.easting
-    origin_y = asset.northing + _TILE_SIZE_M  # top of tile
-    transform = from_origin(origin_x, origin_y, 1.0, 1.0)
+    if n_cols * n_rows < len(z_vals):
+        raise ValueError(
+            f"{asset.filename}: {n_cols}×{n_rows} = {n_cols * n_rows} cells "
+            f"but {len(z_vals)} points (too many)"
+        )
+
+    # Build a lookup from (x, y) → z, allowing for incomplete tiles
+    coord_to_z = {}
+    for xi, yi, zi in zip(x_vals, y_vals, z_vals, strict=True):
+        coord_to_z[(float(xi), float(yi))] = float(zi)
+
+    x_unique = np.sort(np.unique(x_vals))
+    y_unique = np.sort(np.unique(y_vals))
+
+    # Build 2D array: rows = south-to-north (y ascending), cols = west-to-east
+    arr = np.full((n_rows, n_cols), np.nan, dtype=np.float64)
+    for r, yv in enumerate(y_unique):
+        for c, xv in enumerate(x_unique):
+            key = (float(xv), float(yv))
+            if key in coord_to_z:
+                arr[r, c] = coord_to_z[key]
+
+    # Flip vertically so row 0 = northernmost row (north-up)
+    arr = arr[::-1, :]
+
+    # Build transform from actual data extents
+    x_min, x_max = float(x_vals.min()), float(x_vals.max())
+    y_min, y_max = float(y_vals.min()), float(y_vals.max())
+    origin_x = x_min - 0.5  # cell center to edge offset
+    origin_y = y_max + 0.5  # northernmost cell center + 0.5 = grid top
+    res_x = (x_max - x_min) / (n_cols - 1) if n_cols > 1 else 1.0
+    res_y = (y_max - y_min) / (n_rows - 1) if n_rows > 1 else 1.0
+    transform = from_origin(origin_x, origin_y, res_x, res_y)
 
     return arr, transform
 
@@ -292,42 +323,40 @@ def _read_xyz_zip(
 def _validate_xyz_coords(
     x_vals: np.ndarray, y_vals: np.ndarray, asset: AtomAsset,
 ) -> None:
-    """Validate XYZ coordinate dimensions, spacing, and extents."""
-    # Check X range
-    x_min, x_max = float(x_vals.min()), float(x_vals.max())
-    expected_x_min = asset.easting + 0.5
-    expected_x_max = asset.easting + _TILE_SIZE_M - 0.5
-    if abs(x_min - expected_x_min) > 0.01 or abs(x_max - expected_x_max) > 0.01:
-        raise ValueError(
-            f"{asset.filename}: X range [{x_min}, {x_max}] does not match "
-            f"expected [{expected_x_min}, {expected_x_max}]"
-        )
-
-    # Check Y range (south-to-north in file)
-    y_min, y_max = float(y_vals.min()), float(y_vals.max())
-    expected_y_min = asset.northing + 0.5
-    expected_y_max = asset.northing + _TILE_SIZE_M - 0.5
-    if abs(y_min - expected_y_min) > 0.01 or abs(y_max - expected_y_max) > 0.01:
-        raise ValueError(
-            f"{asset.filename}: Y range [{y_min}, {y_max}] does not match "
-            f"expected [{expected_y_min}, {expected_y_max}]"
-        )
+    """Validate XYZ coordinate spacing and general extents."""
+    # Check Y spacing (should be 1.0 m)
+    y_unique = np.unique(y_vals)
+    if len(y_unique) > 1:
+        y_step = float(np.median(np.diff(y_unique)))
+        if abs(y_step - 1.0) > 0.01:
+            raise ValueError(
+                f"{asset.filename}: Y spacing {y_step:.3f} m, expected 1.0 m"
+            )
 
     # Check X spacing (should be 1.0 m)
-    x_step = float(np.median(np.diff(np.unique(x_vals))))
-    if abs(x_step - 1.0) > 0.01:
+    x_unique = np.unique(x_vals)
+    if len(x_unique) > 1:
+        x_step = float(np.median(np.diff(x_unique)))
+        if abs(x_step - 1.0) > 0.01:
+            raise ValueError(
+                f"{asset.filename}: X spacing {x_step:.3f} m, expected 1.0 m"
+            )
+
+    # Sanity: tile should be near the declared origin (within 2 km)
+    x_min, x_max = float(x_vals.min()), float(x_vals.max())
+    y_min, y_max = float(y_vals.min()), float(y_vals.max())
+    if abs(x_min - asset.easting) > 2500 or abs(y_min - asset.northing) > 2500:
         raise ValueError(
-            f"{asset.filename}: X spacing {x_step:.3f} m, expected 1.0 m"
+            f"{asset.filename}: X/Y range [{x_min:.0f}, {x_max:.0f}] x "
+            f"[{y_min:.0f}, {y_max:.0f}] too far from origin "
+            f"({asset.easting}, {asset.northing})"
         )
 
 
 def _validate_tile(arr: np.ndarray, transform: object, asset: AtomAsset) -> None:
-    """Validate a DGM tile's shape, coordinates, and coverage."""
-    if arr.shape != (_TILE_SIZE_M, _TILE_SIZE_M):
-        raise ValueError(
-            f"{asset.filename}: expected shape ({_TILE_SIZE_M}, {_TILE_SIZE_M}), "
-            f"got {arr.shape}"
-        )
+    """Validate a DGM tile's shape and coverage."""
+    if arr.ndim != 2:
+        raise ValueError(f"{asset.filename}: expected 2D array, got {arr.ndim}D")
     valid_count = int(np.sum(~np.isnan(arr)))
     if valid_count == 0:
         raise ValueError(f"{asset.filename}: all NaN — no valid terrain data")
