@@ -581,3 +581,145 @@ def upload_manifest(session: nox.Session) -> None:
     session.run("gcloud", "storage", "cp", str(local), dst, external=True)
     session.log(f"Uploaded: {dst}")
     session.log(f"Use: manifest_uri={dst}")
+
+
+# ── static source pipeline ──────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-static-sources")
+def smoke_static_sources(session: nox.Session) -> None:
+    """Run Pipeline A locally with real data on a small aligned subset.
+
+    Downloads all 4 source products (imperviousness, VH, DGM, LoD2) for
+    a 2×2 km representative extent, writes final products, validates.
+    Runs twice to confirm idempotency.
+    """
+    output_root = "data/static/sources/smoke"
+
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_static_sources.py",
+            "--config-name", "smoke",
+            f"source_root={output_root}",
+            external=True,
+        )
+
+    _verify_local_artifacts(
+        session,
+        output_root,
+        required_suffixes=(
+            # imperviousness
+            "sources/imperviousness/2016/imperviousness_2016.tif",
+            "sources/imperviousness/2016/complete.json",
+            "sources/imperviousness/2021/imperviousness_2021.tif",
+            "sources/imperviousness/2021/complete.json",
+            # vegetation height
+            "sources/vegetation_height/2020/vegetation_height_2020.tif",
+            "sources/vegetation_height/2020/complete.json",
+            # terrain height
+            "sources/terrain_height/2021/terrain_height_2021.tif",
+            "sources/terrain_height/2021/complete.json",
+            # LoD2 morphology
+            "sources/lod2_morphology/2024/lod2_morphology_2024.tif",
+            "sources/lod2_morphology/2024/complete.json",
+            # report + ledger
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-static-sources")
+def cloud_static_sources(session: nox.Session) -> None:
+    """Run Pipeline A against GCS with all source products.
+
+    Requires ADC / Workload Identity. Creates a unique run prefix,
+    processes all 4 source products, then verifies all artifacts via GCS.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = (
+        f"stat-src-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    source_root = f"gs://berlin-lst-data/static/sources/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_static_sources.py",
+            "--config-name", "smoke",
+            f"source_root={source_root}",
+            external=True,
+        )
+
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        required_suffixes=(
+            "sources/imperviousness/2016/imperviousness_2016.tif",
+            "sources/imperviousness/2016/complete.json",
+            "sources/imperviousness/2021/imperviousness_2021.tif",
+            "sources/imperviousness/2021/complete.json",
+            "sources/vegetation_height/2020/vegetation_height_2020.tif",
+            "sources/vegetation_height/2020/complete.json",
+            "sources/terrain_height/2021/terrain_height_2021.tif",
+            "sources/terrain_height/2021/complete.json",
+            "sources/lod2_morphology/2024/lod2_morphology_2024.tif",
+            "sources/lod2_morphology/2024/complete.json",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-static-derived")
+def cloud_static_derived(session: nox.Session) -> None:
+    """Run Pipeline B (derived geometry) against GCS.
+
+    Consumes finalized Pipeline A source products and produces
+    building/vegetation/combined DSMs, horizons, and SVF.
+    Requires ADC / Workload Identity.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = (
+        f"stat-drv-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    source_root = "gs://berlin-lst-data/static/sources/full"
+    derived_root = f"gs://berlin-lst-data/static/derived/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    session.run(
+        "uv", "run", "python", "scripts/run_static_derived.py",
+        "--config-name", "smoke",
+        f"source_root={source_root}",
+        f"derived_root={derived_root}",
+        external=True,
+    )
+
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        required_suffixes=(
+            "building_dsm",
+            "vegetation_dsm",
+            "combined_dsm",
+            "horizon_building",
+            "horizon_vegetation",
+            "svf",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )

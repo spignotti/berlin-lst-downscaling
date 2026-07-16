@@ -200,7 +200,17 @@ def finalize_secondary_product(
     grid: GeoBox,
     output_root: str,
     run_id: str,
+    product_dir_override: str | None = None,
 ) -> ProductArtifacts:
+    """Write the four final artifacts for a secondary product.
+
+    Parameters
+    ----------
+    product_dir_override :
+        If given, use this as the product directory instead of
+        constructing it from ``output_root/category/source/item_key``.
+        Used by Pipeline A to write to ``ard/static/sources/`` layout.
+    """
     """Write the four final artifacts for a secondary product.
 
     Order of writes:
@@ -215,18 +225,26 @@ def finalize_secondary_product(
     ledger row as ``failed``.
     """
     completed_at = datetime.now(UTC).isoformat()
-    cog_uri = product_cog_path(
-        output_root, prepared.category, prepared.source, prepared.item_key,
-    )
-    provenance_uri = product_provenance_path(
-        output_root, prepared.category, prepared.source, prepared.item_key,
-    )
-    stac_uri = product_stac_path(
-        output_root, prepared.category, prepared.source, prepared.item_key,
-    )
-    completion_uri = product_completion_path(
-        output_root, prepared.category, prepared.source, prepared.item_key,
-    )
+
+    if product_dir_override is not None:
+        base = product_dir_override.rstrip("/")
+        cog_uri = f"{base}/{prepared.source}_{prepared.item_key}.tif"
+        provenance_uri = f"{base}/provenance.json"
+        stac_uri = f"{base}/{prepared.source}_{prepared.item_key}.stac.json"
+        completion_uri = f"{base}/complete.json"
+    else:
+        cog_uri = product_cog_path(
+            output_root, prepared.category, prepared.source, prepared.item_key,
+        )
+        provenance_uri = product_provenance_path(
+            output_root, prepared.category, prepared.source, prepared.item_key,
+        )
+        stac_uri = product_stac_path(
+            output_root, prepared.category, prepared.source, prepared.item_key,
+        )
+        completion_uri = product_completion_path(
+            output_root, prepared.category, prepared.source, prepared.item_key,
+        )
 
     # ── 1. write COG ─────────────────────────────────────────────────
     write_cog_atomic(prepared.dataset, cog_uri, prepared.contract, overwrite=True)

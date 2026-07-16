@@ -21,7 +21,10 @@ from omegaconf import DictConfig
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
-from berlin_lst_downscaling.data.secondary.paths import ledger_path
+from berlin_lst_downscaling.data.secondary.paths import (
+    ledger_path,
+    source_product_dir,
+)
 from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
 from berlin_lst_downscaling.data.secondary.reports import (
     format_secondary_report,
@@ -117,8 +120,10 @@ def _run_imperviousness(
         try:
             print(f"  Processing imperviousness {vintage} (reason={reason})...")
             prepared = prepare_imperviousness(vintage, source_root, run_id)
+            prod_dir = source_product_dir(source_root, "imperviousness", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared, grid, source_root, run_id,
+                product_dir_override=prod_dir,
             )
         except Exception as exc:
             print(f"  imperviousness {vintage} FAILED: {exc}")
@@ -180,8 +185,10 @@ def _run_vegetation_height(
         try:
             print(f"  Processing vegetation_height {vintage} (reason={reason})...")
             prepared = prepare_vegetation_height(vintage, source_root, run_id)
+            prod_dir = source_product_dir(source_root, "vegetation_height", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared, grid, source_root, run_id,
+                product_dir_override=prod_dir,
             )
         except Exception as exc:
             print(f"  vegetation_height {vintage} FAILED: {exc}")
@@ -246,8 +253,10 @@ def _run_terrain_height(
             prepared = prepare_terrain_height(
                 vintage, source_root, run_id, smoke_tile_count=smoke_tile_count,
             )
+            prod_dir = source_product_dir(source_root, "terrain_height", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared, grid, source_root, run_id,
+                product_dir_override=prod_dir,
             )
         except Exception as exc:
             print(f"  terrain_height {vintage} FAILED: {exc}")
@@ -312,8 +321,10 @@ def _run_lod2_morphology(
             prepared = prepare_lod2_morphology(
                 vintage, source_root, run_id, smoke_tile_count=smoke_tile_count,
             )
+            prod_dir = source_product_dir(source_root, "lod2_morphology", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared, grid, source_root, run_id,
+                product_dir_override=prod_dir,
             )
         except Exception as exc:
             print(f"  lod2_morphology {vintage} FAILED: {exc}")
