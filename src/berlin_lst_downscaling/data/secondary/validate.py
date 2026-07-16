@@ -20,6 +20,8 @@ from berlin_lst_downscaling.data.ard.validate import ValidationResult, validate_
 _RANGES: dict[str, tuple[float, float]] = {
     "imperviousness": (-0.01, 100.01),
     "vegetation_height": (-0.01, 150.01),
+    "vegetation_height_mean": (-0.01, 150.01),
+    "vegetation_height_max": (-0.01, 150.01),
 }
 
 

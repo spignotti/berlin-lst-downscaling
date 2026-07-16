@@ -73,22 +73,61 @@ def _fixture_imperviousness(
 def _fixture_vegetation_height(
     output_root: str, run_id: str,
 ) -> PreparedSecondaryProduct:
-    """Fixture product for the vegetation-height source.
+    """Fixture product for the vegetation-height source (2 bands).
 
     Random uniform values in [0, 150] on the canonical 10 m grid.
     No upstream download.
     """
-    return _make_fixture(
+    from berlin_lst_downscaling.data.secondary.vegetation_height import (
+        contract_for_vegetation_height,
+    )
+
+    grid = canon_grid_10m()
+    rng = np.random.default_rng(2)
+
+    xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
+    ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
+
+    mean_data = rng.uniform(0.0, 150.0, size=(grid.shape.y, grid.shape.x)).astype(
+        np.float32,
+    )
+    max_data = mean_data + rng.uniform(0.0, 20.0, size=mean_data.shape).astype(
+        np.float32,
+    )
+
+    ds = xr.Dataset(
+        {
+            "vegetation_height_mean": (("y", "x"), mean_data),
+            "vegetation_height_max": (("y", "x"), max_data),
+        },
+        coords={"x": xs, "y": ys},
+    )
+    ds = ds.rio.write_crs(str(grid.crs))
+    ds = ds.rio.write_transform(grid.transform)
+
+    contract = contract_for_vegetation_height()
+
+    valid = mean_data[~np.isnan(mean_data)]
+    return PreparedSecondaryProduct(
         source="vegetation_height",
         item_key="2020",
         category="morphology",
-        band_name="vegetation_height",
-        band_description="Fixture vegetation height (m, synthetic)",
-        vmin=0.0,
-        vmax=150.0,
-        config_hash="fixture:vegetation_height:v1",
+        dataset=ds,
+        contract=contract,
         nominal_interval=vintage_interval(2020),
-        seed=2,
+        source_metadata={
+            "kind": "synthetic_fixture",
+            "seed": 2,
+            "retrieved_at": datetime.now(UTC).isoformat(),
+            "note": "Synthetic fixture — no upstream download.",
+        },
+        qa_stats={
+            "valid_frac": float(len(valid)) / mean_data.size if mean_data.size > 0 else 0.0,
+            "min": float(valid.min()) if len(valid) > 0 else None,
+            "max": float(valid.max()) if len(valid) > 0 else None,
+            "shape": list(mean_data.shape),
+        },
+        config_hash="fixture:vegetation_height:v2",
     )
 
 
