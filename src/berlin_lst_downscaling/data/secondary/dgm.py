@@ -219,18 +219,20 @@ def _process_tile(
     asset.checksum = receipt.checksum
     asset.byte_count = receipt.byte_count
 
-    # Read XYZ from ZIP, validate, and reproject to canonical 10m grid
     xyz_path = Path(receipt.local_cache_path) if receipt.local_cache_path else None
     if xyz_path is None:
         raise ValueError(f"No local cache for {asset.filename}")
 
     src_arr, src_transform = _read_xyz_zip(xyz_path, asset)
-    _validate_tile(src_arr, asset)
+    _validate_tile(src_arr, src_transform, asset)
 
-    # Reproject 1m → 10m using average resampling
+    # Reproject 1m → 10m into a fresh temporary array, then merge
+    tile_arr = np.empty((grid.shape.y, grid.shape.x), dtype=np.float32)
+    tile_arr[:] = np.nan
+
     reproject(
         source=src_arr.astype(np.float32),
-        destination=dst_arr,
+        destination=tile_arr,
         src_transform=src_transform,
         src_crs="EPSG:25833",
         dst_transform=grid.transform,
@@ -240,13 +242,17 @@ def _process_tile(
         dst_nodata=np.nan,
     )
 
+    # Accumulate: where this tile has valid values, write to destination
+    valid = ~np.isnan(tile_arr)
+    dst_arr[valid] = tile_arr[valid]
+
     return receipt
 
 
 def _read_xyz_zip(
     zip_path: Path, asset: AtomAsset,
 ) -> tuple[np.ndarray, object]:
-    """Read XYZ CSV from a DGM tile ZIP and return a 2000×2000 array."""
+    """Read XYZ CSV from a DGM tile ZIP and return a north-up 2000×2000 array."""
     from rasterio.transform import from_origin
 
     with zipfile.ZipFile(zip_path) as z:
@@ -262,20 +268,61 @@ def _read_xyz_zip(
             f"got {data.shape[0]}"
         )
 
-    # Columns: X Y Z — extract Z and reshape to 2000×2000
+    # Columns: X Y Z
+    x_vals = data[:, 0]
+    y_vals = data[:, 1]
     z_vals = data[:, 2]
+
+    # Validate coordinate spacing
+    _validate_xyz_coords(x_vals, y_vals, asset)
+
+    # XYZ is south-to-north (Y ascending).  Reshape to 2000×2000 rows,
+    # then flip vertically so row 0 = northernmost row (north-up).
     arr = z_vals.reshape(_TILE_SIZE_M, _TILE_SIZE_M)
+    arr = arr[::-1, :]  # south-to-north → north-to-south
 
     # Build transform: cell centers at +0.5 offset from tile origin
     origin_x = asset.easting
-    origin_y = asset.northing + _TILE_SIZE_M  # top of tile (northing increases north)
+    origin_y = asset.northing + _TILE_SIZE_M  # top of tile
     transform = from_origin(origin_x, origin_y, 1.0, 1.0)
 
     return arr, transform
 
 
-def _validate_tile(arr: np.ndarray, asset: AtomAsset) -> None:
-    """Validate a DGM tile's shape and coverage."""
+def _validate_xyz_coords(
+    x_vals: np.ndarray, y_vals: np.ndarray, asset: AtomAsset,
+) -> None:
+    """Validate XYZ coordinate dimensions, spacing, and extents."""
+    # Check X range
+    x_min, x_max = float(x_vals.min()), float(x_vals.max())
+    expected_x_min = asset.easting + 0.5
+    expected_x_max = asset.easting + _TILE_SIZE_M - 0.5
+    if abs(x_min - expected_x_min) > 0.01 or abs(x_max - expected_x_max) > 0.01:
+        raise ValueError(
+            f"{asset.filename}: X range [{x_min}, {x_max}] does not match "
+            f"expected [{expected_x_min}, {expected_x_max}]"
+        )
+
+    # Check Y range (south-to-north in file)
+    y_min, y_max = float(y_vals.min()), float(y_vals.max())
+    expected_y_min = asset.northing + 0.5
+    expected_y_max = asset.northing + _TILE_SIZE_M - 0.5
+    if abs(y_min - expected_y_min) > 0.01 or abs(y_max - expected_y_max) > 0.01:
+        raise ValueError(
+            f"{asset.filename}: Y range [{y_min}, {y_max}] does not match "
+            f"expected [{expected_y_min}, {expected_y_max}]"
+        )
+
+    # Check X spacing (should be 1.0 m)
+    x_step = float(np.median(np.diff(np.unique(x_vals))))
+    if abs(x_step - 1.0) > 0.01:
+        raise ValueError(
+            f"{asset.filename}: X spacing {x_step:.3f} m, expected 1.0 m"
+        )
+
+
+def _validate_tile(arr: np.ndarray, transform: object, asset: AtomAsset) -> None:
+    """Validate a DGM tile's shape, coordinates, and coverage."""
     if arr.shape != (_TILE_SIZE_M, _TILE_SIZE_M):
         raise ValueError(
             f"{asset.filename}: expected shape ({_TILE_SIZE_M}, {_TILE_SIZE_M}), "
