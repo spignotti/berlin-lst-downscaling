@@ -67,17 +67,18 @@ _FEED_URL = "https://gdi.berlin.de/data/a_lod2/atom/0.atom"
 _LICENSE = "dl-de/zero-2.0"
 _LOD2_RE = re.compile(r"LoD2_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
 
-# CityGML namespaces (1.0 and 2.0)
-_CityGML_NS = {
-    "gml": "http://www.opengis.net/gml",
-    "bldg": "http://www.opengis.net/citygml/building/2.0",
-    "core": "http://www.opengis.net/citygml/core/2.0",
-    "grp": "http://www.opengis.net/citygml/cityobjectgroup/2.0",
-}
-_CityGML1_NS = {
-    "gml": "http://www.opengis.net/gml",
-    "bldg": "http://www.opengis.net/citygml/building/1.0",
-    "core": "http://www.opengis.net/citygml/core/1.0",
+# CityGML namespaces — we detect version from the document itself
+_CITYGML_NS_MAP = {
+    1: {
+        "gml": "http://www.opengis.net/gml",
+        "bldg": "http://www.opengis.net/citygml/building/1.0",
+        "core": "http://www.opengis.net/citygml/core/1.0",
+    },
+    2: {
+        "gml": "http://www.opengis.net/gml",
+        "bldg": "http://www.opengis.net/citygml/building/2.0",
+        "core": "http://www.opengis.net/citygml/core/2.0",
+    },
 }
 
 
@@ -99,7 +100,7 @@ _CONFIG_HASH_PREFIX = "lod2_morphology:v1:"
 
 
 def contract_for_lod2_morphology() -> Contract:
-    """Return the output Contract for LoD2 morphology COGs."""
+    """Return the output Contract for LoD2 morphology COGs (4 bands)."""
     return Contract(
         source="lod2_morphology",
         target_crs="EPSG:25833",
@@ -128,9 +129,17 @@ def contract_for_lod2_morphology() -> Contract:
                 unit="",
                 valid_range=(-0.01, 1.01),
             ),
+            BandSpec(
+                name="building_height_max",
+                dtype="float32",
+                nodata=float("nan"),
+                description="Maximum building height in cell (for DSM derivation)",
+                unit="m",
+                valid_range=(0.0, 200.0),
+            ),
         ),
         tiling=TilingSpec(),
-        schema_version=1,
+        schema_version=2,
         flag_mode="none",
     )
 
@@ -144,50 +153,42 @@ def config_hash_for_vintage(vintage: int) -> str:
 # ── CityGML parsing ──────────────────────────────────────────────────
 
 
-def _detect_namespace(root: ET.Element) -> dict[str, str]:
-    """Detect whether the document uses CityGML 1.0 or 2.0 namespaces."""
-    tag = root.tag
-    if "1.0" in tag:
-        return _CityGML1_NS
-    return _CityGML_NS
+def _detect_citygml_version(content: bytes) -> int:
+    """Detect CityGML version from document content."""
+    if b"citygml/building/1.0" in content:
+        return 1
+    if b"citygml/building/2.0" in content:
+        return 2
+    return 1  # default to 1.0
 
 
-def _parse_gml_ring(coords_text: str) -> list[tuple[float, float]]:
-    """Parse a GML posList or coordinates string into (x, y) tuples."""
+def _parse_gml_ring(coords_text: str, srs_dim: int = 2) -> list[tuple[float, float]]:
+    """Parse a GML posList string into (x, y) tuples.
+
+    Handles both 2D (x y) and 3D (x y z) coordinate lists.
+    """
     tokens = coords_text.strip().split()
-    # GML posList: x y [z] x y [z] … — take pairs
     coords = []
-    for i in range(0, len(tokens) - 1, 3):
+    step = srs_dim
+    for i in range(0, len(tokens) - step + 1, step):
         try:
             x, y = float(tokens[i]), float(tokens[i + 1])
             coords.append((x, y))
         except (ValueError, IndexError):
-            # Try 2D format (no z)
-            try:
-                x, y = float(tokens[i]), float(tokens[i + 1])
-                coords.append((x, y))
-            except (ValueError, IndexError):
-                continue
-    # If step 3 didn't work, try step 2 (2D coordinates)
-    if len(coords) < 3:
-        coords = []
-        for i in range(0, len(tokens) - 1, 2):
-            try:
-                coords.append((float(tokens[i]), float(tokens[i + 1])))
-            except (ValueError, IndexError):
-                continue
+            continue
     return coords
 
 
 def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | None:
     """Parse a gml:Polygon element into a Shapely Polygon."""
-    # Exterior ring
+    # Detect srsDimension from posList
     ext_ring = polygon_elem.find(f".//{ns['gml']}:exterior//{ns['gml']}:posList")
     if ext_ring is None or not ext_ring.text:
         return None
 
-    ext_coords = _parse_gml_ring(ext_ring.text)
-    if len(ext_coords) < 4:  # need at least 4 for a closed ring
+    srs_dim = int(ext_ring.get("srsDimension", "2"))
+    ext_coords = _parse_gml_ring(ext_ring.text, srs_dim)
+    if len(ext_coords) < 4:
         return None
 
     # Interior rings (holes)
@@ -195,7 +196,8 @@ def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | No
     for interior in polygon_elem.findall(f".//{ns['gml']}:interior"):
         pos_list = interior.find(f".//{ns['gml']}:posList")
         if pos_list is not None and pos_list.text:
-            hole_coords = _parse_gml_ring(pos_list.text)
+            srs_dim_i = int(pos_list.get("srsDimension", "2"))
+            hole_coords = _parse_gml_ring(pos_list.text, srs_dim_i)
             if len(hole_coords) >= 4:
                 holes.append(hole_coords)
 
@@ -203,7 +205,6 @@ def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | No
         poly = Polygon(ext_coords, holes)
         if poly.is_valid and not poly.is_empty:
             return poly
-        # Try to fix invalid geometry
         poly = poly.buffer(0)
         if poly.is_valid and not poly.is_empty and isinstance(poly, Polygon):
             return poly
@@ -225,20 +226,19 @@ def _parse_buildings_from_tile(
 
         for gml_name in gml_names:
             with z.open(gml_name) as f:
-                # Use iterparse for memory-efficient parsing
-                ns = _CityGML_NS  # default
-                for event, elem in ET.iterparse(f, events=("start-ns", "start", "end")):  # noqa: S314
-                    if event == "start-ns":
-                        prefix, uri = elem
-                        if "building" in uri:
-                            ns = {"bldg": uri, "gml": ns.get("gml", "http://www.opengis.net/gml")}
-                        continue
+                raw = f.read()
 
-                    if event == "end" and elem.tag.endswith("}Building"):
-                        building = _extract_building(elem, ns)
-                        if building is not None:
-                            buildings.append(building)
-                        elem.clear()
+            # Detect version from actual content
+            version = _detect_citygml_version(raw)
+            ns = _CITYGML_NS_MAP[version]
+
+            root = ET.fromstring(raw)  # noqa: S314
+
+            # Find all Building elements (not BuildingPart — those are children)
+            for building_elem in root.iter(f"{{{ns['bldg']}}}Building"):
+                building = _extract_building(building_elem, ns)
+                if building is not None:
+                    buildings.append(building)
 
     return buildings
 
@@ -247,19 +247,18 @@ def _extract_building(
     building_elem: ET.Element, ns: dict[str, str],
 ) -> ParsedBuilding | None:
     """Extract footprint and height from a Building element."""
-    # Building ID
     bid = building_elem.get(
         f"{{{ns.get('gml', '')}}}id",
         building_elem.get("gml:id", ""),
     )
 
-    # measuredHeight
+    # measuredHeight — try both with and without namespace prefix
     height = None
-    for height_tag in [
-        f"{{{ns.get('bldg', '')}}}measuredHeight",
+    for tag in [
+        f"{{{ns['bldg']}}}measuredHeight",
         "bldg:measuredHeight",
     ]:
-        height_elem = building_elem.find(height_tag)
+        height_elem = building_elem.find(tag)
         if height_elem is not None and height_elem.text:
             try:
                 height = float(height_elem.text)
@@ -268,28 +267,21 @@ def _extract_building(
             break
 
     if height is None or height <= 0:
-        return None  # skip buildings without valid height
+        return None
 
     # Ground surfaces → footprint
     ground_surfaces: list[Polygon] = []
-    for gs_tag in [
-        f"{{{ns.get('bldg', '')}}}boundedBy//{{{ns.get('bldg', '')}}}GroundSurface",
-        f"{{{ns.get('bldg', '')}}}boundedBy//{ns.get('bldg', '')}:GroundSurface",
-        ".//{http://www.opengis.net/citygml/building/2.0}boundedBy//{http://www.opengis.net/citygml/building/2.0}GroundSurface",
-    ]:
-        try:
-            for gs in building_elem.findall(gs_tag):
-                for poly_elem in gs.findall(f".//{{{ns.get('gml', '')}}}Polygon"):
-                    poly = _parse_polygon(poly_elem, ns)
-                    if poly is not None:
-                        ground_surfaces.append(poly)
-        except Exception:  # noqa: S112
-            continue
+    # CityGML 1.0: bldg:boundedBy/bldg:GroundSurface/bldg:lod2MultiSurface/...
+    # CityGML 2.0: bldg:boundedBy/bldg:GroundSurface/bldg:lod2MultiSurface/...
+    for gs_elem in building_elem.iter(f"{{{ns['bldg']}}}GroundSurface"):
+        for poly_elem in gs_elem.iter(f"{{{ns['gml']}}}Polygon"):
+            poly = _parse_polygon(poly_elem, ns)
+            if poly is not None:
+                ground_surfaces.append(poly)
 
     if not ground_surfaces:
         return None
 
-    # Union of ground surfaces = building footprint
     try:
         merged = unary_union(ground_surfaces)
         if isinstance(merged, (Polygon, MultiPolygon)):
@@ -315,12 +307,12 @@ def _accumulate_buildings(
     sumsq_arr: np.ndarray,
     count_arr: np.ndarray,
     area_arr: np.ndarray,
+    max_arr: np.ndarray,
 ) -> int:
     """Rasterize building footprints and accumulate statistics.
 
     Returns the number of buildings processed.
     """
-    cell_area = 100.0  # 10m × 10m = 100 m²
     transform = grid.transform
     shape = (grid.shape.y, grid.shape.x)
 
@@ -344,7 +336,6 @@ def _accumulate_buildings(
         except Exception:  # noqa: S112
             continue
 
-        # Cells where this building is present
         cells = mask > 0
         n_cells = int(np.sum(cells))
         if n_cells == 0:
@@ -354,7 +345,13 @@ def _accumulate_buildings(
         sum_arr[cells] += h
         sumsq_arr[cells] += h * h
         count_arr[cells] += 1
-        area_arr[cells] += cell_area  # approximate: each covered cell contributes 100 m²
+
+        # BCR: use actual footprint area (m²) divided by cell area
+        footprint_area = bldg.footprint.area
+        area_arr[cells] += footprint_area / n_cells  # distribute evenly across touched cells
+
+        # Max height
+        max_arr[cells] = np.maximum(max_arr[cells], h)
 
     return len(buildings)
 
@@ -403,6 +400,7 @@ def prepare_lod2_morphology(
     sumsq_arr = np.zeros(shape, dtype=np.float64)
     count_arr = np.zeros(shape, dtype=np.int32)
     area_arr = np.zeros(shape, dtype=np.float64)
+    max_arr = np.full(shape, np.nan, dtype=np.float32)
 
     tile_receipts: list[dict] = []
     all_checksums: list[str] = []
@@ -416,7 +414,8 @@ def prepare_lod2_morphology(
             )
 
         receipt = _process_lod2_tile(
-            asset, grid, sum_arr, sumsq_arr, count_arr, area_arr, output_root,
+            asset, grid, sum_arr, sumsq_arr, count_arr, area_arr, max_arr,
+            output_root,
         )
         tile_receipts.append({
             "filename": asset.filename,
@@ -438,7 +437,6 @@ def prepare_lod2_morphology(
     std_arr = np.where(count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan).astype(np.float32)
     cell_area = 100.0  # 10m × 10m
     bcr_arr = np.where(count_f > 0, area_arr / cell_area, np.nan).astype(np.float32)
-    # Clip BCR to [0, 1] (floating-point tolerance)
     bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
 
     # ── 4. build canonical xr.Dataset ────────────────────────────────
@@ -449,6 +447,7 @@ def prepare_lod2_morphology(
             "building_height_mean": (("y", "x"), mean_arr),
             "building_height_std": (("y", "x"), std_arr),
             "building_coverage_ratio": (("y", "x"), bcr_arr),
+            "building_height_max": (("y", "x"), max_arr),
         },
         coords={"x": xs, "y": ys},
     )
@@ -501,6 +500,7 @@ def _process_lod2_tile(
     sumsq_arr: np.ndarray,
     count_arr: np.ndarray,
     area_arr: np.ndarray,
+    max_arr: np.ndarray,
     output_root: str,
 ) -> DownloadReceipt:
     """Download and rasterize a single LoD2 tile."""
@@ -522,7 +522,9 @@ def _process_lod2_tile(
         raise ValueError(f"No local cache for {asset.filename}")
 
     buildings = _parse_buildings_from_tile(zip_path, asset)
-    n = _accumulate_buildings(buildings, grid, sum_arr, sumsq_arr, count_arr, area_arr)
+    n = _accumulate_buildings(
+        buildings, grid, sum_arr, sumsq_arr, count_arr, area_arr, max_arr,
+    )
     print(f"    {asset.filename}: {n} buildings with valid height")
 
     return receipt

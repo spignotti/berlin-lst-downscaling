@@ -156,12 +156,12 @@ def _fixture_terrain_height(
 def _fixture_lod2_morphology(
     output_root: str, run_id: str,
 ) -> PreparedSecondaryProduct:
-    """Fixture product for the lod2_morphology source.
+    """Fixture product for the lod2_morphology source (4 bands).
 
-    Three-band synthetic: height mean [0, 50], std [0, 10], BCR [0, 1].
+    Four-band synthetic: height mean [0, 50], std [0, 10], BCR [0, 1], max [0, 60].
     No upstream download.
     """
-    from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+    from berlin_lst_downscaling.data.secondary.lod2 import contract_for_lod2_morphology
 
     grid = canon_grid_10m()
     rng = np.random.default_rng(4)
@@ -178,50 +178,31 @@ def _fixture_lod2_morphology(
     bcr_data = rng.uniform(0.0, 1.0, size=(grid.shape.y, grid.shape.x)).astype(
         np.float32,
     )
+    max_data = mean_data + rng.uniform(0.0, 10.0, size=mean_data.shape).astype(
+        np.float32,
+    )
 
     ds = xr.Dataset(
         {
             "building_height_mean": (("y", "x"), mean_data),
             "building_height_std": (("y", "x"), std_data),
             "building_coverage_ratio": (("y", "x"), bcr_data),
+            "building_height_max": (("y", "x"), max_data),
         },
         coords={"x": xs, "y": ys},
     )
     ds = ds.rio.write_crs(str(grid.crs))
     ds = ds.rio.write_transform(grid.transform)
 
-    contract = Contract(
-        source="lod2_morphology",
-        target_crs="EPSG:25833",
-        output_bands=(
-            BandSpec(
-                name="building_height_mean", dtype="float32",
-                nodata=float("nan"),
-                description="Fixture building height mean (m, synthetic)",
-            ),
-            BandSpec(
-                name="building_height_std", dtype="float32",
-                nodata=float("nan"),
-                description="Fixture building height std (m, synthetic)",
-            ),
-            BandSpec(
-                name="building_coverage_ratio", dtype="float32",
-                nodata=float("nan"),
-                description="Fixture BCR (synthetic)",
-            ),
-        ),
-        tiling=TilingSpec(),
-        schema_version=1,
-        flag_mode="none",
-    )
+    contract = contract_for_lod2_morphology()
 
     return PreparedSecondaryProduct(
         source="lod2_morphology",
-        item_key="2026",
+        item_key="2024",
         category="morphology",
         dataset=ds,
         contract=contract,
-        nominal_interval=vintage_interval(2026),
+        nominal_interval=vintage_interval(2024),
         source_metadata={
             "kind": "synthetic_fixture",
             "seed": 4,
@@ -234,7 +215,7 @@ def _fixture_lod2_morphology(
             "max_height": float(np.nanmax(mean_data)),
             "shape": list(mean_data.shape),
         },
-        config_hash="fixture:lod2_morphology:v1",
+        config_hash="fixture:lod2_morphology:v2",
     )
 
 
