@@ -97,6 +97,25 @@ def exists(uri: UriLike) -> bool:
     return _resolve_local(loc.uri).exists()
 
 
+def delete_file(uri: UriLike) -> bool:
+    """Delete a file at *uri*. Returns True if deleted, False if not found."""
+    loc = _as_loc(uri)
+    if loc.scheme == "gcs":
+        bucket_name, key = _parse_gs_uri(loc.uri)
+        client = _gcs_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(key)
+        if blob.exists():
+            blob.delete()
+            return True
+        return False
+    path = _resolve_local(loc.uri)
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
 def read_bytes(uri: UriLike) -> bytes:
     """Read the full content at the URI into bytes."""
     loc = _as_loc(uri)

@@ -106,10 +106,14 @@ def build_secondary_stac_item(
     # Build per-band raster:bands from contract specs
     raster_bands = []
     for spec in prepared.contract.output_bands:
-        nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
+        # Raster Extension 1.1: float nodata must be "nan" string, not JSON null
+        if spec.nodata is not None and _is_nan(spec.nodata):
+            nodata_stac = "nan"
+        else:
+            nodata_stac = spec.nodata
         band_entry: dict = {
             "data_type": spec.dtype,
-            "nodata": nodata,
+            "nodata": nodata_stac,
             "spatial_resolution": abs(transform.a),
         }
         if spec.unit:
