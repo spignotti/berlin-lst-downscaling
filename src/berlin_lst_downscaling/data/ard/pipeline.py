@@ -483,16 +483,15 @@ def _run_scene(
             aoi_uri = f"{aoi_base}/aoi_{aoi_res}m.tif"
             try:
                 _raw = compute_aoi_metrics(flag_dst, aoi_uri, contract)
-                # int fields (clear/cloudy/shadow/cirrus/saturated/fill/total/overlap)
-                for _key in (
-                    "aoi_clear_px", "aoi_cloudy_px", "aoi_shadow_px",
-                    "aoi_cirrus_px", "aoi_saturated_px", "aoi_fill_px",
-                    "aoi_total_px", "aoi_overlap_px",
-                ):
-                    _v = _raw.get(_key)
-                    locals()[_key] = None if _v is None else int(_v)
-                _v = _raw.get("aoi_clear_frac")
-                aoi_clear_frac = None if _v is None else float(_v)
+                aoi_clear_px = _int_or_none(_raw.get("aoi_clear_px"))
+                aoi_cloudy_px = _int_or_none(_raw.get("aoi_cloudy_px"))
+                aoi_shadow_px = _int_or_none(_raw.get("aoi_shadow_px"))
+                aoi_cirrus_px = _int_or_none(_raw.get("aoi_cirrus_px"))
+                aoi_saturated_px = _int_or_none(_raw.get("aoi_saturated_px"))
+                aoi_fill_px = _int_or_none(_raw.get("aoi_fill_px"))
+                aoi_total_px = _int_or_none(_raw.get("aoi_total_px"))
+                aoi_overlap_px = _int_or_none(_raw.get("aoi_overlap_px"))
+                aoi_clear_frac = _float_or_none(_raw.get("aoi_clear_frac"))
             except Exception as _exc:
                 # AOI metrics are best-effort; log and continue without them
                 _log(cfg, run_id, "aoi_metrics_error", {
@@ -769,6 +768,24 @@ def _log(cfg: DictConfig, run_id: str, event: str, data: dict[str, Any]) -> None
     log_path = log_dir / f"{run_id}.jsonl"
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def _int_or_none(val) -> int | None:
+    """Convert value to int, returning None for None or NaN."""
+    if val is None:
+        return None
+    if isinstance(val, float) and val != val:  # NaN
+        return None
+    return int(val)
+
+
+def _float_or_none(val) -> float | None:
+    """Convert value to float, returning None for None or NaN."""
+    if val is None:
+        return None
+    if isinstance(val, float) and val != val:  # NaN
+        return None
+    return float(val)
 
 
 __all__ = [

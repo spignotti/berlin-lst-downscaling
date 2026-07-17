@@ -71,7 +71,9 @@ def main() -> int:
         source = row["source"]
         scene_id = row["scene_id"]
         cog_uri = row.get("path_cog")
-        flag_uri = cog_uri.replace(".tif", ".flag.tif") if cog_uri else None
+        flag_uri = row.get("path_flag")
+        if not flag_uri and cog_uri:
+            flag_uri = cog_uri.replace(".tif", ".flag.tif")
 
         if not cog_uri:
             results.append(ValidationResult(
