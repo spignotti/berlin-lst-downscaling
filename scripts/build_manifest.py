@@ -45,13 +45,13 @@ Usage
 
 from __future__ import annotations
 
-import json
+import logging
 import pickle
-import sys
 from pathlib import Path
 
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.data.selection import (
     build_anchors,
     couple_all,
@@ -60,38 +60,29 @@ from berlin_lst_downscaling.data.selection import (
 )
 from berlin_lst_downscaling.data.selection.scan import run_scan
 
+_logger = logging.getLogger(__name__)
+
 # ── couple mode ──────────────────────────────────────────────────────────────
 
 
 def _run_couple(cfg: DictConfig) -> None:
     """Run full pixel-coupled manifest generation."""
-    # Suppress transient rasterio CPLE warnings (SAS token expiry, Azure
-    # blob read errors) — the pipeline handles these via retry + graceful
-    # degradation (clear_frac=None on failure, coupling continues).
-    import logging
-    logging.getLogger("rasterio._err").setLevel(logging.ERROR)
-    logging.getLogger("odc.loader._rio").setLevel(logging.ERROR)
-    logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
-
-    print(json.dumps({
-        "mode": "couple",
-        "years": list(cfg.years),
-        "months": list(cfg.months),
-        "bbox": list(cfg.bbox),
-    }), file=sys.stderr)
+    log_event(_logger, logging.INFO, "start", mode="couple",
+        years=list(cfg.years), months=list(cfg.months), bbox=list(cfg.bbox))
 
     # ── 1. Build Landsat anchors ─────────────────────────────────────────────
-    print("  [1/5] Searching Landsat anchors ...", file=sys.stderr)
+    log_event(_logger, logging.INFO, "searching_anchors")
     anchors, anchor_stats = build_anchors(cfg)
-    print(f"  [1/5] Found {anchor_stats['n_total']} anchors, "
-          f"kept {anchor_stats['n_kept']} after pixel filter "
-          f"({anchor_stats['n_dropped']} dropped)", file=sys.stderr)
+    log_event(_logger, logging.INFO, "anchors_found",
+        n_total=anchor_stats['n_total'],
+        n_kept=anchor_stats['n_kept'],
+        n_dropped=anchor_stats['n_dropped'])
     if not anchors:
-        print("ERROR: No Landsat anchors found for the configured range.", file=sys.stderr)
+        log_event(_logger, logging.ERROR, "no_anchors")
         raise SystemExit(1)
 
     # ── 2. Search S2 candidates per anchor + compute clear_frac (parallel) ──
-    print("  [2/5] Searching S2 candidates + computing clear_frac ...", file=sys.stderr)
+    log_event(_logger, logging.INFO, "searching_s2_candidates")
     s2_by_anchor: dict[str, list] = {}
     ckpt_path = "data/ard/couple_checkpoint.pkl"
 
@@ -100,10 +91,10 @@ def _run_couple(cfg: DictConfig) -> None:
         try:
             with open(ckpt_path, "rb") as f:
                 s2_by_anchor = pickle.load(f)  # noqa: S301 — internal checkpoint, not untrusted
-            print(f"  [2/5] Resumed from checkpoint: {len(s2_by_anchor)} anchors already done",
-                  file=sys.stderr)
+            log_event(_logger, logging.INFO, "checkpoint_resumed",
+                n_anchors=len(s2_by_anchor))
         except Exception:
-            print("  [2/5] Checkpoint load failed — starting fresh", file=sys.stderr)
+            log_event(_logger, logging.WARNING, "checkpoint_load_failed")
             s2_by_anchor = {}
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -115,9 +106,9 @@ def _run_couple(cfg: DictConfig) -> None:
             candidates = match_s2_candidates_with_clear_frac(anchor, l8_items, cfg)
             return anchor["scene_id"], candidates
         except Exception as exc:
-            print(f"  [2/5] ERROR anchor {anchor.get('scene_id', '???')}: {exc}", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
+            log_event(_logger, logging.ERROR, "anchor_failed",
+                scene_id=anchor.get('scene_id', '???'), error=str(exc),
+                exc_info=True)
             return anchor["scene_id"], []
 
     # Filter anchors already processed in a previous run
@@ -135,25 +126,27 @@ def _run_couple(cfg: DictConfig) -> None:
             if done_count % 50 == 0 or done_count == n_total:
                 with open(ckpt_path, "wb") as f:
                     pickle.dump(s2_by_anchor, f)
-                print(f"  [2/5] Progress: {done_count}/{n_total} anchors processed"
-                      f" (last: {scene_id}) — checkpoint saved", file=sys.stderr)
+                log_event(_logger, logging.INFO, "s2_progress",
+                    done=done_count, total=n_total, last_scene=scene_id)
 
     # Delete checkpoint on successful completion
     Path(ckpt_path).unlink(missing_ok=True)
-    print(f"  [2/5] Done — processed {len(anchors)} anchors", file=sys.stderr)
+    log_event(_logger, logging.INFO, "s2_done", n_anchors=len(anchors))
 
     # ── 3. Score + Tie-Break + Drop ──────────────────────────────────────────
-    print("  [3/5] Scoring and coupling ...", file=sys.stderr)
+    log_event(_logger, logging.INFO, "coupling")
     coupled, dropped = couple_all(anchors, s2_by_anchor, cfg)
-    print(f"  [3/5] Coupled: {len(coupled)}, Dropped: {len(dropped)}", file=sys.stderr)
+    log_event(_logger, logging.INFO, "coupling_done",
+        n_coupled=len(coupled), n_dropped=len(dropped))
 
     # ── 4. ECOSTRESS validation granules (fixed allowlist) ──────────────
-    print("  [4/5] Resolving ECOSTRESS validation granules ...", file=sys.stderr)
+    log_event(_logger, logging.INFO, "resolving_ecostress")
     eco_granules = _resolve_ecostress_allowlist(cfg)
-    print(f"  [4/5] ECOSTRESS granules: {len(eco_granules)}", file=sys.stderr)
+    log_event(_logger, logging.INFO, "ecostress_resolved",
+        n_granules=len(eco_granules))
 
     # ── 5. Write manifest bundle ────────────────────────────────────────
-    print("  [5/5] Writing manifest bundle ...", file=sys.stderr)
+    log_event(_logger, logging.INFO, "writing_bundle")
     manifest_out = cfg.get("manifest_out", f"{cfg.output_root}/manifest.parquet")
     pairings_out = cfg.get("pairings_out", f"{cfg.output_root}/pairings.parquet")
     report_out = cfg.get("report_out", f"{cfg.output_root}/manifest_report.json")
@@ -169,24 +162,18 @@ def _run_couple(cfg: DictConfig) -> None:
     )
 
     coupling_rate = result.n_coupled / result.n_anchors if result.n_anchors > 0 else 0.0
-    print(json.dumps({
-        "event": "manifest_done",
-        "n_anchors_total": anchor_stats["n_total"],
-        "n_anchors_kept_after_pixel_filter": anchor_stats["n_kept"],
-        "n_anchors_dropped_pixel_filter": anchor_stats["n_dropped"],
-        "n_anchors": result.n_anchors,
-        "n_coupled": result.n_coupled,
-        "n_dropped": result.n_dropped,
-        "n_ecostress": result.n_ecostress,
-        "coupling_rate_observed": round(coupling_rate, 4),
-        "manifest_path": result.manifest_path,
-        "pairings_path": result.pairings_path,
-        "report_path": result.report_path,
-    }), file=sys.stderr)
-
-    print(f"  [OK] Bundle written: {result.manifest_path}", file=sys.stderr)
-    print(f"       Anchors: {result.n_anchors} | Coupled: {result.n_coupled} | "
-          f"Dropped: {result.n_dropped} | ECOSTRESS: {result.n_ecostress}")
+    log_event(_logger, logging.INFO, "bundle_written",
+        n_anchors_total=anchor_stats["n_total"],
+        n_anchors_kept_after_pixel_filter=anchor_stats["n_kept"],
+        n_anchors_dropped_pixel_filter=anchor_stats["n_dropped"],
+        n_anchors=result.n_anchors,
+        n_coupled=result.n_coupled,
+        n_dropped=result.n_dropped,
+        n_ecostress=result.n_ecostress,
+        coupling_rate_observed=round(coupling_rate, 4),
+        manifest_path=result.manifest_path,
+        pairings_path=result.pairings_path,
+        report_path=result.report_path)
 
 
 def _resolve_landsat_items(anchor: dict, cfg) -> list:
@@ -225,7 +212,8 @@ def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
     for gid in ids:
         dt = parse_granule_datetime(gid)
         if dt is None:
-            print(f"  WARNING: Cannot parse datetime from {gid}", file=sys.stderr)
+            log_event(_logger, logging.WARNING, "ecostress_datetime_parse_failed",
+                granule_id=gid)
             continue
         mgrs = parse_granule_mgrs(gid)
         granules.append({
@@ -247,40 +235,34 @@ def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
 
 def _run_scan(cfg: DictConfig) -> None:
     """Run metadata-only volume scan."""
-    print(json.dumps({
-        "mode": "scan",
-        "years": list(cfg.years),
-        "months": list(cfg.months),
-    }), file=sys.stderr)
+    log_event(_logger, logging.INFO, "start", mode="scan",
+        years=list(cfg.years), months=list(cfg.months))
 
-    print("  [scan] Running metadata-only volume scan ...", file=sys.stderr)
+    log_event(_logger, logging.INFO, "running_scan")
     report = run_scan(cfg)
 
-    print(json.dumps({
-        "event": "scan_done",
-        "n_landsat_total": report.n_landsat_total,
-        "n_landsat_coupled": report.n_landsat_coupled,
-        "n_landsat_dropped": report.n_landsat_dropped,
-        "n_s2_candidates": report.n_s2_candidates,
-        "n_ecostress_matches": report.n_ecostress_matches,
-        "est_total_gb": report.est_total_gb,
-    }), file=sys.stderr)
-
-    print(f"  [OK] Scan report: {report.metadata_json}", file=sys.stderr)
-    print(f"       Anchors: {report.n_landsat_total} | Coupled: {report.n_landsat_coupled} "
-          f"| Dropped: {report.n_landsat_dropped} | ECOSTRESS: {report.n_ecostress_matches}")
-    print(f"       Volume: {report.est_total_gb:.1f} GB total")
+    log_event(_logger, logging.INFO, "scan_done",
+        n_landsat_total=report.n_landsat_total,
+        n_landsat_coupled=report.n_landsat_coupled,
+        n_landsat_dropped=report.n_landsat_dropped,
+        n_s2_candidates=report.n_s2_candidates,
+        n_ecostress_matches=report.n_ecostress_matches,
+        est_total_gb=report.est_total_gb)
 
 
 # ── Hydra main ────────────────────────────────────────────────────────────────
 
 
 def main(cfg: DictConfig) -> None:
-    mode = cfg.get("mode", "couple")
-    if mode == "scan":
-        _run_scan(cfg)
-    else:
-        _run_couple(cfg)
+    output_root = str(cfg.get("output_root", "data/ard"))
+    run_id = __import__("uuid").uuid4().hex[:8]
+
+    with RunLogSession(output_root, pipeline="selection", run_id=run_id):
+        mode = cfg.get("mode", "couple")
+        if mode == "scan":
+            _run_scan(cfg)
+        else:
+            _run_couple(cfg)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import numpy as np
@@ -10,7 +11,10 @@ import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_load
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
+
+_logger = logging.getLogger(__name__)
 
 # Platform prefix → normalized platform name
 _PLATFORM_MAP = {
@@ -91,11 +95,8 @@ def build_anchors(cfg) -> tuple[list, dict]:
         )
 
     if n_skipped_platform > 0:
-        import sys
-        print(
-            f"  [anchors] Skipped {n_skipped_platform} non-L8/L9 scenes",
-            file=sys.stderr,
-        )
+        log_event(_logger, logging.INFO, "platform_skipped",
+            n_skipped=n_skipped_platform)
 
     # ── Pixel-wise anchor fitness gate ─────────────────────────────────────
     min_cf = getattr(cfg.landsat.anchor, "min_clear_frac", 0.0)
@@ -137,7 +138,6 @@ def _filter_by_pixel_clear_frac(
     Returns ``(kept, dropped)``.
     """
     import pickle
-    import sys
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from pathlib import Path
 
@@ -149,12 +149,10 @@ def _filter_by_pixel_clear_frac(
         try:
             with open(ckpt_path, "rb") as f:
                 cf_cache = pickle.load(f)  # noqa: S301 — internal checkpoint
-            print(
-                f"  [anchor_filter] Resumed checkpoint: {len(cf_cache)} anchors cached",
-                file=sys.stderr,
-            )
+            log_event(_logger, logging.INFO, "anchor_filter_checkpoint_resumed",
+                n_cached=len(cf_cache))
         except Exception:
-            print("  [anchor_filter] Checkpoint load failed — starting fresh", file=sys.stderr)
+            log_event(_logger, logging.WARNING, "anchor_filter_checkpoint_load_failed")
             cf_cache = {}
 
     n_total = len(anchors)
@@ -162,11 +160,8 @@ def _filter_by_pixel_clear_frac(
 
     if todo:
         done = len(cf_cache)
-        print(
-            f"  [anchor_filter] processing {len(todo)}/{n_total} anchors "
-            f"(min_clear_frac={min_clear_frac})",
-            file=sys.stderr,
-        )
+        log_event(_logger, logging.INFO, "anchor_filter_processing",
+            n_todo=len(todo), n_total=n_total, min_clear_frac=min_clear_frac)
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {pool.submit(compute_anchor_clear_frac, a, cfg): a for a in todo}
             for future in as_completed(futures):
@@ -178,11 +173,8 @@ def _filter_by_pixel_clear_frac(
                     cf_cache[anchor["scene_id"]] = result
                 done += 1
                 if done % 20 == 0 or done == n_total:
-                    print(
-                        f"  [anchor_filter] progress: {done}/{n_total} anchors "
-                        f"(last: {anchor['scene_id']})",
-                        file=sys.stderr,
-                    )
+                    log_event(_logger, logging.INFO, "anchor_filter_progress",
+                        done=done, n_total=n_total, last_scene=anchor['scene_id'])
                 if done % 50 == 0:
                     with open(ckpt_path, "wb") as f:
                         pickle.dump(cf_cache, f)
@@ -204,17 +196,12 @@ def _filter_by_pixel_clear_frac(
         else:
             dropped.append(anchor)
             cf_str = f"{cf:.3f}" if cf is not None else "N/A"
-            print(
-                f"[anchor_filter] dropped {anchor['scene_id']} "
-                f"(clear_frac={cf_str} < {min_clear_frac})",
-                file=sys.stderr,
-            )
+            log_event(_logger, logging.DEBUG, "anchor_dropped",
+                scene_id=anchor['scene_id'], clear_frac=cf_str,
+                min_clear_frac=min_clear_frac)
 
-    print(
-        f"[anchor_filter] kept {len(kept)}/{len(anchors)} anchors "
-        f"(min_clear_frac={min_clear_frac})",
-        file=sys.stderr,
-    )
+    log_event(_logger, logging.INFO, "anchor_filter_done",
+        n_kept=len(kept), n_total=len(anchors), min_clear_frac=min_clear_frac)
 
     # Delete checkpoint on successful completion
     Path(ckpt_path).unlink(missing_ok=True)

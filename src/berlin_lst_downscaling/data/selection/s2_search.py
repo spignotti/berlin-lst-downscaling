@@ -13,9 +13,13 @@ This module provides two functions:
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
+from berlin_lst_downscaling.data.io import log_event
+
+_logger = logging.getLogger(__name__)
 
 
 def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
@@ -82,9 +86,6 @@ def match_s2_candidates_with_clear_frac(
     Loads Landsat + S2 via odc.stac and computes clear_frac per candidate.
     Reuses the same l8_items for all candidates (the anchor scene).
     """
-    import json
-    import sys
-
     candidates = match_s2_candidates(anchor, cfg)
     if not candidates:
         return candidates
@@ -118,14 +119,9 @@ def match_s2_candidates_with_clear_frac(
             cf_by_dt[dt] = (cf, counts)
         except Exception as exc:
             cf_by_dt[dt] = None
-            import traceback
-
-            print(
-                f"  [clear_frac error] anchor {anchor.get('scene_id', '?')} "
-                f"dt={dt}: {exc}",
-                file=sys.stderr,
-            )
-            traceback.print_exc(file=sys.stderr)
+            log_event(_logger, logging.WARNING, "clear_frac_failed",
+                scene_id=anchor.get('scene_id', '?'),
+                dt=str(dt), error=str(exc), exc_info=True)
 
     # Assign clear_frac and AOI metrics to all candidates sharing each datetime
     candidate_diagnostics = []
@@ -146,15 +142,12 @@ def match_s2_candidates_with_clear_frac(
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
 
     # Log structured diagnostic event for this anchor
-    event = {
-        "event": "clear_frac_diagnostic",
-        "anchor_id": anchor["scene_id"],
-        "anchor_date": anchor["date"],
-        "n_candidates": len(candidate_diagnostics),
-        "n_unique_dts": len(unique_dts),
-        "candidates": candidate_diagnostics,
-    }
-    print(json.dumps(event), file=sys.stderr)
+    log_event(_logger, logging.INFO, "clear_frac_diagnostic",
+        anchor_id=anchor["scene_id"],
+        anchor_date=anchor["date"],
+        n_candidates=len(candidate_diagnostics),
+        n_unique_dts=len(unique_dts),
+        candidates=candidate_diagnostics)
 
     return candidates
 
