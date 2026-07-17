@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import sys
 import time
 from collections.abc import Callable
@@ -46,6 +47,8 @@ from berlin_lst_downscaling.data.ard.writer import (
     write_flag_cog_atomic,
     write_stac_atomic,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ── per-source runner registry ───────────────────────────────────────
 
@@ -206,7 +209,11 @@ def _process_manifest(
     ledger: Ledger,
     run_id: str,
 ) -> None:
-    """Process scenes listed in a manifest Parquet (mode=full)."""
+    """Process scenes listed in a manifest Parquet (mode=full).
+
+    Reads the v3 manifest schema, validates the bundle, and resolves
+    exact STAC items from item_href before passing them to loaders.
+    """
     from berlin_lst_downscaling.data.io import exists
 
     manifest_uri = cfg.get("manifest_uri") or f"{cfg.output_root}/manifest.parquet"
@@ -230,16 +237,23 @@ def _process_manifest(
     if rows.num_rows == 0:
         return
 
-    # Collect manifest rows per source — always carry scene_id + year
+    # Collect manifest rows — carry scene_id, year, item_href, acq time
     scenes: list[tuple[str, str, int]] = []
-    scene_dates: dict[str, str | None] = {}  # scene_id → date (optional)
+    scene_meta: dict[str, dict] = {}
     for i in range(rows.num_rows):
         r = rows.slice(i, 1).to_pydict()
         sid = str(r["scene_id"][0])
-        scenes.append((sid, source, int(r["year"][0])))
-        # Optional date column (forward-compatible schema extension)
-        _dt = r.get("date", [None])[0]
-        scene_dates[sid] = str(_dt) if _dt is not None else None
+        yr = int(r["year"][0])
+        scenes.append((sid, source, yr))
+
+        # Extract v3 fields
+        href = r.get("item_href", [None])[0]
+        acq_dt = r.get("acquisition_datetime", [None])[0]
+        scene_meta[sid] = {
+            "item_href": href,
+            "acquisition_datetime": acq_dt,
+            "year": yr,
+        }
 
     todo = reconcile(scenes, ledger, contract)
     _log(cfg, run_id, "manifest_todo", {
@@ -250,14 +264,47 @@ def _process_manifest(
 
     if source == "ecostress":
         _process_ecostress_todo(
-            todo, source, contract, cfg, ledger, run_id, scene_dates,
+            todo, source, contract, cfg, ledger, run_id, scene_meta,
         )
     else:
         for scene_id, _source, year, _reason in todo:
+            meta = scene_meta.get(scene_id, {})
+            # Resolve exact STAC item from manifest HREF
+            items = _resolve_manifest_items(scene_id, source, meta)
             _run_scene(
                 scene_id, source, year, contract, cfg, ledger, run_id,
-                scene_date=scene_dates.get(scene_id),
+                items=items,
+                scene_date=meta.get("acquisition_datetime"),
             )
+
+
+def _resolve_manifest_items(
+    scene_id: str,
+    source: str,
+    meta: dict,
+) -> list[Any] | None:
+    """Resolve exact STAC items from manifest metadata.
+
+    For PC STAC sources (Landsat/Sentinel-2), resolves the exact item
+    by ID.  Returns None for ECOSTRESS or when no HREF is available.
+    """
+    if source == "ecostress":
+        return None
+
+    from berlin_lst_downscaling.data.acquisition.pc_client import resolve_exact_item
+
+    try:
+        item = resolve_exact_item(
+            collection=source,
+            scene_id=scene_id,
+        )
+        return [item]
+    except Exception as exc:
+        _logger.warning(
+            f"Could not resolve exact item {scene_id!r}: {exc}. "
+            "Falling back to date-based search."
+        )
+        return None
 
 
 def _process_ecostress_todo(
@@ -267,7 +314,7 @@ def _process_ecostress_todo(
     cfg: DictConfig,
     ledger: Ledger,
     run_id: str,
-    scene_dates: dict[str, str | None],
+    scene_meta: dict[str, dict],
 ) -> None:
     """Process ECOSTRESS scenes with pipeline-internal staging.
 
@@ -295,7 +342,7 @@ def _process_ecostress_todo(
 
             _run_scene(
                 scene_id, source, year, contract, cfg, ledger, run_id,
-                scene_date=scene_dates.get(scene_id),
+                scene_date=scene_meta.get(scene_id, {}).get("acquisition_datetime"),
                 ecostress_raw_dir=granule_raw_dir,
             )
         # Stage cleaned up automatically on StageSession.__exit__
