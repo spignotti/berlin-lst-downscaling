@@ -255,7 +255,8 @@ def _process_manifest(
             "year": yr,
         }
 
-    todo = reconcile(scenes, ledger, contract)
+    max_attempts = cfg.get("max_scene_attempts", 3)
+    todo = reconcile(scenes, ledger, contract, max_attempts=max_attempts)
     _log(cfg, run_id, "manifest_todo", {
         "source": source,
         "total": len(scenes),
@@ -387,14 +388,12 @@ def _run_scene(
     })
     t0 = time.perf_counter()
 
-    # Mark as exporting (crash recovery entry)
-    # Note: attempts is auto-managed by upsert (increments from existing)
-    ledger.upsert(
+    # Mark as exporting (crash recovery entry) with attempt tracking
+    _attempts = ledger.begin_attempt(
         LedgerRow(
             scene_id=scene_id,
             source=source,
             year=year,
-            status="exporting",
             run_id=run_id,
         )
     )
@@ -532,6 +531,7 @@ def _run_scene(
                 source=source,
                 year=year,
                 path_cog=cog_dst,
+                path_flag=flag_dst if contract.flag_mode == "separate" else None,
                 path_stac=stac_dst,
                 status="done",
                 schema_hash=contract.schema_version_str(),

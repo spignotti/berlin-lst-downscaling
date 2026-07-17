@@ -17,6 +17,9 @@ cloud_dilation_px: 2              # morphological dilation radius for cloud buff
 # Cloud-shadow projection (S2 directional offset)
 cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
 
+# Attempt ceiling — scenes exceeding this many attempts become exhausted
+max_scene_attempts: 3
+
 # ECOSTRESS (disabled in default; enabled per ecostress source config)
 ecostress:
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs

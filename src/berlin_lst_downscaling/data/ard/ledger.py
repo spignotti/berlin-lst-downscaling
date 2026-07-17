@@ -28,13 +28,14 @@ _pcinv = pc.invert  # type: ignore[attr-defined]
 
 # ── schema ───────────────────────────────────────────────────────────
 
-_STATUSES = {"pending", "exporting", "done", "failed", "skipped"}
+_STATUSES = {"pending", "exporting", "done", "failed", "skipped", "exhausted"}
 
 _SCHEMA = pa.schema([
     pa.field("scene_id", pa.string(), nullable=False),
     pa.field("source", pa.string(), nullable=False),
     pa.field("year", pa.int32(), nullable=False),
     pa.field("path_cog", pa.string()),
+    pa.field("path_flag", pa.string()),
     pa.field("path_stac", pa.string()),
     pa.field("status", pa.string(), nullable=False),
     pa.field("schema_hash", pa.string()),
@@ -57,19 +58,20 @@ _SCHEMA = pa.schema([
 ])
 
 # Current schema version
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # ── row type ─────────────────────────────────────────────────────────
 
 
 @dataclass
 class LedgerRow:
-    """A single row in the ARD processing ledger (schema v4)."""
+    """A single row in the ARD processing ledger (schema v6)."""
 
     scene_id: str
     source: str
     year: int
     path_cog: str | None = None
+    path_flag: str | None = None
     path_stac: str | None = None
     status: str = "pending"
     schema_hash: str | None = None
@@ -156,18 +158,38 @@ class Ledger:
 
     # ── mutations ───────────────────────────────────────────────
 
+    def begin_attempt(self, row: LedgerRow) -> int:
+        """Start a new processing attempt for a scene.
+
+        Inserts or updates the row with status='exporting' and increments
+        the attempt counter. Returns the new attempt number.
+        """
+        existing = self.get(row.scene_id, row.source)
+        if existing is not None:
+            row.attempts = existing.attempts + 1
+        else:
+            row.attempts = 1
+
+        row.status = "exporting"
+        self._upsert_row(row)
+        return row.attempts
+
     def upsert(self, row: LedgerRow) -> None:
         """Insert or update a row identified by ``scene_id + source``.
 
+        Does NOT auto-increment attempts — use begin_attempt() for that.
         Persists immediately via atomic temp-file write.
         """
-        # Auto-increment attempts from existing row (H4 fix)
         existing = self.get(row.scene_id, row.source)
         if existing is not None:
-            row.attempts = min(existing.attempts + 1, 999)
+            row.attempts = existing.attempts
         else:
-            row.attempts = 1  # first attempt
+            row.attempts = 1
 
+        self._upsert_row(row)
+
+    def _upsert_row(self, row: LedgerRow) -> None:
+        """Internal: insert/update and persist."""
         new_row = pa.Table.from_pylist(
             [_row_to_dict(row)], schema=_SCHEMA
         )
@@ -183,7 +205,6 @@ class Ledger:
                 [self._table.filter(_pcinv(existing_mask)), new_row]
             )
 
-        # Per-transition atomic write (H3 fix)
         self._write_atomic()
 
     # ── persistence ─────────────────────────────────────────────
@@ -237,6 +258,7 @@ def _row_to_dict(row: LedgerRow) -> dict:
         "source": row.source,
         "year": row.year,
         "path_cog": row.path_cog,
+        "path_flag": row.path_flag,
         "path_stac": row.path_stac,
         "status": row.status,
         "schema_hash": row.schema_hash,
@@ -269,6 +291,7 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
                 source=str(d["source"][0]),
                 year=int(d["year"][0]),
                 path_cog=_opt_str(d, "path_cog"),
+                path_flag=_opt_str(d, "path_flag"),
                 path_stac=_opt_str(d, "path_stac"),
                 status=str(d["status"][0]),
                 schema_hash=_opt_str(d, "schema_hash"),
