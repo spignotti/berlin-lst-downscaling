@@ -63,15 +63,14 @@ def write_bundle(
 
     # ── Build manifest rows ────────────────────────────────────────────
     manifest_rows: list[dict] = []
-    # Track referenced S2 IDs for completeness check
-    referenced_s2: set[str] = set()
+    # Track referenced S2 IDs — each S2 scene appears only once in manifest
+    seen_s2: set[str] = set()
 
     for pair in coupled:
         anchor = pair["anchor"]
         s2 = pair["s2"]
-        referenced_s2.add(s2["scene_id"])
 
-        # Anchor row
+        # Anchor row (unique per Landsat scene)
         manifest_rows.append({
             "scene_id": anchor["scene_id"],
             "source": "landsat-c2-l2",
@@ -88,22 +87,24 @@ def write_bundle(
             "solar_elevation": anchor.get("sun_elevation"),
         })
 
-        # S2 predictor row
-        manifest_rows.append({
-            "scene_id": s2["scene_id"],
-            "source": "sentinel-2-l2a",
-            "role": "predictor",
-            "platform": "sentinel-2",
-            "year": s2["year"],
-            "acquisition_datetime": _naive_to_utc(s2["datetime"]),
-            "item_href": s2.get("item_href"),
-            "aoi_clear_px": s2.get("aoi_clear_px"),
-            "aoi_total_px": s2.get("aoi_total_px"),
-            "aoi_clear_frac": s2.get("aoi_clear_frac"),
-            "cloud_cover": s2.get("cloud_cover"),
-            "solar_azimuth": None,
-            "solar_elevation": None,
-        })
+        # S2 predictor row (deduplicated — one row per unique S2 scene)
+        if s2["scene_id"] not in seen_s2:
+            seen_s2.add(s2["scene_id"])
+            manifest_rows.append({
+                "scene_id": s2["scene_id"],
+                "source": "sentinel-2-l2a",
+                "role": "predictor",
+                "platform": "sentinel-2",
+                "year": s2["year"],
+                "acquisition_datetime": _naive_to_utc(s2["datetime"]),
+                "item_href": s2.get("item_href"),
+                "aoi_clear_px": s2.get("aoi_clear_px"),
+                "aoi_total_px": s2.get("aoi_total_px"),
+                "aoi_clear_frac": s2.get("aoi_clear_frac"),
+                "cloud_cover": s2.get("cloud_cover"),
+                "solar_azimuth": None,
+                "solar_elevation": None,
+            })
 
     # ECOSTRESS validation rows (exactly six unique IDs)
     for eco in ecostress_granules:
@@ -148,16 +149,11 @@ def write_bundle(
     manifest_table = pa.Table.from_pylist(manifest_rows, schema=MANIFEST_SCHEMA)
     pairings_table = pa.Table.from_pylist(pairing_rows, schema=PAIRINGS_SCHEMA)
 
-    # Compute hashes before writing
-    manifest_buf = pa.BufferOutputStream()
-    pq.write_table(manifest_table, manifest_buf)
-    manifest_hash = hashlib.sha256(manifest_buf.getvalue().to_pybytes()).hexdigest()[:16]
+    # Compute initial hashes (before metadata — placeholder)
+    manifest_hash = ""
+    pairings_hash = ""
 
-    pairings_buf = pa.BufferOutputStream()
-    pq.write_table(pairings_table, pairings_buf)
-    pairings_hash = hashlib.sha256(pairings_buf.getvalue().to_pybytes()).hexdigest()[:16]
-
-    # Attach metadata
+    # Attach metadata (needs hash placeholders)
     meta = bundle_metadata(
         p_hash, cutoff_utc,
         manifest_hash=manifest_hash,
@@ -191,6 +187,10 @@ def write_bundle(
 
     pq.write_table(manifest_table, manifest_path)
     pq.write_table(pairings_table, pairings_path)
+
+    # Compute hashes from written files (after metadata attachment)
+    manifest_hash = _file_hash(manifest_path)
+    pairings_hash = _file_hash(pairings_path)
 
     # ── Build report ───────────────────────────────────────────────────
     n_coupled = len(coupled)
@@ -268,6 +268,15 @@ def _ensure_dir(path: str) -> None:
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
+
+
+def _file_hash(path: str) -> str:
+    """Return SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:16]
 
 
 def _summarize_dropped(dropped: list[dict]) -> dict[str, int]:
