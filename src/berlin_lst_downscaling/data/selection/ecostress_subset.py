@@ -8,12 +8,16 @@ Per the Szenen-Selektion spec:
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC
 from zoneinfo import ZoneInfo
 
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.selection.ecostress import (
     search_ecostress,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def build_ecostress_subset(
@@ -59,8 +63,8 @@ def build_ecostress_subset(
         bbox=tuple(cfg.bbox),
         version=cfg.ecostress.version,
     )
-    print(f"  [4/5] CMR returned {len(all_granules)} ECOSTRESS granules "
-          f"({min_year}-{max_year}), filtering per anchor ...", file=__import__("sys").stderr)
+    log_event(_logger, logging.INFO, "cmr_ecostress_query",
+        n_granules=len(all_granules), min_year=min_year, max_year=max_year)
 
     result: dict[str, list[dict]] = {}
 

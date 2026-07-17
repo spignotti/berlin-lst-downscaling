@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import planetary_computer
 import pystac
 import pystac_client
@@ -13,8 +11,6 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
-
-_logger = logging.getLogger(__name__)
 
 
 def get_catalog() -> pystac_client.Client:

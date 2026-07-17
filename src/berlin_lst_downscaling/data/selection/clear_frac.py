@@ -19,7 +19,6 @@ this function.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 
 import numpy as np
@@ -29,8 +28,6 @@ from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.acquisition.pc_client import stac_load
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
-
-_logger = logging.getLogger(__name__)
 
 
 def compute_clear_frac_with_counts(
