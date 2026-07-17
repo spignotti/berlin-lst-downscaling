@@ -256,7 +256,7 @@ def _process_tile(
 def _read_xyz_zip(
     zip_path: Path, asset: AtomAsset,
 ) -> tuple[np.ndarray, object]:
-    """Read XYZ CSV from a DGM tile ZIP and return a north-up 2000×2000 array."""
+    """Read XYZ CSV from a DGM tile ZIP and return a north-up 2-D array."""
     from rasterio.transform import from_origin
 
     with zipfile.ZipFile(zip_path) as z:
@@ -266,10 +266,12 @@ def _read_xyz_zip(
         with z.open(xyz_names[0]) as f:
             data = np.loadtxt(f, dtype=np.float64)
 
-    if data.shape[0] < 1000:  # sanity: at least 1000 points per tile
+    if data.ndim != 2 or data.shape[1] != 3:
         raise ValueError(
-            f"{asset.filename}: too few points ({data.shape[0]}), expected >= 1000"
+            f"{asset.filename}: expected M×3 XYZ array, got shape {data.shape}"
         )
+    if data.shape[0] == 0:
+        raise ValueError(f"{asset.filename}: empty XYZ data")
 
     # Columns: X Y Z
     x_vals = data[:, 0]
