@@ -11,12 +11,14 @@ Supports two modes:
 
 from __future__ import annotations
 
+import logging
 import time
 from uuid import uuid4
 
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import ledger_path
@@ -26,6 +28,8 @@ from berlin_lst_downscaling.data.secondary.reports import (
     persist_secondary_report,
     secondary_qa_report,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ── public entry ──────────────────────────────────────────────────────
 
@@ -51,16 +55,16 @@ def run(cfg: DictConfig) -> int:
     if cfg.mode == "fixture":
         rc = _run_fixture(led, cfg, run_id, output_root)
         elapsed = time.perf_counter() - t0
-        print(f"  Duration: {elapsed:.1f}s")
+        log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
         return rc
 
     if cfg.mode == "full":
         rc = _run_full(led, cfg, run_id, output_root)
         elapsed = time.perf_counter() - t0
-        print(f"  Duration: {elapsed:.1f}s")
+        log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
         return rc
 
-    print(f"Unknown mode '{cfg.mode}'.")
+    log_event(_logger, logging.ERROR, "unknown_mode", mode=cfg.mode)
     return 1
 
 
@@ -93,7 +97,7 @@ def _run_fixture(
         items = [(item_id, source, period)]
         todo = reconcile(items, led, c_hash)
         if not todo:
-            print(f"  fixture[{source}] already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source=source)
             continue
 
         led.upsert(SecondaryLedgerRow(
@@ -105,13 +109,13 @@ def _run_fixture(
         ))
 
         try:
-            print(f"  Finalising fixture[{source}]...")
+            log_event(_logger, logging.INFO, "finalising_fixture", source=source)
             prepared = factory(output_root, run_id)
             artifacts = finalize_secondary_product(
                 prepared, grid, output_root, run_id,
             )
         except Exception as exc:
-            print(f"  fixture[{source}] FAILED: {exc}")
+            log_event(_logger, logging.ERROR, "fixture_failed", source=source, error=str(exc))
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id,
                 source=source,
@@ -135,12 +139,15 @@ def _run_fixture(
             provenance_uri=artifacts.provenance_uri,
             completion_uri=artifacts.completion_uri,
         ))
-        print(f"  fixture[{source}] OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "fixture_done",
+            source=source, output_uri=artifacts.cog_uri,
+        )
 
     report = secondary_qa_report(led, run_id, sources=list(registry().keys()))
-    print(format_secondary_report(report))
+    log_event(_logger, logging.INFO, "qa_report", report=format_secondary_report(report))
     report_uri = persist_secondary_report(report, output_root)
-    print(f"  QA report  : {report_uri}")
+    log_event(_logger, logging.INFO, "qa_report_path", path=report_uri)
     return 0 if failed == 0 else 1
 
 
@@ -156,16 +163,14 @@ def _run_full(
     """Run the secondary pipeline with configured sources."""
     sources: list[str] = list(cfg.get("sources", []))
     if not sources:
-        print("  No sources configured — nothing to do.")
+        log_event(_logger, logging.INFO, "no_sources")
         return 0
 
     peak_scratch_gb = cfg.get("peak_scratch_gb", 999)
     disk_budget_gb = cfg.get("disk_budget_gb", 20)
     if peak_scratch_gb > disk_budget_gb:
-        print(
-            f"  DISK BUDGET EXCEEDED: peak_scratch_gb={peak_scratch_gb} > "
-            f"disk_budget_gb={disk_budget_gb}"
-        )
+        log_event(_logger, logging.ERROR, "disk_budget_exceeded",
+            peak_scratch_gb=peak_scratch_gb, disk_budget_gb=disk_budget_gb)
         return 1
 
     failed = 0
@@ -180,14 +185,14 @@ def _run_full(
         elif source == "lod2_morphology":
             failed += _run_lod2_morphology(led, cfg, run_id, output_root)
         else:
-            print(f"  Unknown source '{source}' — skipping.")
+            log_event(_logger, logging.WARNING, "unknown_source", source=source)
             failed += 1
 
     # Final QA report — printed and persisted under qa/secondary/{run_id}/
     report = secondary_qa_report(led, run_id)
-    print(format_secondary_report(report))
+    log_event(_logger, logging.INFO, "qa_report", report=format_secondary_report(report))
     report_uri = persist_secondary_report(report, output_root)
-    print(f"  QA report  : {report_uri}")
+    log_event(_logger, logging.INFO, "qa_report_path", path=report_uri)
 
     return 0 if failed == 0 else 1
 
@@ -216,7 +221,7 @@ def _run_imperviousness(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  imperviousness {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="imperviousness", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -229,13 +234,23 @@ def _run_imperviousness(
         ))
 
         try:
-            print(f"  Processing imperviousness {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="imperviousness",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_imperviousness(vintage, output_root, run_id)
             artifacts = finalize_secondary_product(
                 prepared, grid, output_root, run_id,
             )
         except Exception as exc:
-            print(f"  imperviousness {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="imperviousness",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id,
                 source="imperviousness",
@@ -260,7 +275,12 @@ def _run_imperviousness(
             completion_uri=artifacts.completion_uri,
         ))
 
-        print(f"  imperviousness {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="imperviousness",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -292,7 +312,7 @@ def _run_vegetation_height(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  vegetation_height {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="vegetation_height", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -305,13 +325,23 @@ def _run_vegetation_height(
         ))
 
         try:
-            print(f"  Processing vegetation_height {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="vegetation_height",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_vegetation_height(vintage, output_root, run_id)
             artifacts = finalize_secondary_product(
                 prepared, grid, output_root, run_id,
             )
         except Exception as exc:
-            print(f"  vegetation_height {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="vegetation_height",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id,
                 source="vegetation_height",
@@ -336,7 +366,12 @@ def _run_vegetation_height(
             completion_uri=artifacts.completion_uri,
         ))
 
-        print(f"  vegetation_height {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="vegetation_height",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -365,7 +400,7 @@ def _run_terrain_height(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  terrain_height {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="terrain_height", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -378,13 +413,23 @@ def _run_terrain_height(
         ))
 
         try:
-            print(f"  Processing terrain_height {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="terrain_height",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_terrain_height(vintage, output_root, run_id)
             artifacts = finalize_secondary_product(
                 prepared, grid, output_root, run_id,
             )
         except Exception as exc:
-            print(f"  terrain_height {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="terrain_height",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id,
                 source="terrain_height",
@@ -409,7 +454,12 @@ def _run_terrain_height(
             completion_uri=artifacts.completion_uri,
         ))
 
-        print(f"  terrain_height {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="terrain_height",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -438,7 +488,7 @@ def _run_lod2_morphology(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  lod2_morphology {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="lod2_morphology", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -451,13 +501,23 @@ def _run_lod2_morphology(
         ))
 
         try:
-            print(f"  Processing lod2_morphology {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="lod2_morphology",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_lod2_morphology(vintage, output_root, run_id)
             artifacts = finalize_secondary_product(
                 prepared, grid, output_root, run_id,
             )
         except Exception as exc:
-            print(f"  lod2_morphology {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="lod2_morphology",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id,
                 source="lod2_morphology",
@@ -482,16 +542,17 @@ def _run_lod2_morphology(
             completion_uri=artifacts.completion_uri,
         ))
 
-        print(f"  lod2_morphology {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="lod2_morphology",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
 
 def _banner(cfg: DictConfig, run_id: str, output_root: str) -> None:
-    """Print a pipeline header."""
-    width = 60
-    print("=" * width, flush=True)
-    print(f"Secondary Pipeline — mode={cfg.mode}", flush=True)
-    print(f"  run_id      : {run_id}", flush=True)
-    print(f"  output_root : {output_root}", flush=True)
-    print("=" * width, flush=True)
+    """Log a pipeline header."""
+    log_event(_logger, logging.INFO, "run_start",
+        pipeline="secondary", mode=cfg.mode, run_id=run_id, output_root=output_root)

@@ -13,12 +13,14 @@ lod2_morphology.
 
 from __future__ import annotations
 
+import logging
 import time
 from uuid import uuid4
 
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m, smoke_grid
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import (
@@ -48,7 +50,7 @@ def run_sources(cfg: DictConfig) -> int:
 
     sources: list[str] = list(cfg.get("sources", []))
     if not sources:
-        print("  No sources configured — nothing to do.")
+        log_event(_logger, logging.INFO, "no_sources")
         return 0
 
     failed = 0
@@ -69,17 +71,19 @@ def run_sources(cfg: DictConfig) -> int:
                 led, cfg, run_id, source_root, smoke_count, grid,
             )
         else:
-            print(f"  Unknown source '{source}' — skipping.")
+            log_event(_logger, logging.WARNING, "unknown_source", source=source)
             failed += 1
 
     report = secondary_qa_report(led, run_id, sources=sources)
-    print(format_secondary_report(report))
+    log_event(_logger, logging.INFO, "qa_report", report=format_secondary_report(report))
     persist_secondary_report(report, source_root)
 
     elapsed = time.perf_counter() - t0
-    print(f"  Duration: {elapsed:.1f}s")
+    log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
     return 0 if failed == 0 else 1
 
+
+_logger = logging.getLogger(__name__)
 
 # ── runners ──────────────────────────────────────────────────────────
 
@@ -109,7 +113,7 @@ def _run_imperviousness(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  imperviousness {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="imperviousness", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -120,7 +124,12 @@ def _run_imperviousness(
         ))
 
         try:
-            print(f"  Processing imperviousness {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="imperviousness",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_imperviousness(vintage, source_root, run_id, grid=grid)
             prod_dir = source_product_dir(source_root, "imperviousness", str(vintage))
             artifacts = finalize_secondary_product(
@@ -128,7 +137,12 @@ def _run_imperviousness(
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
-            print(f"  imperviousness {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="imperviousness",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id, source="imperviousness",
                 period_or_vintage=str(vintage), status="failed",
@@ -145,7 +159,12 @@ def _run_imperviousness(
             provenance_uri=artifacts.provenance_uri,
             completion_uri=artifacts.completion_uri,
         ))
-        print(f"  imperviousness {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="imperviousness",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -175,7 +194,7 @@ def _run_vegetation_height(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  vegetation_height {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="vegetation_height", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -186,7 +205,12 @@ def _run_vegetation_height(
         ))
 
         try:
-            print(f"  Processing vegetation_height {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="vegetation_height",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_vegetation_height(vintage, source_root, run_id, grid=grid)
             prod_dir = source_product_dir(source_root, "vegetation_height", str(vintage))
             artifacts = finalize_secondary_product(
@@ -194,7 +218,12 @@ def _run_vegetation_height(
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
-            print(f"  vegetation_height {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="vegetation_height",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id, source="vegetation_height",
                 period_or_vintage=str(vintage), status="failed",
@@ -211,7 +240,12 @@ def _run_vegetation_height(
             provenance_uri=artifacts.provenance_uri,
             completion_uri=artifacts.completion_uri,
         ))
-        print(f"  vegetation_height {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="vegetation_height",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -242,7 +276,7 @@ def _run_terrain_height(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  terrain_height {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="terrain_height", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -253,7 +287,12 @@ def _run_terrain_height(
         ))
 
         try:
-            print(f"  Processing terrain_height {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="terrain_height",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_terrain_height(
                 vintage, source_root, run_id, smoke_tile_count=smoke_tile_count, grid=grid,
             )
@@ -263,7 +302,12 @@ def _run_terrain_height(
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
-            print(f"  terrain_height {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="terrain_height",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id, source="terrain_height",
                 period_or_vintage=str(vintage), status="failed",
@@ -280,7 +324,12 @@ def _run_terrain_height(
             provenance_uri=artifacts.provenance_uri,
             completion_uri=artifacts.completion_uri,
         ))
-        print(f"  terrain_height {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="terrain_height",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -311,7 +360,7 @@ def _run_lod2_morphology(
         todo = reconcile(items, led, c_hash)
 
         if not todo:
-            print(f"  lod2_morphology {vintage} already done — skipping.")
+            log_event(_logger, logging.INFO, "skipped", source="lod2_morphology", vintage=vintage)
             continue
 
         reason = todo[0][3]
@@ -322,7 +371,12 @@ def _run_lod2_morphology(
         ))
 
         try:
-            print(f"  Processing lod2_morphology {vintage} (reason={reason})...")
+            log_event(
+                _logger, logging.INFO, "processing",
+                source="lod2_morphology",
+                vintage=vintage,
+                reason=reason,
+            )
             prepared = prepare_lod2_morphology(
                 vintage, source_root, run_id, smoke_tile_count=smoke_tile_count, grid=grid,
             )
@@ -332,7 +386,12 @@ def _run_lod2_morphology(
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
-            print(f"  lod2_morphology {vintage} FAILED: {exc}")
+            log_event(
+                _logger, logging.ERROR, "failed",
+                source="lod2_morphology",
+                vintage=vintage,
+                error=str(exc),
+            )
             led.upsert(SecondaryLedgerRow(
                 item_id=item_id, source="lod2_morphology",
                 period_or_vintage=str(vintage), status="failed",
@@ -349,7 +408,12 @@ def _run_lod2_morphology(
             provenance_uri=artifacts.provenance_uri,
             completion_uri=artifacts.completion_uri,
         ))
-        print(f"  lod2_morphology {vintage} OK — {artifacts.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "done",
+            source="lod2_morphology",
+            vintage=vintage,
+            output_uri=artifacts.cog_uri,
+        )
 
     return failed
 
@@ -373,9 +437,5 @@ def _resolve_grid(cfg: DictConfig):
 
 
 def _banner(cfg: DictConfig, run_id: str, source_root: str) -> None:
-    width = 60
-    print("=" * width, flush=True)
-    print(f"Static Sources Pipeline (A) — mode={cfg.mode}", flush=True)
-    print(f"  run_id      : {run_id}", flush=True)
-    print(f"  source_root : {source_root}", flush=True)
-    print("=" * width, flush=True)
+    log_event(_logger, logging.INFO, "run_start",
+        pipeline="static-sources", mode=cfg.mode, run_id=run_id, source_root=source_root)

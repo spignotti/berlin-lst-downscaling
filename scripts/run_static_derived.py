@@ -14,9 +14,12 @@ Usage
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 import hydra
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.io import RunLogSession
 from berlin_lst_downscaling.data.secondary.derived_pipeline import run_derived
 
 
@@ -27,7 +30,11 @@ from berlin_lst_downscaling.data.secondary.derived_pipeline import run_derived
 )
 def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to derived geometry pipeline."""
-    return run_derived(cfg)
+    run_id = uuid4().hex[:8]
+    derived_root = str(cfg.derived_root)
+
+    with RunLogSession(derived_root, pipeline="static-derived", run_id=run_id):
+        return run_derived(cfg)
 
 
 if __name__ == "__main__":

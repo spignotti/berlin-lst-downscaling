@@ -11,11 +11,13 @@ valid COG, STAC, provenance, and completion marker.
 
 from __future__ import annotations
 
+import logging
 import time
 from uuid import uuid4
 
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import (
@@ -31,6 +33,8 @@ from berlin_lst_downscaling.data.secondary.reports import (
 from berlin_lst_downscaling.data.secondary.source_products import (
     resolve_source_products,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def run_derived(cfg: DictConfig) -> int:
@@ -50,26 +54,36 @@ def run_derived(cfg: DictConfig) -> int:
     upstream_cfg = dict(cfg.get("upstream", {}))
     report = resolve_source_products(source_root, upstream_cfg or None)
     if not report.ok:
-        print("  SOURCE RESOLUTION FAILED:")
+        log_event(_logger, logging.ERROR, "source_resolution_failed")
         for err in report.errors:
-            print(f"    {err}")
+            log_event(_logger, logging.ERROR, "source_resolution_error", error=str(err))
         return 1
 
-    print(f"  Resolved {len(report.resolved)} source products:")
+    log_event(_logger, logging.INFO, "sources_resolved", n=len(report.resolved))
     for r in report.resolved:
-        print(f"    {r.source}/{r.revision} — {r.cog_uri}")
+        log_event(
+            _logger, logging.INFO, "source_resolved",
+            source=r.source,
+            revision=r.revision,
+            cog_uri=r.cog_uri,
+        )
 
     # ── 1. infer grid from terrain COG ───────────────────────────────
     terrain_resolved = next(
         (r for r in report.resolved if r.source == "terrain_height"), None,
     )
     if terrain_resolved is None:
-        print("  FAILED: terrain_height not resolved")
+        log_event(_logger, logging.ERROR, "terrain_height_not_resolved")
         return 1
 
     from berlin_lst_downscaling.common.grid import grid_from_cog
     grid = grid_from_cog(terrain_resolved.cog_uri)
-    print(f"  Grid: {grid.shape} @ ({grid.transform.xoff}, {grid.transform.yoff})")
+    log_event(
+        _logger, logging.INFO, "grid",
+        shape=grid.shape,
+        xoff=grid.transform.xoff,
+        yoff=grid.transform.yoff,
+    )
 
     # Build upstream map: "source/revision" → ResolvedSource
     src_map = {f"{r.source}/{r.revision}": r for r in report.resolved}
@@ -89,11 +103,11 @@ def run_derived(cfg: DictConfig) -> int:
 
     # ── 4. final report ──────────────────────────────────────────────
     report = secondary_qa_report(led, run_id)
-    print(format_secondary_report(report))
+    log_event(_logger, logging.INFO, "qa_report", report=format_secondary_report(report))
     persist_secondary_report(report, derived_root)
 
     elapsed = time.perf_counter() - t0
-    print(f"  Duration: {elapsed:.1f}s")
+    log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
     return 0 if failed == 0 else 1
 
 
@@ -129,7 +143,7 @@ def _run_dsm_products(
             ("vegetation_height/2020", vh),
             ("lod2_morphology/2024", lod2),
         ] if v is None]
-        print(f"  DSM skipped — missing upstream: {missing}")
+        log_event(_logger, logging.WARNING, "dsm_skipped_missing_upstream", missing=missing)
         return 1
 
     upstream_hashes = {
@@ -144,7 +158,7 @@ def _run_dsm_products(
     todo = reconcile([(bldg_item, bldg_item, geometry_id)], led, bldg_hash)
 
     if todo:
-        print("  Processing building_dsm...")
+        log_event(_logger, logging.INFO, "processing", product="building_dsm")
         led.upsert(SecondaryLedgerRow(
             item_id=bldg_item, source="building_dsm",
             period_or_vintage=geometry_id, status="exporting",
@@ -168,9 +182,12 @@ def _run_dsm_products(
                 provenance_uri=artifacts.provenance_uri,
                 completion_uri=artifacts.completion_uri,
             ))
-            print(f"  building_dsm OK — {artifacts.cog_uri}")
+            log_event(
+                _logger, logging.INFO, "done",
+                product="building_dsm", output_uri=artifacts.cog_uri,
+            )
         except Exception as exc:
-            print(f"  building_dsm FAILED: {exc}")
+            log_event(_logger, logging.ERROR, "failed", product="building_dsm", error=str(exc))
             led.upsert(SecondaryLedgerRow(
                 item_id=bldg_item, source="building_dsm",
                 period_or_vintage=geometry_id, status="failed",
@@ -184,7 +201,7 @@ def _run_dsm_products(
     todo = reconcile([(veg_item, veg_item, geometry_id)], led, veg_hash)
 
     if todo:
-        print("  Processing vegetation_dsm...")
+        log_event(_logger, logging.INFO, "processing", product="vegetation_dsm")
         led.upsert(SecondaryLedgerRow(
             item_id=veg_item, source="vegetation_dsm",
             period_or_vintage=geometry_id, status="exporting",
@@ -208,9 +225,12 @@ def _run_dsm_products(
                 provenance_uri=artifacts.provenance_uri,
                 completion_uri=artifacts.completion_uri,
             ))
-            print(f"  vegetation_dsm OK — {artifacts.cog_uri}")
+            log_event(
+                _logger, logging.INFO, "done",
+                product="vegetation_dsm", output_uri=artifacts.cog_uri,
+            )
         except Exception as exc:
-            print(f"  vegetation_dsm FAILED: {exc}")
+            log_event(_logger, logging.ERROR, "failed", product="vegetation_dsm", error=str(exc))
             led.upsert(SecondaryLedgerRow(
                 item_id=veg_item, source="vegetation_dsm",
                 period_or_vintage=geometry_id, status="failed",
@@ -229,7 +249,7 @@ def _run_dsm_products(
         todo = reconcile([(combined_item, combined_item, geometry_id)], led, combined_hash)
 
         if todo:
-            print("  Processing combined_dsm...")
+            log_event(_logger, logging.INFO, "processing", product="combined_dsm")
             led.upsert(SecondaryLedgerRow(
                 item_id=combined_item, source="combined_dsm",
                 period_or_vintage=geometry_id, status="exporting",
@@ -253,9 +273,12 @@ def _run_dsm_products(
                     provenance_uri=artifacts.provenance_uri,
                     completion_uri=artifacts.completion_uri,
                 ))
-                print(f"  combined_dsm OK — {artifacts.cog_uri}")
+                log_event(
+                    _logger, logging.INFO, "done",
+                    product="combined_dsm", output_uri=artifacts.cog_uri,
+                )
             except Exception as exc:
-                print(f"  combined_dsm FAILED: {exc}")
+                log_event(_logger, logging.ERROR, "failed", product="combined_dsm", error=str(exc))
                 led.upsert(SecondaryLedgerRow(
                     item_id=combined_item, source="combined_dsm",
                     period_or_vintage=geometry_id, status="failed",
@@ -307,7 +330,7 @@ def _run_horizon_svf(
             led, horizon_bldg_hash,
         )
         if todo:
-            print("  Processing horizon_building...")
+            log_event(_logger, logging.INFO, "processing", product="horizon_building")
             led.upsert(SecondaryLedgerRow(
                 item_id="horizon_building", source="horizon_building",
                 period_or_vintage=geometry_id, status="exporting",
@@ -332,9 +355,15 @@ def _run_horizon_svf(
                     provenance_uri=artifacts.provenance_uri,
                     completion_uri=artifacts.completion_uri,
                 ))
-                print(f"  horizon_building OK — {artifacts.cog_uri}")
+                log_event(
+                    _logger, logging.INFO, "done",
+                    product="horizon_building", output_uri=artifacts.cog_uri,
+                )
             except Exception as exc:
-                print(f"  horizon_building FAILED: {exc}")
+                log_event(
+                    _logger, logging.ERROR, "failed",
+                    product="horizon_building", error=str(exc),
+                )
                 led.upsert(SecondaryLedgerRow(
                     item_id="horizon_building", source="horizon_building",
                     period_or_vintage=geometry_id, status="failed",
@@ -342,7 +371,10 @@ def _run_horizon_svf(
                 ))
                 failed += 1
     else:
-        print("  horizon_building skipped — building_dsm not available")
+        log_event(
+            _logger, logging.INFO, "skipped",
+            product="horizon_building", reason="building_dsm not available",
+        )
 
     # Vegetation horizon — from vegetation_dsm
     if exists(veg_dsm_cog):
@@ -352,7 +384,7 @@ def _run_horizon_svf(
             led, horizon_veg_hash,
         )
         if todo:
-            print("  Processing horizon_vegetation...")
+            log_event(_logger, logging.INFO, "processing", product="horizon_vegetation")
             led.upsert(SecondaryLedgerRow(
                 item_id="horizon_vegetation", source="horizon_vegetation",
                 period_or_vintage=geometry_id, status="exporting",
@@ -377,9 +409,15 @@ def _run_horizon_svf(
                     provenance_uri=artifacts.provenance_uri,
                     completion_uri=artifacts.completion_uri,
                 ))
-                print(f"  horizon_vegetation OK — {artifacts.cog_uri}")
+                log_event(
+                    _logger, logging.INFO, "done",
+                    product="horizon_vegetation", output_uri=artifacts.cog_uri,
+                )
             except Exception as exc:
-                print(f"  horizon_vegetation FAILED: {exc}")
+                log_event(
+                    _logger, logging.ERROR, "failed",
+                    product="horizon_vegetation", error=str(exc),
+                )
                 led.upsert(SecondaryLedgerRow(
                     item_id="horizon_vegetation", source="horizon_vegetation",
                     period_or_vintage=geometry_id, status="failed",
@@ -387,7 +425,10 @@ def _run_horizon_svf(
                 ))
                 failed += 1
     else:
-        print("  horizon_vegetation skipped — vegetation_dsm not available")
+        log_event(
+            _logger, logging.INFO, "skipped",
+            product="horizon_vegetation", reason="vegetation_dsm not available",
+        )
 
     # SVF — from combined DSM
     if exists(combined_cog):
@@ -397,7 +438,7 @@ def _run_horizon_svf(
             led, svf_hash,
         )
         if todo:
-            print("  Processing svf...")
+            log_event(_logger, logging.INFO, "processing", product="svf")
             led.upsert(SecondaryLedgerRow(
                 item_id="svf", source="svf",
                 period_or_vintage=geometry_id, status="exporting",
@@ -422,9 +463,12 @@ def _run_horizon_svf(
                     provenance_uri=artifacts.provenance_uri,
                     completion_uri=artifacts.completion_uri,
                 ))
-                print(f"  svf OK — {artifacts.cog_uri}")
+                log_event(
+                    _logger, logging.INFO, "done",
+                    product="svf", output_uri=artifacts.cog_uri,
+                )
             except Exception as exc:
-                print(f"  svf FAILED: {exc}")
+                log_event(_logger, logging.ERROR, "failed", product="svf", error=str(exc))
                 led.upsert(SecondaryLedgerRow(
                     item_id="svf", source="svf",
                     period_or_vintage=geometry_id, status="failed",
@@ -432,7 +476,10 @@ def _run_horizon_svf(
                 ))
                 failed += 1
     else:
-        print("  svf skipped — combined_dsm not available")
+        log_event(
+            _logger, logging.INFO, "skipped",
+            product="svf", reason="combined_dsm not available",
+        )
 
     return failed
 
@@ -449,10 +496,6 @@ def _product_cog(root: str, product: str, geometry_id: str) -> str:
 def _banner(
     cfg: DictConfig, run_id: str, source_root: str, derived_root: str,
 ) -> None:
-    width = 60
-    print("=" * width, flush=True)
-    print(f"Derived Geometry Pipeline (B) — mode={cfg.mode}", flush=True)
-    print(f"  run_id      : {run_id}", flush=True)
-    print(f"  source_root : {source_root}", flush=True)
-    print(f"  derived_root: {derived_root}", flush=True)
-    print("=" * width, flush=True)
+    log_event(_logger, logging.INFO, "run_start",
+        pipeline="static-derived", mode=cfg.mode, run_id=run_id,
+        source_root=source_root, derived_root=derived_root)
