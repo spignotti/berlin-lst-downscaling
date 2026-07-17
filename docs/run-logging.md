@@ -105,15 +105,20 @@ uv run python scripts/run_ard.py --config-name smoke_primary logging_level=DEBUG
 
 ```
 entry point (run_ard.py, build_manifest.py, etc.)
-    │
+    │ reads logging_level from Hydra config
+    │ creates run_id (shared with pipeline)
     ▼
-RunLogSession(output_root, pipeline, run_id)
+RunLogSession(output_root, pipeline, run_id, level)
+    ├─ ContextFilter — injects pipeline + run_id into every LogRecord
     ├─ stderr StreamHandler — concise text, live terminal
     └─ JSONL FileHandler — structured, durable
          ├─ local: <output_root>/logs/<pipeline>/<run_id>.jsonl
          └─ GCS: local spool → atomic upload on exit
 ```
 
+- **Single run ID**: entry point creates one `run_id` and passes it to the pipeline function. Log, ledger, QA report, and provenance all share the same ID.
+- **ContextFilter**: `pipeline` and `run_id` are attached to every `LogRecord` via a handler filter, so all `log_event()` calls automatically include them.
+- **GCS publication is mandatory**: if the final JSONL upload to GCS fails, the process exits with a `RuntimeError` (after handler cleanup).
 - No root logger pollution: handlers attach temporarily during the session
 - Module loggers propagate to the session root via standard `logging`
 - Third-party loggers (rasterio, urllib3) suppressed to ERROR during runs
