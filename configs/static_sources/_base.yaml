@@ -6,6 +6,9 @@ mode: full                    # fixture | full
 # Source product root (local path or GCS bucket prefix)
 source_root: "data/static/sources"
 
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
 # Disk budget (peak scratch, GiB)
 peak_scratch_gb: 8
 disk_budget_gb: 20

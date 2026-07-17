@@ -29,6 +29,9 @@ ecostress:
 manifest_uri: null                  # explicit manifest path (or resolved from output_root)
 output_root: "data/ard"            # source-specific subdirectory set per source config
 
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
 # AOI (Berlin boundary)
 aoi:
   mask_base: "data/boundaries"     # base path for aoi_10m.tif and aoi_100m.tif

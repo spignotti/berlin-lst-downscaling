@@ -63,6 +63,9 @@ report_out: "data/ard/manifest_report.json"
 scan_out_dir: "data/ard"
 output_root: "data/ard"           # shared root; manifest_out resolved relative to this
 
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
 # ── Hydra (suppress run dir) ──────────────────────────────────────────────────
 hydra:
   output_subdir: null

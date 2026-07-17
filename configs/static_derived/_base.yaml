@@ -24,6 +24,9 @@ svf_max_radius: 3
 svf_n_directions: 16
 horizon_max_radius_m: 200
 
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
 # Hydra overrides
 hydra:
   output_subdir: null
