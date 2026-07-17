@@ -22,6 +22,7 @@ The kernel is Numba-accelerated for full-AOI performance.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -32,10 +33,13 @@ import xarray as xr
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     vintage_interval,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ── constants ──────────────────────────────────────────────────────────
 
@@ -215,9 +219,10 @@ def prepare_horizon(
 
     # Compute horizon cube
     n_azimuths = 36
-    print(
-        f"  Horizon ({component}): computing {n_azimuths} directions, "
-        f"radius={max_radius_m}m..."
+    log_event(
+        _logger, logging.INFO, "horizon_computing",
+        component=component, n_azimuths=n_azimuths,
+        max_radius_m=max_radius_m,
     )
     horizon_cube = _compute_horizon_cube(
         dsm_data, _CELL_SIZE_M, max_radius_m, n_azimuths,

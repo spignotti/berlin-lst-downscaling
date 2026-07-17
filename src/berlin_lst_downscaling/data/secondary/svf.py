@@ -18,6 +18,7 @@ Processing
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from hashlib import sha256
 
@@ -28,10 +29,13 @@ from xrspatial import sky_view_factor
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     vintage_interval,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ── contract ───────────────────────────────────────────────────────────
 
@@ -113,7 +117,10 @@ def prepare_svf(
     )
 
     # Compute SVF
-    print(f"  SVF: computing with max_radius={max_radius}, n_directions={n_directions}...")
+    log_event(
+        _logger, logging.INFO, "svf_computing",
+        max_radius=max_radius, n_directions=n_directions,
+    )
     svf_data = sky_view_factor(
         dsm_da,
         max_radius=max_radius,

@@ -32,6 +32,7 @@ See ``docs/lod2-vintage-qualification.md``.
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 import xml.etree.ElementTree as ET
@@ -51,6 +52,7 @@ from shapely.ops import unary_union
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.atom import (
     AtomAsset,
     parse_atom_feed,
@@ -60,6 +62,8 @@ from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     vintage_interval,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ── constants ──────────────────────────────────────────────────────────
 
@@ -414,7 +418,7 @@ def prepare_lod2_morphology(
     if smoke_tile_count is not None:
         manifest.assets = manifest.assets[:smoke_tile_count]
 
-    print(f"  LoD2: {len(manifest.assets)} tiles to process")
+    log_event(_logger, logging.INFO, "lod2_tiles", n_tiles=len(manifest.assets))
 
     # ── 2. accumulate rasterization statistics ───────────────────────
     shape = (grid.shape.y, grid.shape.x)
@@ -430,9 +434,10 @@ def prepare_lod2_morphology(
 
     for i, asset in enumerate(manifest.assets):
         if (i + 1) % 50 == 0:
-            print(
-                f"    tile {i + 1}/{len(manifest.assets)} "
-                f"({total_buildings} buildings so far)..."
+            log_event(
+                _logger, logging.DEBUG, "lod2_tile_progress",
+                done=i+1, total=len(manifest.assets),
+                buildings=total_buildings,
             )
 
         receipt = _process_lod2_tile(
@@ -548,7 +553,7 @@ def _process_lod2_tile(
     n = _accumulate_buildings(
         buildings, grid, sum_arr, sumsq_arr, count_arr, area_arr, max_arr,
     )
-    print(f"    {asset.filename}: {n} buildings with valid height")
+    log_event(_logger, logging.DEBUG, "lod2_tile_done", filename=asset.filename, buildings=n)
 
     return receipt
 

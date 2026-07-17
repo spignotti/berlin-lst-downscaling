@@ -20,6 +20,7 @@ Processing
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 import zipfile
@@ -36,6 +37,7 @@ from rasterio.warp import reproject
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.atom import (
     AtomAsset,
     parse_atom_feed,
@@ -45,6 +47,8 @@ from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     vintage_interval,
 )
+
+_logger = logging.getLogger(__name__)
 
 # ── constants ──────────────────────────────────────────────────────────
 
@@ -130,7 +134,7 @@ def prepare_terrain_height(
     if smoke_tile_count is not None:
         manifest.assets = manifest.assets[:smoke_tile_count]
 
-    print(f"  DGM: {len(manifest.assets)} tiles to process")
+    log_event(_logger, logging.INFO, "dgm_tiles", n_tiles=len(manifest.assets))
 
     # ── 2. download + accumulate on canonical grid ───────────────────
     dst_arr = np.full((grid.shape.y, grid.shape.x), np.nan, dtype=np.float32)
@@ -139,7 +143,10 @@ def prepare_terrain_height(
 
     for i, asset in enumerate(manifest.assets):
         if (i + 1) % 50 == 0:
-            print(f"    tile {i + 1}/{len(manifest.assets)}...")
+            log_event(
+                _logger, logging.DEBUG, "dgm_tile_progress",
+                done=i+1, total=len(manifest.assets),
+            )
 
         receipt = _process_tile(asset, dst_arr, grid, output_root)
         tile_receipts.append({
