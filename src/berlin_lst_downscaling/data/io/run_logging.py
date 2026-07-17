@@ -6,7 +6,7 @@ for a single pipeline invocation.
 
 Usage::
 
-    with RunLogSession(output_root, pipeline="ard", run_id=run_id) as log:
+    with RunLogSession(output_root, pipeline="ard", run_id=run_id):
         logger = logging.getLogger("berlin_lst_downscaling.data.ard.pipeline")
         log_event(logger, logging.INFO, "start", mode="full")
 
@@ -36,6 +36,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# ── context filter ────────────────────────────────────────────────────
+
+
+class _ContextFilter(logging.Filter):
+    """Inject pipeline and run_id into every LogRecord processed by a handler."""
+
+    def __init__(self, pipeline: str, run_id: str) -> None:
+        super().__init__()
+        self.pipeline = pipeline
+        self.run_id = run_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.pipeline = self.pipeline  # type: ignore[attr-defined]
+        record.run_id = self.run_id  # type: ignore[attr-defined]
+        return True
+
+
 # ── formatters ────────────────────────────────────────────────────────
 
 
@@ -60,13 +77,16 @@ class _JSONLFormatter(logging.Formatter):
             "logger": record.name,
             "event": record.getMessage(),
         }
+        # Context fields from the filter
         for key in ("pipeline", "run_id"):
             val = getattr(record, key, None)
             if val is not None:
                 entry[key] = val
+        # Event-specific fields from log_event()
         fields = getattr(record, "fields", None)
         if fields is not None:
             entry.update(fields)
+        # Traceback from exc_info=True / logger.exception()
         if record.exc_info and record.exc_info[0] is not None:
             entry["exception"] = "".join(traceback.format_exception(*record.exc_info))
         return json.dumps(entry, default=str)
@@ -99,9 +119,11 @@ def run_log_path(
     output_root: str,
     pipeline: str,
     run_id: str,
-) -> Path:
-    """Deterministic log file path for a run (local filesystem)."""
-    return Path(output_root) / "logs" / pipeline / f"{run_id}.jsonl"
+) -> str:
+    """Deterministic GCS/local log URI for a run."""
+    # Always string-based — avoids Path("gs://...") producing gs:/...
+    base = output_root.rstrip("/")
+    return f"{base}/logs/{pipeline}/{run_id}.jsonl"
 
 
 def log_event(
@@ -149,9 +171,10 @@ class RunLogSession:
         self.pipeline = pipeline
         self.run_id = run_id
         self.level = level
-        self._log_path: Path | None = None
         self._spool_path: Path | None = None
+        self._final_uri: str | None = None
         self._handlers: list[logging.Handler] = []  # type: ignore[type-arg]
+        self._ctx_filter: _ContextFilter | None = None
         self._orig_propagate: bool | None = None
 
     def __enter__(self) -> RunLogSession:
@@ -160,28 +183,29 @@ class RunLogSession:
         root.propagate = False
         root.setLevel(self.level)
 
+        # Context filter — attaches pipeline + run_id to every record
+        self._ctx_filter = _ContextFilter(self.pipeline, self.run_id)
+
         # stderr — always live
         stderr_h = _StderrHandler()
         stderr_h.setLevel(self.level)
+        stderr_h.addFilter(self._ctx_filter)
         root.addHandler(stderr_h)
         self._handlers.append(stderr_h)
 
         # JSONL file — local or spool+upload for GCS
-        log_path = run_log_path(self.output_root, self.pipeline, self.run_id)
+        self._final_uri = run_log_path(self.output_root, self.pipeline, self.run_id)
         is_gcs = self.output_root.startswith("gs://")
 
         if is_gcs:
-            # Spool locally, upload on exit
             spool_dir = Path(tempfile.mkdtemp(prefix=f"log_{self.pipeline}_"))
             self._spool_path = spool_dir / f"{self.run_id}.jsonl"
             file_h = _JSONLFileHandler(self._spool_path)
-            final = Path(self.output_root) / "logs" / self.pipeline
-            self._log_path = final / f"{self.run_id}.jsonl"
         else:
-            file_h = _JSONLFileHandler(log_path)
-            self._log_path = log_path
+            file_h = _JSONLFileHandler(Path(self._final_uri))
 
         file_h.setLevel(self.level)
+        file_h.addFilter(self._ctx_filter)
         root.addHandler(file_h)
         self._handlers.append(file_h)
 
@@ -191,10 +215,10 @@ class RunLogSession:
 
         return self
 
-    def __exit__(self, *_: Any) -> None:
+    def __exit__(self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any) -> None:
         root = logging.getLogger()
 
-        # Close handlers to flush buffers
+        # Close handlers to flush buffers, then remove
         for h in self._handlers:
             try:
                 h.close()
@@ -206,19 +230,32 @@ class RunLogSession:
         if self._orig_propagate is not None:
             root.propagate = self._orig_propagate
 
-        # GCS upload: local spool → final GCS URI
-        if self._spool_path is not None and self._log_path is not None:
+        # GCS upload: local spool → final GCS URI (mandatory)
+        upload_exc: Exception | None = None
+        if self._spool_path is not None and self._final_uri is not None:
             try:
                 from berlin_lst_downscaling.data.io.storage import atomic_upload
 
-                atomic_upload(self._spool_path, str(self._log_path))
-            except Exception:  # noqa: S110 — best-effort: don't crash over log upload
-                pass
+                atomic_upload(self._spool_path, self._final_uri)
+            except Exception as exc:
+                upload_exc = exc
             finally:
-                # Clean up spool directory
                 try:
                     spool_dir = self._spool_path.parent
                     self._spool_path.unlink(missing_ok=True)
                     spool_dir.rmdir()
                 except Exception:  # noqa: S110 — best-effort cleanup
                     pass
+
+        # If GCS log upload failed, re-raise after cleanup
+        if upload_exc is not None:
+            raise RuntimeError(
+                f"GCS log publication failed for {self._final_uri}: {upload_exc}"
+            ) from upload_exc
+
+
+__all__ = [
+    "RunLogSession",
+    "log_event",
+    "run_log_path",
+]

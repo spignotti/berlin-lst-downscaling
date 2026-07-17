@@ -254,10 +254,13 @@ def _run_scan(cfg: DictConfig) -> None:
 
 
 def main(cfg: DictConfig) -> None:
+    import logging
+
     output_root = str(cfg.get("output_root", "data/ard"))
     run_id = __import__("uuid").uuid4().hex[:8]
+    level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
 
-    with RunLogSession(output_root, pipeline="selection", run_id=run_id):
+    with RunLogSession(output_root, pipeline="selection", run_id=run_id, level=level):
         mode = cfg.get("mode", "couple")
         if mode == "scan":
             _run_scan(cfg)

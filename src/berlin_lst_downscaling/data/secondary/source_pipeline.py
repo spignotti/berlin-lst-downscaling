@@ -35,12 +35,13 @@ from berlin_lst_downscaling.data.secondary.reports import (
 )
 
 
-def run_sources(cfg: DictConfig) -> int:
+def run_sources(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the static source pipeline (Pipeline A).
 
     Returns 0 on success, 1 if any items failed.
     """
-    run_id = uuid4().hex[:8]
+    if run_id is None:
+        run_id = uuid4().hex[:8]
     source_root = str(cfg.source_root)
     t0 = time.perf_counter()
 

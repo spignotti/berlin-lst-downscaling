@@ -168,7 +168,7 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 # ── main entry ───────────────────────────────────────────────────────
 
 
-def run(cfg: DictConfig) -> int:
+def run(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the ARD pipeline — manifest-driven only (mode=full).
 
     Smoke mode was removed in favor of manifest-driven smoke using
@@ -177,7 +177,8 @@ def run(cfg: DictConfig) -> int:
 
     Returns 0 on success, 1 if any scene failed.
     """
-    run_id = uuid4().hex[:8]
+    if run_id is None:
+        run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
 
     led = Ledger.open(f"{output_root}/ledger.parquet")

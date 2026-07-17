@@ -37,12 +37,13 @@ from berlin_lst_downscaling.data.secondary.source_products import (
 _logger = logging.getLogger(__name__)
 
 
-def run_derived(cfg: DictConfig) -> int:
+def run_derived(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the derived geometry pipeline (Pipeline B).
 
     Returns 0 on success, 1 if any items failed.
     """
-    run_id = uuid4().hex[:8]
+    if run_id is None:
+        run_id = uuid4().hex[:8]
     source_root = str(cfg.source_root)
     derived_root = str(cfg.derived_root)
     geometry_id = str(cfg.geometry_id)

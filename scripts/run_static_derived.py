@@ -14,6 +14,7 @@ Usage
 """
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 import hydra
@@ -32,9 +33,10 @@ def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to derived geometry pipeline."""
     run_id = uuid4().hex[:8]
     derived_root = str(cfg.derived_root)
+    level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
 
-    with RunLogSession(derived_root, pipeline="static-derived", run_id=run_id):
-        return run_derived(cfg)
+    with RunLogSession(derived_root, pipeline="static-derived", run_id=run_id, level=level):
+        return run_derived(cfg, run_id=run_id)
 
 
 if __name__ == "__main__":

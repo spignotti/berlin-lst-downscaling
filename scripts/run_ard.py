@@ -38,8 +38,9 @@ def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to ard_run."""
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
+    level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
 
-    with RunLogSession(output_root, pipeline="ard", run_id=run_id):
+    with RunLogSession(output_root, pipeline="ard", run_id=run_id, level=level):
         log_event(_logger, logging.INFO, "config",
             mode=cfg.mode,
             sources=list(cfg.sources),
@@ -47,7 +48,7 @@ def main(cfg: DictConfig) -> int:
             manifest_uri=cfg.get("manifest_uri", "N/A"),
             bbox=list(cfg.bbox),
         )
-        return ard_run(cfg)
+        return ard_run(cfg, run_id=run_id)
 
 
 if __name__ == "__main__":

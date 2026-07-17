@@ -34,7 +34,7 @@ _logger = logging.getLogger(__name__)
 # ── public entry ──────────────────────────────────────────────────────
 
 
-def run(cfg: DictConfig) -> int:
+def run(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the secondary-data pipeline.
 
     Returns 0 on success, 1 if any items failed.
@@ -44,7 +44,8 @@ def run(cfg: DictConfig) -> int:
     cfg :
         Hydra config.  Must contain at least ``mode`` and ``output_root``.
     """
-    run_id = uuid4().hex[:8]
+    if run_id is None:
+        run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     t0 = time.perf_counter()
 

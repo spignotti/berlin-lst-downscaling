@@ -28,6 +28,7 @@ Usage
 
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 import hydra
@@ -42,9 +43,10 @@ def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to secondary pipeline."""
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
+    level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
 
-    with RunLogSession(output_root, pipeline="secondary", run_id=run_id):
-        return secondary_run(cfg)
+    with RunLogSession(output_root, pipeline="secondary", run_id=run_id, level=level):
+        return secondary_run(cfg, run_id=run_id)
 
 
 if __name__ == "__main__":
