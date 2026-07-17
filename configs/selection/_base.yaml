@@ -6,11 +6,15 @@
 bbox: [13.08, 52.34, 13.76, 52.68]   # WGS84 Berlin bbox (minx, miny, maxx, maxy)
 years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
 months: [5, 6, 7, 8, 9]               # May – September (1-indexed)
+cutoff_utc: null                       # required for current-year runs; e.g. "2026-07-17T23:59:59Z"
 
 # ── Pipeline mode ─────────────────────────────────────────────────────────────
 # "couple" → full pixel-coupled manifest
 # "scan"   → metadata-only volume scan, writes scan_report.{json,md}
 mode: couple
+
+# ── Platform filter ──────────────────────────────────────────────────────────
+platforms: ["landsat-8", "landsat-9"]  # exclude Landsat-7 (SLC-off, different bands)
 
 # ── Landsat anchor ────────────────────────────────────────────────────────────
 landsat:
@@ -38,6 +42,14 @@ ecostress:
   local_tz: "Europe/Berlin"   # IANA tz name for UTC offset conversion
   overlap_min: 0.10            # minimum footprint overlap with Berlin bbox
   clear_frac_min: 0.50         # min fraction of cloud==0 pixels inside Berlin-AOI
+  # Fixed validation allowlist (2018-08-25 only)
+  validation_ids:
+    - "ECOv002_L2T_LSTE_00770_009_32UQD_20180825T082058_0712_01"
+    - "ECOv002_L2T_LSTE_00770_009_33UUU_20180825T082058_0712_01"
+    - "ECOv002_L2T_LSTE_00770_009_33UVU_20180825T082058_0712_01"
+    - "ECOv002_L2T_LSTE_00771_005_32UQD_20180825T095710_0712_01"
+    - "ECOv002_L2T_LSTE_00771_005_33UUU_20180825T095710_0712_01"
+    - "ECOv002_L2T_LSTE_00771_005_33UVU_20180825T095710_0712_01"
   # AppEEARS credentials are picked up via EARTHDATA_TOKEN env var automatically
 
 # ── AOI (for clear_frac computation) ─────────────────────────────────────────
@@ -46,6 +58,8 @@ aoi:
 
 # ── Output ───────────────────────────────────────────────────────────────────
 manifest_out: "data/ard/manifest.parquet"
+pairings_out: "data/ard/pairings.parquet"
+report_out: "data/ard/manifest_report.json"
 scan_out_dir: "data/ard"
 output_root: "data/ard"           # shared root; manifest_out resolved relative to this
 

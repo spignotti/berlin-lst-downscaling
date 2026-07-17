@@ -59,7 +59,7 @@ from berlin_lst_downscaling.data.selection.ecostress import search_ecostress  # 
 from berlin_lst_downscaling.data.selection.ecostress_subset import (  # noqa: E402
     build_ecostress_subset,
 )
-from berlin_lst_downscaling.data.selection.manifest import write_manifest  # noqa: E402
+from berlin_lst_downscaling.data.selection.manifest import write_bundle  # noqa: E402
 from berlin_lst_downscaling.data.selection.s2_search import (  # noqa: E402
     match_s2_candidates,
     match_s2_candidates_with_clear_frac,
@@ -73,7 +73,7 @@ __all__ = [
     "match_s2_candidates_with_clear_frac",
     "couple_all",
     "build_ecostress_subset",
-    "write_manifest",
+    "write_bundle",
     "run_scan",
     "search_ecostress",
     # Dataclasses

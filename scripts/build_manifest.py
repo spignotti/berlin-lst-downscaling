@@ -56,9 +56,8 @@ from berlin_lst_downscaling.data.selection import (
     build_anchors,
     couple_all,
     match_s2_candidates_with_clear_frac,
-    write_manifest,
+    write_bundle,
 )
-from berlin_lst_downscaling.data.selection.ecostress_subset import build_ecostress_subset
 from berlin_lst_downscaling.data.selection.scan import run_scan
 
 # ── couple mode ──────────────────────────────────────────────────────────────
@@ -148,16 +147,26 @@ def _run_couple(cfg: DictConfig) -> None:
     coupled, dropped = couple_all(anchors, s2_by_anchor, cfg)
     print(f"  [3/5] Coupled: {len(coupled)}, Dropped: {len(dropped)}", file=sys.stderr)
 
-    # ── 4. ECOSTRESS subset ─────────────────────────────────────────────────
-    print("  [4/5] Building ECOSTRESS subset ...", file=sys.stderr)
-    ecostress_by_anchor = build_ecostress_subset(coupled, cfg)
-    n_eco = sum(len(v) for v in ecostress_by_anchor.values())
-    print(f"  [4/5] ECOSTRESS matches: {n_eco}", file=sys.stderr)
+    # ── 4. ECOSTRESS validation granules (fixed allowlist) ──────────────
+    print("  [4/5] Resolving ECOSTRESS validation granules ...", file=sys.stderr)
+    eco_granules = _resolve_ecostress_allowlist(cfg)
+    print(f"  [4/5] ECOSTRESS granules: {len(eco_granules)}", file=sys.stderr)
 
-    # ── 5. Write manifest ────────────────────────────────────────────────────
-    print("  [5/5] Writing manifest ...", file=sys.stderr)
+    # ── 5. Write manifest bundle ────────────────────────────────────────
+    print("  [5/5] Writing manifest bundle ...", file=sys.stderr)
     manifest_out = cfg.get("manifest_out", f"{cfg.output_root}/manifest.parquet")
-    result = write_manifest(coupled, dropped, ecostress_by_anchor, manifest_out)
+    pairings_out = cfg.get("pairings_out", f"{cfg.output_root}/pairings.parquet")
+    report_out = cfg.get("report_out", f"{cfg.output_root}/manifest_report.json")
+    cutoff = cfg.get("cutoff_utc") or "2026-07-17T23:59:59Z"
+
+    result = write_bundle(
+        coupled, dropped, eco_granules,
+        manifest_path=manifest_out,
+        pairings_path=pairings_out,
+        report_path=report_out,
+        cutoff_utc=cutoff,
+        cfg=cfg,
+    )
 
     coupling_rate = result.n_coupled / result.n_anchors if result.n_anchors > 0 else 0.0
     print(json.dumps({
@@ -171,9 +180,11 @@ def _run_couple(cfg: DictConfig) -> None:
         "n_ecostress": result.n_ecostress,
         "coupling_rate_observed": round(coupling_rate, 4),
         "manifest_path": result.manifest_path,
+        "pairings_path": result.pairings_path,
+        "report_path": result.report_path,
     }), file=sys.stderr)
 
-    print(f"  [OK] Manifest written: {result.manifest_path}", file=sys.stderr)
+    print(f"  [OK] Bundle written: {result.manifest_path}", file=sys.stderr)
     print(f"       Anchors: {result.n_anchors} | Coupled: {result.n_coupled} | "
           f"Dropped: {result.n_dropped} | ECOSTRESS: {result.n_ecostress}")
 
@@ -196,6 +207,39 @@ def _resolve_landsat_items(anchor: dict, cfg) -> list:
         # passed the pixel-wise QA_PIXEL ∩ AOI gate in build_anchors.
     )
     return list(search.items())
+
+
+def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
+    """Resolve the fixed ECOSTRESS validation granules from the allowlist.
+
+    Uses the configured validation_ids to build granule dicts without CMR search.
+    """
+    from berlin_lst_downscaling.data.acquisition.ecostress import (
+        parse_granule_datetime,
+        parse_granule_mgrs,
+    )
+    from berlin_lst_downscaling.data.selection.schema import ECOSTRESS_VALIDATION_IDS
+
+    ids = cfg.get("ecostress", {}).get("validation_ids", ECOSTRESS_VALIDATION_IDS)
+    granules: list[dict] = []
+    for gid in ids:
+        dt = parse_granule_datetime(gid)
+        if dt is None:
+            print(f"  WARNING: Cannot parse datetime from {gid}", file=sys.stderr)
+            continue
+        mgrs = parse_granule_mgrs(gid)
+        granules.append({
+            "granule_id": gid,
+            "source": "ecostress",
+            "year": dt.year,
+            "datetime": dt,
+            "date": dt.strftime("%Y-%m-%d"),
+            "dt_hours": 0.0,
+            "mgrs_tile": mgrs,
+            "overlap_frac": 1.0,
+            "clear_frac": None,
+        })
+    return granules
 
 
 # ── scan mode ────────────────────────────────────────────────────────────────

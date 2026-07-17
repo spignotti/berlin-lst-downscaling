@@ -1,150 +1,260 @@
-"""Write manifest Parquet per docs/ard-manifest-schema.md (v1 + v2 columns).
+"""Write manifest bundle per docs/ard-manifest-schema.md (v3).
 
-Manifest structure: one row per scene (Landsat anchor, S2 match, or ECOSTRESS granule).
-Rows are tagged with ``status`` so the ARD pipeline can filter by source.
-
-Status values (per schema spec):
-  coupled   — Landsat anchor successfully paired with S2 (ECOSTRESS may follow)
-  orphaned  — Landsat anchor with no S2 partner (below threshold)
-  validated — Landsat anchor with both S2 and ECOSTRESS (for validation subset)
-  dropped   — Landsat anchor entirely discarded (no row emitted, logged separately)
+The bundle consists of three artifacts:
+  1. ``manifest.parquet`` — one unique executable scene per row.
+  2. ``pairings.parquet`` — one Landsat→Sentinel-2 relation per anchor.
+  3. ``manifest_report.json`` — publication gate with hashes, counts, policy.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from datetime import UTC, datetime
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from berlin_lst_downscaling.data.selection import ManifestResult
+from berlin_lst_downscaling.data.selection.schema import (
+    MANIFEST_SCHEMA,
+    PAIRINGS_SCHEMA,
+    bundle_metadata,
+    policy_fingerprint,
+    table_metadata,
+)
 
 
-def write_manifest(
+def write_bundle(
     coupled: list[dict],
     dropped: list[dict],
-    ecostress_by_anchor: dict[str, list[dict]],
-    output_path: str,
-) -> ManifestResult:
-    """Write the ARD manifest Parquet and return a summary.
+    ecostress_granules: list[dict],
+    *,
+    manifest_path: str,
+    pairings_path: str,
+    report_path: str,
+    cutoff_utc: str,
+    cfg: Any,
+) -> BundleResult:
+    """Write the full manifest bundle (manifest + pairings + report).
 
-    Emits one row per scene with v1 + v2 columns per
-    :ref:`ard-manifest-schema`.
+    Parameters
+    ----------
+    coupled :
+        List of coupled pair dicts from ``couple_all``.
+    dropped :
+        List of dropped pair dicts from ``couple_all``.
+    ecostress_granules :
+        List of ECOSTRESS granule dicts (from allowlist resolution).
+    manifest_path :
+        Output path for manifest.parquet.
+    pairings_path :
+        Output path for pairings.parquet.
+    report_path :
+        Output path for manifest_report.json.
+    cutoff_utc :
+        ISO timestamp for 2026 data cutoff.
+    cfg :
+        Hydra config for policy fingerprinting.
     """
-    rows: list[dict] = []
+    p_hash = policy_fingerprint(cfg)
+    now = datetime.now(UTC)
 
-    # ── Coupled Landsat anchors (with S2 match) ─────────────────────────────
+    # ── Build manifest rows ────────────────────────────────────────────
+    manifest_rows: list[dict] = []
+    # Track referenced S2 IDs for completeness check
+    referenced_s2: set[str] = set()
+
     for pair in coupled:
         anchor = pair["anchor"]
         s2 = pair["s2"]
-        eco_list = ecostress_by_anchor.get(anchor["scene_id"], [])
+        referenced_s2.add(s2["scene_id"])
 
-        # Primary status: "validated" if ECOSTRESS also matched, else "coupled"
-        status = "validated" if eco_list else "coupled"
+        # Anchor row
+        manifest_rows.append({
+            "scene_id": anchor["scene_id"],
+            "source": "landsat-c2-l2",
+            "role": "anchor",
+            "platform": _extract_platform(anchor["scene_id"]),
+            "year": anchor["year"],
+            "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
+            "item_href": anchor.get("item_href"),
+            "aoi_clear_px": anchor.get("aoi_clear_px"),
+            "aoi_total_px": anchor.get("aoi_total_px"),
+            "aoi_clear_frac": anchor.get("aoi_clear_frac"),
+            "cloud_cover": anchor.get("cloud_cover"),
+            "solar_azimuth": anchor.get("sun_azimuth"),
+            "solar_elevation": anchor.get("sun_elevation"),
+        })
 
-        rows.append(
-            {
-                "scene_id": anchor["scene_id"],
-                "source": "landsat-c2-l2",
-                "year": anchor["year"],
-                "status": status,
-                "coupled_s2_id": s2["scene_id"],
-                "ecostress_id": eco_list[0]["granule_id"] if eco_list else None,
-                "paired_at": _naive_to_utc(s2["datetime"]),
-                "clear_frac": pair.get("clear_frac"),
-                "dt_days": s2["dt_days"],
-                # v2 columns
-                "date": anchor["date"],
-                "item_href": anchor.get("item_href"),
-                "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
-                "cloud_cover": anchor.get("cloud_cover"),
-                "solar_azimuth": anchor.get("sun_azimuth"),
-                "solar_elevation": anchor.get("sun_elevation"),
-            }
-        )
+        # S2 predictor row
+        manifest_rows.append({
+            "scene_id": s2["scene_id"],
+            "source": "sentinel-2-l2a",
+            "role": "predictor",
+            "platform": "sentinel-2",
+            "year": s2["year"],
+            "acquisition_datetime": _naive_to_utc(s2["datetime"]),
+            "item_href": s2.get("item_href"),
+            "aoi_clear_px": s2.get("aoi_clear_px"),
+            "aoi_total_px": s2.get("aoi_total_px"),
+            "aoi_clear_frac": s2.get("aoi_clear_frac"),
+            "cloud_cover": s2.get("cloud_cover"),
+            "solar_azimuth": None,
+            "solar_elevation": None,
+        })
 
-        # S2 partner row
-        rows.append(
-            {
-                "scene_id": s2["scene_id"],
-                "source": "sentinel-2-l2a",
-                "year": s2["year"],
-                "status": status,
-                "coupled_s2_id": None,
-                "ecostress_id": None,
-                "paired_at": _naive_to_utc(s2["datetime"]),
-                "clear_frac": pair.get("clear_frac"),
-                "dt_days": s2["dt_days"],
-                "date": s2["date"],
-                "item_href": s2.get("item_href"),
-                "acquisition_datetime": _naive_to_utc(s2["datetime"]),
-                "cloud_cover": s2.get("cloud_cover"),
-                "solar_azimuth": None,
-                "solar_elevation": None,
-            }
-        )
+    # ECOSTRESS validation rows (exactly six unique IDs)
+    for eco in ecostress_granules:
+        manifest_rows.append({
+            "scene_id": eco["granule_id"],
+            "source": "ecostress",
+            "role": "validation",
+            "platform": "ecostress",
+            "year": eco["year"],
+            "acquisition_datetime": _naive_to_utc(eco["datetime"]),
+            "item_href": None,
+            "aoi_clear_px": None,
+            "aoi_total_px": None,
+            "aoi_clear_frac": None,
+            "cloud_cover": None,
+            "solar_azimuth": None,
+            "solar_elevation": None,
+        })
 
-        # ECOSTRESS rows (may be 0, 1, or more per anchor)
-        for eco in eco_list:
-            rows.append(
-                {
-                    "scene_id": eco["granule_id"],
-                    "source": "ecostress",
-                    "year": eco["year"],
-                    "status": status,
-                    "coupled_s2_id": None,
-                    "ecostress_id": None,
-                    "paired_at": _naive_to_utc(eco["datetime"]),
-                    "clear_frac": eco.get("clear_frac"),
-                    "dt_days": eco.get("dt_hours", 0.0) / 24.0,  # convert hours → days
-                    "date": eco["date"],
-                    "item_href": None,
-                    "acquisition_datetime": _naive_to_utc(eco["datetime"]),
-                    "cloud_cover": None,
-                    "solar_azimuth": None,
-                    "solar_elevation": None,
-                }
-            )
-
-    # ── Orphaned Landsat anchors (no S2 above threshold) ────────────────────
-    for pair in dropped:
+    # ── Build pairings rows ────────────────────────────────────────────
+    pairing_rows: list[dict] = []
+    for pair in coupled:
         anchor = pair["anchor"]
-        rows.append(
-            {
-                "scene_id": anchor["scene_id"],
-                "source": "landsat-c2-l2",
-                "year": anchor["year"],
-                "status": "orphaned",
-                "coupled_s2_id": None,
-                "ecostress_id": None,
-                "paired_at": None,
-                "clear_frac": None,
-                "dt_days": None,
-                "date": anchor["date"],
-                "item_href": anchor.get("item_href"),
-                "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
-                "cloud_cover": anchor.get("cloud_cover"),
-                "solar_azimuth": anchor.get("sun_azimuth"),
-                "solar_elevation": anchor.get("sun_elevation"),
-            }
+        s2 = pair["s2"]
+        dt_seconds = int(abs((anchor["datetime"] - s2["datetime"]).total_seconds()))
+        l_clear = pair.get("landsat_clear_px") or anchor.get("aoi_clear_px") or 0
+        j_clear = pair.get("joint_clear_px") or 0
+        j_frac = pair.get("joint_clear_frac") or pair.get("clear_frac") or 0.0
+        score = pair.get("score") or 0.0
+
+        pairing_rows.append({
+            "landsat_scene_id": anchor["scene_id"],
+            "sentinel2_scene_id": s2["scene_id"],
+            "dt_seconds": dt_seconds,
+            "landsat_clear_px": l_clear,
+            "joint_clear_px": j_clear,
+            "joint_clear_frac": j_frac,
+            "score": score,
+        })
+
+    # ── Build tables ───────────────────────────────────────────────────
+    manifest_table = pa.Table.from_pylist(manifest_rows, schema=MANIFEST_SCHEMA)
+    pairings_table = pa.Table.from_pylist(pairing_rows, schema=PAIRINGS_SCHEMA)
+
+    # Compute hashes before writing
+    manifest_buf = pa.BufferOutputStream()
+    pq.write_table(manifest_table, manifest_buf)
+    manifest_hash = hashlib.sha256(manifest_buf.getvalue().to_pybytes()).hexdigest()[:16]
+
+    pairings_buf = pa.BufferOutputStream()
+    pq.write_table(pairings_table, pairings_buf)
+    pairings_hash = hashlib.sha256(pairings_buf.getvalue().to_pybytes()).hexdigest()[:16]
+
+    # Attach metadata
+    meta = bundle_metadata(
+        p_hash, cutoff_utc,
+        manifest_hash=manifest_hash,
+        pairings_hash=pairings_hash,
+    )
+    manifest_table = manifest_table.replace_schema_metadata(table_metadata(meta))
+    pairings_table = pairings_table.replace_schema_metadata(table_metadata(meta))
+
+    # ── Validate before writing ────────────────────────────────────────
+    from berlin_lst_downscaling.data.selection.validate import (
+        validate_manifest_table,
+        validate_pairings_table,
+    )
+
+    vr = validate_manifest_table(manifest_table, require_item_href=True)
+    if not vr.ok:
+        raise ValueError(
+            "Manifest validation failed:\n" + "\n".join(vr.errors)
         )
 
-    # ── Write Parquet ────────────────────────────────────────────────────────
-    table = pa.Table.from_pylist(rows, schema=_MANIFEST_SCHEMA)
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    pq.write_table(table, output_path)
+    pr = validate_pairings_table(pairings_table, manifest_table)
+    if not pr.ok:
+        raise ValueError(
+            "Pairings validation failed:\n" + "\n".join(pr.errors)
+        )
 
-    n_anchors = len(coupled) + len(dropped)
-    return ManifestResult(
+    # ── Write bundle ───────────────────────────────────────────────────
+    _ensure_dir(manifest_path)
+    _ensure_dir(pairings_path)
+    _ensure_dir(report_path)
+
+    pq.write_table(manifest_table, manifest_path)
+    pq.write_table(pairings_table, pairings_path)
+
+    # ── Build report ───────────────────────────────────────────────────
+    n_coupled = len(coupled)
+    n_dropped = len(dropped)
+    n_anchors = n_coupled + n_dropped
+    n_eco = len(ecostress_granules)
+
+    report = {
+        "bundle_id": f"bundle-{p_hash}-{now.strftime('%Y%m%dT%H%M%S')}",
+        "generated_at": now.isoformat(),
+        "cutoff_utc": cutoff_utc,
+        "policy_hash": p_hash,
+        "schema_version": 3,
+        "manifest_hash": manifest_hash,
+        "pairings_hash": pairings_hash,
+        "counts": {
+            "anchors_total": n_anchors,
+            "coupled": n_coupled,
+            "dropped": n_dropped,
+            "ecostress": n_eco,
+            "manifest_rows": len(manifest_rows),
+            "pairing_rows": len(pairing_rows),
+            "unique_landsat": len({
+                r["scene_id"] for r in manifest_rows
+                if r["source"] == "landsat-c2-l2"
+            }),
+            "unique_s2": len({
+                r["scene_id"] for r in manifest_rows
+                if r["source"] == "sentinel-2-l2a"
+            }),
+            "unique_ecostress": n_eco,
+        },
+        "dropped_reasons": _summarize_dropped(dropped),
+        "warnings": pr.warnings + vr.warnings,
+        "unresolved_errors": len(vr.errors) + len(pr.errors),
+    }
+
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    return BundleResult(
+        manifest_path=manifest_path,
+        pairings_path=pairings_path,
+        report_path=report_path,
+        manifest_hash=manifest_hash,
+        pairings_hash=pairings_hash,
         n_anchors=n_anchors,
-        n_coupled=len(coupled),
-        n_dropped=len(dropped),
-        n_ecostress=sum(len(v) for v in ecostress_by_anchor.values()),
-        manifest_path=output_path,
+        n_coupled=n_coupled,
+        n_dropped=n_dropped,
+        n_ecostress=n_eco,
     )
+
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+def _extract_platform(scene_id: str) -> str:
+    """Derive platform from Landsat scene ID prefix."""
+    prefix = scene_id[:4]
+    if prefix == "LC08":
+        return "landsat-8"
+    if prefix == "LC09":
+        return "landsat-9"
+    return "unknown"
 
 
 def _naive_to_utc(dt: datetime) -> datetime:
@@ -154,24 +264,51 @@ def _naive_to_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
-_MANIFEST_SCHEMA = pa.schema(
-    [
-        # v1 core
-        pa.field("scene_id", pa.string(), nullable=False),
-        pa.field("source", pa.string(), nullable=False),
-        pa.field("year", pa.int32(), nullable=False),
-        pa.field("status", pa.string(), nullable=False),
-        pa.field("coupled_s2_id", pa.string(), nullable=True),
-        pa.field("ecostress_id", pa.string(), nullable=True),
-        pa.field("paired_at", pa.timestamp("us", tz="UTC"), nullable=True),
-        pa.field("clear_frac", pa.float32(), nullable=True),
-        pa.field("dt_days", pa.float32(), nullable=True),
-        # v2 optional
-        pa.field("date", pa.string(), nullable=True),
-        pa.field("item_href", pa.string(), nullable=True),
-        pa.field("acquisition_datetime", pa.timestamp("us", tz="UTC"), nullable=True),
-        pa.field("cloud_cover", pa.float32(), nullable=True),
-        pa.field("solar_azimuth", pa.float32(), nullable=True),
-        pa.field("solar_elevation", pa.float32(), nullable=True),
-    ]
-)
+def _ensure_dir(path: str) -> None:
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+
+
+def _summarize_dropped(dropped: list[dict]) -> dict[str, int]:
+    """Count dropped anchors by reason."""
+    reasons: dict[str, int] = {}
+    for pair in dropped:
+        r = pair.get("reason", "unknown")
+        reasons[r] = reasons.get(r, 0) + 1
+    return reasons
+
+
+# ── result type ──────────────────────────────────────────────────────
+
+
+class BundleResult:
+    """Result of writing the manifest bundle."""
+
+    def __init__(
+        self,
+        manifest_path: str,
+        pairings_path: str,
+        report_path: str,
+        manifest_hash: str,
+        pairings_hash: str,
+        n_anchors: int,
+        n_coupled: int,
+        n_dropped: int,
+        n_ecostress: int,
+    ) -> None:
+        self.manifest_path = manifest_path
+        self.pairings_path = pairings_path
+        self.report_path = report_path
+        self.manifest_hash = manifest_hash
+        self.pairings_hash = pairings_hash
+        self.n_anchors = n_anchors
+        self.n_coupled = n_coupled
+        self.n_dropped = n_dropped
+        self.n_ecostress = n_ecostress
+
+
+__all__ = [
+    "write_bundle",
+    "BundleResult",
+]
