@@ -21,24 +21,33 @@ Usage
 
 from __future__ import annotations
 
+import logging
+from uuid import uuid4
+
 import hydra
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.ard.pipeline import run as ard_run
+from berlin_lst_downscaling.data.io import RunLogSession, log_event
+
+_logger = logging.getLogger(__name__)
 
 
 @hydra.main(config_path="../configs/ard", config_name="default", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to ard_run."""
-    print("=" * 60, flush=True)
-    print(f"ARD Pipeline — mode={cfg.mode}", flush=True)
-    print(f"  sources      : {list(cfg.sources)}", flush=True)
-    print(f"  output_root  : {cfg.output_root}", flush=True)
-    print(f"  manifest_uri : {cfg.get('manifest_uri', 'N/A')}", flush=True)
-    print(f"  bbox         : {cfg.bbox}", flush=True)
-    print("=" * 60, flush=True)
+    run_id = uuid4().hex[:8]
+    output_root = str(cfg.output_root)
 
-    return ard_run(cfg)
+    with RunLogSession(output_root, pipeline="ard", run_id=run_id):
+        log_event(_logger, logging.INFO, "config",
+            mode=cfg.mode,
+            sources=list(cfg.sources),
+            output_root=output_root,
+            manifest_uri=cfg.get("manifest_uri", "N/A"),
+            bbox=list(cfg.bbox),
+        )
+        return ard_run(cfg)
 
 
 if __name__ == "__main__":

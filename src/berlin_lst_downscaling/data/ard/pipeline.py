@@ -16,13 +16,10 @@ Supported sources: ``landsat-c2-l2``, ``sentinel-2-l2a``, ``ecostress``.
 from __future__ import annotations
 
 import io
-import json
 import logging
-import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -47,6 +44,7 @@ from berlin_lst_downscaling.data.ard.writer import (
     write_flag_cog_atomic,
     write_stac_atomic,
 )
+from berlin_lst_downscaling.data.io import log_event
 
 _logger = logging.getLogger(__name__)
 
@@ -183,7 +181,7 @@ def run(cfg: DictConfig) -> int:
     output_root = str(cfg.output_root)
 
     led = Ledger.open(f"{output_root}/ledger.parquet")
-    _log(cfg, run_id, "start", {"mode": cfg.mode, "sources": list(cfg.sources)})
+    log_event(_logger, logging.INFO, "start", mode=cfg.mode, sources=list(cfg.sources))
 
     sources = list(cfg.sources)
 
@@ -196,7 +194,7 @@ def run(cfg: DictConfig) -> int:
     failed_count = sum(
         report.get("per_source", {}).get(s, {}).get("failed", 0) for s in sources
     )
-    _log(cfg, run_id, "qa_report", report)
+    log_event(_logger, logging.INFO, "qa_report", **report)
 
     # Note: ledger persists per-transition via upsert — no batch write needed
     return 0 if failed_count == 0 else 1
@@ -257,11 +255,11 @@ def _process_manifest(
 
     max_attempts = cfg.get("max_scene_attempts", 3)
     todo = reconcile(scenes, ledger, contract, max_attempts=max_attempts)
-    _log(cfg, run_id, "manifest_todo", {
-        "source": source,
-        "total": len(scenes),
-        "n_todo": len(todo),
-    })
+    log_event(_logger, logging.INFO, "manifest_todo",
+        source=source,
+        total=len(scenes),
+        n_todo=len(todo),
+    )
 
     if source == "ecostress":
         _process_ecostress_todo(
@@ -301,9 +299,9 @@ def _resolve_manifest_items(
         )
         return [item]
     except Exception as exc:
-        _logger.warning(
-            f"Could not resolve exact item {scene_id!r}: {exc}. "
-            "Falling back to date-based search."
+        log_event(_logger, logging.WARNING, "exact_item_resolve_failed",
+            scene_id=scene_id,
+            error=str(exc),
         )
         return None
 
@@ -334,11 +332,11 @@ def _process_ecostress_todo(
                 download_and_stage_granule(scene_id, stage)
                 granule_raw_dir = str(stage.uri.uri)
             except Exception as exc:
-                _log(cfg, run_id, "scene_failed", {
-                    "scene_id": scene_id,
-                    "source": source,
-                    "error": f"Stage download failed: {exc}",
-                })
+                log_event(_logger, logging.WARNING, "scene_failed",
+                    scene_id=scene_id,
+                    source=source,
+                    error=f"Stage download failed: {exc}",
+                )
                 continue
 
             _run_scene(
@@ -381,11 +379,11 @@ def _run_scene(
         downloaded and staged on demand.
     """
     effective_date = scene_date or cfg.scene_date
-    _log(cfg, run_id, "scene_start", {
-        "scene_id": scene_id,
-        "source": source,
-        "scene_date": effective_date,
-    })
+    log_event(_logger, logging.INFO, "scene_start",
+        scene_id=scene_id,
+        source=source,
+        scene_date=effective_date,
+    )
     t0 = time.perf_counter()
 
     # Mark as exporting (crash recovery entry) with attempt tracking
@@ -418,7 +416,7 @@ def _run_scene(
         )
 
         # ── WRITE MAIN COG ──
-        _log(cfg, run_id, "scene_writing", {"scene_id": scene_id, "source": source})
+        log_event(_logger, logging.INFO, "scene_writing", scene_id=scene_id, source=source)
         root = str(cfg.output_root)
         cog_dst = cog_path(root, source, year, scene_id)
 
@@ -450,7 +448,7 @@ def _run_scene(
 
         vig = validate_cog(cog_dst, contract, expected_grid)
         if vig.ok:
-            _log(cfg, run_id, "cog_validated", {"scene_id": scene_id, "source": source})
+            log_event(_logger, logging.INFO, "cog_validated", scene_id=scene_id, source=source)
         else:
             raise RuntimeError(
                 f"COG validation failed: {'; '.join(vig.errors)}"
@@ -494,11 +492,11 @@ def _run_scene(
                 aoi_clear_frac = _float_or_none(_raw.get("aoi_clear_frac"))
             except Exception as _exc:
                 # AOI metrics are best-effort; log and continue without them
-                _log(cfg, run_id, "aoi_metrics_error", {
-                    "scene_id": scene_id,
-                    "aoi_uri": aoi_uri,
-                    "error": str(_exc),
-                })
+                log_event(_logger, logging.WARNING, "aoi_metrics_error",
+                    scene_id=scene_id,
+                    aoi_uri=aoi_uri,
+                    error=str(_exc),
+                )
         else:
             aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
             aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
@@ -508,11 +506,11 @@ def _run_scene(
         # This catches off-target swaths where the COG covers the AOI bbox but LST is NaN.
         min_overlap = cfg.get("aoi", {}).get("min_overlap_px", None)
         if aoi_overlap_px is not None and min_overlap is not None and aoi_overlap_px < min_overlap:
-            _log(cfg, run_id, "low_aoi_overlap", {
-                "scene_id": scene_id,
-                "aoi_overlap_px": aoi_overlap_px,
-                "min_overlap_px": min_overlap,
-            })
+            log_event(_logger, logging.WARNING, "low_aoi_overlap",
+                scene_id=scene_id,
+                aoi_overlap_px=aoi_overlap_px,
+                min_overlap_px=min_overlap,
+            )
 
         # ── BUILD + WRITE STAC ──
         stac_dst = stac_path(root, source, year, scene_id)
@@ -549,23 +547,23 @@ def _run_scene(
             )
         )
         _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
-        _log(cfg, run_id, "scene_done", {
-            "scene_id": scene_id,
-            "source": source,
-            "attempts": _attempts,
-            "elapsed_s": round(elapsed, 2),
-        })
+        log_event(_logger, logging.INFO, "scene_done",
+            scene_id=scene_id,
+            source=source,
+            attempts=_attempts,
+            elapsed_s=round(elapsed, 2),
+        )
 
     except Exception as exc:
         elapsed = time.perf_counter() - t0
         _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
-        _log(cfg, run_id, "scene_failed", {
-            "scene_id": scene_id,
-            "source": source,
-            "attempts": _attempts,
-            "error": str(exc),
-            "elapsed_s": round(elapsed, 2),
-        })
+        log_event(_logger, logging.ERROR, "scene_failed",
+            scene_id=scene_id,
+            source=source,
+            attempts=_attempts,
+            error=str(exc),
+            elapsed_s=round(elapsed, 2),
+        )
         # Note: attempts is auto-managed by upsert
         ledger.upsert(
             LedgerRow(
@@ -742,32 +740,6 @@ def _acquisition_datetime(
 def _is_nan(val: float) -> bool:
     """Check if a float is NaN without importing math."""
     return val != val
-
-
-# ── logging ──────────────────────────────────────────────────────────
-
-
-def _log(cfg: DictConfig, run_id: str, event: str, data: dict[str, Any]) -> None:
-    """Emit a structured JSON log line to stderr and append to run log file."""
-    entry = {
-        "run_id": run_id,
-        "event": event,
-        "timestamp": datetime.now(UTC).isoformat(),
-        **data,
-    }
-    line = json.dumps(entry)
-
-    print(line, file=sys.stderr)
-
-    logging_root = cfg.get("logging_dir", cfg.output_root)
-    # For GCS output_root, default logs to local ./logs/ directory
-    if str(logging_root).startswith("gs://"):
-        logging_root = "./logs"
-    log_dir = Path(logging_root) / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{run_id}.jsonl"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
 
 
 def _int_or_none(val) -> int | None:
