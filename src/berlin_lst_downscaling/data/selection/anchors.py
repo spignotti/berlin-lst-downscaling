@@ -12,12 +12,19 @@ from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
 
+# Platform prefix → normalized platform name
+_PLATFORM_MAP = {
+    "LC08": "landsat-8",
+    "LC09": "landsat-9",
+}
+
 
 def build_anchors(cfg) -> tuple[list, dict]:
     """Return Landsat C2 L2 scenes as coupling anchors.
 
     Queries PC STAC for all scenes intersecting the configured bbox within
     the year range, then filters to May–September (configurable months).
+    Only L8/L9 platforms are accepted (L7 excluded).
 
     Returns a tuple ``(anchors, stats)`` where ``anchors`` is a list of dicts
     and ``stats`` is a dict with keys ``n_total``, ``n_kept``, ``n_dropped``
@@ -25,10 +32,10 @@ def build_anchors(cfg) -> tuple[list, dict]:
     """
     cat = get_catalog()
 
+    allowed_platforms = set(cfg.get("platforms", ["landsat-8", "landsat-9"]))
+
     min_year = min(cfg.years)
     max_year = max(cfg.years)
-    # Build a season-spanning datetime for the STAC query
-    # Use a single range covering all requested years + seasons
     query_start = f"{min_year}-05-01"
     query_end = f"{max_year}-09-30"
 
@@ -36,37 +43,39 @@ def build_anchors(cfg) -> tuple[list, dict]:
         collections=[cfg.landsat.collection],
         bbox=tuple(cfg.bbox),
         datetime=f"{query_start}/{query_end}",
-        # scene-level cloud_cover filter removed per audit decision:
-        # all Landsat overpasses over Berlin loaded; fitness decided
-        # pixel-wise via QA_PIXEL ∩ AOI below.
     )
 
     anchors: list = []
+    n_skipped_platform = 0
     for item in search.items():
         dt_utc = _parse_item_datetime(item)
         if dt_utc is None:
             continue
 
-        # Filter by configured months (1-indexed)
+        # Platform filter
+        platform = _PLATFORM_MAP.get(item.id[:4], "unknown")
+        if platform not in allowed_platforms:
+            n_skipped_platform += 1
+            continue
+
+        # Temporal filters
         if dt_utc.month not in tuple(cfg.months):
             continue
-        # Filter by configured years
         if dt_utc.year not in tuple(cfg.years):
             continue
 
-        # Extract solar angles from STAC properties
+        # Extract solar angles and cloud cover (diagnostic only)
         sun_az = item.properties.get("view:sun_azimuth")
         sun_el = item.properties.get("view:sun_elevation")
         cloud_cover = item.properties.get("eo:cloud_cover")
 
-        # item.get_self_href() returns the absolute self link (may be None for some catalogs)
-        # For mode=full the pipeline re-resolves via date; we store item.id only.
         item_href = item.get_self_href() if hasattr(item, "get_self_href") else None
 
         anchors.append(
             {
                 "scene_id": item.id,
                 "source": "landsat-c2-l2",
+                "platform": platform,
                 "year": dt_utc.year,
                 "datetime": dt_utc,
                 "date": dt_utc.strftime("%Y-%m-%d"),
@@ -74,7 +83,18 @@ def build_anchors(cfg) -> tuple[list, dict]:
                 "sun_azimuth": sun_az,
                 "sun_elevation": sun_el,
                 "item_href": item_href,
+                # AOI metrics — filled by pixel filter below
+                "aoi_clear_px": None,
+                "aoi_total_px": None,
+                "aoi_clear_frac": None,
             }
+        )
+
+    if n_skipped_platform > 0:
+        import sys
+        print(
+            f"  [anchors] Skipped {n_skipped_platform} non-L8/L9 scenes",
+            file=sys.stderr,
         )
 
     # ── Pixel-wise anchor fitness gate ─────────────────────────────────────
@@ -111,6 +131,9 @@ def _filter_by_pixel_clear_frac(
     computes ``AOI ∩ clear / AOI``.  Anchors below the threshold are
     dropped from the list and logged to stderr.
 
+    The clear_px, total_px, and clear_frac are stored on each kept anchor
+    dict for downstream manifest emission.
+
     Returns ``(kept, dropped)``.
     """
     import pickle
@@ -120,8 +143,8 @@ def _filter_by_pixel_clear_frac(
 
     ckpt_path = "data/ard/anchor_filter_checkpoint.pkl"
 
-    # Load checkpoint — cached clear_frac by scene_id
-    cf_cache: dict[str, float | None] = {}
+    # Load checkpoint — cached (clear_frac, clear_px, total_px) by scene_id
+    cf_cache: dict[str, tuple[float | None, int | None, int | None]] = {}
     if Path(ckpt_path).exists():
         try:
             with open(ckpt_path, "rb") as f:
@@ -132,6 +155,7 @@ def _filter_by_pixel_clear_frac(
             )
         except Exception:
             print("  [anchor_filter] Checkpoint load failed — starting fresh", file=sys.stderr)
+            cf_cache = {}
 
     n_total = len(anchors)
     todo = [a for a in anchors if a["scene_id"] not in cf_cache]
@@ -147,8 +171,11 @@ def _filter_by_pixel_clear_frac(
             futures = {pool.submit(compute_anchor_clear_frac, a, cfg): a for a in todo}
             for future in as_completed(futures):
                 anchor = futures[future]
-                cf = future.result()
-                cf_cache[anchor["scene_id"]] = cf
+                result = future.result()
+                if result is None:
+                    cf_cache[anchor["scene_id"]] = (None, None, None)
+                else:
+                    cf_cache[anchor["scene_id"]] = result
                 done += 1
                 if done % 20 == 0 or done == n_total:
                     print(
@@ -160,11 +187,19 @@ def _filter_by_pixel_clear_frac(
                     with open(ckpt_path, "wb") as f:
                         pickle.dump(cf_cache, f)
 
-    # Apply filter using cached results
+    # Apply filter using cached results and store metrics on anchors
     kept, dropped = [], []
     for anchor in anchors:
-        cf = cf_cache.get(anchor["scene_id"])
+        cached = cf_cache.get(anchor["scene_id"])
+        if cached is None:
+            cf, clear_px, total_px = None, None, None
+        else:
+            cf, clear_px, total_px = cached
+
         if cf is not None and cf >= min_clear_frac:
+            anchor["aoi_clear_px"] = clear_px
+            anchor["aoi_total_px"] = total_px
+            anchor["aoi_clear_frac"] = cf
             kept.append(anchor)
         else:
             dropped.append(anchor)
@@ -189,11 +224,11 @@ def _filter_by_pixel_clear_frac(
 def compute_anchor_clear_frac(
     anchor: dict,
     cfg,
-) -> float | None:
+) -> tuple[float, int, int] | None:
     """Compute pixel-wise clear fraction for a Landsat anchor over the Berlin AOI.
 
     Loads QA_PIXEL via odc.stac over the configured bbox, intersects with
-    the Berlin AOI mask, and returns the fraction of clear pixels.
+    the Berlin AOI mask, and returns (clear_frac, clear_px, total_px).
 
     Returns None on load failure.
     """
@@ -238,11 +273,11 @@ def compute_anchor_clear_frac(
         ds,
     )
 
-    denom = int(np.sum(aoi))
-    if denom == 0:
+    total_px = int(np.sum(aoi))
+    if total_px == 0:
         return None
-    numer = int(np.sum(aoi & l8_clear))
-    return numer / denom
+    clear_px = int(np.sum(aoi & l8_clear))
+    return clear_px / total_px, clear_px, total_px
 
 
 def _parse_item_datetime(item) -> datetime | None:

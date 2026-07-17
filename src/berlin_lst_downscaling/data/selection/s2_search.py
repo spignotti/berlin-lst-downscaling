@@ -127,16 +127,22 @@ def match_s2_candidates_with_clear_frac(
             )
             traceback.print_exc(file=sys.stderr)
 
-    # Assign clear_frac to all candidates sharing each datetime
+    # Assign clear_frac and AOI metrics to all candidates sharing each datetime
     candidate_diagnostics = []
     for c in candidates:
         result = cf_by_dt.get(c["datetime"])
         if result is None:
             c["clear_frac"] = None
+            c["aoi_clear_px"] = None
+            c["aoi_total_px"] = None
+            c["aoi_clear_frac"] = None
             candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
         else:
             cf, counts = result
             c["clear_frac"] = cf
+            c["aoi_clear_px"] = counts.get("intersect_px")
+            c["aoi_total_px"] = counts.get("aoi_px")
+            c["aoi_clear_frac"] = cf
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
 
     # Log structured diagnostic event for this anchor
