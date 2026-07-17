@@ -44,6 +44,7 @@ All paths are relative to `source_root` (local path or `gs://bucket/prefix`).
 |------|---------|
 | `_raw/secondary/{source}/{period}/` | Raw downloaded archives — one per source and period/vintage |
 | `ard/static/sources/{source}/{vintage}/` | Final source products (COG + STAC + provenance + completion marker) |
+| `logs/static-sources/{run_id}.jsonl` | Structured JSONL run log (see [docs/run-logging.md](run-logging.md)) |
 | `qa/static/sources/{run_id}/report.json` | Persisted per-run QA report |
 | `_state/static/sources/ledger.parquet` | Persistent item-level processing ledger |
 

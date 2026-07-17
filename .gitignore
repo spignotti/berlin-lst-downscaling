@@ -10,7 +10,7 @@ __pycache__/
 .env.*
 !.env.example
 
-# Pipeline / transient logs (canonical home: data/logs/; ./logs/ for GCS output_root)
+# Pipeline run logs (JSONL — persisted beside output, see docs/run-logging.md)
 *.log
 logs/
 
