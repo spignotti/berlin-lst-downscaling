@@ -67,6 +67,18 @@ notebooks/                     # EDA notebooks
 - **No tests unless explicitly requested** — QA is validated through real-data smoke/spike scripts, not unit tests
 - **Build order:** Spike → Core → Framework (not the reverse — no premature scaffolding)
 
+## Runtime Logging
+
+All productive pipeline entrypoints use the shared run logger (`data/io/run_logging.py`).
+
+- Use `log_event(logger, level, event, **fields)` — never raw `print()` for pipeline telemetry.
+- `print()` is allowed only for validators, spikes, and human-oriented CLI summaries.
+- Every run emits: lifecycle start/end, config context, work-unit outcomes, duration, QA summary, and tracebacks for caught failures.
+- Log levels: `DEBUG` for tile detail, `INFO` for lifecycle/progress, `WARNING` for recoverable degradation, `ERROR` for failures.
+- JSONL contract: `<output_root>/logs/<pipeline>/<run_id>.jsonl`. GCS runs publish after exit.
+- Ledger, QA reports, STAC, provenance, and completion markers remain authoritative domain artifacts — logs complement them, not replace them.
+- No secrets, tokens, credentials, or signed URLs in logs.
+
 ## Library Documentation
 
 Context7 MCP is available in this project. When working with any external library, use it to fetch current, version-specific documentation rather than relying on training data. Invoke with the library name or a Context7 library ID (e.g. `/fastapi/fastapi`, `/pydantic/pydantic`).
