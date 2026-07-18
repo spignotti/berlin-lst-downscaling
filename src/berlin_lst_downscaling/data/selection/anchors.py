@@ -188,6 +188,7 @@ def _filter_by_pixel_clear_frac(
                     log_event(_logger, logging.INFO, "anchor_filter_progress",
                         done=done, n_total=n_total, last_scene=anchor['scene_id'])
                 if done % 50 == 0:
+                    Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
                     with open(ckpt_path, "wb") as f:
                         pickle.dump(cf_cache, f)
 

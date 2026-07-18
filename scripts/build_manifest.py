@@ -125,6 +125,7 @@ def _run_couple(cfg: DictConfig) -> None:
             done_count += 1
             # Save checkpoint every 50 anchors
             if done_count % 50 == 0 or done_count == n_total:
+                Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(ckpt_path, "wb") as f:
                     pickle.dump(s2_by_anchor, f)
                 log_event(_logger, logging.INFO, "s2_progress",
@@ -152,9 +153,15 @@ def _run_couple(cfg: DictConfig) -> None:
     pairings_out = cfg.get("pairings_out", f"{cfg.output_root}/pairings.parquet")
     report_out = cfg.get("report_out", f"{cfg.output_root}/manifest_report.json")
     cutoff = cfg.get("cutoff_utc")
-    if not cutoff:
-        raise SystemExit("ERROR: cutoff_utc is required for couple mode. "
-                         "Set it in the config or via CLI override.")
+    years = list(cfg.get("years", []))
+    max_year = max(years) if years else 0
+    from datetime import UTC, datetime as _dt
+    current_year = _dt.now(UTC).year
+    if max_year >= current_year and not cutoff:
+        raise SystemExit(
+            f"ERROR: cutoff_utc is required when year range includes "
+            f"current year ({current_year}). Set it in the config or via CLI override."
+        )
 
     result = write_bundle(
         coupled, dropped, eco_granules,
