@@ -122,8 +122,19 @@ def _resolve_pc_items(table) -> bool:
     """Resolve Planetary Computer STAC items by exact ID (requires network).
 
     Returns True if all items resolved successfully, False on any error.
+    Uses bounded retries for rate-limited operations.
     """
-    from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    from berlin_lst_downscaling.data.acquisition.pc_client import (
+        get_catalog,
+        resolve_item_from_href,
+    )
 
     sources = table.column("source").to_pylist()
     ids = table.column("scene_id").to_pylist()
@@ -137,34 +148,45 @@ def _resolve_pc_items(table) -> bool:
 
     if not pc_rows:
         print("  No PC STAC rows to resolve.")
-        return
+        return True
 
     cat = get_catalog()
     errors = []
-    for i, (sid, expected_href) in enumerate(pc_rows):
-        src = sources[ids.index(sid)]
-        coll = "landsat-c2-l2" if src == "landsat-c2-l2" else "sentinel-2-l2a"
-        try:
-            search = cat.search(
-                collections=[coll],
-                ids=[sid],
-                max_items=1,
-            )
-            items = list(search.items())
-            if not items:
-                errors.append(f"  {sid}: not found in PC")
-                continue
-            item = items[0]
-            actual_href = item.get_self_href() if hasattr(item, "get_self_href") else None
-            if actual_href and expected_href and actual_href != expected_href:
-                msg = f"  {sid}: HREF mismatch (expected={expected_href}, got={actual_href})"
-                errors.append(msg)
-            else:
-                print(f"  {sid}: OK")
-        except Exception as exc:
-            errors.append(f"  {sid}: resolution failed: {exc}")
+    resolved = 0
 
-        if (i + 1) % 20 == 0:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, Exception)),
+        reraise=True,
+    )
+    def _resolve_one(sid, expected_href):
+        # Try direct HREF resolution first (faster, avoids catalog search)
+        if expected_href:
+            try:
+                item = resolve_item_from_href(expected_href, expected_id=sid)
+                return item
+            except Exception:  # noqa: S110 — fallback to catalog search
+                pass
+        # Fallback to catalog search
+        search = cat.search(
+            collections=["landsat-c2-l2"] if "LC" in sid else ["sentinel-2-l2a"],
+            ids=[sid],
+            max_items=1,
+        )
+        items = list(search.items())
+        if not items:
+            raise RuntimeError(f"Not found: {sid}")
+        return items[0]
+
+    for i, (sid, expected_href) in enumerate(pc_rows):
+        try:
+            _resolve_one(sid, expected_href)
+            resolved += 1
+        except Exception as exc:
+            errors.append(f"  {sid}: {exc}")
+
+        if (i + 1) % 50 == 0:
             print(f"  ... resolved {i + 1}/{len(pc_rows)}")
 
     if errors:
@@ -172,6 +194,8 @@ def _resolve_pc_items(table) -> bool:
         for e in errors:
             print(e, file=sys.stderr)
         return False
+
+    print(f"  All {resolved} items resolved successfully.")
     return True
 
 

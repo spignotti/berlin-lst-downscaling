@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import sys
 from pathlib import Path
 
@@ -70,6 +71,38 @@ def main() -> int:
     # Report last — this is the publication marker
     print("  Uploading manifest_report.json (publication marker)...")
     atomic_upload(report_local, f"{publish}/manifest_report.json", overwrite=False)
+
+    # Remote validation — re-read from GCS and verify
+    print("\nVerifying published bundle...")
+    import pyarrow.parquet as pq
+
+    from berlin_lst_downscaling.data.io.storage import read_bytes
+
+    manifest_gcs = f"{publish}/manifest.parquet"
+    pairings_gcs = f"{publish}/pairings.parquet"
+    report_gcs = f"{publish}/manifest_report.json"
+
+    try:
+        manifest_table = pq.read_table(io.BytesIO(read_bytes(manifest_gcs)))
+        pairings_table = pq.read_table(io.BytesIO(read_bytes(pairings_gcs)))
+        import json
+        report = json.loads(read_bytes(report_gcs))
+
+        # Verify hashes
+        local_mf_hash = _file_hash(manifest_local)
+        local_pf_hash = _file_hash(pairings_local)
+        if report.get("manifest_hash") != local_mf_hash:
+            print("ERROR: manifest hash mismatch after publish", file=sys.stderr)
+            return 1
+        if report.get("pairings_hash") != local_pf_hash:
+            print("ERROR: pairings hash mismatch after publish", file=sys.stderr)
+            return 1
+        print(f"  Remote validation passed: {manifest_table.num_rows} manifest rows, "
+              f"{pairings_table.num_rows} pairings")
+    except Exception as exc:
+        print(f"WARNING: Remote validation failed: {exc}", file=sys.stderr)
+        print("Bundle was published but could not be verified.", file=sys.stderr)
+        return 1
 
     print(f"\nPublished bundle: {publish}")
     print(f"Use: manifest_uri={manifest_gcs}")
