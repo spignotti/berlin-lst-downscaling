@@ -20,43 +20,76 @@ _SMOKE_ROWS = [
     {
         "scene_id": "LC09_L2SP_193024_20240629_02_T1",
         "source": "landsat-c2-l2",
+        "role": "anchor",
+        "platform": "landsat-9",
         "year": 2024,
-        "status": "coupled",
-        "date": "2024-06-29",
+        "item_href": "https://planetarycomputer.microsoft.com/api/stac/data/landsat-c2-l2/items/LC09_L2SP_193024_20240629_02_T1",
+        "aoi_clear_px": 5000,
+        "aoi_total_px": 10000,
+        "aoi_clear_frac": 0.5,
     },
     {
         "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
         "source": "sentinel-2-l2a",
+        "role": "predictor",
+        "platform": "sentinel-2",
         "year": 2024,
-        "status": "coupled",
-        "date": "2024-06-29",
+        "item_href": "https://planetarycomputer.microsoft.com/api/stac/data/sentinel-2-l2a/items/S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+        "aoi_clear_px": 6000,
+        "aoi_total_px": 10000,
+        "aoi_clear_frac": 0.6,
     },
     {
         "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
         "source": "ecostress",
+        "role": "validation",
+        "platform": "ecostress",
         "year": 2018,
-        "status": "coupled",
-        "date": "2018-07-30",
+        "item_href": None,
+        "aoi_clear_px": None,
+        "aoi_total_px": None,
+        "aoi_clear_frac": None,
+    },
+]
+
+_SMOKE_PAIRINGS = [
+    {
+        "landsat_scene_id": "LC09_L2SP_193024_20240629_02_T1",
+        "sentinel2_scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+        "dt_seconds": 3600,
+        "landsat_clear_px": 5000,
+        "joint_clear_px": 4000,
+        "joint_clear_frac": 0.8,
+        "score": 0.7,
     },
 ]
 
 
 def _write_smoke_manifest(manifest_path: str) -> None:
-    """Write the 3-row smoke manifest to *manifest_path* (Parquet)."""
+    """Write the 3-row v3 smoke manifest to *manifest_path* (Parquet)."""
     import os
 
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from berlin_lst_downscaling.data.selection.schema import MANIFEST_SCHEMA
+
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-    schema = pa.schema([
-        pa.field("scene_id", pa.string(), nullable=False),
-        pa.field("source", pa.string(), nullable=False),
-        pa.field("year", pa.int32(), nullable=False),
-        pa.field("status", pa.string(), nullable=False),
-        pa.field("date", pa.string(), nullable=True),
-    ])
-    table = pa.Table.from_pylist(_SMOKE_ROWS, schema=schema)
+
+    # Add missing datetime field (required by schema)
+    from datetime import UTC, datetime
+
+    for row in _SMOKE_ROWS:
+        if "acquisition_datetime" not in row:
+            row["acquisition_datetime"] = datetime(2024, 6, 29, 10, 20, 0, tzinfo=UTC)
+        if "cloud_cover" not in row:
+            row["cloud_cover"] = None
+        if "solar_azimuth" not in row:
+            row["solar_azimuth"] = None
+        if "solar_elevation" not in row:
+            row["solar_elevation"] = None
+
+    table = pa.Table.from_pylist(_SMOKE_ROWS, schema=MANIFEST_SCHEMA)
     pq.write_table(table, manifest_path)
     print(f"Manifest written: {manifest_path}")
 

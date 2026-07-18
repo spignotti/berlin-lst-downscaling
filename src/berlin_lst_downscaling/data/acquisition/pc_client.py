@@ -124,9 +124,53 @@ def resolve_exact_item(
     return item
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    reraise=True,
+)
+def resolve_item_from_href(
+    item_href: str,
+    expected_id: str | None = None,
+) -> pystac.Item:
+    """Resolve a STAC item directly from its HREF (no search required).
+
+    Uses ``pystac.STACObject.from_file`` to fetch the item JSON from the
+    exact URL stored in the manifest. This avoids redundant catalog searches
+    and guarantees the exact item identity.
+
+    Parameters
+    ----------
+    item_href :
+        Absolute URL to the STAC item JSON (from manifest ``item_href``).
+    expected_id :
+        If provided, verify the loaded item's ID matches this value.
+
+    Raises
+    ------
+    RuntimeError
+        If the item cannot be loaded or the ID does not match.
+    """
+    item = pystac.STACObject.from_file(item_href)
+    if not isinstance(item, pystac.Item):
+        raise RuntimeError(
+            f"HREF {item_href!r} did not resolve to a STAC Item "
+            f"(got {type(item).__name__})"
+        )
+    if expected_id is not None and item.id != expected_id:
+        raise RuntimeError(
+            f"Item at {item_href!r} has id={item.id!r}, expected {expected_id!r}"
+        )
+    # Sign assets for Planetary Computer access
+    planetary_computer.sign_inplace(item)
+    return item
+
+
 __all__ = [
     "get_catalog",
     "stac_load",
     "pc_search",
     "resolve_exact_item",
+    "resolve_item_from_href",
 ]

@@ -285,24 +285,38 @@ def _resolve_manifest_items(
 ) -> list[Any] | None:
     """Resolve exact STAC items from manifest metadata.
 
-    For PC STAC sources (Landsat/Sentinel-2), resolves the exact item
-    by ID.  Returns None for ECOSTRESS or when no HREF is available.
+    For PC STAC sources (Landsat/Sentinel-2), tries to resolve directly
+    from item_href first (faster, avoids catalog search). Falls back to
+    ID-based search if item_href is missing.
+    Returns None for ECOSTRESS or when resolution fails.
     """
     if source == "ecostress":
         return None
 
-    from berlin_lst_downscaling.data.acquisition.pc_client import resolve_exact_item
+    from berlin_lst_downscaling.data.acquisition.pc_client import (
+        resolve_exact_item,
+        resolve_item_from_href,
+    )
 
+    item_href = meta.get("item_href")
+
+    # Try direct HREF resolution first (preferred path)
+    if item_href:
+        try:
+            item = resolve_item_from_href(item_href, expected_id=scene_id)
+            return [item]
+        except Exception as exc:
+            log_event(_logger, logging.WARNING, "href_resolve_failed",
+                scene_id=scene_id, item_href=item_href, error=str(exc),
+            )
+
+    # Fallback: resolve by ID from catalog
     try:
-        item = resolve_exact_item(
-            collection=source,
-            scene_id=scene_id,
-        )
+        item = resolve_exact_item(collection=source, scene_id=scene_id)
         return [item]
     except Exception as exc:
         log_event(_logger, logging.WARNING, "exact_item_resolve_failed",
-            scene_id=scene_id,
-            error=str(exc),
+            scene_id=scene_id, error=str(exc),
         )
         return None
 
