@@ -1,0 +1,15 @@
+# @package _global_
+# ARD cloud smoke — one real Landsat/S2 pair + one ECOSTRESS granule.
+# Consumes the full manifest but processes only a minimal subset.
+defaults:
+  - full_all
+  - _self_
+
+# Select exactly one pair + one ECOSTRESS granule
+scene_filter:
+  landsat_ids:
+    - "LC09_L2SP_193024_20240629_02_T1"
+  s2_ids:
+    - "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907"
+  ecostress_ids:
+    - "ECOv002_L2T_LSTE_00770_009_32UQD_20180825T082058_0712_01"

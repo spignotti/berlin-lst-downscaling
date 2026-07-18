@@ -231,6 +231,25 @@ def _process_manifest(
     if tbl.num_rows == 0:
         return
 
+    # Apply scene filter if configured (for cloud smoke)
+    scene_filter = cfg.get("scene_filter")
+    if scene_filter:
+        filter_ids = scene_filter.get(f"{source.replace('-', '_')}_ids", [])
+        if source == "landsat-c2-l2":
+            filter_ids = scene_filter.get("landsat_ids", [])
+        elif source == "sentinel-2-l2a":
+            filter_ids = scene_filter.get("s2_ids", [])
+        elif source == "ecostress":
+            filter_ids = scene_filter.get("ecostress_ids", [])
+
+        if filter_ids:
+            mask = pc.is_in(tbl.column("scene_id"), filter_ids)  # type: ignore[attr-defined]
+            tbl = tbl.filter(mask)
+            if tbl.num_rows == 0:
+                log_event(_logger, logging.INFO, "no_scenes_after_filter",
+                    source=source, filter_ids=filter_ids)
+                return
+
     mask = pc.equal(tbl.column("source"), source)  # type: ignore[attr-defined]
     rows = tbl.filter(mask)
     if rows.num_rows == 0:
