@@ -243,7 +243,8 @@ def _process_manifest(
             filter_ids = scene_filter.get("ecostress_ids", [])
 
         if filter_ids:
-            mask = pc.is_in(tbl.column("scene_id"), filter_ids)  # type: ignore[attr-defined]
+            filter_set = set(filter_ids)
+            mask = pc.is_in(tbl.column("scene_id"), filter_set)  # type: ignore[attr-defined]
             tbl = tbl.filter(mask)
             if tbl.num_rows == 0:
                 log_event(_logger, logging.INFO, "no_scenes_after_filter",
