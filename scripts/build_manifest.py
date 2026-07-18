@@ -155,8 +155,9 @@ def _run_couple(cfg: DictConfig) -> None:
     cutoff = cfg.get("cutoff_utc")
     years = list(cfg.get("years", []))
     max_year = max(years) if years else 0
-    from datetime import UTC, datetime as _dt
-    current_year = _dt.now(UTC).year
+    from datetime import UTC, datetime
+
+    current_year = datetime.now(UTC).year
     if max_year >= current_year and not cutoff:
         raise SystemExit(
             f"ERROR: cutoff_utc is required when year range includes "
