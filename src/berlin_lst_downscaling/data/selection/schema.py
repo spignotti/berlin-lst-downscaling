@@ -83,7 +83,8 @@ def policy_fingerprint(cfg: Any) -> str:
     """Return a stable SHA-256 fingerprint of the selection policy.
 
     Covers all parameters that change the manifest output: platforms,
-    years, months, bbox, clear thresholds, window, and ECOSTRESS IDs.
+    years, months, bbox, clear thresholds, window, cutoff, score lambda,
+    collections, and ECOSTRESS IDs.
     """
     import json
 
@@ -92,11 +93,15 @@ def policy_fingerprint(cfg: Any) -> str:
         "years": sorted(cfg.get("years", [])),
         "months": sorted(cfg.get("months", [])),
         "bbox": list(cfg.get("bbox", [])),
+        "landsat_collection": cfg.get("landsat", {}).get("collection", "landsat-c2-l2"),
         "landsat_min_clear_frac": (
             cfg.get("landsat", {}).get("anchor", {}).get("min_clear_frac", 0.05)
         ),
+        "s2_collection": cfg.get("sentinel2", {}).get("collection", "sentinel-2-l2a"),
         "s2_min_clear_frac": cfg.get("sentinel2", {}).get("min_clear_frac", 0.05),
         "s2_window_days": cfg.get("sentinel2", {}).get("window_days", 3),
+        "s2_score_lambda": cfg.get("sentinel2", {}).get("score", {}).get("lambda", 0.1),
+        "cutoff_utc": cfg.get("cutoff_utc", ""),
         "ecostress_ids": sorted(ECOSTRESS_VALIDATION_IDS),
     }, sort_keys=True)
     return sha256(payload.encode()).hexdigest()[:16]
@@ -105,10 +110,12 @@ def policy_fingerprint(cfg: Any) -> str:
 def bundle_metadata(
     policy_hash: str,
     cutoff_utc: str,
-    manifest_hash: str = "",
-    pairings_hash: str = "",
 ) -> dict[str, str]:
-    """Return Parquet metadata dict for manifest and pairings tables."""
+    """Return Parquet metadata dict for manifest and pairings tables.
+
+    Note: file hashes are NOT embedded here — they go exclusively
+    in manifest_report.json to avoid a circular hash contract.
+    """
     from datetime import UTC, datetime
 
     return {
@@ -117,8 +124,6 @@ def bundle_metadata(
         "policy_sha256": policy_hash,
         "cutoff_utc": cutoff_utc,
         "generated_at": datetime.now(UTC).isoformat(),
-        "manifest_hash": manifest_hash,
-        "pairings_hash": pairings_hash,
     }
 
 

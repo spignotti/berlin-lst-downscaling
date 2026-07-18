@@ -8,7 +8,10 @@ defaults:
 mode: couple
 years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 months: [5, 6, 7, 8, 9]
-# cutoff_utc must be provided at runtime: years 2017-2025 are complete;
-# 2026 acquisitions are included only up to this instant.
-# Example: cutoff_utc=2026-07-17T23:59:59Z
-cutoff_utc: null
+cutoff_utc: "2026-07-17T23:59:59Z"
+
+# Isolated output root for this bundle — never overwrites legacy data/ard/
+output_root: "data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z"
+
+# Dedicated checkpoint directory (namespaced by config to avoid cross-run collisions)
+checkpoint_dir: "data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/checkpoints"

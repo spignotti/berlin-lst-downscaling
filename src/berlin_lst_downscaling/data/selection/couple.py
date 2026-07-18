@@ -64,8 +64,8 @@ def couple_one_anchor(
         score = cf - lam * (c["dt_days"] / 3.0)
         scored.append((c, score))
 
-    # Sort: descending score, then ascending dt_days (tie-break)
-    scored.sort(key=lambda x: (-x[1], x[0]["dt_days"]))
+    # Sort: descending score, then ascending dt_days, then scene_id (final tie-break)
+    scored.sort(key=lambda x: (-x[1], x[0]["dt_days"], x[0]["scene_id"]))
     best_candidate, best_score = scored[0]
 
     max_clear_frac = max((c.get("clear_frac") or 0.0) for c, _ in scored)

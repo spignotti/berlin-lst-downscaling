@@ -84,7 +84,8 @@ def _run_couple(cfg: DictConfig) -> None:
     # ── 2. Search S2 candidates per anchor + compute clear_frac (parallel) ──
     log_event(_logger, logging.INFO, "searching_s2_candidates")
     s2_by_anchor: dict[str, list] = {}
-    ckpt_path = "data/ard/couple_checkpoint.pkl"
+    ckpt_dir = cfg.get("checkpoint_dir") or f"{cfg.output_root}/checkpoints"
+    ckpt_path = f"{ckpt_dir}/couple_checkpoint.pkl"
 
     # Load checkpoint if exists (resume from partial run)
     if Path(ckpt_path).exists():
@@ -150,7 +151,10 @@ def _run_couple(cfg: DictConfig) -> None:
     manifest_out = cfg.get("manifest_out", f"{cfg.output_root}/manifest.parquet")
     pairings_out = cfg.get("pairings_out", f"{cfg.output_root}/pairings.parquet")
     report_out = cfg.get("report_out", f"{cfg.output_root}/manifest_report.json")
-    cutoff = cfg.get("cutoff_utc") or "2026-07-17T23:59:59Z"
+    cutoff = cfg.get("cutoff_utc")
+    if not cutoff:
+        raise SystemExit("ERROR: cutoff_utc is required for couple mode. "
+                         "Set it in the config or via CLI override.")
 
     result = write_bundle(
         coupled, dropped, eco_granules,

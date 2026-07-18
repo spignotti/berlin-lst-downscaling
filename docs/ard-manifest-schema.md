@@ -38,8 +38,9 @@ process. It consists of three Parquet files published together.
 | `policy_sha256` | SHA-256 fingerprint of selection policy |
 | `cutoff_utc` | ISO timestamp; 2026 data up to this instant |
 | `generated_at` | ISO timestamp of bundle creation |
-| `manifest_hash` | SHA-256 of manifest Parquet (in pairings/report only) |
-| `pairings_hash` | SHA-256 of pairings Parquet (in manifest/report only) |
+
+Note: File hashes are NOT embedded in Parquet metadata. They appear
+exclusively in `manifest_report.json` to avoid a circular hash contract.
 
 ## Schema v1 — pairings.parquet
 

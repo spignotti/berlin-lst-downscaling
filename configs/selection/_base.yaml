@@ -62,6 +62,7 @@ pairings_out: "data/ard/pairings.parquet"
 report_out: "data/ard/manifest_report.json"
 scan_out_dir: "data/ard"
 output_root: "data/ard"           # shared root; manifest_out resolved relative to this
+checkpoint_dir: null              # override per config; defaults to {output_root}/checkpoints
 
 # Logging
 logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR

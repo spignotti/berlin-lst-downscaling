@@ -41,7 +41,15 @@ def build_anchors(cfg) -> tuple[list, dict]:
     min_year = min(cfg.years)
     max_year = max(cfg.years)
     query_start = f"{min_year}-05-01"
-    query_end = f"{max_year}-09-30"
+
+    # Clamp query end to cutoff if provided
+    cutoff_str = cfg.get("cutoff_utc")
+    cutoff_dt = _parse_cutoff(cutoff_str) if cutoff_str else None
+    if cutoff_dt:
+        # Use cutoff date (not time) for STAC query; post-filter by exact time
+        query_end = cutoff_dt.strftime("%Y-%m-%d")
+    else:
+        query_end = f"{max_year}-09-30"
 
     search = cat.search(
         collections=[cfg.landsat.collection],
@@ -66,6 +74,9 @@ def build_anchors(cfg) -> tuple[list, dict]:
         if dt_utc.month not in tuple(cfg.months):
             continue
         if dt_utc.year not in tuple(cfg.years):
+            continue
+        # Cutoff filter: reject items acquired after the cutoff instant
+        if cutoff_dt and dt_utc > cutoff_dt:
             continue
 
         # Extract solar angles and cloud cover (diagnostic only)
@@ -141,7 +152,8 @@ def _filter_by_pixel_clear_frac(
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from pathlib import Path
 
-    ckpt_path = "data/ard/anchor_filter_checkpoint.pkl"
+    ckpt_dir = cfg.get("checkpoint_dir") or f"{cfg.output_root}/checkpoints"
+    ckpt_path = f"{ckpt_dir}/anchor_filter_checkpoint.pkl"
 
     # Load checkpoint — cached (clear_frac, clear_px, total_px) by scene_id
     cf_cache: dict[str, tuple[float | None, int | None, int | None]] = {}
@@ -265,6 +277,18 @@ def compute_anchor_clear_frac(
         return None
     clear_px = int(np.sum(aoi & l8_clear))
     return clear_px / total_px, clear_px, total_px
+
+
+def _parse_cutoff(cutoff_str: str) -> datetime:
+    """Parse a cutoff timestamp as UTC datetime."""
+    try:
+        # Handle both "Z" suffix and "+00:00" suffix
+        return datetime.fromisoformat(cutoff_str.replace("Z", "+00:00"))
+    except ValueError as err:
+        raise ValueError(
+            f"Invalid cutoff_utc format: {cutoff_str!r}. "
+            "Expected ISO format, e.g. '2026-07-17T23:59:59Z'."
+        ) from err
 
 
 def _parse_item_datetime(item) -> datetime | None:

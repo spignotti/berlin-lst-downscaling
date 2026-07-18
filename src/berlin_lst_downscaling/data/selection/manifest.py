@@ -146,19 +146,15 @@ def write_bundle(
         })
 
     # ── Build tables ───────────────────────────────────────────────────
+    # Sort for deterministic output: anchors by scene_id, then predictors
+    manifest_rows.sort(key=lambda r: (r["role"] != "anchor", r["scene_id"]))
+    pairing_rows.sort(key=lambda r: r["landsat_scene_id"])
+
     manifest_table = pa.Table.from_pylist(manifest_rows, schema=MANIFEST_SCHEMA)
     pairings_table = pa.Table.from_pylist(pairing_rows, schema=PAIRINGS_SCHEMA)
 
-    # Compute initial hashes (before metadata — placeholder)
-    manifest_hash = ""
-    pairings_hash = ""
-
-    # Attach metadata (needs hash placeholders)
-    meta = bundle_metadata(
-        p_hash, cutoff_utc,
-        manifest_hash=manifest_hash,
-        pairings_hash=pairings_hash,
-    )
+    # Attach metadata (no self-referential file hashes — those go in the report only)
+    meta = bundle_metadata(p_hash, cutoff_utc)
     manifest_table = manifest_table.replace_schema_metadata(table_metadata(meta))
     pairings_table = pairings_table.replace_schema_metadata(table_metadata(meta))
 
@@ -188,7 +184,7 @@ def write_bundle(
     pq.write_table(manifest_table, manifest_path)
     pq.write_table(pairings_table, pairings_path)
 
-    # Compute hashes from written files (after metadata attachment)
+    # Compute full SHA-256 hashes from written files (authoritative in report only)
     manifest_hash = _file_hash(manifest_path)
     pairings_hash = _file_hash(pairings_path)
 
@@ -271,12 +267,12 @@ def _ensure_dir(path: str) -> None:
 
 
 def _file_hash(path: str) -> str:
-    """Return SHA-256 hex digest of a file."""
+    """Return full SHA-256 hex digest of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
-    return h.hexdigest()[:16]
+    return h.hexdigest()
 
 
 def _summarize_dropped(dropped: list[dict]) -> dict[str, int]:

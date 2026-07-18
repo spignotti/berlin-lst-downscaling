@@ -36,6 +36,12 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     start_dt = anchor_dt - timedelta(days=window_days)
     end_dt = anchor_dt + timedelta(days=window_days)
 
+    # Clamp end_dt to cutoff if provided
+    cutoff_str = cfg.get("cutoff_utc")
+    cutoff_dt = _parse_cutoff(cutoff_str) if cutoff_str else None
+    if cutoff_dt and end_dt > cutoff_dt:
+        end_dt = cutoff_dt
+
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str = end_dt.strftime("%Y-%m-%d")
 
@@ -53,6 +59,9 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
 
         dt_days = abs((dt_utc - anchor_dt).total_seconds()) / 86400.0
         if dt_days > window_days + 1e-6:
+            continue
+        # Cutoff filter for S2 items
+        if cutoff_dt is not None and dt_utc > cutoff_dt:
             continue
 
         cloud_cover = item.properties.get("eo:cloud_cover")
@@ -199,6 +208,17 @@ def _resolve_s2_items(
             result[dt] = items
 
     return result
+
+
+def _parse_cutoff(cutoff_str: str) -> datetime:
+    """Parse a cutoff timestamp as UTC datetime."""
+    try:
+        return datetime.fromisoformat(cutoff_str.replace("Z", "+00:00"))
+    except ValueError as err:
+        raise ValueError(
+            f"Invalid cutoff_utc format: {cutoff_str!r}. "
+            "Expected ISO format, e.g. '2026-07-17T23:59:59Z'."
+        ) from err
 
 
 def _parse_item_datetime(item) -> datetime | None:

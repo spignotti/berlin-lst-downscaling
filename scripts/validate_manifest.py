@@ -106,7 +106,9 @@ def main() -> int:
     # ── Upstream resolution ─────────────────────────────────────────────
     if args.resolve_upstream:
         print("Resolving upstream identities...")
-        _resolve_pc_items(manifest_table)
+        upstream_ok = _resolve_pc_items(manifest_table)
+        if not upstream_ok:
+            all_ok = False
 
     if all_ok:
         print("\nAll checks passed.")
@@ -116,8 +118,11 @@ def main() -> int:
         return 1
 
 
-def _resolve_pc_items(table) -> None:
-    """Resolve Planetary Computer STAC items by exact ID (requires network)."""
+def _resolve_pc_items(table) -> bool:
+    """Resolve Planetary Computer STAC items by exact ID (requires network).
+
+    Returns True if all items resolved successfully, False on any error.
+    """
     from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 
     sources = table.column("source").to_pylist()
@@ -166,6 +171,8 @@ def _resolve_pc_items(table) -> None:
         print(f"\n  {len(errors)} upstream errors:", file=sys.stderr)
         for e in errors:
             print(e, file=sys.stderr)
+        return False
+    return True
 
 
 if __name__ == "__main__":
