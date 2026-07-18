@@ -14,12 +14,15 @@ All functions accept ``str | Path | OutputLocation`` as the URI argument.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal, Union
 from uuid import uuid4
+
+_logger = logging.getLogger(__name__)
 
 # ── URI type ─────────────────────────────────────────────────────────
 
@@ -221,23 +224,54 @@ def _atomic_write_gcs(uri: str, data: bytes, overwrite: bool) -> None:
     ).as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
+    _gcs_upload_with_retry(tmp_blob, data, bucket, key)
+
+
+def _gcs_upload_with_retry(tmp_blob, data, bucket, key):
+    """Upload to GCS with retries for transient failures (429, 503, etc.)."""
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=1, max=60),
+        retry=retry_if_exception_type((
+            Exception,  # google.api_core.exceptions 429/503 inherit from Exception
+        )),
+        reraise=True,
+    )
+    def _do_upload():
+        try:
+            tmp_blob.upload_from_string(data)
+            bucket.copy_blob(tmp_blob, bucket, key)
+        except Exception:
+            # Clean up temp blob on failure before retry
+            try:
+                tmp_blob.delete()
+            except Exception:  # noqa: S110 — best-effort cleanup
+                pass
+            raise
+
     try:
-        tmp_blob.upload_from_string(data)
-        bucket.copy_blob(tmp_blob, bucket, key)
+        _do_upload()
         tmp_blob.delete()
-    except BaseException:
+    except Exception:
         try:
             tmp_blob.delete()
-        except Exception:  # noqa: S110 — best-effort cleanup, no logging needed
+        except Exception:  # noqa: S110 — best-effort cleanup
             pass
         raise
 
 
 def _prune_tmp(tmp_dir: Path, max_age_s: int = 3600) -> None:
     """Remove orphaned temp files older than *max_age_s*."""
-    import time
+    import time as _time
 
-    now = time.time()
+    now = _time.time()
     for p in tmp_dir.iterdir():
         if p.is_file() and (now - p.stat().st_mtime) > max_age_s:
             p.unlink(missing_ok=True)
@@ -326,11 +360,39 @@ def _atomic_upload_gcs(local_path: Path, dst_uri: str, overwrite: bool) -> None:
     ).as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
+    _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key)
+
+
+def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key):
+    """Upload file to GCS with retries for transient failures."""
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=1, max=60),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+    def _do_upload():
+        try:
+            tmp_blob.upload_from_filename(str(local_path))
+            bucket.copy_blob(tmp_blob, bucket, key)
+        except Exception:
+            try:
+                tmp_blob.delete()
+            except Exception:  # noqa: S110 — best-effort cleanup
+                pass
+            raise
+
     try:
-        tmp_blob.upload_from_filename(str(local_path))
-        bucket.copy_blob(tmp_blob, bucket, key)
+        _do_upload()
         tmp_blob.delete()
-    except BaseException:
+    except Exception:
         try:
             tmp_blob.delete()
         except Exception:  # noqa: S110 — best-effort cleanup
