@@ -138,3 +138,28 @@ The parser handles this via coordinate-lookup accumulation.
 2. **Emit mapping report** — for each scene year, list the qualifying vintage
    or state "unmapped".
 3. **Exclude unmapped scenes** from morphology ablation stages (2–4).
+
+---
+
+## Retrospective-Static Geometry Policy (Dynamic Pipeline)
+
+**Decision (2026-07-19):** For the dynamic scene pipeline (Pipeline C),
+use LoD2-2024, DGM-2021, and vegetation height-2020 as
+quasi-static context geometry for all scenes in 2017–2025.
+
+**Rationale:** The research question tests whether urban context
+principally improves LST downscaling — not whether every individual
+construction site is historically reconstructed. Berlin's urban
+morphology is quasi-static: building stock changes by <1–2% per year,
+so the 2024 geometry is representative for all study years.
+
+**Implementation:**
+- `geometry_temporal_mode = "retrospective_static"` in all dynamic products
+- Every scene product carries `shadow:geometry_temporal_mode` and
+  `era5:geometry_temporal_mode` STAC properties
+- Provenance records the exact vintage per source
+- QA reports document the vintage distribution
+
+**Boundary:** This policy applies to the dynamic shadow and meteorology
+channels only. Static vintage mapping for ablation stages 2–4 follows
+the strict temporal rule above.

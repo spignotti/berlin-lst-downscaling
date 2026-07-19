@@ -66,6 +66,9 @@ class PreparedSecondaryProduct:
     qa_stats: dict  # valid_frac, min, max, shape, …
     config_hash: str
     extra_provenance: dict = field(default_factory=dict)
+    # dynamic (scene-timed) product fields — None for static vintage products
+    acquisition_datetime: datetime | None = None
+    stac_properties: dict | None = None
 
 
 @dataclass
@@ -140,7 +143,6 @@ def build_secondary_stac_item(
             ],
         },
         "properties": {
-            "datetime": None,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
             "proj:code": str(grid.crs),
@@ -166,6 +168,18 @@ def build_secondary_stac_item(
         },
         "links": [],
     }
+
+    # Dynamic (scene-timed) product: set actual acquisition datetime
+    if prepared.acquisition_datetime is not None:
+        item["properties"]["datetime"] = prepared.acquisition_datetime.isoformat()
+        # Remove nominal interval for point-acquisition products
+        item["properties"].pop("start_datetime", None)
+        item["properties"].pop("end_datetime", None)
+
+    # Merge any extra STAC properties (solar geometry, vintage info, etc.)
+    if prepared.stac_properties:
+        item["properties"].update(prepared.stac_properties)
+
     return item
 
 
@@ -175,7 +189,7 @@ def build_provenance(
     completed_at: str,
 ) -> dict:
     """Build the provenance payload for a secondary product."""
-    return {
+    prov = {
         "source": prepared.source,
         "item_key": prepared.item_key,
         "category": prepared.category,
@@ -190,6 +204,10 @@ def build_provenance(
         "source_metadata": prepared.source_metadata,
         **prepared.extra_provenance,
     }
+    # Include acquisition datetime for scene-timed products
+    if prepared.acquisition_datetime is not None:
+        prov["acquisition_datetime"] = prepared.acquisition_datetime.isoformat()
+    return prov
 
 
 # ── finalisation ──────────────────────────────────────────────────────

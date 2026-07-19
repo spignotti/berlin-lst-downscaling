@@ -5,12 +5,13 @@ data sources used in the LST downscaling ablation study.
 
 ## Architecture
 
-Two independent pipelines share the product contract:
+Three pipelines share the product contract:
 
 | Pipeline | Purpose | Entry point | Config prefix |
 |----------|---------|-------------|---------------|
 | **A — Source products** | Download official archives, reproject to canonical grid, publish validated COGs | `scripts/run_static_sources.py` | `configs/static_sources/` |
 | **B — Derived geometry** | Combine source COGs into DSM, horizons, SVF | `scripts/run_static_derived.py` | `configs/static_derived/` |
+| **C — Dynamic scene** | Per-scene ERA5-Land + shadow products from static geometry | `scripts/run_dynamic.py` | `configs/dynamic/` |
 
 Pipeline A is strictly independent of Pipeline B; it does not
 depend on any derived geometry products.

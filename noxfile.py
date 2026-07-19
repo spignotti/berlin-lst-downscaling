@@ -799,3 +799,68 @@ def cloud_static_derived(session: nox.Session) -> None:
             "ledger.parquet",
         ),
     )
+
+
+# ── Dynamic scene pipeline ──────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-dynamic")
+def smoke_dynamic(session: nox.Session) -> None:
+    """Run dynamic pipeline smoke test locally.
+
+    Requires:
+    - Local static smoke products (run smoke-static-sources + smoke-static-derived first)
+    - CDS API access (~/.cdsapirc or CDS_API_KEY env)
+    - eccodes system library for GRIB decoding
+
+    Uses a small set of representative manifest anchors.
+    """
+    output_root = "data/dynamic/smoke"
+
+    session.run(
+        "uv", "run", "python", "scripts/run_dynamic.py",
+        "--config-name", "smoke",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-dynamic")
+def cloud_dynamic(session: nox.Session) -> None:
+    """Run dynamic pipeline against GCS.
+
+    Requires:
+    - ADC / Workload Identity
+    - Published v3 manifest
+    - Published static source + derived products
+    - eccodes on the VM (apt install libeccodes-dev)
+
+    Usage:
+        uv run nox -s cloud-dynamic -- \
+            gs://berlin-lst-data/manifests/v3/bundle-xxx/manifest.parquet
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    manifest_uri = session.posargs[0] if session.posargs else ""
+
+    run_id = (
+        f"dyn-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    output_root = f"gs://berlin-lst-data/dynamic/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    session.run(
+        "uv", "run", "python", "scripts/run_dynamic.py",
+        "--config-name", "smoke",
+        f"manifest_uri={manifest_uri}",
+        "source_root=gs://berlin-lst-data/static/sources/full",
+        "derived_root=gs://berlin-lst-data/static/derived/full",
+        f"output_root={output_root}",
+        external=True,
+    )

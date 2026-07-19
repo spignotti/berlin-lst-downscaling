@@ -1,0 +1,14 @@
+defaults:
+  - _base
+  - _self_
+
+# Full run — all 2017–2025 Landsat anchors against production bucket.
+# Invoke on the VM:
+#   uv run python scripts/run_dynamic.py --config-name full \
+#       manifest_uri=gs://berlin-lst-data/manifests/v3/... \
+#       source_root=gs://berlin-lst-data/static/sources/full \
+#       derived_root=gs://berlin-lst-data/static/derived/full \
+#       output_root=gs://berlin-lst-data/dynamic/full
+source_root: "gs://berlin-lst-data/static/sources/full"
+derived_root: "gs://berlin-lst-data/static/derived/full"
+output_root: "gs://berlin-lst-data/dynamic/full"
