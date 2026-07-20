@@ -171,7 +171,18 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
 
 
 def _decode_monthly_grib(grib_path: str) -> xr.Dataset:
-    """Decode a monthly ERA5 GRIB file with cfgrib."""
+    """Decode a monthly ERA5 GRIB file with cfgrib.
+
+    cfgrib cannot write index files to GCS, so remote GRIBs are copied
+    to a local temp file first.
+    """
+    if grib_path.startswith("gs://"):
+        from berlin_lst_downscaling.data.io.storage import read_bytes
+
+        local_tmp = Path(tempfile.mkdtemp()) / Path(grib_path).name
+        local_tmp.write_bytes(read_bytes(grib_path))
+        grib_path = str(local_tmp)
+
     return xr.open_dataset(grib_path, engine="cfgrib")
 
 
