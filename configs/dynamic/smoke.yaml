@@ -2,10 +2,10 @@ defaults:
   - _base
   - _self_
 
-# Smoke test: small local subset
+# Smoke test: real-data local subset
 source_root: "data/static/sources/smoke"
 derived_root: "data/static/derived/smoke"
 output_root: "data/dynamic/smoke"
 
-# Limit to a few scenes for smoke testing
-# Override on CLI with: '+years=[2024]' '+manifest_uri=...'
+# manifest_uri must be provided on command line:
+#   manifest_uri=data/ard/manifests/v3/.../manifest.parquet

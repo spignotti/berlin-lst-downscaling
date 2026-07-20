@@ -813,14 +813,16 @@ def smoke_dynamic(session: nox.Session) -> None:
     - CDS API access (~/.cdsapirc or CDS_API_KEY env)
     - eccodes system library for GRIB decoding
 
-    Uses a small set of representative manifest anchors.
+    Usage:
+        uv run nox -s smoke-dynamic -- \
+            data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
     """
-    output_root = "data/dynamic/smoke"
+    manifest_uri = session.posargs[0] if session.posargs else ""
 
     session.run(
         "uv", "run", "python", "scripts/run_dynamic.py",
         "--config-name", "smoke",
-        f"output_root={output_root}",
+        f"manifest_uri={manifest_uri}",
         external=True,
     )
 
@@ -837,7 +839,7 @@ def cloud_dynamic(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s cloud-dynamic -- \
-            gs://berlin-lst-data/manifests/v3/bundle-xxx/manifest.parquet
+            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
     """
     import uuid
     from datetime import UTC, datetime
@@ -851,16 +853,14 @@ def cloud_dynamic(session: nox.Session) -> None:
         f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
         f"{uuid.uuid4().hex[:6]}"
     )
-    output_root = f"gs://berlin-lst-data/dynamic/smoke/{run_id}"
+    output_root = f"gs://berlin-lst-data/dynamic/full/{run_id}"
 
     _preflight_gcs(session)
 
     session.run(
         "uv", "run", "python", "scripts/run_dynamic.py",
-        "--config-name", "smoke",
+        "--config-name", "full",
         f"manifest_uri={manifest_uri}",
-        "source_root=gs://berlin-lst-data/static/sources/full",
-        "derived_root=gs://berlin-lst-data/static/derived/full",
         f"output_root={output_root}",
         external=True,
     )

@@ -16,6 +16,9 @@ import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.io.storage import exists, read_bytes
 
+# Study period — enforced at manifest level
+_STUDY_YEARS = list(range(2017, 2026))
+
 
 @dataclass
 class DynamicScene:
@@ -26,6 +29,7 @@ class DynamicScene:
     role: str
     platform: str
     year: int
+    day_of_year: int
     acquisition_datetime: datetime
     item_href: str | None
     cloud_cover: float | None
@@ -58,18 +62,17 @@ def load_landsat_anchors(
     manifest_uri :
         URI to manifest.parquet (local or ``gs://``).
     years :
-        If given, restrict to these years.  None = all years.
+        Restrict to these years.  Defaults to 2017–2025.
 
     Returns
     -------
     ManifestReport
         Filtered scenes and metadata for dynamic pipeline consumption.
     """
-    errors: list[str] = []
+    if years is None:
+        years = _STUDY_YEARS
 
-    if not manifest_uri.endswith(".manifest.parquet"):
-        # Accept raw path; derive if needed
-        pass
+    errors: list[str] = []
 
     if not exists(manifest_uri):
         return ManifestReport([], 0, "", [f"Manifest not found: {manifest_uri}"])
@@ -81,33 +84,28 @@ def load_landsat_anchors(
         return ManifestReport([], 0, "", [f"Failed to read manifest: {exc}"])
 
     total_rows = table.num_rows
-
-    # Compute manifest fingerprint
     manifest_hash = sha256(raw).hexdigest()[:16]
 
     # Filter to Landsat anchors
     import pyarrow as pa
     import pyarrow.compute as pc
 
-    # pyarrow.compute stubs — every ``pc.<name>`` access needs the type-ignore
     _pceq = pc.equal  # type: ignore[attr-defined]
     _pcand = pc.and_  # type: ignore[attr-defined]
     _pcin = pc.is_in  # type: ignore[attr-defined]
 
     source_col = table.column("source")
     role_col = table.column("role")
+    year_col = table.column("year")
 
     mask = _pcand(
-        _pceq(source_col, "landsat-c2-l2"),
-        _pceq(role_col, "anchor"),
+        _pcand(
+            _pceq(source_col, "landsat-c2-l2"),
+            _pceq(role_col, "anchor"),
+        ),
+        _pcin(year_col, value_set=pa.array(years)),
     )
     filtered = table.filter(mask)
-
-    # Filter by year if requested
-    if years is not None:
-        year_col = filtered.column("year")
-        year_mask = _pcin(year_col, value_set=pa.array(years))
-        filtered = filtered.filter(year_mask)
 
     # Convert to DynamicScene objects
     scenes: list[DynamicScene] = []
@@ -132,6 +130,7 @@ def load_landsat_anchors(
                 role=str(d["role"][0]),
                 platform=str(d["platform"][0]),
                 year=int(d["year"][0]),
+                day_of_year=dt.timetuple().tm_yday,
                 acquisition_datetime=dt,
                 item_href=d.get("item_href", [None])[0],
                 cloud_cover=d.get("cloud_cover", [None])[0],

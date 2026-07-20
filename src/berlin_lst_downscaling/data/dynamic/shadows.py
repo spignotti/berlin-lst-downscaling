@@ -158,6 +158,9 @@ def prepare_shadow(
     grid=None,
     geometry_id: str = "",
     geometry_hash: str = "",
+    acquisition_datetime: datetime | None = None,
+    day_of_year: int | None = None,
+    scene_year: int | None = None,
 ) -> PreparedSecondaryProduct:
     """Prepare a binary shadow mask for a single component and scene.
 
@@ -173,9 +176,23 @@ def prepare_shadow(
         Landsat scene ID.
     output_root, run_id :
         Pipeline context.
+    acquisition_datetime :
+        Scene acquisition time (UTC). Required for correct provenance.
+    day_of_year :
+        Day of year (1–366). Derived from acquisition_datetime if not given.
+    scene_year :
+        Scene year. Derived from acquisition_datetime if not given.
     """
     grid = grid or canon_grid_10m()
     c_hash = sha256(f"shadow_{component}:{scene_id}".encode()).hexdigest()[:12]
+
+    # Derive temporal fields from acquisition_datetime
+    if scene_year is None and acquisition_datetime is not None:
+        scene_year = acquisition_datetime.year
+    if day_of_year is None and acquisition_datetime is not None:
+        day_of_year = acquisition_datetime.timetuple().tm_yday
+    if scene_year is None:
+        scene_year = datetime.now(UTC).year
 
     log_event(
         _logger,
@@ -218,11 +235,7 @@ def prepare_shadow(
         category="dynamic",
         dataset=ds,
         contract=contract_for_shadow(component),
-        nominal_interval=vintage_interval(
-            int(scene_id.split("_")[-1][:4])
-            if scene_id.split("_")[-1][:4].isdigit()
-            else datetime.now(UTC).year
-        ),
+        nominal_interval=vintage_interval(scene_year),
         source_metadata={
             "horizon_uri": horizon_uri,
             "solar_azimuth_deg": round(azimuth_deg, 3),
@@ -230,6 +243,8 @@ def prepare_shadow(
             "geometry_id": geometry_id,
             "geometry_temporal_mode": "retrospective_static",
             "component": component,
+            "scene_year": scene_year,
+            "day_of_year": day_of_year,
             "retrieved_at": retrieved_at,
         },
         qa_stats={
@@ -240,15 +255,22 @@ def prepare_shadow(
             "total_pixels": total_px,
             "solar_azimuth": round(azimuth_deg, 1),
             "solar_elevation": round(elevation_deg, 1),
+            "scene_year": scene_year,
+            "day_of_year": day_of_year,
         },
         config_hash=c_hash,
-        acquisition_datetime=None,  # set by caller
+        acquisition_datetime=acquisition_datetime,
         stac_properties={
             "shadow:component": component,
             "shadow:solar_azimuth": round(azimuth_deg, 3),
             "shadow:solar_elevation": round(elevation_deg, 3),
             "shadow:geometry_temporal_mode": "retrospective_static",
             "shadow:encoding": "uint8 (0=lit, 1=shadow, 255=nodata)",
+            "acquisition:datetime": (
+                acquisition_datetime.isoformat() if acquisition_datetime else None
+            ),
+            "acquisition:doy": day_of_year,
+            "acquisition:year": scene_year,
         },
     )
 
