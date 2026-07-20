@@ -39,7 +39,7 @@ from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
 from berlin_lst_downscaling.data.dynamic.paths import era5_cache_path
 from berlin_lst_downscaling.data.io import log_event
-from berlin_lst_downscaling.data.io.storage import atomic_write, exists
+from berlin_lst_downscaling.data.io.storage import exists
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     vintage_interval,
@@ -229,7 +229,7 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
 
 
 def _decode_monthly_era5(
-    nc_path: str,
+    nc_path: str | Path,
     time_slice: tuple[str, str] | None = None,
 ) -> xr.Dataset:
     """Decode a monthly ERA5-Land NetCDF file.
@@ -243,14 +243,15 @@ def _decode_monthly_era5(
     time_slice : (start, end) ISO datetime strings, optional
         If given, only load data within this time window.
     """
-    if nc_path.startswith("gs://"):
+    nc_str = str(nc_path)
+    if nc_str.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import read_bytes
 
-        local_tmp = Path(tempfile.mkdtemp()) / Path(nc_path).name
-        local_tmp.write_bytes(read_bytes(nc_path))
-        nc_path = str(local_tmp)
+        local_tmp = Path(tempfile.mkdtemp()) / Path(nc_str).name
+        local_tmp.write_bytes(read_bytes(nc_str))
+        nc_str = str(local_tmp)
 
-    ds = xr.open_dataset(nc_path)
+    ds = xr.open_dataset(nc_str)
 
     if time_slice is not None:
         time_dim = "valid_time" if "valid_time" in ds.dims else "time"
