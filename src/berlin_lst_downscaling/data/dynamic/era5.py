@@ -12,10 +12,10 @@ ERA5-Land variables:
 
 Processing
 ----------
-1. Cache monthly GRIB files under ``_raw/dynamic/era5_land/YYYY-MM/``.
+1. Cache monthly NetCDF files under ``_raw/dynamic/era5_land/YYYY-MM/``.
    Fetch the preceding month when the scene month's first 72h window
    spills into the previous month.
-2. Decode with ``cfgrib`` engine, concatenate months.
+2. Decode with xarray (NetCDF), concatenate months.
 3. For each scene: extract t2m at the acquisition hour; derive hourly ssrd
    at the acquisition hour; compute 72-hour antecedent mean of hourly ssrd.
 4. Expand each ERA5 grid cell to the canonical 10m grid via nearest-neighbour.
@@ -124,7 +124,7 @@ def _ensure_month_cached(
     if exists(cache_path):
         return cache_path
 
-    local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.grib"
+    local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.nc"
     log_event(_logger, logging.INFO, "era5_download", year=year, month=month)
     t0 = time.perf_counter()
 
@@ -161,7 +161,7 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
             "time": [f"{h:02d}:00" for h in range(24)],
             # CDS order: N, W, S, E
             "area": [_BERLIN_BBOX[2], _BERLIN_BBOX[0], _BERLIN_BBOX[1], _BERLIN_BBOX[3]],
-            "format": "grib",
+            "format": "netcdf",
         },
         str(target),
     )
@@ -171,19 +171,8 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
 
 
 def _decode_monthly_grib(grib_path: str) -> xr.Dataset:
-    """Decode a monthly ERA5 GRIB file with cfgrib.
-
-    cfgrib cannot write index files to GCS, so remote GRIBs are copied
-    to a local temp file first.
-    """
-    if grib_path.startswith("gs://"):
-        from berlin_lst_downscaling.data.io.storage import read_bytes
-
-        local_tmp = Path(tempfile.mkdtemp()) / Path(grib_path).name
-        local_tmp.write_bytes(read_bytes(grib_path))
-        grib_path = str(local_tmp)
-
-    return xr.open_dataset(grib_path, engine="cfgrib")
+    """Decode a monthly ERA5 file (NetCDF or GRIB)."""
+    return xr.open_dataset(grib_path)
 
 
 def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:

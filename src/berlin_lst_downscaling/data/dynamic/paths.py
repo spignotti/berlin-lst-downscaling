@@ -38,8 +38,8 @@ def era5_cache_dir(root: str, year: int, month: int) -> str:
 
 
 def era5_cache_path(root: str, year: int, month: int) -> str:
-    """Return the ERA5-Land GRIB file path for a given month."""
-    return f"{era5_cache_dir(root, year, month)}/era5_land_{year:04d}{month:02d}.grib"
+    """Return the ERA5-Land NetCDF file path for a given month."""
+    return f"{era5_cache_dir(root, year, month)}/era5_land_{year:04d}{month:02d}.nc"
 
 
 # ── per-scene product paths ──────────────────────────────────────────
