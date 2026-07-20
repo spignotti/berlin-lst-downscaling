@@ -156,8 +156,9 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
     client = cdsapi.Client()
     n_days = calendar.monthrange(year, month)[1]
 
-    # retrieve() downloads to a temp file and returns a Result object
-    result = client.retrieve(
+    # retrieve() downloads the ZIP to a temp path; we get the path back
+    zip_path = Path(target).with_suffix(".zip")
+    client.retrieve(
         "reanalysis-era5-land",
         {
             "variable": _ERA5_VARIABLES,
@@ -169,10 +170,8 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
             "area": [_BERLIN_BBOX[2], _BERLIN_BBOX[0], _BERLIN_BBOX[1], _BERLIN_BBOX[3]],
             "format": "netcdf",
         },
+        str(zip_path),
     )
-
-    # Result is a path to the downloaded ZIP file
-    zip_path = Path(str(result))
 
     # Extract NetCDF from ZIP
     with zipfile.ZipFile(zip_path) as zf:
@@ -181,6 +180,7 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
             raise ValueError(f"No .nc file in CDS ZIP for {year}-{month:02d}")
         # Write the first (usually only) NetCDF entry to target
         target.write_bytes(zf.read(nc_names[0]))
+    zip_path.unlink(missing_ok=True)
 
 
 # ── ERA5 decode and processing ────────────────────────────────────────
