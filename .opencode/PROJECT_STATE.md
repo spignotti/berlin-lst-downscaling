@@ -52,3 +52,11 @@ Last updated: 2026-07-20
 ## Local Skills
 
 - `.opencode/skills/google-access/` — rclone mount, ADC, GCS access patterns.
+
+---
+
+## Commit Conventions
+
+- **Kein `Co-authored-by`** — Agent-Commits, nicht noetig.
+- **Keine Notion-Task-Referenzen** in Commit-Messages — gehoert in den Workflow, nicht in den Code.
+- Conventional Commits (`feat:`, `fix:`, `chore:`, etc.) immer.
