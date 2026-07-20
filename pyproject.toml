@@ -28,7 +28,6 @@ dependencies = [
     "xarray-spatial>=0.10.16",
     # dynamic pipeline (ERA5-Land ingestion)
     "cdsapi>=0.7.7",
-    "cfgrib>=0.9.14",
     "netcdf4>=1.7.3",
 ]
 

@@ -19,7 +19,7 @@ Concrete findings per datasource after detailed feasibility check:
 | 2 | Umweltatlas Vegetationshöhe 2020 | `https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/veghoehe_2020.zip` | GeoTIFF | EPSG:25833 | ~785 MB (single file) | `rasterio` (already in deps) | ✅ |
 | 3 | Umweltatlas Versiegelung 2016 & 2021 | ATOM: `https://gdi.berlin.de/data/ua_versiegelung_{2016,2021}/atom/Versiegelung_Raster_{2016,2021}.zip` (raster); WFS: `wfs/ua_versiegelung_2021` (vector) | GeoTIFF uint8 (raster) / GML (WFS) | EPSG:25833 | ~41 MB each (ZIP), native 2.5 m | `rasterio` (already in deps) | ✅ |
 | 4 | DGM 1 m | `https://gdi.berlin.de/data/dgm1/atom/0.atom` (INSPIRE ATOM) | XYZ CSV in ZIP | EPSG:25833, DHHN2016 | ~16 MB/tile compressed, 297 tiles (~4.75 GB) | `pandas` → `rasterio` (XYZ→GeoTIFF via `gdal.Grid()`) | ⚠️ Large volume, auxiliary only |
-| 5 | ERA5-Land | CDS API (`cdsapi` Python) | **GRIB** | 0.1° lat/lon | ~10 MB (Berlin subset 2017–2025 hourly) | `cdsapi`, `cfgrib` (GRIB preferred post-Apr 2025 NetCDF limit) | ✅ |
+| 5 | ERA5-Land | CDS API (`cdsapi` Python) | **NetCDF** (ZIP-wrapped) | 0.0625° lat/lon | ~1.2 GB/month (Berlin subset) | `cdsapi`, `netcdf4` | ✅ |
 | 6 | SVF | **`xarray-spatial.sky_view_factor()`** | Derived from DSM | EPSG:25833 | N/A — compute | `xarray-spatial>=0.10`, `numba>=0.60,<0.61` (macOS x86_64) | ✅ |
 | 7 | Shadow masks | Custom ray-casting (no PyPI library) | Derived from DSM + sun position | EPSG:25833 | N/A — compute | Custom numpy + numba + Michalsky-SPA (already implemented), UMEP algorithm as ref | 🔧 |
 
@@ -29,8 +29,8 @@ Concrete findings per datasource after detailed feasibility check:
 - SVF → **`xarray-spatial`** Zakek 2011 (~21s for Berlin AOI, replaces custom impl)
 - Shadow → custom ray-casting with pre-computed horizon maps (confirmed: no PyPI library available)
 - DWD → **`wetterdienst` v0.90+** (replaces direct URL download)
-- ERA5 → **GRIB format** (CDS NetCDF limits tightened Apr 2025)
-- ERA5 ssrd → accumulation handling: diff consecutive timesteps, ÷3600 for W/m²
+- ERA5 → **NetCDF format** (ZIP-wrapped from CDS, decoded via netCDF4)
+- ERA5 ssrd → ECMWF conversion: ssrd/3600 at 01 UTC, (ssrd[t]-ssrd[t-1])/3600 otherwise
 
 ---
 
@@ -246,17 +246,17 @@ No Berlin DWD station measures direct solar radiation. Evaluating three compleme
 |-------|--------|
 | Source | **Copernicus Climate Data Store** |
 | URL | [https://cds.climate.copernicus.eu/](https://cds.climate.copernicus.eu/) |
-| Resolution | 0.1° × 0.1° (~9 km, ~11 × 7 km at Berlin) |
+| Resolution | 0.0625° × 0.0625° (~6.9 km at 52°N) |
 | Temporal | Hourly, **1950–present** (real-time through present) |
 | Variables | Surface solar radiation downwards (SSRD), 2m temperature (t2m) |
-| API | CDS API via `cdsapi` Python package (free registration). **Update 2026-07-14:** legacy CDS offline since Sep 2024 — new platform at `cds.climate.copernicus.eu`, `.cdsapirc` now needs `url` + `key` only (no `uid`), token from CDS profile page. |
-| Query | One month per request (1.488 fields, well under 12K limit). Format: `grib` (preferable; CDS tightened NetCDF limits Apr 2025). Convert locally via `cfgrib` + `xarray`. |
-| Volume estimate | 5 months × 9 years (2017–2025) = 45 monthly requests. Each request retrieves 20 grid cells × 31 days × 24 h × 2 vars ≈ 30K fields. Total ~10 MB as GRIB. |
+| API | CDS API via `cdsapi` Python package (free registration). `.cdsapirc` needs `url` + `key`. |
+| Query | One month per request. Format: `netcdf` (ZIP-wrapped). Decoded via `netcdf4` + `xarray`. |
+| Volume estimate | 45 scene-months (2017–2025, May–Sep). Each request ~1.2 GB NetCDF. Total ~54 GB raw, but only 2 months cached locally at a time. |
 | Variables for pipeline | `2m_temperature` (t2m, K, instantaneous), `surface_solar_radiation_downwards` (ssrd, J/m², **accumulation** — see below) |
-| **ssrd accumulation handling** | `ssrd` at HH:00 = sum from 00:00 to HH:00; at 00:00 of next day = 24h sum. To get hourly irradiance: `ssrd.diff('time')` then divide by 3600 for W/m². `t2m` is instantaneous — no post-processing. |
-| Antecedent 3-day mean | Rolling 72-hour mean of t2m and ssrd before each scene acquisition time (computed from hourly data) |
-| Resampling to 10 m | Nearest-neighbor: constant value per ERA5 cell (~9 km) → nan for 10 m grid — trivial (`xarray` reproject) |
-| Library | `cdsapi` (not in deps yet — add to pyproject.toml dev/section) |
+| **ssrd accumulation handling** | ECMWF ERA5-Land rule: at 01 UTC, hourly = ssrd/3600; otherwise hourly = (ssrd[t] - ssrd[t-1])/3600. At 00 UTC this yields the 24th hour's value. See `era5.py:_ssrd_to_hourly`. |
+| Antecedent 3-day mean | Rolling 72-hour mean of hourly ssrd before each scene acquisition time |
+| Resampling to 10 m | Nearest-neighbor: constant value per ERA5 cell (~6.9 km) → fill 10 m grid |
+| Library | `cdsapi`, `netcdf4` (both in pyproject.toml) |
 | Account | Copernicus CDS account + API key needed (user has account) |
 | Update latency | ~5 days (ERA5-Land-T near-real-time), final product ~2 months |
 | **Verdict** | ✅ **Best operational choice.** Tiny volume, hourly resolution, direct API. SSRD needs conversion J/m² → W/m². |
@@ -341,7 +341,7 @@ Complete feature-to-source mapping for all 5 ablation stages + validation.
 | Antecedent T | 4 | DWD BER or Dahlem (`wetterdienst`) | point | 1973–present | ✅ |
 | Precip | 4 | DWD BER or Dahlem (`wetterdienst`) | point | 1995–present | ✅ |
 | Wind speed | 4 | DWD BER (`wetterdienst`) | point | 1973–present | ✅ |
-| Solar radiation | 4 | ERA5-Land (CDS API, `cdsapi`, **GRIB**) | ~9 km grid | 1950–present | ✅ |
+| Solar radiation | 4 | ERA5-Land (CDS API, `cdsapi`, **NetCDF**) | ~6.9 km grid | 1950–present | ✅ |
 | Cloud cover | 4 | DWD BER (hourly) | point | 1975–present | ✅ |
 | Surface pressure | 4 | DWD BER (hourly) | point | 1975–present | ✅ |
 | Humidity / dew point | 4 | DWD Dahlem (hourly) | point | 1955–present | ✅ |
