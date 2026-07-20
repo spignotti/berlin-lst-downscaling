@@ -186,11 +186,19 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
 # ── ERA5 decode and processing ────────────────────────────────────────
 
 
-def _decode_monthly_grib(grib_path: str) -> xr.Dataset:
+def _decode_monthly_grib(
+    grib_path: str,
+    time_slice: tuple[str, str] | None = None,
+) -> xr.Dataset:
     """Decode a monthly ERA5 file (NetCDF or GRIB).
 
     netCDF4 cannot read GCS URIs directly, so remote files are
     copied to a local temp path first.
+
+    Parameters
+    ----------
+    time_slice : (start, end) ISO datetime strings, optional
+        If given, only load data within this time window to reduce memory.
     """
     if grib_path.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import read_bytes
@@ -199,7 +207,14 @@ def _decode_monthly_grib(grib_path: str) -> xr.Dataset:
         local_tmp.write_bytes(read_bytes(grib_path))
         grib_path = str(local_tmp)
 
-    return xr.open_dataset(grib_path)
+    ds = xr.open_dataset(grib_path)
+
+    if time_slice is not None:
+        # Find the time coordinate name (ERA5 uses 'valid_time' or 'time')
+        time_dim = "valid_time" if "valid_time" in ds.dims else "time"
+        ds = ds.sel({time_dim: slice(time_slice[0], time_slice[1])})
+
+    return ds
 
 
 def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
@@ -339,12 +354,20 @@ def prepare_era5_scene(
     # ── 2. decode and concatenate months ──────────────────────────────
     log_event(_logger, logging.INFO, "era5_processing", scene_id=scene_id)
 
-    primary_ds = _decode_monthly_grib(grib_paths[(acq_year, acq_month)])
+    # Compute time window: 72h before acquisition to acquisition time
+    window_start = acquisition_dt - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS)
+    time_slice = (str(window_start), str(acquisition_dt))
+
+    primary_ds = _decode_monthly_grib(
+        grib_paths[(acq_year, acq_month)], time_slice=time_slice,
+    )
 
     # If we need previous month for antecedent, decode and concatenate
     prev_month_key = months_needed[1] if len(months_needed) > 1 else None
     if prev_month_key and prev_month_key in grib_paths:
-        prev_ds = _decode_monthly_grib(grib_paths[prev_month_key])
+        prev_ds = _decode_monthly_grib(
+            grib_paths[prev_month_key], time_slice=time_slice,
+        )
         # Concatenate along time dimension
         primary_ds = xr.concat([prev_ds, primary_ds], dim="time")
         primary_ds = primary_ds.sortby("time")
