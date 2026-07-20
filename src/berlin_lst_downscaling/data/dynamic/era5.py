@@ -369,8 +369,10 @@ def prepare_era5_scene(
     log_event(_logger, logging.INFO, "era5_processing", scene_id=scene_id)
 
     # Compute time window: 72h before acquisition to acquisition time
-    window_start = acquisition_dt - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS)
-    time_slice = (str(window_start), str(acquisition_dt))
+    # Strip timezone for xarray compatibility (ERA5 times are naive UTC)
+    acq_naive = acquisition_dt.replace(tzinfo=None)
+    window_start = acq_naive - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS)
+    time_slice = (str(window_start), str(acq_naive))
 
     primary_ds = _decode_monthly_grib(
         grib_paths[(acq_year, acq_month)], time_slice=time_slice,
