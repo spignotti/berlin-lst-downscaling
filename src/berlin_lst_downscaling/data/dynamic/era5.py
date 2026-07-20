@@ -187,7 +187,18 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
 
 
 def _decode_monthly_grib(grib_path: str) -> xr.Dataset:
-    """Decode a monthly ERA5 file (NetCDF or GRIB)."""
+    """Decode a monthly ERA5 file (NetCDF or GRIB).
+
+    netCDF4 cannot read GCS URIs directly, so remote files are
+    copied to a local temp path first.
+    """
+    if grib_path.startswith("gs://"):
+        from berlin_lst_downscaling.data.io.storage import read_bytes
+
+        local_tmp = Path(tempfile.mkdtemp()) / Path(grib_path).name
+        local_tmp.write_bytes(read_bytes(grib_path))
+        grib_path = str(local_tmp)
+
     return xr.open_dataset(grib_path)
 
 
