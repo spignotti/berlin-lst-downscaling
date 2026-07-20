@@ -116,15 +116,21 @@ def _cache_grib_path(output_root: str, year: int, month: int) -> str:
     return era5_cache_path(output_root, year, month)
 
 
+_LOCAL_ERA5_CACHE: dict[tuple[int, int], str] = {}
+
+
 def _ensure_month_cached(
     output_root: str, year: int, month: int, run_id: str,
 ) -> str | None:
     """Ensure a monthly ERA5-Land NetCDF file is available locally.
 
-    Returns a local file path for decoding. If the file was already
-    cached to GCS, it is downloaded to a local temp path first (netCDF4
-    cannot read GCS URIs directly).
+    Returns a local file path for decoding. Uses an in-process cache
+    to avoid re-downloading the same month for multiple scenes.
     """
+    key = (year, month)
+    if key in _LOCAL_ERA5_CACHE and Path(_LOCAL_ERA5_CACHE[key]).exists():
+        return _LOCAL_ERA5_CACHE[key]
+
     cache_path = _cache_grib_path(output_root, year, month)
 
     # If already cached on GCS, download to local temp for decoding
@@ -133,6 +139,7 @@ def _ensure_month_cached(
         if not local_tmp.exists():
             from berlin_lst_downscaling.data.io.storage import read_bytes
             local_tmp.write_bytes(read_bytes(cache_path))
+        _LOCAL_ERA5_CACHE[key] = str(local_tmp)
         return str(local_tmp)
 
     local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.nc"
@@ -146,6 +153,7 @@ def _ensure_month_cached(
                   year=year, month=month, elapsed_s=round(elapsed, 1),
                   size_mb=round(local_tmp.stat().st_size / 1024 / 1024, 1))
         atomic_write(cache_path, local_tmp.read_bytes(), overwrite=False)
+        _LOCAL_ERA5_CACHE[key] = str(local_tmp)
         return str(local_tmp)
     except Exception as exc:
         log_event(_logger, logging.ERROR, "era5_download_failed",
