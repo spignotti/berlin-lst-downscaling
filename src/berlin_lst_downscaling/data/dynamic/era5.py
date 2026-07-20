@@ -208,7 +208,7 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
             "month": f"{month:02d}",
             "day": [f"{d:02d}" for d in range(1, n_days + 1)],
             "time": [f"{h:02d}:00" for h in range(24)],
-            # CDS order: N, W, S, E
+            # CDS area order: N, W, S, E
             "area": [_BERLIN_BBOX[2], _BERLIN_BBOX[0], _BERLIN_BBOX[1], _BERLIN_BBOX[3]],
             "format": "netcdf",
         },
