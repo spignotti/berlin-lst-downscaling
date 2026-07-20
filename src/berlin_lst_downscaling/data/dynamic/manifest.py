@@ -54,6 +54,7 @@ class ManifestReport:
 def load_landsat_anchors(
     manifest_uri: str,
     years: list[int] | None = None,
+    scene_ids: list[str] | None = None,
 ) -> ManifestReport:
     """Load Landsat anchor scenes from a v3 manifest bundle.
 
@@ -63,6 +64,9 @@ def load_landsat_anchors(
         URI to manifest.parquet (local or ``gs://``).
     years :
         Restrict to these years.  Defaults to 2017–2025.
+    scene_ids :
+        Restrict to these scene IDs. If given, only these scenes are returned
+        (after year/role filtering).
 
     Returns
     -------
@@ -106,6 +110,12 @@ def load_landsat_anchors(
         _pcin(year_col, value_set=pa.array(years)),
     )
     filtered = table.filter(mask)
+
+    # Optional: restrict to specific scene IDs
+    if scene_ids:
+        scene_id_col = filtered.column("scene_id")
+        sid_mask = _pcin(scene_id_col, value_set=pa.array(scene_ids))
+        filtered = filtered.filter(sid_mask)
 
     # Convert to DynamicScene objects
     scenes: list[DynamicScene] = []

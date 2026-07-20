@@ -53,7 +53,10 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     _banner(cfg, run_id, output_root, manifest_uri)
 
     # ── 0. preflight ─────────────────────────────────────────────────
-    manifest_report = load_landsat_anchors(manifest_uri)
+    manifest_report = load_landsat_anchors(
+        manifest_uri,
+        scene_ids=list(cfg.scene_ids) if cfg.scene_ids else None,
+    )
     if not manifest_report.ok:
         log_event(_logger, logging.ERROR, "manifest_load_failed",
                   errors=manifest_report.errors)

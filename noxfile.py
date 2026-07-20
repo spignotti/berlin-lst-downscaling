@@ -811,7 +811,6 @@ def smoke_dynamic(session: nox.Session) -> None:
     Requires:
     - Local static smoke products (run smoke-static-sources + smoke-static-derived first)
     - CDS API access (~/.cdsapirc or CDS_API_KEY env)
-    - eccodes system library for GRIB decoding
 
     Usage:
         uv run nox -s smoke-dynamic -- \
@@ -827,15 +826,57 @@ def smoke_dynamic(session: nox.Session) -> None:
     )
 
 
-@nox.session(venv_backend="none", name="cloud-dynamic")
-def cloud_dynamic(session: nox.Session) -> None:
-    """Run dynamic pipeline against GCS.
+@nox.session(venv_backend="none", name="cloud-smoke-dynamic")
+def cloud_smoke_dynamic(session: nox.Session) -> None:
+    """Run a deterministic 1-scene dynamic smoke test against GCS.
+
+    Uses cloud_smoke.yaml config with a fixed scene ID.
+    Output goes to gs://berlin-lst-data/dynamic/smoke/<run_id>/.
 
     Requires:
     - ADC / Workload Identity
     - Published v3 manifest
     - Published static source + derived products
-    - eccodes on the VM (apt install libeccodes-dev)
+    - CDS API access for ERA5-Land download
+
+    Usage:
+        uv run nox -s cloud-smoke-dynamic -- \
+            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    manifest_uri = session.posargs[0] if session.posargs else ""
+
+    run_id = (
+        f"dyn-smoke-"
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+    output_root = f"gs://berlin-lst-data/dynamic/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    session.run(
+        "uv", "run", "python", "scripts/run_dynamic.py",
+        "--config-name", "cloud_smoke",
+        f"manifest_uri={manifest_uri}",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-dynamic")
+def cloud_dynamic(session: nox.Session) -> None:
+    """Run dynamic pipeline against GCS (all 324 scenes).
+
+    Requires:
+    - ADC / Workload Identity
+    - Published v3 manifest
+    - Published static source + derived products
+    - CDS API access for ERA5-Land download
 
     Usage:
         uv run nox -s cloud-dynamic -- \
