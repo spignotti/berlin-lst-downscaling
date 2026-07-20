@@ -7,7 +7,7 @@ never as a model channel.
 Berlin stations (verified active 2017–2025):
 - 00427 (Berlin-Tegel): 1973–present
 - 00403 (Berlin-Dahlem): 2002–present
-- 00433 (Berlin-Tempelhof): 1951–present (SD ends 2022)
+- 00433 (Berlin-Tempelhof): 1951–present
 - 00400 (Berlin-Alexanderplatz): 1991–present
 
 Data source: https://opendata.dwd.de/climate_environment/CDC/
@@ -18,17 +18,15 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from urllib.request import urlopen
 
 from berlin_lst_downscaling.data.io import log_event
 
 _logger = logging.getLogger(__name__)
-
-# ── Berlin stations ────────────────────────────────────────────────────
 
 柏林_STATIONS = {
     "00427": "Berlin-Tegel",
@@ -37,14 +35,18 @@ _logger = logging.getLogger(__name__)
     "00400": "Berlin-Alexanderplatz",
 }
 
-# DWD base URLs for hourly temperature
-_HIST_URL = (
+_HIST_BASE = (
     "https://opendata.dwd.de/climate_environment/CDC/"
     "observations_germany/climate/hourly/air_temperature/historical/"
 )
-_RECENT_URL = (
+_RECENT_BASE = (
     "https://opendata.dwd.de/climate_environment/CDC/"
     "observations_germany/climate/hourly/air_temperature/recent/"
+)
+
+# Pattern for historical ZIPs: stundenwerte_TU_{station}_{start}_{end}_hist.zip
+_HIST_ZIP_RE = re.compile(
+    r"stundenwerte_TU_(\d{5})_(\d{8})_(\d{8})_hist\.zip"
 )
 
 
@@ -54,7 +56,7 @@ class DwdStationRecord:
 
     station_id: str
     timestamp: datetime  # UTC
-    temperature: float  # °C (DWD convention: TMK)
+    temperature: float  # °C
 
 
 @dataclass
@@ -65,10 +67,7 @@ class DwdStationData:
     records: list[DwdStationRecord] = field(default_factory=list)
 
     def lookup_hour(self, utc_dt: datetime) -> float | None:
-        """Find the temperature for the nearest full UTC hour.
-
-        Returns °C or None if no matching record.
-        """
+        """Find the temperature for the exact UTC hour, or None."""
         for rec in self.records:
             if (
                 rec.timestamp.year == utc_dt.year
@@ -83,66 +82,92 @@ class DwdStationData:
 def download_dwd_station(
     station_id: str,
     year_range: tuple[int, int] | None = None,
-    cache_dir: str | Path | None = None,
 ) -> DwdStationData:
     """Download and parse DWD hourly temperature data for a station.
 
-    Tries the historical archive first, then recent if available.
+    Finds the correct ZIP via directory listing rather than guessing filenames.
     """
     data = DwdStationData(station_id=station_id)
 
-    # Try historical
+    # Try to find the right historical ZIP
     try:
-        records = _fetch_dwd_station(station_id, _HIST_URL, year_range)
+        records = _fetch_dwd_historical(station_id, year_range)
         data.records = records
-        log_event(
-            _logger, logging.INFO, "dwd_downloaded", station_id=station_id, n_records=len(records)
-        )
+        log_event(_logger, logging.INFO, "dwd_downloaded",
+                  station_id=station_id, n_records=len(records))
         return data
     except Exception as exc:
-        log_event(
-            _logger, logging.WARNING, "dwd_hist_failed", station_id=station_id, error=str(exc)
-        )
+        log_event(_logger, logging.WARNING, "dwd_hist_failed",
+                  station_id=station_id, error=str(exc))
 
     # Fallback to recent
     try:
-        records = _fetch_dwd_station(station_id, _RECENT_URL, year_range)
+        records = _fetch_dwd_recent(station_id, year_range)
         data.records = records
-        log_event(
-            _logger,
-            logging.INFO,
-            "dwd_recent_downloaded",
-            station_id=station_id,
-            n_records=len(records),
-        )
+        log_event(_logger, logging.INFO, "dwd_recent_downloaded",
+                  station_id=station_id, n_records=len(records))
     except Exception as exc:
-        log_event(
-            _logger, logging.WARNING, "dwd_recent_failed", station_id=station_id, error=str(exc)
-        )
+        log_event(_logger, logging.WARNING, "dwd_recent_failed",
+                  station_id=station_id, error=str(exc))
 
     return data
 
 
-def _fetch_dwd_station(
+def _fetch_dwd_historical(
     station_id: str,
-    base_url: str,
     year_range: tuple[int, int] | None = None,
 ) -> list[DwdStationRecord]:
-    """Fetch DWD hourly temperature CSV from the CDC archive."""
-    # Construct expected filename pattern
-    # Historical: stundenwerte_TU_{station}_YYYYMMDD_YYYYMMDD_hist.zip
-    # Recent: stundenwerte_TU_{station}_akt.zip
-    if year_range is not None:
-        start, end = year_range
-        url = f"{base_url}stundenwerte_TU_{station_id}_{start:04d}0101_{end:04d}1231_hist.zip"
-    else:
-        url = f"{base_url}stundenwerte_TU_{station_id}_akt.zip"
+    """Discover and fetch the correct historical ZIP from the DWD index."""
+    # Fetch the directory listing page
+    response = urlopen(_HIST_BASE, timeout=30)  # noqa: S310
+    listing = response.read().decode("latin-1")
+
+    # Find ZIPs matching this station
+    matches = []
+    for m in _HIST_ZIP_RE.finditer(listing):
+        sid, start_str, end_str = m.group(1), m.group(2), m.group(3)
+        if sid != station_id:
+            continue
+        start_year = int(start_str[:4])
+        end_year = int(end_str[:4])
+
+        # Check overlap with requested year range
+        if year_range is not None:
+            req_start, req_end = year_range
+            if end_year < req_start or start_year > req_end:
+                continue
+
+        matches.append((start_str, end_str))
+
+    if not matches:
+        raise ValueError(
+            f"No historical ZIP found for station {station_id} "
+            f"in range {year_range}"
+        )
+
+    # Use the most recent matching archive
+    start_str, end_str = sorted(matches)[-1]
+    url = (
+        f"{_HIST_BASE}"
+        f"stundenwerte_TU_{station_id}_{start_str}_{end_str}_hist.zip"
+    )
 
     log_event(_logger, logging.DEBUG, "dwd_fetch", url=url)
-
-    response = urlopen(url, timeout=60)  # noqa: S310 — DWD CDC is known safe
+    response = urlopen(url, timeout=60)  # noqa: S310
     zip_bytes = response.read()
 
+    return _parse_dwd_zip(zip_bytes, station_id, year_range)
+
+
+def _fetch_dwd_recent(
+    station_id: str,
+    year_range: tuple[int, int] | None = None,
+) -> list[DwdStationRecord]:
+    """Fetch the 'recent' ZIP for a station."""
+    url = f"{_RECENT_BASE}stundenwerte_TU_{station_id}_akt.zip"
+    log_event(_logger, logging.DEBUG, "dwd_fetch_recent", url=url)
+    response = urlopen(url, timeout=60)  # noqa: S310
+    zip_bytes = response.read()
     return _parse_dwd_zip(zip_bytes, station_id, year_range)
 
 
@@ -155,20 +180,20 @@ def _parse_dwd_zip(
     records: list[DwdStationRecord] = []
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        # Find the data CSV file (not the station description)
-        csv_names = [n for n in z.namelist() if n.endswith(".csv") and "Beschreibung" not in n]
+        csv_names = [
+            n for n in z.namelist()
+            if n.endswith(".csv") and "Beschreibung" not in n
+        ]
         if not csv_names:
             raise ValueError(f"No CSV found in DWD ZIP for {station_id}")
 
         with z.open(csv_names[0]) as f:
             content = f.read().decode("latin-1")
 
-        # Parse CSV (semicolon-separated)
         reader = csv.DictReader(io.StringIO(content), delimiter=";")
 
         for row in reader:
             try:
-                # Date column: "MESSDATUM" or "date"
                 date_val = row.get("MESSDATUM") or row.get("date", "")
                 temp_val = row.get("TMK") or row.get("tt_tu", "")
 
@@ -181,18 +206,15 @@ def _parse_dwd_zip(
 
                 temp = float(temp_val.strip())
 
-                # Filter by year range
                 if year_range is not None:
                     if dt.year < year_range[0] or dt.year > year_range[1]:
                         continue
 
-                records.append(
-                    DwdStationRecord(
-                        station_id=station_id,
-                        timestamp=dt,
-                        temperature=temp,
-                    )
-                )
+                records.append(DwdStationRecord(
+                    station_id=station_id,
+                    timestamp=dt,
+                    temperature=temp,
+                ))
             except (ValueError, KeyError):
                 continue
 
@@ -221,17 +243,11 @@ def compare_era5_with_dwd(
     dwd_data: DwdStationData,
     station_name: str,
 ) -> DwdComparisonResult:
-    """Compare ERA5 2m temperature with DWD station observations.
+    """Compare ERA5 2m temperature with DWD station observations."""
+    import math
 
-    Parameters
-    ----------
-    era5_t2m_by_hour :
-        Dict mapping UTC datetime → ERA5 t2m in Kelvin.
-    dwd_data :
-        DWD station data.
-    station_name :
-        Human-readable station name.
-    """
+    import numpy as np
+
     diffs: list[float] = []
     dwd_vals: list[float] = []
     era5_vals: list[float] = []
@@ -242,8 +258,7 @@ def compare_era5_with_dwd(
             continue
 
         era5_c = era5_k - 273.15  # K → °C
-        diff = era5_c - dwd_c
-        diffs.append(diff)
+        diffs.append(era5_c - dwd_c)
         dwd_vals.append(dwd_c)
         era5_vals.append(era5_c)
 
@@ -251,30 +266,18 @@ def compare_era5_with_dwd(
         return DwdComparisonResult(
             station_id=dwd_data.station_id,
             station_name=station_name,
-            n_matched=0,
-            bias=0.0,
-            mae=0.0,
-            rmse=0.0,
-            dwd_mean=0.0,
-            era5_mean=0.0,
+            n_matched=0, bias=0.0, mae=0.0, rmse=0.0,
+            dwd_mean=0.0, era5_mean=0.0,
         )
 
-    import math
-
-    import numpy as np
-
     diffs_arr = np.array(diffs)
-    bias = float(np.mean(diffs_arr))
-    mae = float(np.mean(np.abs(diffs_arr)))
-    rmse = float(math.sqrt(np.mean(diffs_arr**2)))
-
     return DwdComparisonResult(
         station_id=dwd_data.station_id,
         station_name=station_name,
         n_matched=len(diffs),
-        bias=round(bias, 3),
-        mae=round(mae, 3),
-        rmse=round(rmse, 3),
+        bias=round(float(np.mean(diffs_arr)), 3),
+        mae=round(float(np.mean(np.abs(diffs_arr))), 3),
+        rmse=round(float(math.sqrt(np.mean(diffs_arr**2))), 3),
         dwd_mean=round(float(np.mean(dwd_vals)), 2),
         era5_mean=round(float(np.mean(era5_vals)), 2),
     )
