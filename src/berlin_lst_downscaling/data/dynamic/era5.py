@@ -8,7 +8,9 @@ Produces one three-band COG per Landsat anchor scene containing:
 ERA5-Land variables:
 - ``t2m``: instantaneous 2m temperature (K) — direct read
 - ``ssrd``: cumulative surface solar radiation (J/m²) — accumulates 00:00→23:59,
-  resets daily at 00:00.  Convert to hourly W/m² via first-difference / 3600.
+  resets at 01:00 next day.  Convert to hourly W/m² via ECMWF conversion rule:
+  - 01 UTC: ssrd / 3600
+  - Otherwise: (ssrd[t] - ssrd[t-1]) / 3600
 
 Processing
 ----------
@@ -16,8 +18,8 @@ Processing
    Fetch the preceding month when the scene month's first 72h window
    spills into the previous month.
 2. Decode with xarray (NetCDF), concatenate months.
-3. For each scene: extract t2m at the acquisition hour; derive hourly ssrd
-   at the acquisition hour; compute 72-hour antecedent mean of hourly ssrd.
+3. For each scene: normalize acquisition to nearest UTC hour; extract t2m;
+   derive hourly ssrd via ECMWF differencing; compute 72h antecedent mean.
 4. Expand each ERA5 grid cell to the canonical 10m grid via nearest-neighbour.
 """
 
@@ -86,7 +88,8 @@ def contract_for_era5_scene() -> Contract:
                 nodata=float("nan"),
                 description=(
                     "ERA5-Land surface solar radiation downwards at acquisition hour. "
-                    "Derived from daily accumulation: delta(ssrd) / 3600."
+                    "Derived via ECMWF conversion: ssrd/3600 at 01 UTC, "
+                    "delta(ssrd)/3600 otherwise."
                 ),
                 unit="W/m²",
                 valid_range=(-1.0, 1500.0),
@@ -205,31 +208,31 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
 # ── ERA5 decode and processing ────────────────────────────────────────
 
 
-def _decode_monthly_grib(
-    grib_path: str,
+def _decode_monthly_era5(
+    nc_path: str,
     time_slice: tuple[str, str] | None = None,
 ) -> xr.Dataset:
-    """Decode a monthly ERA5 file (NetCDF or GRIB).
+    """Decode a monthly ERA5-Land NetCDF file.
 
     netCDF4 cannot read GCS URIs directly, so remote files are
     copied to a local temp path first.
 
     Parameters
     ----------
+    nc_path : local or GCS path to .nc file
     time_slice : (start, end) ISO datetime strings, optional
-        If given, only load data within this time window to reduce memory.
+        If given, only load data within this time window.
     """
-    if grib_path.startswith("gs://"):
+    if nc_path.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import read_bytes
 
-        local_tmp = Path(tempfile.mkdtemp()) / Path(grib_path).name
-        local_tmp.write_bytes(read_bytes(grib_path))
-        grib_path = str(local_tmp)
+        local_tmp = Path(tempfile.mkdtemp()) / Path(nc_path).name
+        local_tmp.write_bytes(read_bytes(nc_path))
+        nc_path = str(local_tmp)
 
-    ds = xr.open_dataset(grib_path)
+    ds = xr.open_dataset(nc_path)
 
     if time_slice is not None:
-        # Find the time coordinate name (ERA5 uses 'valid_time' or 'time')
         time_dim = "valid_time" if "valid_time" in ds.dims else "time"
         ds = ds.sel({time_dim: slice(time_slice[0], time_slice[1])})
 
@@ -239,34 +242,40 @@ def _decode_monthly_grib(
 def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
     """Convert cumulative SSRD (J/m²) to hourly irradiance (W/m²).
 
-    SSRD accumulates within each day from 00:00:
-    - At HH:00, ssrd = sum of hourly values from 00:00 to HH:00
-    - At 00:00 of next day, ssrd = full previous day's 24h sum
+    ECMWF ERA5-Land convention (CDS documentation):
+      - SSRD accumulates from 00 UTC to the hour ending at the forecast step.
+      - At 01 UTC, ssrd = accumulation for 00:00–01:00 (1 hour).
+      - At 02+ UTC, ssrd = accumulation for 00:00–HH:00.
+      - At 00 UTC (next day), ssrd = full 24h accumulation of previous day.
 
-    Strategy: group by date, first-difference within each day, divide by 3600.
-    Handles multi-dimensional arrays (time × lat × lon).
+    Conversion:
+      - 01 UTC:  hourly = ssrd / 3600
+      - Otherwise: hourly = (ssrd[t] - ssrd[t-1]) / 3600
+
+    At 00 UTC this yields the 24th hour's value (previous day's last hour).
+    The resulting array has shape (time, lat, lon) with a per-element linear
+    loop over timesteps.  For ~744 steps × ~396 × 3214 cells the cost is
+    dominated by I/O, not this loop.
     """
-    time_vals = ssrd.time.values if "time" in ssrd.dims else ssrd.valid_time.values
-    hourly = ssrd.copy()
+    time_dim = "valid_time" if "valid_time" in ssrd.dims else "time"
+    time_vals = ssrd[time_dim].values
+    hourly = np.empty_like(ssrd.data, dtype=np.float32)
 
-    for date in np.unique(time_vals.astype("datetime64[D]")):
-        day_mask = time_vals.astype("datetime64[D]") == date
-        indices = np.where(day_mask)[0]
+    for t in range(len(time_vals)):
+        h = int(time_vals[t].astype("datetime64[h]").astype(int) % 24)
+        if h == 1:
+            # 01 UTC: ssrd = accumulation for 00:00–01:00
+            hourly[t] = ssrd.data[t].astype(np.float32) / 3600.0
+        else:
+            # All other hours: (ssrd[t] - ssrd[t-1]) / 3600
+            hourly[t] = (
+                (ssrd.data[t].astype(np.float64) - ssrd.data[t - 1].astype(np.float64))
+                / 3600.0
+            ).astype(np.float32)
 
-        if len(indices) < 2:
-            continue
-
-        # Set 00:00 to 0 (it's previous day's accumulated total)
-        hourly.data[indices[0]] = 0.0
-
-        # Vectorised diff over all spatial dims simultaneously
-        for j in range(1, len(indices)):
-            hourly.data[indices[j]] = (
-                ssrd.data[indices[j]].astype(np.float64)
-                - ssrd.data[indices[j - 1]].astype(np.float64)
-            )
-
-    return (hourly / 3600.0).astype(np.float32)
+    return xr.DataArray(
+        hourly, coords=ssrd.coords, dims=ssrd.dims, attrs=ssrd.attrs,
+    )
 
 
 def _extract_era5_at_scene(
@@ -376,20 +385,22 @@ def prepare_era5_scene(
     # ── 2. decode and concatenate months ──────────────────────────────
     log_event(_logger, logging.INFO, "era5_processing", scene_id=scene_id)
 
-    # Compute time window: 72h before acquisition to acquisition time
-    # Strip timezone for xarray compatibility (ERA5 times are naive UTC)
+    # Normalize acquisition time to nearest UTC hour
     acq_naive = acquisition_dt.replace(tzinfo=None)
-    window_start = acq_naive - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS)
-    time_slice = (str(window_start), str(acq_naive))
+    acq_hour = acq_naive.replace(minute=0, second=0, microsecond=0)
 
-    primary_ds = _decode_monthly_grib(
+    # Time window: 72h + 1h padding before acquisition (for diff)
+    window_start = acq_hour - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS + 1)
+    time_slice = (str(window_start), str(acq_hour))
+
+    primary_ds = _decode_monthly_era5(
         grib_paths[(acq_year, acq_month)], time_slice=time_slice,
     )
 
     # If we need previous month for antecedent, decode and concatenate
     prev_month_key = months_needed[1] if len(months_needed) > 1 else None
     if prev_month_key and prev_month_key in grib_paths:
-        prev_ds = _decode_monthly_grib(
+        prev_ds = _decode_monthly_era5(
             grib_paths[prev_month_key], time_slice=time_slice,
         )
         # Find time dimension name for concat
@@ -404,7 +415,7 @@ def prepare_era5_scene(
 
     if t2m_var is None or ssrd_var is None:
         raise ValueError(
-            f"Cannot find t2m/ssrd in ERA5 GRIB for {scene_id}: "
+            f"Cannot find t2m/ssrd in ERA5 NetCDF for {scene_id}: "
             f"vars={list(primary_ds.data_vars)}"
         )
 
@@ -414,7 +425,7 @@ def prepare_era5_scene(
 
     # ── 4. extract scene values (per-cell) ────────────────────────────
     t2m_2d, ssrd_2d, antecedent_2d = _extract_era5_at_scene(
-        hourly_t2m, hourly_ssrd, acquisition_dt,
+        hourly_t2m, hourly_ssrd, acq_hour,
     )
 
     # ── 5. expand to canonical grid (nearest ERA5 cell) ───────────────
