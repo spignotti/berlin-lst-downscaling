@@ -270,17 +270,20 @@ def _extract_era5_at_scene(
     """
     acq_np = np.datetime64(acquisition_dt.replace(tzinfo=None))
 
+    # Find the time dimension name (ERA5 uses 'valid_time' or 'time')
+    time_dim = "valid_time" if "valid_time" in t2m.dims else "time"
+
     # Nearest hour
-    diffs = np.abs(t2m.time.values - acq_np)
+    diffs = np.abs(t2m[time_dim].values - acq_np)
     nearest_idx = int(diffs.argmin())
 
-    t2m_vals = t2m.isel(time=nearest_idx).values.astype(np.float32)
-    ssrd_vals = ssrd_hourly.isel(time=nearest_idx).values.astype(np.float32)
+    t2m_vals = t2m.isel({time_dim: nearest_idx}).values.astype(np.float32)
+    ssrd_vals = ssrd_hourly.isel({time_dim: nearest_idx}).values.astype(np.float32)
     ssrd_vals = np.clip(ssrd_vals, 0.0, None)
 
     # 72h antecedent mean
     window_start = acq_np - np.timedelta64(_ANTECEDENT_HOURS, "h")
-    time_vals = ssrd_hourly.time.values
+    time_vals = ssrd_hourly[time_dim].values
     mask = (time_vals >= window_start) & (time_vals <= acq_np)
     window_data = ssrd_hourly.values[mask]  # shape: (n_hours, n_lat, n_lon)
     with np.errstate(invalid="ignore"):
@@ -368,9 +371,11 @@ def prepare_era5_scene(
         prev_ds = _decode_monthly_grib(
             grib_paths[prev_month_key], time_slice=time_slice,
         )
+        # Find time dimension name for concat
+        time_dim = "valid_time" if "valid_time" in primary_ds.dims else "time"
         # Concatenate along time dimension
-        primary_ds = xr.concat([prev_ds, primary_ds], dim="time")
-        primary_ds = primary_ds.sortby("time")
+        primary_ds = xr.concat([prev_ds, primary_ds], dim=time_dim)
+        primary_ds = primary_ds.sortby(time_dim)
 
     # Find variables
     t2m_var = _find_var(primary_ds, ["t2m"])
