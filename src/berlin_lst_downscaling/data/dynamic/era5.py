@@ -227,7 +227,7 @@ def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
     Strategy: group by date, first-difference within each day, divide by 3600.
     Handles multi-dimensional arrays (time × lat × lon).
     """
-    time_vals = ssrd.time.values
+    time_vals = ssrd.time.values if "time" in ssrd.dims else ssrd.valid_time.values
     hourly = ssrd.copy()
 
     for date in np.unique(time_vals.astype("datetime64[D]")):
