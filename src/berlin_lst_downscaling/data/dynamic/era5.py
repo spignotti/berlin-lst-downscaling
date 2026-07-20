@@ -119,10 +119,21 @@ def _cache_grib_path(output_root: str, year: int, month: int) -> str:
 def _ensure_month_cached(
     output_root: str, year: int, month: int, run_id: str,
 ) -> str | None:
-    """Ensure a monthly ERA5-Land GRIB file is cached locally."""
+    """Ensure a monthly ERA5-Land NetCDF file is available locally.
+
+    Returns a local file path for decoding. If the file was already
+    cached to GCS, it is downloaded to a local temp path first (netCDF4
+    cannot read GCS URIs directly).
+    """
     cache_path = _cache_grib_path(output_root, year, month)
+
+    # If already cached on GCS, download to local temp for decoding
     if exists(cache_path):
-        return cache_path
+        local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.nc"
+        if not local_tmp.exists():
+            from berlin_lst_downscaling.data.io.storage import read_bytes
+            local_tmp.write_bytes(read_bytes(cache_path))
+        return str(local_tmp)
 
     local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.nc"
     log_event(_logger, logging.INFO, "era5_download", year=year, month=month)
@@ -135,7 +146,7 @@ def _ensure_month_cached(
                   year=year, month=month, elapsed_s=round(elapsed, 1),
                   size_mb=round(local_tmp.stat().st_size / 1024 / 1024, 1))
         atomic_write(cache_path, local_tmp.read_bytes(), overwrite=False)
-        return cache_path
+        return str(local_tmp)
     except Exception as exc:
         log_event(_logger, logging.ERROR, "era5_download_failed",
                   year=year, month=month, error=str(exc))
