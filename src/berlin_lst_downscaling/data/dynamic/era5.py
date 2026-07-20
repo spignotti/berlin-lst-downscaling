@@ -119,49 +119,69 @@ def _cache_grib_path(output_root: str, year: int, month: int) -> str:
     return era5_cache_path(output_root, year, month)
 
 
-_LOCAL_ERA5_CACHE: dict[tuple[int, int], str] = {}
-
-
 def _ensure_month_cached(
-    output_root: str, year: int, month: int, run_id: str,
-) -> str | None:
+    output_root: str,
+    year: int,
+    month: int,
+    run_id: str,
+    *,
+    local_dir: Path | None = None,
+) -> Path | None:
     """Ensure a monthly ERA5-Land NetCDF file is available locally.
 
-    Returns a local file path for decoding. Uses an in-process cache
-    to avoid re-downloading the same month for multiple scenes.
+    Returns a local file path for decoding. Downloads from GCS using
+    streaming (no full-file RAM load). Files are written to ``local_dir``
+    if given, otherwise to a new temp directory.
+
+    Parameters
+    ----------
+    local_dir : directory to write the .nc file into. Caller is responsible
+        for cleanup. If None, a new temp dir is created (legacy behaviour).
     """
-    key = (year, month)
-    if key in _LOCAL_ERA5_CACHE and Path(_LOCAL_ERA5_CACHE[key]).exists():
-        return _LOCAL_ERA5_CACHE[key]
-
     cache_path = _cache_grib_path(output_root, year, month)
+    fname = f"era5_land_{year:04d}{month:02d}.nc"
 
-    # If already cached on GCS, download to local temp for decoding
+    if local_dir is not None:
+        target = local_dir / fname
+    else:
+        target = Path(tempfile.mkdtemp()) / fname
+
+    if target.exists() and target.stat().st_size > 0:
+        return target
+
+    # If already cached on GCS, stream-download to local
     if exists(cache_path):
-        local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.nc"
-        if not local_tmp.exists():
-            from berlin_lst_downscaling.data.io.storage import read_bytes
-            local_tmp.write_bytes(read_bytes(cache_path))
-        _LOCAL_ERA5_CACHE[key] = str(local_tmp)
-        return str(local_tmp)
+        _download_gcs_to_local(cache_path, target)
+        return target
 
-    local_tmp = Path(tempfile.mkdtemp()) / f"era5_land_{year:04d}{month:02d}.nc"
+    # Download from CDS, then upload to GCS cache
     log_event(_logger, logging.INFO, "era5_download", year=year, month=month)
     t0 = time.perf_counter()
 
     try:
-        _download_era5_month(year, month, local_tmp)
+        _download_era5_month(year, month, target)
         elapsed = time.perf_counter() - t0
         log_event(_logger, logging.INFO, "era5_downloaded",
                   year=year, month=month, elapsed_s=round(elapsed, 1),
-                  size_mb=round(local_tmp.stat().st_size / 1024 / 1024, 1))
-        atomic_write(cache_path, local_tmp.read_bytes(), overwrite=False)
-        _LOCAL_ERA5_CACHE[key] = str(local_tmp)
-        return str(local_tmp)
+                  size_mb=round(target.stat().st_size / 1024 / 1024, 1))
+        # Upload to GCS cache via streaming (no full-file RAM load)
+        from berlin_lst_downscaling.data.io.storage import atomic_upload
+        atomic_upload(target, cache_path, overwrite=False)
+        return target
     except Exception as exc:
         log_event(_logger, logging.ERROR, "era5_download_failed",
                   year=year, month=month, error=str(exc))
         return None
+
+
+def _download_gcs_to_local(gcs_uri: str, local_path: Path) -> None:
+    """Stream-download a GCS object to a local path (no full-file RAM load)."""
+    from google.cloud import storage
+
+    bucket_name, key = gcs_uri.removeprefix("gs://").split("/", 1)
+    client = storage.Client()
+    blob = client.bucket(bucket_name).blob(key)
+    blob.download_to_filename(str(local_path))
 
 
 def _download_era5_month(year: int, month: int, target: Path) -> None:
@@ -355,8 +375,14 @@ def prepare_era5_scene(
     run_id: str,
     *,
     grid=None,
+    local_dir: Path | None = None,
 ) -> PreparedSecondaryProduct:
-    """Prepare ERA5-Land scene channels for a Landsat anchor."""
+    """Prepare ERA5-Land scene channels for a Landsat anchor.
+
+    Parameters
+    ----------
+    local_dir : directory for ERA5 monthly cache files. Caller manages cleanup.
+    """
     grid = grid or canon_grid_10m()
     c_hash = sha256(f"era5_land:{scene_id}".encode()).hexdigest()[:12]
 
@@ -370,9 +396,9 @@ def prepare_era5_scene(
     else:
         months_needed.append((acq_year, acq_month - 1))
 
-    grib_paths: dict[tuple[int, int], str] = {}
+    grib_paths: dict[tuple[int, int], Path] = {}
     for year, month in months_needed:
-        path = _ensure_month_cached(output_root, year, month, run_id)
+        path = _ensure_month_cached(output_root, year, month, run_id, local_dir=local_dir)
         if path is not None:
             grib_paths[(year, month)] = path
 

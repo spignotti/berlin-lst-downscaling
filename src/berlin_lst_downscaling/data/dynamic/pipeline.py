@@ -11,7 +11,10 @@ Orchestrates the full lifecycle for each Landsat anchor scene:
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
+from collections import defaultdict
+from pathlib import Path
 from uuid import uuid4
 
 from omegaconf import DictConfig
@@ -81,132 +84,148 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     processed = 0
 
     # ── 1. process scenes ────────────────────────────────────────────
+    # Group scenes by acquisition month for bounded ERA5 local cache
+    scenes_by_month: dict[tuple[int, int], list] = defaultdict(list)
     for scene in manifest_report.scenes:
-        log_event(_logger, logging.INFO, "scene_start",
-                  scene_id=scene.scene_id,
-                  year=scene.year,
-                  doy=scene.day_of_year,
-                  dt=scene.acquisition_datetime.isoformat())
+        key = (scene.acquisition_datetime.year, scene.acquisition_datetime.month)
+        scenes_by_month[key].append(scene)
 
-        # ── 1a. ERA5 meteorology ─────────────────────────────────────
-        era5_source = "era5_land"
-        era5_item_id = f"era5_land_{scene.scene_id}"
-        era5_todo = reconcile([(era5_item_id, era5_source, scene.scene_id)], led, c_hash)
+    for (ym_year, ym_month), month_scenes in sorted(scenes_by_month.items()):
+        log_event(_logger, logging.INFO, "month_group_start",
+                  year=ym_year, month=ym_month, n_scenes=len(month_scenes))
 
-        if era5_todo:
-            led.upsert(SecondaryLedgerRow(
-                item_id=era5_item_id, source=era5_source,
-                period_or_vintage=scene.scene_id,
-                status="exporting", run_id=run_id))
-            try:
-                from berlin_lst_downscaling.data.dynamic.era5 import prepare_era5_scene
+        with tempfile.TemporaryDirectory(prefix=f"era5_{ym_year}{ym_month:02d}_") as tmp_dir:
+            local_dir = Path(tmp_dir)
 
-                prepared = prepare_era5_scene(
-                    scene.scene_id, scene.acquisition_datetime,
-                    output_root, run_id, grid=grid)
-                prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
-                artifacts = finalize_secondary_product(
-                    prepared, grid, output_root, run_id,
-                    product_dir_override=prod_dir)
-                led.upsert(SecondaryLedgerRow(
-                    item_id=era5_item_id, source=era5_source,
-                    period_or_vintage=scene.scene_id,
-                    status="done", run_id=run_id, config_hash=c_hash,
-                    output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
-                    provenance_uri=artifacts.provenance_uri,
-                    completion_uri=artifacts.completion_uri))
-                processed += 1
-                log_event(_logger, logging.INFO, "era5_done",
-                          scene_id=scene.scene_id, output_uri=artifacts.cog_uri)
-            except Exception as exc:
-                log_event(_logger, logging.ERROR, "era5_failed",
-                          scene_id=scene.scene_id, error=str(exc))
-                led.upsert(SecondaryLedgerRow(
-                    item_id=era5_item_id, source=era5_source,
-                    period_or_vintage=scene.scene_id,
-                    status="failed", run_id=run_id, last_error=str(exc)))
-                failed += 1
-        else:
-            log_event(_logger, logging.INFO, "era5_skipped",
-                      scene_id=scene.scene_id)
+            for scene in month_scenes:
+                log_event(_logger, logging.INFO, "scene_start",
+                          scene_id=scene.scene_id,
+                          year=scene.year,
+                          doy=scene.day_of_year,
+                          dt=scene.acquisition_datetime.isoformat())
 
-        # ── 1b. Shadow masks (building + vegetation) ─────────────────
-        azimuth = scene.solar_azimuth
-        elevation = scene.solar_elevation
+                # ── 1a. ERA5 meteorology ─────────────────────────────
+                era5_source = "era5_land"
+                era5_item_id = f"era5_land_{scene.scene_id}"
+                era5_todo = reconcile([(era5_item_id, era5_source, scene.scene_id)], led, c_hash)
 
-        if azimuth is None or elevation is None:
-            log_event(_logger, logging.WARNING, "shadow_skipped_no_solar",
-                      scene_id=scene.scene_id)
-        else:
-            for component in ("building", "vegetation"):
-                shadow_source = f"shadow_{component}"
-                shadow_item_id = f"shadow_{component}_{scene.scene_id}"
-                shadow_todo = reconcile(
-                    [(shadow_item_id, shadow_source, scene.scene_id)], led, c_hash)
-
-                if shadow_todo:
+                if era5_todo:
                     led.upsert(SecondaryLedgerRow(
-                        item_id=shadow_item_id, source=shadow_source,
+                        item_id=era5_item_id, source=era5_source,
                         period_or_vintage=scene.scene_id,
                         status="exporting", run_id=run_id))
                     try:
-                        from berlin_lst_downscaling.data.dynamic.shadows import (
-                            prepare_shadow,
-                        )
+                        from berlin_lst_downscaling.data.dynamic.era5 import prepare_era5_scene
 
-                        horizon_uri = (
-                            geo.horizon_building_cog if component == "building"
-                            else geo.horizon_vegetation_cog
-                        )
-                        prepared = prepare_shadow(
-                            component=component,
-                            horizon_uri=horizon_uri,
-                            azimuth_deg=azimuth,
-                            elevation_deg=elevation,
-                            scene_id=scene.scene_id,
-                            output_root=output_root,
-                            run_id=run_id,
-                            grid=grid,
-                            geometry_id=geometry_id,
-                            geometry_hash=c_hash,
-                        )
-                        # Pass acquisition datetime into the product
-                        prepared.acquisition_datetime = scene.acquisition_datetime
-                        prepared.stac_properties = {
-                            **(prepared.stac_properties or {}),
-                            "acquisition:datetime": scene.acquisition_datetime.isoformat(),
-                            "acquisition:doy": scene.day_of_year,
-                            "acquisition:year": scene.year,
-                        }
-
-                        prod_dir = scene_product_dir(
-                            output_root, shadow_source, scene.scene_id)
+                        prepared = prepare_era5_scene(
+                            scene.scene_id, scene.acquisition_datetime,
+                            output_root, run_id, grid=grid, local_dir=local_dir)
+                        prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
                         artifacts = finalize_secondary_product(
                             prepared, grid, output_root, run_id,
                             product_dir_override=prod_dir)
                         led.upsert(SecondaryLedgerRow(
-                            item_id=shadow_item_id, source=shadow_source,
+                            item_id=era5_item_id, source=era5_source,
                             period_or_vintage=scene.scene_id,
                             status="done", run_id=run_id, config_hash=c_hash,
-                            output_uri=artifacts.cog_uri,
-                            stac_uri=artifacts.stac_uri,
+                            output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
                             provenance_uri=artifacts.provenance_uri,
                             completion_uri=artifacts.completion_uri))
                         processed += 1
-                        log_event(_logger, logging.INFO, "shadow_done",
-                                  scene_id=scene.scene_id,
-                                  component=component,
-                                  output_uri=artifacts.cog_uri)
+                        log_event(_logger, logging.INFO, "era5_done",
+                                  scene_id=scene.scene_id, output_uri=artifacts.cog_uri)
                     except Exception as exc:
-                        log_event(_logger, logging.ERROR, "shadow_failed",
-                                  scene_id=scene.scene_id,
-                                  component=component, error=str(exc))
+                        log_event(_logger, logging.ERROR, "era5_failed",
+                                  scene_id=scene.scene_id, error=str(exc))
                         led.upsert(SecondaryLedgerRow(
-                            item_id=shadow_item_id, source=shadow_source,
+                            item_id=era5_item_id, source=era5_source,
                             period_or_vintage=scene.scene_id,
-                            status="failed", run_id=run_id,
-                            last_error=str(exc)))
+                            status="failed", run_id=run_id, last_error=str(exc)))
                         failed += 1
+                else:
+                    log_event(_logger, logging.INFO, "era5_skipped",
+                              scene_id=scene.scene_id)
+
+                # ── 1b. Shadow masks (building + vegetation) ─────────
+                azimuth = scene.solar_azimuth
+                elevation = scene.solar_elevation
+
+                if azimuth is None or elevation is None:
+                    log_event(_logger, logging.WARNING, "shadow_skipped_no_solar",
+                              scene_id=scene.scene_id)
+                else:
+                    for component in ("building", "vegetation"):
+                        shadow_source = f"shadow_{component}"
+                        shadow_item_id = f"shadow_{component}_{scene.scene_id}"
+                        shadow_todo = reconcile(
+                            [(shadow_item_id, shadow_source, scene.scene_id)], led, c_hash)
+
+                        if shadow_todo:
+                            led.upsert(SecondaryLedgerRow(
+                                item_id=shadow_item_id, source=shadow_source,
+                                period_or_vintage=scene.scene_id,
+                                status="exporting", run_id=run_id))
+                            try:
+                                from berlin_lst_downscaling.data.dynamic.shadows import (
+                                    prepare_shadow,
+                                )
+
+                                horizon_uri = (
+                                    geo.horizon_building_cog if component == "building"
+                                    else geo.horizon_vegetation_cog
+                                )
+                                prepared = prepare_shadow(
+                                    component=component,
+                                    horizon_uri=horizon_uri,
+                                    azimuth_deg=azimuth,
+                                    elevation_deg=elevation,
+                                    scene_id=scene.scene_id,
+                                    output_root=output_root,
+                                    run_id=run_id,
+                                    grid=grid,
+                                    geometry_id=geometry_id,
+                                    geometry_hash=c_hash,
+                                )
+                                # Pass acquisition datetime into the product
+                                prepared.acquisition_datetime = scene.acquisition_datetime
+                                prepared.stac_properties = {
+                                    **(prepared.stac_properties or {}),
+                                    "acquisition:datetime": scene.acquisition_datetime.isoformat(),
+                                    "acquisition:doy": scene.day_of_year,
+                                    "acquisition:year": scene.year,
+                                }
+
+                                prod_dir = scene_product_dir(
+                                    output_root, shadow_source, scene.scene_id)
+                                artifacts = finalize_secondary_product(
+                                    prepared, grid, output_root, run_id,
+                                    product_dir_override=prod_dir)
+                                led.upsert(SecondaryLedgerRow(
+                                    item_id=shadow_item_id, source=shadow_source,
+                                    period_or_vintage=scene.scene_id,
+                                    status="done", run_id=run_id, config_hash=c_hash,
+                                    output_uri=artifacts.cog_uri,
+                                    stac_uri=artifacts.stac_uri,
+                                    provenance_uri=artifacts.provenance_uri,
+                                    completion_uri=artifacts.completion_uri))
+                                processed += 1
+                                log_event(_logger, logging.INFO, "shadow_done",
+                                          scene_id=scene.scene_id,
+                                          component=component,
+                                          output_uri=artifacts.cog_uri)
+                            except Exception as exc:
+                                log_event(_logger, logging.ERROR, "shadow_failed",
+                                          scene_id=scene.scene_id,
+                                          component=component, error=str(exc))
+                                led.upsert(SecondaryLedgerRow(
+                                    item_id=shadow_item_id, source=shadow_source,
+                                    period_or_vintage=scene.scene_id,
+                                    status="failed", run_id=run_id,
+                                    last_error=str(exc)))
+                                failed += 1
+
+        log_event(_logger, logging.INFO, "month_group_done",
+                  year=ym_year, month=ym_month)
 
     # ── 2. final report ──────────────────────────────────────────────
     from berlin_lst_downscaling.data.dynamic.reports import (
