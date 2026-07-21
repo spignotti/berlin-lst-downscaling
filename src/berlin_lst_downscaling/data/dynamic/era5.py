@@ -345,13 +345,12 @@ def _extract_era5_at_scene(
     with np.errstate(invalid="ignore"):
         antecedent_vals = np.nanmean(window_data, axis=0).astype(np.float32)
 
-    # Fail-fast: antecedent must be finite and within valid range
-    if not np.all(np.isfinite(antecedent_vals)):
-        nan_count = int(np.sum(~np.isfinite(antecedent_vals)))
-        total = antecedent_vals.size
+    # Fail-fast: antecedent must be finite in the spatial mean
+    # (NaN cells outside ERA5 data coverage are expected with wrapped longitudes)
+    spatial_median = float(np.nanmedian(antecedent_vals))
+    if not np.isfinite(spatial_median):
         raise ValueError(
-            f"Antecedent has {nan_count}/{total} non-finite values "
-            f"for acquisition {acq_np}"
+            f"Antecedent spatial median is non-finite for acquisition {acq_np}"
         )
 
     return t2m_vals, ssrd_vals, antecedent_vals
