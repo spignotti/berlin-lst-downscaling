@@ -120,7 +120,7 @@ def contract_for_era5_scene() -> Contract:
 
 
 def _cache_grib_path(output_root: str, year: int, month: int) -> str:
-    return era5_cache_path(output_root, year, month, cache_version="v2")
+    return era5_cache_path(output_root, year, month)
 
 
 def _ensure_month_cached(
@@ -307,10 +307,10 @@ def _extract_era5_at_scene(
     t2m: xr.DataArray,
     ssrd_hourly: xr.DataArray,
     acquisition_dt: datetime,
-    berlin_lat: float = _BERLIN_LAT,
-    berlin_lon: float = _BERLIN_LON,
 ) -> tuple[float, float, float]:
-    """Extract t2m, ssrd, and 72h-antecedent at the nearest ERA5 cell to Berlin.
+    """Extract t2m, ssrd, and 72h-antecedent from a 1D ERA5 cell DataArray.
+
+    The caller must have already selected the nearest Berlin cell (1D arrays).
 
     Returns
     -------
@@ -322,33 +322,21 @@ def _extract_era5_at_scene(
         72h rolling mean of hourly SSRD in W/m².
     """
     acq_np = np.datetime64(acquisition_dt.replace(tzinfo=None))
-
-    # Find the time dimension name (ERA5 uses 'valid_time' or 'time')
     time_dim = "valid_time" if "valid_time" in t2m.dims else "time"
 
-    # Select nearest Berlin cell before any heavy computation
-    lat_vals = t2m.latitude.values if "latitude" in t2m.coords else np.array([berlin_lat])
-    lon_vals = t2m.longitude.values if "longitude" in t2m.coords else np.array([berlin_lon])
-    lat_idx = int(np.abs(lat_vals - berlin_lat).argmin())
-    lon_idx = int(np.abs(lon_vals - berlin_lon).argmin())
-
-    t2m_cell = t2m.isel(latitude=lat_idx, longitude=lon_idx) if "latitude" in t2m.dims else t2m
-    ssrd_dims = "latitude" in ssrd_hourly.dims
-    ssrd_cell = ssrd_hourly.isel(latitude=lat_idx, longitude=lon_idx) if ssrd_dims else ssrd_hourly
-
     # Nearest hour
-    diffs = np.abs(t2m_cell[time_dim].values - acq_np)
+    diffs = np.abs(t2m[time_dim].values - acq_np)
     nearest_idx = int(diffs.argmin())
 
-    t2m_val = float(t2m_cell.isel({time_dim: nearest_idx}).values)
-    ssrd_val = float(ssrd_cell.isel({time_dim: nearest_idx}).values)
+    t2m_val = float(t2m.isel({time_dim: nearest_idx}).values)
+    ssrd_val = float(ssrd_hourly.isel({time_dim: nearest_idx}).values)
     ssrd_val = max(ssrd_val, 0.0)
 
     # 72h antecedent mean
     window_start = acq_np - np.timedelta64(_ANTECEDENT_HOURS, "h")
-    time_vals = ssrd_cell[time_dim].values
+    time_vals = ssrd_hourly[time_dim].values
     mask = (time_vals >= window_start) & (time_vals <= acq_np)
-    window_data = ssrd_cell.values[mask]
+    window_data = ssrd_hourly.values[mask]
 
     if window_data.size == 0:
         raise ValueError(
@@ -363,31 +351,6 @@ def _extract_era5_at_scene(
         )
 
     return t2m_val, ssrd_val, antecedent_val
-
-
-def _expand_to_canonical_grid(
-    era5_2d: np.ndarray,
-    era5_lat: np.ndarray,
-    era5_lon: np.ndarray,
-    grid,
-    berlin_lat: float = 52.52,
-    berlin_lon: float = 13.42,
-) -> np.ndarray:
-    """Expand an ERA5 2D field (lat × lon) to the canonical 10m grid.
-
-    Strategy: find the nearest ERA5 grid cell to Berlin center,
-    fill entire canonical grid with that value.
-
-    Returns a 2D float32 array of shape (grid_y, grid_x).
-    """
-    h, w = grid.shape.y, grid.shape.x
-
-    # Find nearest ERA5 cell to Berlin center
-    lat_idx = int(np.abs(era5_lat - berlin_lat).argmin())
-    lon_idx = int(np.abs(era5_lon - berlin_lon).argmin())
-
-    val = float(era5_2d[lat_idx, lon_idx])
-    return np.full((h, w), val, dtype=np.float32)
 
 
 # ── public API ─────────────────────────────────────────────────────────
@@ -449,62 +412,92 @@ def prepare_era5_scene(
     window_start = acq_hour - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS + 1)
     time_slice = (str(window_start), str(acq_hour))
 
-    primary_ds = _decode_monthly_era5(
-        grib_paths[(acq_year, acq_month)], time_slice=time_slice,
-    )
+    primary_ds = None
+    prev_ds = None
 
-    # If we need previous month for antecedent, decode and concatenate
-    prev_month_key = months_needed[1] if len(months_needed) > 1 else None
-    if prev_month_key and prev_month_key in grib_paths:
-        prev_ds = _decode_monthly_era5(
-            grib_paths[prev_month_key], time_slice=time_slice,
-        )
-        # Find time dimension name for concat
-        time_dim = "valid_time" if "valid_time" in primary_ds.dims else "time"
-        # Concatenate along time dimension
-        primary_ds = xr.concat([prev_ds, primary_ds], dim=time_dim)
-        primary_ds = primary_ds.sortby(time_dim)
-
-    # ── 2b. preflight validation ────────────────────────────────────
-    t2m_var = _find_var(primary_ds, ["t2m"])
-    ssrd_var = _find_var(primary_ds, ["ssrd"])
-
-    if t2m_var is None or ssrd_var is None:
-        raise ValueError(
-            f"Cannot find t2m/ssrd in ERA5 NetCDF for {scene_id}: "
-            f"vars={list(primary_ds.data_vars)}"
+    try:
+        primary_ds = _decode_monthly_era5(
+            grib_paths[(acq_year, acq_month)], time_slice=time_slice,
         )
 
-    # Validate spatial coverage: coordinates must include Berlin area
-    if "latitude" in primary_ds.coords:
-        lat_range = float(primary_ds.latitude.min()), float(primary_ds.latitude.max())
-        lon_range = float(primary_ds.longitude.min()), float(primary_ds.longitude.max())
-        if not (lat_range[0] <= _BERLIN_LAT <= lat_range[1]):
+        # Find variables and validate
+        t2m_var = _find_var(primary_ds, ["t2m"])
+        ssrd_var = _find_var(primary_ds, ["ssrd"])
+        if t2m_var is None or ssrd_var is None:
             raise ValueError(
-                f"ERA5 latitude range {lat_range} does not cover Berlin ({_BERLIN_LAT})"
-            )
-        if not (lon_range[0] <= _BERLIN_LON <= lon_range[1]):
-            raise ValueError(
-                f"ERA5 longitude range {lon_range} does not cover Berlin ({_BERLIN_LON})"
+                f"Cannot find t2m/ssrd in ERA5 NetCDF for {scene_id}: "
+                f"vars={list(primary_ds.data_vars)}"
             )
 
-    # Validate time coverage
-    time_dim = "valid_time" if "valid_time" in primary_ds.dims else "time"
-    time_vals = primary_ds[time_dim].values
-    acq_np = np.datetime64(acq_hour)
-    if not np.any(np.abs(time_vals - acq_np) < np.timedelta64(2, "h")):
-        raise ValueError(
-            f"ERA5 time range does not cover acquisition {acq_hour}"
+        # Validate spatial coverage
+        if "latitude" in primary_ds.coords:
+            lat_range = float(primary_ds.latitude.min()), float(primary_ds.latitude.max())
+            lon_range = float(primary_ds.longitude.min()), float(primary_ds.longitude.max())
+            if not (lat_range[0] <= _BERLIN_LAT <= lat_range[1]):
+                raise ValueError(
+                    f"ERA5 latitude range {lat_range} does not cover Berlin ({_BERLIN_LAT})"
+                )
+            if not (lon_range[0] <= _BERLIN_LON <= lon_range[1]):
+                raise ValueError(
+                    f"ERA5 longitude range {lon_range} does not cover Berlin ({_BERLIN_LON})"
+                )
+
+        # Select nearest Berlin cell from primary BEFORE any concat
+        has_lat = "latitude" in primary_ds.coords
+        has_lon = "longitude" in primary_ds.coords
+        lat_vals = primary_ds.latitude.values if has_lat else np.array([_BERLIN_LAT])
+        lon_vals = primary_ds.longitude.values if has_lon else np.array([_BERLIN_LON])
+        lat_idx = int(np.abs(lat_vals - _BERLIN_LAT).argmin())
+        lon_idx = int(np.abs(lon_vals - _BERLIN_LON).argmin())
+
+        t2m_cell = primary_ds[t2m_var].isel(latitude=lat_idx, longitude=lon_idx)
+        ssrd_cell = primary_ds[ssrd_var].isel(latitude=lat_idx, longitude=lon_idx)
+
+        # Close primary before loading predecessor
+        primary_ds.close()
+        primary_ds = None
+
+        # If we need previous month for antecedent, select its cell too
+        prev_month_key = months_needed[1] if len(months_needed) > 1 else None
+        if prev_month_key and prev_month_key in grib_paths:
+            prev_ds = _decode_monthly_era5(
+                grib_paths[prev_month_key], time_slice=time_slice,
+            )
+            prev_t2m = prev_ds[t2m_var].isel(latitude=lat_idx, longitude=lon_idx)
+            prev_ssrd = prev_ds[ssrd_var].isel(latitude=lat_idx, longitude=lon_idx)
+            prev_ds.close()
+            prev_ds = None
+
+            # Concatenate 1D cell arrays along time
+            time_dim = "valid_time" if "valid_time" in t2m_cell.dims else "time"
+            t2m_cell = xr.concat([prev_t2m, t2m_cell], dim=time_dim)
+            t2m_cell = t2m_cell.sortby(time_dim)
+            ssrd_cell = xr.concat([prev_ssrd, ssrd_cell], dim=time_dim)
+            ssrd_cell = ssrd_cell.sortby(time_dim)
+
+        # Validate time coverage
+        time_dim = "valid_time" if "valid_time" in t2m_cell.dims else "time"
+        time_vals = t2m_cell[time_dim].values
+        acq_np = np.datetime64(acq_hour)
+        if not np.any(np.abs(time_vals - acq_np) < np.timedelta64(2, "h")):
+            raise ValueError(
+                f"ERA5 time range does not cover acquisition {acq_hour}"
+            )
+
+        # ── 3. convert SSRD to hourly W/m² on 1D cell only ─────────
+        hourly_ssrd = _ssrd_to_hourly(ssrd_cell)
+
+        # ── 4. extract scene values from 1D cell ───────────────────
+        t2m_val, ssrd_val, antecedent_val = _extract_era5_at_scene(
+            t2m_cell, hourly_ssrd, acq_hour,
         )
 
-    # ── 3. convert SSRD to hourly W/m² ───────────────────────────────
-    hourly_ssrd = _ssrd_to_hourly(primary_ds[ssrd_var])
-    hourly_t2m = primary_ds[t2m_var]
-
-    # ── 4. extract scene values (nearest Berlin cell only) ───────────
-    t2m_val, ssrd_val, antecedent_val = _extract_era5_at_scene(
-        hourly_t2m, hourly_ssrd, acq_hour,
-    )
+    finally:
+        # Ensure all datasets are closed
+        if primary_ds is not None:
+            primary_ds.close()
+        if prev_ds is not None:
+            prev_ds.close()
 
     # ── 5. fill canonical grid with scalar values ────────────────────
     shape = (grid.shape.y, grid.shape.x)
@@ -526,8 +519,6 @@ def prepare_era5_scene(
     )
     t2m_ds = t2m_ds.rio.write_crs(str(grid.crs))
     t2m_ds = t2m_ds.rio.write_transform(grid.transform)
-
-    primary_ds.close()
 
     # Scene channel values for logging/QA
     t2m_val_log = t2m_val

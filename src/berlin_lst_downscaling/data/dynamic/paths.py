@@ -3,8 +3,7 @@
 Layout
 ------
 Raw ERA5-Land cache:
-  _raw/dynamic/era5_land/v2/YYYY-MM/       (v2: correct CDS area + 0.1°)
-  _raw/dynamic/era5_land/YYYY-MM/          (legacy v1, preserved for reference)
+  _raw/dynamic/era5_land/YYYY-MM/
 
 Per-scene dynamic products:
   ard/dynamic/{source}/{scene_id}/
@@ -33,22 +32,14 @@ _STATE_ROOT = "_state/dynamic"
 # ── raw ERA5 cache ───────────────────────────────────────────────────
 
 
-def era5_cache_dir(root: str, year: int, month: int, cache_version: str = "v2") -> str:
-    """Return the ERA5-Land cache directory for a given month.
-
-    Parameters
-    ----------
-    cache_version : ``"v2"`` for corrected CDS area + 0.1° grid (default).
-        ``"v1"`` preserves the legacy path for reference.
-    """
-    if cache_version == "v1":
-        return f"{root.rstrip('/')}/{_RAW_ROOT}/era5_land/{year:04d}-{month:02d}"
-    return f"{root.rstrip('/')}/{_RAW_ROOT}/era5_land/{cache_version}/{year:04d}-{month:02d}"
+def era5_cache_dir(root: str, year: int, month: int) -> str:
+    """Return the ERA5-Land cache directory for a given month."""
+    return f"{root.rstrip('/')}/{_RAW_ROOT}/era5_land/{year:04d}-{month:02d}"
 
 
-def era5_cache_path(root: str, year: int, month: int, cache_version: str = "v2") -> str:
+def era5_cache_path(root: str, year: int, month: int) -> str:
     """Return the ERA5-Land NetCDF file path for a given month."""
-    return f"{era5_cache_dir(root, year, month, cache_version)}/era5_land_{year:04d}{month:02d}.nc"
+    return f"{era5_cache_dir(root, year, month)}/era5_land_{year:04d}{month:02d}.nc"
 
 
 # ── per-scene product paths ──────────────────────────────────────────

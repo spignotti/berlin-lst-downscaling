@@ -60,15 +60,12 @@ def config_hash_for_era5(
     geometry_id: str,
     era5_cache_root: str,
     antecedent_hours: int = 72,
-    cache_version: str = "v2",
 ) -> str:
     """Config hash for ERA5 scene products specifically.
 
-    Parameters
-    ----------
-    cache_version : ``"v2"`` for corrected CDS area + 0.1° grid (default).
-        Changing this invalidates previously cached ERA5 products, triggering
-        reprocessing. Shadow products use a separate hash and are unaffected.
+    Includes processing parameters that affect output values (CDS area order,
+    grid resolution, cell selection strategy). Shadow products use a separate
+    hash and are unaffected.
     """
     payload = json.dumps(
         {
@@ -77,7 +74,6 @@ def config_hash_for_era5(
             "era5_channels": list(ERA5_CHANNELS),
             "era5_cache_root": era5_cache_root,
             "antecedent_hours": antecedent_hours,
-            "cache_version": cache_version,
         },
         sort_keys=True,
     )

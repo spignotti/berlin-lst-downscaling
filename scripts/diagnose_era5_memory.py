@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import resource
 import tempfile
 import time
 from pathlib import Path
@@ -49,12 +48,12 @@ def main() -> int:
     args = parser.parse_args()
 
     from berlin_lst_downscaling.common.grid import canon_grid_10m
+    from berlin_lst_downscaling.data.dynamic.era5 import prepare_era5_scene
     from berlin_lst_downscaling.data.dynamic.manifest import load_landsat_anchors
     from berlin_lst_downscaling.data.dynamic.paths import ledger_path, scene_product_dir
-    from berlin_lst_downscaling.data.dynamic.era5 import prepare_era5_scene
-    from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
-    from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
     from berlin_lst_downscaling.data.secondary.idempotency import reconcile
+    from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
+    from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
 
     log_stage("start")
 
@@ -80,33 +79,33 @@ def main() -> int:
         era5_todo = reconcile([(era5_item_id, "era5_land", scene.scene_id)], led, "diag")
 
         if not era5_todo:
-            log_stage(f"  skipped (already done)")
+            log_stage("  skipped (already done)")
             continue
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             local_dir = Path(tmp_dir)
 
             # Prepare
-            log_stage(f"  prepare_era5_scene start")
+            log_stage("  prepare_era5_scene start")
             t0 = time.perf_counter()
             try:
                 prepared = prepare_era5_scene(
                     scene.scene_id, scene.acquisition_datetime,
                     args.output_root, "diag", grid=grid, local_dir=local_dir)
-                log_stage(f"  prepare_era5_scene done", t0)
+                log_stage("  prepare_era5_scene done", t0)
             except Exception as e:
                 log_stage(f"  prepare FAILED: {e}")
                 continue
 
             # Finalize
-            log_stage(f"  finalize start")
+            log_stage("  finalize start")
             t0 = time.perf_counter()
             try:
                 prod_dir = scene_product_dir(args.output_root, "era5_land", scene.scene_id)
-                artifacts = finalize_secondary_product(
+                finalize_secondary_product(
                     prepared, grid, args.output_root, "diag",
                     product_dir_override=prod_dir)
-                log_stage(f"  finalize done", t0)
+                log_stage("  finalize done", t0)
             except Exception as e:
                 log_stage(f"  finalize FAILED: {e}")
                 continue

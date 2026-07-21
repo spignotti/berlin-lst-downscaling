@@ -28,7 +28,6 @@ import argparse
 import json
 import sys
 from collections import Counter
-from pathlib import Path
 
 import pyarrow.parquet as pq
 
@@ -48,9 +47,10 @@ def load_ledger(output_root: str) -> dict:
 
     sources = table.column("source").to_pylist()
     statuses = table.column("status").to_pylist()
-    roles = table.column("role").to_pylist() if "role" in table.column_names else [None] * table.num_rows
+    has_role = "role" in table.column_names
+    roles = table.column("role").to_pylist() if has_role else [None] * table.num_rows
 
-    counts = Counter(zip(sources, statuses))
+    counts = Counter(zip(sources, statuses, strict=False))
     non_done = []
     for i in range(table.num_rows):
         row = table.slice(i, 1).to_pydict()
@@ -75,24 +75,10 @@ def load_ledger(output_root: str) -> dict:
 
 def check_artifacts(output_root: str, ledger_info: dict) -> dict:
     """Check that COG + complete.json exist for done items."""
-    from berlin_lst_downscaling.data.io.storage import exists
-
-    done_items = []
-    for src in ("era5_land", "shadow_building", "shadow_vegetation"):
-        for item_id, status in ledger_info["counts"].items():
-            if isinstance(item_id, tuple):
-                src_name, _ = item_id
-            else:
-                src_name = src
-            # This is simplified; full check needs ledger row access
-
-    # Quick check: count complete.json markers per source
+    # Relies on ledger counts; full GCS prefix listing not practical here.
     results = {}
     for src in ("era5_land", "shadow_building", "shadow_vegetation"):
-        src_prefix = f"{output_root.rstrip('/')}/ard/dynamic/{src}/"
-        # We can't easily list GCS prefixes, so rely on ledger
         results[src] = "check ledger counts"
-
     return results
 
 
