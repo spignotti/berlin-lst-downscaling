@@ -335,8 +335,24 @@ def _extract_era5_at_scene(
     time_vals = ssrd_hourly[time_dim].values
     mask = (time_vals >= window_start) & (time_vals <= acq_np)
     window_data = ssrd_hourly.values[mask]  # shape: (n_hours, n_lat, n_lon)
+
+    if window_data.size == 0:
+        raise ValueError(
+            f"Empty 72h antecedent window for acquisition {acq_np}: "
+            f"no ERA5 timesteps in [{window_start}, {acq_np}]"
+        )
+
     with np.errstate(invalid="ignore"):
         antecedent_vals = np.nanmean(window_data, axis=0).astype(np.float32)
+
+    # Fail-fast: antecedent must be finite and within valid range
+    if not np.all(np.isfinite(antecedent_vals)):
+        nan_count = int(np.sum(~np.isfinite(antecedent_vals)))
+        total = antecedent_vals.size
+        raise ValueError(
+            f"Antecedent has {nan_count}/{total} non-finite values "
+            f"for acquisition {acq_np}"
+        )
 
     return t2m_vals, ssrd_vals, antecedent_vals
 
@@ -412,9 +428,14 @@ def prepare_era5_scene(
     # ── 2. decode and concatenate months ──────────────────────────────
     log_event(_logger, logging.INFO, "era5_processing", scene_id=scene_id)
 
-    # Normalize acquisition time to nearest UTC hour
+    # Normalize acquisition time to nearest UTC hour (round, not truncate)
     acq_naive = acquisition_dt.replace(tzinfo=None)
-    acq_hour = acq_naive.replace(minute=0, second=0, microsecond=0)
+    if acq_naive.minute >= 30:
+        acq_hour = (acq_naive + __import__("datetime").timedelta(hours=1)).replace(
+            minute=0, second=0, microsecond=0,
+        )
+    else:
+        acq_hour = acq_naive.replace(minute=0, second=0, microsecond=0)
 
     # Time window: 72h + 1h padding before acquisition (for diff)
     window_start = acq_hour - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS + 1)
