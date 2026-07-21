@@ -16,8 +16,8 @@ import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.io.storage import exists, read_bytes
 
-# Study period — enforced at manifest level
-_STUDY_YEARS = list(range(2017, 2026))
+# Default study period — can be overridden via years parameter
+_DEFAULT_YEARS = list(range(2017, 2026))
 
 
 @dataclass
@@ -55,6 +55,7 @@ def load_landsat_anchors(
     manifest_uri: str,
     years: list[int] | None = None,
     scene_ids: list[str] | None = None,
+    dataset_role: str | None = None,
 ) -> ManifestReport:
     """Load Landsat anchor scenes from a v3 manifest bundle.
 
@@ -67,6 +68,9 @@ def load_landsat_anchors(
     scene_ids :
         Restrict to these scene IDs. If given, only these scenes are returned
         (after year/role filtering).
+    dataset_role :
+        If given, attach this role to all returned scenes (e.g. ``"inference"``).
+        Stored on ``DynamicScene.role`` for downstream ledger/STAC propagation.
 
     Returns
     -------
@@ -74,7 +78,7 @@ def load_landsat_anchors(
         Filtered scenes and metadata for dynamic pipeline consumption.
     """
     if years is None:
-        years = _STUDY_YEARS
+        years = _DEFAULT_YEARS
 
     errors: list[str] = []
 
@@ -137,7 +141,7 @@ def load_landsat_anchors(
             DynamicScene(
                 scene_id=str(d["scene_id"][0]),
                 source=str(d["source"][0]),
-                role=str(d["role"][0]),
+                role=dataset_role or str(d["role"][0]),
                 platform=str(d["platform"][0]),
                 year=int(d["year"][0]),
                 day_of_year=dt.timetuple().tm_yday,

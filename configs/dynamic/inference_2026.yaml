@@ -1,0 +1,20 @@
+defaults:
+  - _base
+  - _self_
+
+# Inference run — 21 Landsat anchors from 2026.
+# All products are marked role=inference; excluded from training/validation/test.
+# Invoke on the VM:
+#   uv run python scripts/run_dynamic.py --config-name inference_2026 \
+#       manifest_uri=gs://berlin-lst-data/manifests/v3/... \
+#       source_root=gs://berlin-lst-data/static/sources/full \
+#       derived_root=gs://berlin-lst-data/static/derived/full \
+#       output_root=gs://berlin-lst-data/dynamic/inference/2026/<run-id>
+source_root: "gs://berlin-lst-data/static/sources/full"
+derived_root: "gs://berlin-lst-data/static/derived/full"
+output_root: "gs://berlin-lst-data/dynamic/inference/2026"
+
+# Only 2026 scenes
+years: [2026]
+dataset_role: "inference"
+expected_scene_count: 21

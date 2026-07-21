@@ -48,9 +48,10 @@ _SCHEMA = pa.schema([
     pa.field("completion_uri", pa.string()),
     pa.field("last_error", pa.string()),
     pa.field("updated_at", pa.timestamp("us", tz="UTC")),
+    pa.field("role", pa.string()),
 ])
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ── row type ─────────────────────────────────────────────────────────
 
@@ -73,6 +74,7 @@ class SecondaryLedgerRow:
     completion_uri: str | None = None
     last_error: str | None = None
     updated_at: datetime | None = None
+    role: str | None = None
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -236,6 +238,7 @@ def _row_to_dict(row: SecondaryLedgerRow) -> dict:
         "completion_uri": row.completion_uri,
         "last_error": row.last_error,
         "updated_at": row.updated_at,
+        "role": row.role,
     }
 
 
@@ -258,18 +261,19 @@ def _rows_from_table(tbl: pa.Table) -> list[SecondaryLedgerRow]:
             completion_uri=_opt_str(d, "completion_uri"),
             last_error=_opt_str(d, "last_error"),
             updated_at=_opt_dt(d, "updated_at"),
+            role=_opt_str(d, "role"),
         ))
     return rows
 
 
 def _migrate(table: pa.Table) -> tuple[pa.Table, int]:
-    """Add missing v2 columns (stac/provenance/completion URIs) as null.
+    """Add missing v2/v3 columns as null.
 
-    Returns ``(table, schema_version)``.  If the table is already v2-
+    Returns ``(table, schema_version)``.  If the table is already v3-
     compatible, no columns are added.
     """
     added = []
-    for name in ("stac_uri", "provenance_uri", "completion_uri"):
+    for name in ("stac_uri", "provenance_uri", "completion_uri", "role"):
         if name not in table.column_names:
             added.append(
                 pa.array([None] * table.num_rows, type=pa.string())

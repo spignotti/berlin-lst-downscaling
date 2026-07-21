@@ -54,19 +54,32 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     _banner(cfg, run_id, output_root, manifest_uri)
 
     # ── 0. preflight ─────────────────────────────────────────────────
+    years = list(cfg.years) if cfg.get("years") else None
+    dataset_role = cfg.get("dataset_role")
+    expected_count = cfg.get("expected_scene_count")
+
     manifest_report = load_landsat_anchors(
         manifest_uri,
+        years=years,
         scene_ids=list(cfg.scene_ids) if cfg.scene_ids else None,
+        dataset_role=dataset_role,
     )
     if not manifest_report.ok:
         log_event(_logger, logging.ERROR, "manifest_load_failed",
                   errors=manifest_report.errors)
         return 1
 
+    # Validate expected scene count if specified
+    if expected_count is not None and len(manifest_report.scenes) != expected_count:
+        log_event(_logger, logging.ERROR, "scene_count_mismatch",
+                  expected=expected_count, actual=len(manifest_report.scenes))
+        return 1
+
     log_event(_logger, logging.INFO, "manifest_loaded",
               n_scenes=len(manifest_report.scenes),
               total_rows=manifest_report.total_rows,
-              manifest_hash=manifest_report.manifest_hash)
+              manifest_hash=manifest_report.manifest_hash,
+              dataset_role=dataset_role)
 
     geom_report = resolve_geometry(source_root, derived_root, geometry_id)
     if not geom_report.ok or geom_report.resolved is None:
@@ -122,7 +135,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                     led.upsert(SecondaryLedgerRow(
                         item_id=era5_item_id, source=era5_source,
                         period_or_vintage=scene.scene_id,
-                        status="exporting", run_id=run_id))
+                        status="exporting", run_id=run_id,
+                        role=dataset_role))
                     try:
                         from berlin_lst_downscaling.data.dynamic.era5 import prepare_era5_scene
 
@@ -139,7 +153,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                             status="done", run_id=run_id, config_hash=era5_hash,
                             output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
                             provenance_uri=artifacts.provenance_uri,
-                            completion_uri=artifacts.completion_uri))
+                            completion_uri=artifacts.completion_uri,
+                            role=dataset_role))
                         processed += 1
                         log_event(_logger, logging.INFO, "era5_done",
                                   scene_id=scene.scene_id, output_uri=artifacts.cog_uri)
@@ -149,7 +164,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                         led.upsert(SecondaryLedgerRow(
                             item_id=era5_item_id, source=era5_source,
                             period_or_vintage=scene.scene_id,
-                            status="failed", run_id=run_id, last_error=str(exc)))
+                            status="failed", run_id=run_id, last_error=str(exc),
+                            role=dataset_role))
                         failed += 1
                 else:
                     log_event(_logger, logging.INFO, "era5_skipped",
@@ -173,7 +189,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                             led.upsert(SecondaryLedgerRow(
                                 item_id=shadow_item_id, source=shadow_source,
                                 period_or_vintage=scene.scene_id,
-                                status="exporting", run_id=run_id))
+                                status="exporting", run_id=run_id,
+                                role=dataset_role))
                             try:
                                 from berlin_lst_downscaling.data.dynamic.shadows import (
                                     prepare_shadow,
@@ -216,7 +233,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                     output_uri=artifacts.cog_uri,
                                     stac_uri=artifacts.stac_uri,
                                     provenance_uri=artifacts.provenance_uri,
-                                    completion_uri=artifacts.completion_uri))
+                                    completion_uri=artifacts.completion_uri,
+                                    role=dataset_role))
                                 processed += 1
                                 log_event(_logger, logging.INFO, "shadow_done",
                                           scene_id=scene.scene_id,
@@ -230,7 +248,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                     item_id=shadow_item_id, source=shadow_source,
                                     period_or_vintage=scene.scene_id,
                                     status="failed", run_id=run_id,
-                                    last_error=str(exc)))
+                                    last_error=str(exc),
+                                    role=dataset_role))
                                 failed += 1
 
         log_event(_logger, logging.INFO, "month_group_done",
