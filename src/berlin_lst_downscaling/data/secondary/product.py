@@ -244,10 +244,6 @@ def finalize_secondary_product(
     """
     completed_at = datetime.now(UTC).isoformat()
 
-    # Memory tracking (diagnostic)
-    import os, psutil
-    _proc = psutil.Process(os.getpid())
-
     if product_dir_override is not None:
         base = product_dir_override.rstrip("/")
         cog_uri = f"{base}/{prepared.source}_{prepared.item_key}.tif"
@@ -269,16 +265,10 @@ def finalize_secondary_product(
         )
 
     # ── 1. write COG ─────────────────────────────────────────────────
-    _rss = _proc.memory_info().rss / 1024 / 1024
-    print(f"  [finalize] before COG write: {_rss:.0f} MB", flush=True)
     write_cog_atomic(prepared.dataset, cog_uri, prepared.contract, overwrite=True)
-    _rss = _proc.memory_info().rss / 1024 / 1024
-    print(f"  [finalize] after COG write: {_rss:.0f} MB", flush=True)
 
     # ── 2. validate ──────────────────────────────────────────────────
     vig = validate_secondary_cog(cog_uri, prepared.contract, grid)
-    _rss = _proc.memory_info().rss / 1024 / 1024
-    print(f"  [finalize] after validate: {_rss:.0f} MB", flush=True)
     if not vig.ok:
         raise ValueError(
             f"COG validation failed for {prepared.source} "
