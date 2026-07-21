@@ -27,6 +27,7 @@ from berlin_lst_downscaling.data.dynamic.schema import (
     GEOMETRY_TEMPORAL_MODE,
     GEOMETRY_VINTAGES,
     config_hash_for_dynamic,
+    config_hash_for_era5,
 )
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
@@ -77,7 +78,12 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     log_event(_logger, logging.INFO, "geometry_resolved",
               geometry_id=geometry_id)
 
-    c_hash = config_hash_for_dynamic(
+    # Separate config hashes: ERA5 uses v2 hash (triggers reprocessing),
+    # shadows use the unchanged dynamic hash (existing products preserved).
+    era5_hash = config_hash_for_era5(
+        manifest_report.manifest_hash, geometry_id, output_root,
+    )
+    shadow_hash = config_hash_for_dynamic(
         manifest_report.manifest_hash, geometry_id, output_root,
     )
 
@@ -110,7 +116,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                 # ── 1a. ERA5 meteorology ─────────────────────────────
                 era5_source = "era5_land"
                 era5_item_id = f"era5_land_{scene.scene_id}"
-                era5_todo = reconcile([(era5_item_id, era5_source, scene.scene_id)], led, c_hash)
+                era5_todo = reconcile([(era5_item_id, era5_source, scene.scene_id)], led, era5_hash)
 
                 if era5_todo:
                     led.upsert(SecondaryLedgerRow(
@@ -130,7 +136,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                         led.upsert(SecondaryLedgerRow(
                             item_id=era5_item_id, source=era5_source,
                             period_or_vintage=scene.scene_id,
-                            status="done", run_id=run_id, config_hash=c_hash,
+                            status="done", run_id=run_id, config_hash=era5_hash,
                             output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
                             provenance_uri=artifacts.provenance_uri,
                             completion_uri=artifacts.completion_uri))
@@ -161,7 +167,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                         shadow_source = f"shadow_{component}"
                         shadow_item_id = f"shadow_{component}_{scene.scene_id}"
                         shadow_todo = reconcile(
-                            [(shadow_item_id, shadow_source, scene.scene_id)], led, c_hash)
+                            [(shadow_item_id, shadow_source, scene.scene_id)], led, shadow_hash)
 
                         if shadow_todo:
                             led.upsert(SecondaryLedgerRow(
@@ -187,7 +193,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                     run_id=run_id,
                                     grid=grid,
                                     geometry_id=geometry_id,
-                                    geometry_hash=c_hash,
+                                    geometry_hash=shadow_hash,
                                 )
                                 # Pass acquisition datetime into the product
                                 prepared.acquisition_datetime = scene.acquisition_datetime
@@ -206,7 +212,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                 led.upsert(SecondaryLedgerRow(
                                     item_id=shadow_item_id, source=shadow_source,
                                     period_or_vintage=scene.scene_id,
-                                    status="done", run_id=run_id, config_hash=c_hash,
+                                    status="done", run_id=run_id, config_hash=shadow_hash,
                                     output_uri=artifacts.cog_uri,
                                     stac_uri=artifacts.stac_uri,
                                     provenance_uri=artifacts.provenance_uri,

@@ -58,8 +58,12 @@ _ERA5_VARIABLES = ["2m_temperature", "surface_solar_radiation_downwards"]
 # Hours in an antecedent window
 _ANTECEDENT_HOURS = 72
 
-# ERA5-Land grid resolution
-_ERA5_GRID_DEG = 0.0625  # ~6.9 km at 52°N
+# ERA5-Land grid resolution (official CDS default: 0.1° × 0.1°)
+_ERA5_GRID_DEG = 0.1
+
+# Berlin center for nearest-cell selection
+_BERLIN_LAT = 52.52
+_BERLIN_LON = 13.42
 
 
 # ── contract ───────────────────────────────────────────────────────────
@@ -116,7 +120,7 @@ def contract_for_era5_scene() -> Contract:
 
 
 def _cache_grib_path(output_root: str, year: int, month: int) -> str:
-    return era5_cache_path(output_root, year, month)
+    return era5_cache_path(output_root, year, month, cache_version="v2")
 
 
 def _ensure_month_cached(
@@ -209,7 +213,7 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
             "day": [f"{d:02d}" for d in range(1, n_days + 1)],
             "time": [f"{h:02d}:00" for h in range(24)],
             # CDS area order: N, W, S, E
-            "area": [_BERLIN_BBOX[2], _BERLIN_BBOX[0], _BERLIN_BBOX[1], _BERLIN_BBOX[3]],
+            "area": [_BERLIN_BBOX[2], _BERLIN_BBOX[1], _BERLIN_BBOX[0], _BERLIN_BBOX[3]],
             "format": "netcdf",
         },
         str(zip_path),
@@ -303,18 +307,18 @@ def _extract_era5_at_scene(
     t2m: xr.DataArray,
     ssrd_hourly: xr.DataArray,
     acquisition_dt: datetime,
-    berlin_lat: float = 52.52,
-    berlin_lon: float = 13.42,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract t2m, ssrd, and 72h-antecedent for all ERA5 cells over Berlin.
+    berlin_lat: float = _BERLIN_LAT,
+    berlin_lon: float = _BERLIN_LON,
+) -> tuple[float, float, float]:
+    """Extract t2m, ssrd, and 72h-antecedent at the nearest ERA5 cell to Berlin.
 
     Returns
     -------
-    t2m_vals : np.ndarray shape (n_lat, n_lon)
+    t2m_val : float
         Temperature in K at the acquisition hour.
-    ssrd_vals : np.ndarray shape (n_lat, n_lon)
+    ssrd_val : float
         Hourly SSRD in W/m² at the acquisition hour.
-    antecedent_vals : np.ndarray shape (n_lat, n_lon)
+    antecedent_val : float
         72h rolling mean of hourly SSRD in W/m².
     """
     acq_np = np.datetime64(acquisition_dt.replace(tzinfo=None))
@@ -322,19 +326,29 @@ def _extract_era5_at_scene(
     # Find the time dimension name (ERA5 uses 'valid_time' or 'time')
     time_dim = "valid_time" if "valid_time" in t2m.dims else "time"
 
+    # Select nearest Berlin cell before any heavy computation
+    lat_vals = t2m.latitude.values if "latitude" in t2m.coords else np.array([berlin_lat])
+    lon_vals = t2m.longitude.values if "longitude" in t2m.coords else np.array([berlin_lon])
+    lat_idx = int(np.abs(lat_vals - berlin_lat).argmin())
+    lon_idx = int(np.abs(lon_vals - berlin_lon).argmin())
+
+    t2m_cell = t2m.isel(latitude=lat_idx, longitude=lon_idx) if "latitude" in t2m.dims else t2m
+    ssrd_dims = "latitude" in ssrd_hourly.dims
+    ssrd_cell = ssrd_hourly.isel(latitude=lat_idx, longitude=lon_idx) if ssrd_dims else ssrd_hourly
+
     # Nearest hour
-    diffs = np.abs(t2m[time_dim].values - acq_np)
+    diffs = np.abs(t2m_cell[time_dim].values - acq_np)
     nearest_idx = int(diffs.argmin())
 
-    t2m_vals = t2m.isel({time_dim: nearest_idx}).values.astype(np.float32)
-    ssrd_vals = ssrd_hourly.isel({time_dim: nearest_idx}).values.astype(np.float32)
-    ssrd_vals = np.clip(ssrd_vals, 0.0, None)
+    t2m_val = float(t2m_cell.isel({time_dim: nearest_idx}).values)
+    ssrd_val = float(ssrd_cell.isel({time_dim: nearest_idx}).values)
+    ssrd_val = max(ssrd_val, 0.0)
 
     # 72h antecedent mean
     window_start = acq_np - np.timedelta64(_ANTECEDENT_HOURS, "h")
-    time_vals = ssrd_hourly[time_dim].values
+    time_vals = ssrd_cell[time_dim].values
     mask = (time_vals >= window_start) & (time_vals <= acq_np)
-    window_data = ssrd_hourly.values[mask]  # shape: (n_hours, n_lat, n_lon)
+    window_data = ssrd_cell.values[mask]
 
     if window_data.size == 0:
         raise ValueError(
@@ -342,18 +356,13 @@ def _extract_era5_at_scene(
             f"no ERA5 timesteps in [{window_start}, {acq_np}]"
         )
 
-    with np.errstate(invalid="ignore"):
-        antecedent_vals = np.nanmean(window_data, axis=0).astype(np.float32)
-
-    # Fail-fast: antecedent must be finite in the spatial mean
-    # (NaN cells outside ERA5 data coverage are expected with wrapped longitudes)
-    spatial_median = float(np.nanmedian(antecedent_vals))
-    if not np.isfinite(spatial_median):
+    antecedent_val = float(np.nanmean(window_data))
+    if not np.isfinite(antecedent_val):
         raise ValueError(
-            f"Antecedent spatial median is non-finite for acquisition {acq_np}"
+            f"Antecedent value is non-finite for acquisition {acq_np}"
         )
 
-    return t2m_vals, ssrd_vals, antecedent_vals
+    return t2m_val, ssrd_val, antecedent_val
 
 
 def _expand_to_canonical_grid(
@@ -456,7 +465,7 @@ def prepare_era5_scene(
         primary_ds = xr.concat([prev_ds, primary_ds], dim=time_dim)
         primary_ds = primary_ds.sortby(time_dim)
 
-    # Find variables
+    # ── 2b. preflight validation ────────────────────────────────────
     t2m_var = _find_var(primary_ds, ["t2m"])
     ssrd_var = _find_var(primary_ds, ["ssrd"])
 
@@ -466,25 +475,44 @@ def prepare_era5_scene(
             f"vars={list(primary_ds.data_vars)}"
         )
 
+    # Validate spatial coverage: coordinates must include Berlin area
+    if "latitude" in primary_ds.coords:
+        lat_range = float(primary_ds.latitude.min()), float(primary_ds.latitude.max())
+        lon_range = float(primary_ds.longitude.min()), float(primary_ds.longitude.max())
+        if not (lat_range[0] <= _BERLIN_LAT <= lat_range[1]):
+            raise ValueError(
+                f"ERA5 latitude range {lat_range} does not cover Berlin ({_BERLIN_LAT})"
+            )
+        if not (lon_range[0] <= _BERLIN_LON <= lon_range[1]):
+            raise ValueError(
+                f"ERA5 longitude range {lon_range} does not cover Berlin ({_BERLIN_LON})"
+            )
+
+    # Validate time coverage
+    time_dim = "valid_time" if "valid_time" in primary_ds.dims else "time"
+    time_vals = primary_ds[time_dim].values
+    acq_np = np.datetime64(acq_hour)
+    if not np.any(np.abs(time_vals - acq_np) < np.timedelta64(2, "h")):
+        raise ValueError(
+            f"ERA5 time range does not cover acquisition {acq_hour}"
+        )
+
     # ── 3. convert SSRD to hourly W/m² ───────────────────────────────
     hourly_ssrd = _ssrd_to_hourly(primary_ds[ssrd_var])
     hourly_t2m = primary_ds[t2m_var]
 
-    # ── 4. extract scene values (per-cell) ────────────────────────────
-    t2m_2d, ssrd_2d, antecedent_2d = _extract_era5_at_scene(
+    # ── 4. extract scene values (nearest Berlin cell only) ───────────
+    t2m_val, ssrd_val, antecedent_val = _extract_era5_at_scene(
         hourly_t2m, hourly_ssrd, acq_hour,
     )
 
-    # ── 5. expand to canonical grid (nearest ERA5 cell) ───────────────
-    lat_vals = primary_ds.latitude.values if "latitude" in primary_ds.coords else np.array([52.5])
-    lon_vals = primary_ds.longitude.values if "longitude" in primary_ds.coords else np.array([13.4])
-
-    t2m_grid = _expand_to_canonical_grid(t2m_2d, lat_vals, lon_vals, grid)
-    ssrd_grid = _expand_to_canonical_grid(ssrd_2d, lat_vals, lon_vals, grid)
-    ant_grid = _expand_to_canonical_grid(antecedent_2d, lat_vals, lon_vals, grid)
+    # ── 5. fill canonical grid with scalar values ────────────────────
+    shape = (grid.shape.y, grid.shape.x)
+    t2m_grid = np.full(shape, t2m_val, dtype=np.float32)
+    ssrd_grid = np.full(shape, ssrd_val, dtype=np.float32)
+    ant_grid = np.full(shape, antecedent_val, dtype=np.float32)
 
     # Build xr.Dataset
-    shape = (grid.shape.y, grid.shape.x)
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
 
@@ -502,13 +530,13 @@ def prepare_era5_scene(
     primary_ds.close()
 
     # Scene channel values for logging/QA
-    t2m_val = float(t2m_grid[shape[0] // 2, shape[1] // 2])
-    ssrd_val = float(ssrd_grid[shape[0] // 2, shape[1] // 2])
-    ant_val = float(ant_grid[shape[0] // 2, shape[1] // 2])
+    t2m_val_log = t2m_val
+    ssrd_val_log = ssrd_val
+    ant_val_log = antecedent_val
 
     log_event(_logger, logging.DEBUG, "era5_scene_values",
-              scene_id=scene_id, t2m=round(t2m_val, 2),
-              ssrd=round(ssrd_val, 2), ssrd_antecedent=round(ant_val, 2))
+              scene_id=scene_id, t2m=round(t2m_val_log, 2),
+              ssrd=round(ssrd_val_log, 2), ssrd_antecedent=round(ant_val_log, 2))
 
     retrieved_at = datetime.now(UTC).isoformat()
     doy = acquisition_dt.timetuple().tm_yday
@@ -531,9 +559,9 @@ def prepare_era5_scene(
             "retrieved_at": retrieved_at,
         },
         qa_stats={
-            "t2m_scene": round(t2m_val, 2),
-            "ssrd_scene": round(ssrd_val, 2),
-            "ssrd_antecedent_72h_mean": round(ant_val, 2),
+            "t2m_scene": round(t2m_val_log, 2),
+            "ssrd_scene": round(ssrd_val_log, 2),
+            "ssrd_antecedent_72h_mean": round(ant_val_log, 2),
             "shape": list(shape),
         },
         config_hash=c_hash,
