@@ -54,14 +54,19 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     _banner(cfg, run_id, output_root, manifest_uri)
 
     # ── 0. preflight ─────────────────────────────────────────────────
+    scene_ids = list(cfg.scene_ids) if cfg.scene_ids else None
     years = list(cfg.years) if cfg.get("years") else None
     dataset_role = cfg.get("dataset_role")
     expected_count = cfg.get("expected_scene_count")
 
+    # When scene_ids are explicitly provided, skip year filter to allow
+    # the child to find scenes across the full manifest range.
+    filter_years = None if scene_ids else years
+
     manifest_report = load_landsat_anchors(
         manifest_uri,
-        years=years,
-        scene_ids=list(cfg.scene_ids) if cfg.scene_ids else None,
+        years=filter_years,
+        scene_ids=scene_ids,
         dataset_role=dataset_role,
     )
     if not manifest_report.ok:
