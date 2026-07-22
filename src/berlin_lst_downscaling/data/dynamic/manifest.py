@@ -77,7 +77,7 @@ def load_landsat_anchors(
     ManifestReport
         Filtered scenes and metadata for dynamic pipeline consumption.
     """
-    if years is None:
+    if years is None and not scene_ids:
         years = _DEFAULT_YEARS
 
     errors: list[str] = []
@@ -104,15 +104,22 @@ def load_landsat_anchors(
 
     source_col = table.column("source")
     role_col = table.column("role")
-    year_col = table.column("year")
 
-    mask = _pcand(
-        _pcand(
+    # When scene_ids are provided, skip year filter (find scenes by ID only)
+    if scene_ids:
+        mask = _pcand(
             _pceq(source_col, "landsat-c2-l2"),
             _pceq(role_col, "anchor"),
-        ),
-        _pcin(year_col, value_set=pa.array(years)),
-    )
+        )
+    else:
+        year_col = table.column("year")
+        mask = _pcand(
+            _pcand(
+                _pceq(source_col, "landsat-c2-l2"),
+                _pceq(role_col, "anchor"),
+            ),
+            _pcin(year_col, value_set=pa.array(years)),
+        )
     filtered = table.filter(mask)
 
     # Optional: restrict to specific scene IDs
