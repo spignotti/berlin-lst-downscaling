@@ -17,6 +17,10 @@ QA:
 
 Ledger:
   _state/dynamic/ledger.parquet
+
+DWD validation runs:
+  _raw/dwd/<run_id>/                   # station inventory + hourly observations
+  runs/<run_id>/                       # anchor comparison, report, provenance, complete
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ _DYNAMIC_ROOT = "ard/dynamic"
 _RAW_ROOT = "_raw/dynamic"
 _QA_ROOT = "qa/dynamic"
 _STATE_ROOT = "_state/dynamic"
+_VALIDATION_RAW_ROOT = "_raw/dwd"
+_VALIDATION_RUNS_ROOT = "runs/dwd"
 
 
 # ── raw ERA5 cache ───────────────────────────────────────────────────
@@ -88,15 +94,66 @@ def ledger_path(root: str) -> str:
     return f"{root.rstrip('/')}/{_STATE_ROOT}/ledger.parquet"
 
 
+# ── DWD validation run paths ────────────────────────────────────────
+
+
+def dwd_raw_dir(root: str, run_id: str) -> str:
+    """Return the raw DWD snapshot directory for a validation run."""
+    return f"{root.rstrip('/')}/{_VALIDATION_RAW_ROOT}/{run_id}"
+
+
+def dwd_station_inventory_path(root: str, run_id: str) -> str:
+    """Return the URI of the DWD station inventory Parquet file."""
+    return f"{dwd_raw_dir(root, run_id)}/station_inventory.parquet"
+
+
+def dwd_observations_path(root: str, run_id: str) -> str:
+    """Return the URI of the merged DWD observations Parquet file."""
+    return f"{dwd_raw_dir(root, run_id)}/dwd_hourly_observations.parquet"
+
+
+def dwd_run_dir(root: str, run_id: str) -> str:
+    """Return the run-scoped DWD validation output directory."""
+    return f"{root.rstrip('/')}/{_VALIDATION_RUNS_ROOT}/{run_id}"
+
+
+def dwd_comparison_path(root: str, run_id: str) -> str:
+    """Return the URI of the per-anchor comparison Parquet file."""
+    return f"{dwd_run_dir(root, run_id)}/anchor_comparison.parquet"
+
+
+def dwd_qa_report_path(root: str, run_id: str) -> str:
+    """Return the URI of the DWD validation QA report."""
+    return f"{dwd_run_dir(root, run_id)}/report.json"
+
+
+def dwd_provenance_path(root: str, run_id: str) -> str:
+    """Return the URI of the DWD validation provenance file."""
+    return f"{dwd_run_dir(root, run_id)}/provenance.json"
+
+
+def dwd_completion_path(root: str, run_id: str) -> str:
+    """Return the URI of the DWD validation completion marker."""
+    return f"{dwd_run_dir(root, run_id)}/complete.json"
+
+
 __all__ = [
+    "dwd_comparison_path",
+    "dwd_completion_path",
+    "dwd_observations_path",
+    "dwd_provenance_path",
+    "dwd_qa_report_path",
+    "dwd_raw_dir",
+    "dwd_run_dir",
+    "dwd_station_inventory_path",
     "era5_cache_dir",
     "era5_cache_path",
-    "scene_product_dir",
-    "scene_product_cog",
-    "scene_product_stac",
-    "scene_product_provenance",
-    "scene_product_completion",
+    "ledger_path",
     "qa_dir",
     "qa_report_path",
-    "ledger_path",
+    "scene_product_cog",
+    "scene_product_completion",
+    "scene_product_dir",
+    "scene_product_provenance",
+    "scene_product_stac",
 ]

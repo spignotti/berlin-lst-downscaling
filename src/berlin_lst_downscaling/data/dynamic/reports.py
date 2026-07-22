@@ -24,7 +24,6 @@ def dynamic_qa_report(
     run_id: str,
     manifest_hash: str,
     geometry_id: str,
-    dwd_results: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Generate a QA report for the dynamic pipeline run.
 
@@ -90,9 +89,6 @@ def dynamic_qa_report(
         "success": total_failed == 0,
     }
 
-    if dwd_results:
-        report["dwd_validation"] = dwd_results
-
     return report
 
 
@@ -136,18 +132,6 @@ def format_dynamic_report(report: dict[str, Any]) -> str:
         lines.append("  Year distribution:")
         for year, count in sorted(year_dist.items()):
             lines.append(f"    {year}: {count} scenes")
-        lines.append("")
-
-    # DWD validation
-    dwd = report.get("dwd_validation", [])
-    if dwd:
-        lines.append("  DWD validation:")
-        for d in dwd:
-            lines.append(
-                f"    {d['station_name']} ({d['station_id']}): "
-                f"n={d['n_matched']}, bias={d['bias_celsius']:.3f}°C, "
-                f"MAE={d['mae_celsius']:.3f}°C"
-            )
         lines.append("")
 
     return "\n".join(lines)

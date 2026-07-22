@@ -208,7 +208,7 @@ Concrete findings per datasource after detailed feasibility check:
 | Format | Hourly ZIP files (CSV) per station + parameter |
 | License | CC-BY (DWD Open Data) |
 | Auth | None (fully open) |
-| **Library (update 2026-07-14)** | **`wetterdienst` v0.90+ (PyPI)** — actively maintained DWD client, wraps `Wetterdienst(provider="dwd", network="observation")`. Handles directory listing, file discovery, caching, parsing, unit conversion. Replaces direct URL download. Fallback (no extra dep): `urllib.request` + `zipfile` against pattern `stundenwerte_{PARAM}_{STATION}_*_hist.zip`. |
+| **Library** | **`wetterdienst` v0.128+ (PyPI)** — actively maintained DWD client, wraps `DwdObservationRequest(parameters=("hourly","temperature_air","temperature_air_mean_2m"))`. Handles historical/recent archive discovery, bbox station filter, parsing, UTC values, and exposes the official DWD quality level (QN_9) per observation. Replaces direct URL download. |
 
 **Berlin stations active for 2018–2024:**
 
@@ -235,6 +235,8 @@ Concrete findings per datasource after detailed feasibility check:
 **Missing:** Direct solar radiation (W/m²) — no Berlin station has it.
 
 **Verdict:** ✅ **Excellent coverage.** DWD provides free hourly data for 6+ meteorological variables across 4 active Berlin stations. BER and Dahlem (FU) are the top choices.
+
+**Validation use (post-WB2):** DWD is wired into the project **only** as an independent sanity check on the ERA5-Land `t2m_scene` channel. The dedicated pipeline `scripts/run_dwd_validation.py` reads the published dynamic-pipeline outputs (COG provenance + ledger) and joins every Landsat anchor hour against DWD hourly 2 m air temperature for stations inside the Berlin AOI (`data/boundaries/berlin_landesgrenze.geojson`). Historical (quality-controlled) and recent (provisional) observations are queried separately, with historical precedence at the join. DWD data never enters training, normalisation, or the downstream model.
 
 ### 4.2 Solar Radiation (missing from DWD Berlin stations)
 

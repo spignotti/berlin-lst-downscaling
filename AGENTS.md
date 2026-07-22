@@ -36,12 +36,35 @@ src/berlin_lst_downscaling/    # main package
     data/acquisition/          # PC STAC loaders + ECOSTRESS CMR
     data/ard/                  # ARD pipeline (COG write, masking, ledger, STAC)
     data/selection/            # Szenen-Selektion & Kopplung (anchors, coupling, manifest)
+    data/dynamic/              # ERA5-Land + shadow + DWD-vs-ERA5 validation
     data/io/                   # Storage (local + GCS) and ephemeral staging
     common/                    # Pydantic settings / env config
-configs/                       # Hydra configs (ARD + selection)
-scripts/                       # Entry points (run_ard.py, build_manifest.py, etc.)
+configs/                       # Hydra configs (ARD + selection + dynamic + dwd_validation)
+scripts/                       # Entry points (run_ard.py, build_manifest.py, run_dwd_validation.py, etc.)
 notebooks/                     # EDA notebooks
 ```
+
+### DWD-vs-ERA5 validation
+
+Read-only sanity check on the published ERA5-Land `t2m_scene` channel
+at Landsat anchor times. Acquires DWD hourly 2 m air temperature for
+stations inside the Berlin AOI via `wetterdienst` and joins it to the
+published COG provenance. Never feeds DWD into training or
+normalisation.
+
+```bash
+uv run python scripts/run_dwd_validation.py \
+    manifest_uri=gs://berlin-lst-data/manifests/v3/.../manifest.parquet \
+    dynamic_full_root=gs://berlin-lst-data/dynamic/full \
+    dynamic_inference_root=gs://berlin-lst-data/dynamic/inference/2026 \
+    output_root=gs://berlin-lst-data/dwd_validation \
+    aoi_uri=gs://berlin-lst-data/boundaries/berlin_landesgrenze.geojson
+```
+
+Layout: `<output_root>/_raw/dwd/<run_id>/station_inventory.parquet`
++ `dwd_hourly_observations.parquet`,
+`<output_root>/runs/dwd/<run_id>/anchor_comparison.parquet`
++ `report.json` + `provenance.json` + `complete.json`.
 
 ## Validation
 

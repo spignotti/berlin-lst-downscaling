@@ -361,7 +361,7 @@ requires-dist = [
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", specifier = "<2.3" },
     { name = "torchgeo", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", specifier = ">=0.9.0" },
     { name = "wandb", specifier = ">=0.27.2" },
-    { name = "wetterdienst", specifier = ">=0.128.0" },
+    { name = "wetterdienst", specifier = ">=0.128.0,<0.129" },
     { name = "xarray-spatial", specifier = ">=0.10.16" },
     { name = "zarr", specifier = ">=2.18,<3" },
 ]

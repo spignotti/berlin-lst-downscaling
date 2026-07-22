@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
@@ -64,6 +64,28 @@ _ERA5_GRID_DEG = 0.1
 # Berlin center for nearest-cell selection
 _BERLIN_LAT = 52.52
 _BERLIN_LON = 13.42
+
+
+# ── helpers ────────────────────────────────────────────────────────────
+
+
+def normalize_acquisition_hour(acquisition_dt: datetime) -> datetime:
+    """Round a tz-aware acquisition datetime to the nearest UTC hour.
+
+    Half-up rounding (minute >= 30 → next hour). Naive datetimes are
+    interpreted as UTC. The returned datetime keeps the input timezone.
+    """
+    if acquisition_dt.tzinfo is None:
+        naive = acquisition_dt
+    else:
+        naive = acquisition_dt.astimezone(UTC).replace(tzinfo=None)
+    if naive.minute >= 30:
+        rounded = (naive + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    else:
+        rounded = naive.replace(minute=0, second=0, microsecond=0)
+    if acquisition_dt.tzinfo is None:
+        return rounded
+    return rounded.replace(tzinfo=UTC)
 
 
 # ── contract ───────────────────────────────────────────────────────────
@@ -400,16 +422,10 @@ def prepare_era5_scene(
     log_event(_logger, logging.INFO, "era5_processing", scene_id=scene_id)
 
     # Normalize acquisition time to nearest UTC hour (round, not truncate)
-    acq_naive = acquisition_dt.replace(tzinfo=None)
-    if acq_naive.minute >= 30:
-        acq_hour = (acq_naive + __import__("datetime").timedelta(hours=1)).replace(
-            minute=0, second=0, microsecond=0,
-        )
-    else:
-        acq_hour = acq_naive.replace(minute=0, second=0, microsecond=0)
+    acq_hour = normalize_acquisition_hour(acquisition_dt)
 
     # Time window: 72h + 1h padding before acquisition (for diff)
-    window_start = acq_hour - __import__("datetime").timedelta(hours=_ANTECEDENT_HOURS + 1)
+    window_start = acq_hour - timedelta(hours=_ANTECEDENT_HOURS + 1)
     time_slice = (str(window_start), str(acq_hour))
 
     primary_ds = None
@@ -578,5 +594,6 @@ def _find_var(ds: xr.Dataset, candidates: list[str]) -> str | None:
 
 __all__ = [
     "contract_for_era5_scene",
+    "normalize_acquisition_hour",
     "prepare_era5_scene",
 ]
