@@ -1,8 +1,0 @@
-defaults:
-  - _base
-  - _self_
-
-mode: full
-sources: [imperviousness]
-vintages: [2016, 2021]
-peak_scratch_gb: 4

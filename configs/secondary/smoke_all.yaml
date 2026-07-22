@@ -1,8 +1,0 @@
-defaults:
-  - _base
-  - _self_
-
-# Local fixture smoke — exercises every registered source with small
-# synthetic fixtures.  No upstream downloads.
-mode: fixture
-output_root: "data/smoke/secondary/all"
