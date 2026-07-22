@@ -141,7 +141,7 @@ def contract_for_era5_scene() -> Contract:
 # ── ERA5 cache management ─────────────────────────────────────────────
 
 
-def _cache_grib_path(output_root: str, year: int, month: int) -> str:
+def _cache_nc_path(output_root: str, year: int, month: int) -> str:
     return era5_cache_path(output_root, year, month)
 
 
@@ -164,7 +164,7 @@ def _ensure_month_cached(
     local_dir : directory to write the .nc file into. Caller is responsible
         for cleanup. If None, a new temp dir is created (legacy behaviour).
     """
-    cache_path = _cache_grib_path(output_root, year, month)
+    cache_path = _cache_nc_path(output_root, year, month)
     fname = f"era5_land_{year:04d}{month:02d}.nc"
 
     if local_dir is not None:
@@ -406,13 +406,13 @@ def prepare_era5_scene(
     else:
         months_needed.append((acq_year, acq_month - 1))
 
-    grib_paths: dict[tuple[int, int], Path] = {}
+    nc_paths: dict[tuple[int, int], Path] = {}
     for year, month in months_needed:
         path = _ensure_month_cached(output_root, year, month, run_id, local_dir=local_dir)
         if path is not None:
-            grib_paths[(year, month)] = path
+            nc_paths[(year, month)] = path
 
-    if (acq_year, acq_month) not in grib_paths:
+    if (acq_year, acq_month) not in nc_paths:
         raise ValueError(
             f"Cannot process {scene_id}: ERA5 cache missing for "
             f"{acq_year}-{acq_month:02d}"
@@ -433,7 +433,7 @@ def prepare_era5_scene(
 
     try:
         primary_ds = _decode_monthly_era5(
-            grib_paths[(acq_year, acq_month)], time_slice=time_slice,
+            nc_paths[(acq_year, acq_month)], time_slice=time_slice,
         )
 
         # Find variables and validate
@@ -475,9 +475,9 @@ def prepare_era5_scene(
 
         # If we need previous month for antecedent, select its cell too
         prev_month_key = months_needed[1] if len(months_needed) > 1 else None
-        if prev_month_key and prev_month_key in grib_paths:
+        if prev_month_key and prev_month_key in nc_paths:
             prev_ds = _decode_monthly_era5(
-                grib_paths[prev_month_key], time_slice=time_slice,
+                nc_paths[prev_month_key], time_slice=time_slice,
             )
             prev_t2m = prev_ds[t2m_var].isel(latitude=lat_idx, longitude=lon_idx)
             prev_ssrd = prev_ds[ssrd_var].isel(latitude=lat_idx, longitude=lon_idx)
@@ -557,7 +557,7 @@ def prepare_era5_scene(
         nominal_interval=vintage_interval(acquisition_dt.year),
         source_metadata={
             "era5_variables": _ERA5_VARIABLES,
-            "era5_months_used": [f"{y:04d}-{m:02d}" for y, m in grib_paths],
+            "era5_months_used": [f"{y:04d}-{m:02d}" for y, m in nc_paths],
             "acquisition_time_utc": acquisition_dt.isoformat(),
             "scene_year": acquisition_dt.year,
             "day_of_year": doy,

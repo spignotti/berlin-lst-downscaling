@@ -73,15 +73,6 @@ def load_ledger(output_root: str) -> dict:
     }
 
 
-def check_artifacts(output_root: str, ledger_info: dict) -> dict:
-    """Check that COG + complete.json exist for done items."""
-    # Relies on ledger counts; full GCS prefix listing not practical here.
-    results = {}
-    for src in ("era5_land", "shadow_building", "shadow_vegetation"):
-        results[src] = "check ledger counts"
-    return results
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate dynamic pipeline products")
     parser.add_argument("--output-root", required=True, help="Dynamic run output root")

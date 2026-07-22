@@ -38,14 +38,12 @@ _VALIDATION_RUNS_ROOT = "runs/dwd"
 # ── raw ERA5 cache ───────────────────────────────────────────────────
 
 
-def era5_cache_dir(root: str, year: int, month: int) -> str:
-    """Return the ERA5-Land cache directory for a given month."""
-    return f"{root.rstrip('/')}/{_RAW_ROOT}/era5_land/{year:04d}-{month:02d}"
-
-
 def era5_cache_path(root: str, year: int, month: int) -> str:
     """Return the ERA5-Land NetCDF file path for a given month."""
-    return f"{era5_cache_dir(root, year, month)}/era5_land_{year:04d}{month:02d}.nc"
+    return (
+        f"{root.rstrip('/')}/{_RAW_ROOT}/era5_land/"
+        f"{year:04d}-{month:02d}/era5_land_{year:04d}{month:02d}.nc"
+    )
 
 
 # ── per-scene product paths ──────────────────────────────────────────
@@ -54,26 +52,6 @@ def era5_cache_path(root: str, year: int, month: int) -> str:
 def scene_product_dir(root: str, source: str, scene_id: str) -> str:
     """Return the product directory for a scene-keyed dynamic source."""
     return f"{root.rstrip('/')}/{_DYNAMIC_ROOT}/{source}/{scene_id}"
-
-
-def scene_product_cog(root: str, source: str, scene_id: str) -> str:
-    """Return the final COG URI for a scene-keyed dynamic product."""
-    return f"{scene_product_dir(root, source, scene_id)}/{source}_{scene_id}.tif"
-
-
-def scene_product_stac(root: str, source: str, scene_id: str) -> str:
-    """Return the STAC Item URI for a scene-keyed dynamic product."""
-    return f"{scene_product_dir(root, source, scene_id)}/{source}_{scene_id}.stac.json"
-
-
-def scene_product_provenance(root: str, source: str, scene_id: str) -> str:
-    """Return the provenance URI for a scene-keyed dynamic product."""
-    return f"{scene_product_dir(root, source, scene_id)}/provenance.json"
-
-
-def scene_product_completion(root: str, source: str, scene_id: str) -> str:
-    """Return the completion marker URI for a scene-keyed dynamic product."""
-    return f"{scene_product_dir(root, source, scene_id)}/complete.json"
 
 
 # ── QA and ledger ────────────────────────────────────────────────────
@@ -97,19 +75,19 @@ def ledger_path(root: str) -> str:
 # ── DWD validation run paths ────────────────────────────────────────
 
 
-def dwd_raw_dir(root: str, run_id: str) -> str:
+def _dwd_raw_dir(root: str, run_id: str) -> str:
     """Return the raw DWD snapshot directory for a validation run."""
     return f"{root.rstrip('/')}/{_VALIDATION_RAW_ROOT}/{run_id}"
 
 
 def dwd_station_inventory_path(root: str, run_id: str) -> str:
     """Return the URI of the DWD station inventory Parquet file."""
-    return f"{dwd_raw_dir(root, run_id)}/station_inventory.parquet"
+    return f"{_dwd_raw_dir(root, run_id)}/station_inventory.parquet"
 
 
 def dwd_observations_path(root: str, run_id: str) -> str:
     """Return the URI of the merged DWD observations Parquet file."""
-    return f"{dwd_raw_dir(root, run_id)}/dwd_hourly_observations.parquet"
+    return f"{_dwd_raw_dir(root, run_id)}/dwd_hourly_observations.parquet"
 
 
 def dwd_run_dir(root: str, run_id: str) -> str:
@@ -143,17 +121,11 @@ __all__ = [
     "dwd_observations_path",
     "dwd_provenance_path",
     "dwd_qa_report_path",
-    "dwd_raw_dir",
     "dwd_run_dir",
     "dwd_station_inventory_path",
-    "era5_cache_dir",
     "era5_cache_path",
     "ledger_path",
     "qa_dir",
     "qa_report_path",
-    "scene_product_cog",
-    "scene_product_completion",
     "scene_product_dir",
-    "scene_product_provenance",
-    "scene_product_stac",
 ]

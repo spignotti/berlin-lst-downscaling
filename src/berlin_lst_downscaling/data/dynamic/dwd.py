@@ -154,12 +154,6 @@ def _inventory_to_dataframe(inventory: list[DwdStationInventory]) -> pd.DataFram
     )
 
 
-def _safe_wetterdienst_env() -> None:
-    """Unset env vars that wetterdienst pydantic-settings rejects."""
-    for key in _SAFE_KEYS:
-        os.environ.pop(key, None)
-
-
 def _load_aoi_polygon(aoi_uri: str):
     """Load the Berlin AOI polygon and ensure WGS84."""
     gdf = gpd.read_file(aoi_uri)
@@ -349,8 +343,6 @@ def fetch_dwd_temperature(
         end_utc = end_utc.replace(tzinfo=UTC)
     if periods is None:
         periods = ["historical", "recent"]
-    if "historical" not in periods and "recent" not in periods:
-        periods = ["historical", "recent"]
 
     if aoi_uri.startswith("gs://"):
         if not uri_exists(aoi_uri):
@@ -360,8 +352,6 @@ def fetch_dwd_temperature(
         aoi_uri = str(tmp)
 
     aoi_geom = _load_aoi_polygon(aoi_uri)
-
-    _safe_wetterdienst_env()
 
     inventory_rows: dict[str, DwdStationInventory] = {}
     for period in periods:

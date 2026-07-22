@@ -24,10 +24,6 @@ from __future__ import annotations
 # pyright: reportGeneralTypeIssues=false
 # pyright: reportReturnType=false
 # pyright: reportAssignmentType=false
-# decision: ignore pyright's overly conservative narrowing for pandas
-# Series arithmetic (``Series | int | Unknown`` for ``int(Series.sum())``).
-# ``pandas-stubs`` is not installed in this project; correctness is
-# covered by the actual validation run, not static types.
 import os
 
 # decision: see berlin_lst_downscaling.data.dynamic.dwd — strip env vars
@@ -41,7 +37,6 @@ for _key in (
 ):
     os.environ.pop(_key, None)
 
-import io  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 from collections.abc import Mapping  # noqa: E402
@@ -52,7 +47,6 @@ from typing import Any  # noqa: E402
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-import pyarrow.parquet as pq  # noqa: E402
 
 from berlin_lst_downscaling.common.config import BERLIN_BBOX  # noqa: E402
 from berlin_lst_downscaling.data.dynamic.dwd import (  # noqa: E402
@@ -125,11 +119,6 @@ def _atomic_write_parquet(df: pd.DataFrame, uri: str) -> None:
 
 def _read_json(uri: str) -> dict:
     return json.loads(read_bytes(uri).decode("utf-8"))
-
-
-def _read_parquet_df(uri: str) -> pd.DataFrame:
-    raw = read_bytes(uri)
-    return pq.read_table(io.BytesIO(raw)).to_pandas()
 
 
 def _ensure_utc(ts: datetime) -> datetime:

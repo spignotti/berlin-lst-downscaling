@@ -80,24 +80,6 @@ def config_hash_for_era5(
     return sha256(payload.encode()).hexdigest()[:16]
 
 
-def config_hash_for_shadow(
-    manifest_hash: str,
-    geometry_id: str,
-    component: str,
-) -> str:
-    """Config hash for a single shadow product."""
-    payload = json.dumps(
-        {
-            "manifest_hash": manifest_hash,
-            "geometry_id": geometry_id,
-            "component": component,
-            "geometry_temporal_mode": GEOMETRY_TEMPORAL_MODE,
-        },
-        sort_keys=True,
-    )
-    return sha256(payload.encode()).hexdigest()[:16]
-
-
 __all__ = [
     "ERA5_CHANNELS",
     "SHADOW_CHANNELS",
@@ -105,5 +87,4 @@ __all__ = [
     "GEOMETRY_VINTAGES",
     "config_hash_for_dynamic",
     "config_hash_for_era5",
-    "config_hash_for_shadow",
 ]
