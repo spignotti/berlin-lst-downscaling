@@ -20,9 +20,10 @@ Examples:
 |----------|-------------|---------------|-------------|
 | ARD | `scripts/run_ard.py` | `configs/ard/` | `ard` |
 | Selection | `scripts/build_manifest.py` | `configs/selection/` | `selection` |
-| Secondary | `scripts/run_secondary.py` | `configs/secondary/` | `secondary` |
 | Static Sources (A) | `scripts/run_static_sources.py` | `configs/static_sources/` | `static-sources` |
 | Static Derived (B) | `scripts/run_static_derived.py` | `configs/static_derived/` | `static-derived` |
+| Dynamic (C) | `scripts/run_dynamic.py` | `configs/dynamic/` | `dynamic` |
+| DWD validation | `scripts/run_dwd_validation.py` | `configs/dwd_validation/` | `dwd_validation` |
 
 ## JSONL Schema
 

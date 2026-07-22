@@ -35,14 +35,23 @@ Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Compu
 src/berlin_lst_downscaling/    # main package
     data/acquisition/          # PC STAC loaders + ECOSTRESS CMR
     data/ard/                  # ARD pipeline (COG write, masking, ledger, STAC)
-    data/selection/            # Szenen-Selektion & Kopplung (anchors, coupling, manifest)
-    data/dynamic/              # ERA5-Land + shadow + DWD-vs-ERA5 validation
-    data/io/                   # Storage (local + GCS) and ephemeral staging
-    common/                    # Pydantic settings / env config
-configs/                       # Hydra configs (ARD + selection + dynamic + dwd_validation)
-scripts/                       # Entry points (run_ard.py, build_manifest.py, run_dwd_validation.py, etc.)
+    data/secondary/            # Static A + B (sources + derived geometry)
+    data/dynamic/              # ERA5-Land + shadows + DWD validation
+    data/selection/            # v3 manifest selection & coupling
+    data/io/                   # Storage (local + GCS), run logger, ephemeral staging
+    common/                    # Canonical 10 m grid, env config
+configs/                       # Hydra configs (ARD + selection + static_sources
+                               #   + static_derived + dynamic + dwd_validation)
+scripts/                       # Entry points (run_ard.py, run_static_sources.py,
+                               #   run_static_derived.py, run_dynamic.py,
+                               #   run_dwd_validation.py, build_manifest.py,
+                               #   validators, isolated runner)
+scripts/spikes/                # Ad-hoc experiments (kept for reference)
 notebooks/                     # EDA notebooks
 ```
+
+See `docs/preprocessing-pipelines.md` for the canonical pipeline
+operations runbook (ARD, A, B, C, DWD validation).
 
 ### DWD-vs-ERA5 validation
 

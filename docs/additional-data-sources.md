@@ -1,11 +1,17 @@
 # Additional Data Sources — Availability & Feature Definitions
 
-Analysis date: 2026-06-18  
-Research update: 2026-07-14 (post-rebuild decisions after deleted branch, fresh start)  
-Notion context: Sekundärdaten Research Findings + Sekundärdaten Cloud-Workflow  
-Data portal: Berlin Open Data / Geoportal Berlin, DWD CDC, Copernicus CDS, NASA CMR  
-Reference: `docs/data-availability.md` (Landsat, Sentinel-2, ECOSTRESS)  
+Analysis date: 2026-06-18
+Research update: 2026-07-14 (post-rebuild decisions after deleted branch, fresh start)
+Notion context: Sekundärdaten Research Findings + Sekundärdaten Cloud-Workflow
+Data portal: Berlin Open Data / Geoportal Berlin, DWD CDC, Copernicus CDS, NASA CMR
+Reference: `docs/data-availability.md` (Landsat, Sentinel-2, ECOSTRESS)
 Validation scripts: `notebooks/dwd_stations.py`
+
+> Status note (2026-07-23): research record. The shipped pipeline uses
+> `wetterdienst` for DWD access (replaces the older direct-CDC approach),
+> a **retrospective-static** geometry policy for shadows, and an isolated
+> per-scene dynamic runner for bounded memory. See
+> `docs/preprocessing-pipelines.md` for current commands.
 
 ---
 

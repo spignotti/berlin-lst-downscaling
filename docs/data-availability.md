@@ -1,8 +1,14 @@
 # Data Availability — Berlin LST Downscaling
 
-Analysis date: 2026-06-18  
-Query tool: Google Earth Engine (Python API)  
+Analysis date: 2026-06-18
+Query tool: Google Earth Engine (Python API)
 Service account: `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com`
+
+> Status note (2026-07-23): the counts and year breakdown below reflect the
+> pre-manifest feasibility scan. The shipped v3 manifest bundle uses a tighter
+> `2017–2025` selection policy with a different cloud-clear methodology; see
+> `docs/preprocessing-pipelines.md` and `docs/ard-manifest-schema.md` for the
+> actual production numbers.
 
 ---
 

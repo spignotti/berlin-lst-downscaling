@@ -19,10 +19,10 @@ product is not considered final by ``reconcile()``.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-import numpy as np
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.transform import array_bounds
@@ -310,7 +310,7 @@ def vintage_interval(vintage: int) -> tuple[str, str]:
 def _is_nan(value: float) -> bool:
     """Return True if *value* is NaN (safe for non-float inputs)."""
     try:
-        return bool(np.isnan(value))
+        return math.isnan(value)
     except (TypeError, ValueError):
         return False
 
