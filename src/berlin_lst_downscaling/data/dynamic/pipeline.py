@@ -74,8 +74,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                   errors=manifest_report.errors)
         return 1
 
-    # Validate expected scene count if specified
-    if expected_count is not None and len(manifest_report.scenes) != expected_count:
+    # Validate expected scene count if specified (skip when scene_ids override)
+    if expected_count is not None and not scene_ids and len(manifest_report.scenes) != expected_count:
         log_event(_logger, logging.ERROR, "scene_count_mismatch",
                   expected=expected_count, actual=len(manifest_report.scenes))
         return 1
