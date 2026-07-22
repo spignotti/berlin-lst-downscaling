@@ -711,3 +711,64 @@ def cloud_dynamic(session: nox.Session) -> None:
         f"output_root={output_root}",
         external=True,
     )
+
+
+# ── DWD validation ────────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-dwd-validation")
+def smoke_dwd_validation(session: nox.Session) -> None:
+    """Run a bounded DWD-vs-ERA5 validation smoke locally.
+
+    Uses a single fixed Landsat anchor and a one-day DWD window
+    (see ``configs/dwd_validation/smoke.yaml``) so the run completes
+    quickly without external credentials beyond DWD availability.
+
+    Usage:
+        uv run nox -s smoke-dwd-validation -- \\
+            data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet \\
+            gs://berlin-lst-data/dynamic/full/<run_id>
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    if len(session.posargs) < 2:
+        session.error(
+            "Provide the manifest URI and the dynamic full root: "
+            "nox -s smoke-dwd-validation -- <manifest_uri> <dynamic_full_root>"
+        )
+    manifest_uri = session.posargs[0]
+    full_root = session.posargs[1]
+    inference_root = session.posargs[2] if len(session.posargs) > 2 else ""
+
+    output_root = (
+        f"data/dwd_validation/smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+
+    session.run(
+        "uv", "run", "python", "scripts/run_dwd_validation.py",
+        "--config-name", "smoke",
+        f"manifest_uri={manifest_uri}",
+        f"dynamic_full_root={full_root}",
+        f"dynamic_inference_root={inference_root}",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # The validation run writes to <output_root>/runs/dwd/<run_id>/ and
+    # <output_root>/_raw/dwd/<run_id>/. The completion marker signals
+    # successful publication.
+    _assert_dwd_complete(session, output_root)
+
+
+def _assert_dwd_complete(session: nox.Session, output_root: str) -> None:
+    """Assert the DWD validation run produced a complete.json marker."""
+    from pathlib import Path
+
+    completion = next(Path(output_root).glob("runs/dwd/*/complete.json"), None)
+    if completion is None:
+        session.error(
+            f"DWD validation produced no completion marker under {output_root}/runs/dwd/"
+        )
+    print(f"DWD validation complete: {completion}")

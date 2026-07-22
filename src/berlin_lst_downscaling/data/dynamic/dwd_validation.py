@@ -130,13 +130,17 @@ def _ensure_utc(ts: datetime) -> datetime:
 def load_anchors_from_manifest(
     manifest_uri: str,
     dataset_roles: list[str] | None = None,
+    scene_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     """Load every Landsat anchor scene from the published manifest.
 
     Returns a DataFrame with ``scene_id``, ``acquisition_utc``,
     ``role``, and the manifest's raw ``year``.
+
+    ``scene_ids`` filters the manifest to a fixed set of scenes before
+    dataset-role filtering. Used by the bounded DWD smoke.
     """
-    report = load_landsat_anchors(manifest_uri)
+    report = load_landsat_anchors(manifest_uri, scene_ids=scene_ids)
     if not report.ok:
         msg = f"Manifest load failed: {report.errors}"
         raise RuntimeError(msg)
@@ -158,14 +162,22 @@ def load_anchors_from_manifest(
 def _load_era5_anchors(
     dynamic_full_root: str,
     dynamic_inference_root: str | None,
+    scene_ids: list[str] | None = None,
 ) -> list[Era5AnchorValue]:
-    """Load published ERA5 anchor t2m values from the dynamic ledgers."""
+    """Load published ERA5 anchor t2m values from the dynamic ledgers.
+
+    ``scene_ids`` optionally restricts to a fixed set of scenes (matches
+    against ``item_key`` in the published provenance) — used by the
+    bounded DWD smoke to skip full-period queries.
+    """
     anchors: list[Era5AnchorValue] = []
     roots: list[tuple[str, str]] = []
     if exists(dynamic_full_root):
         roots.append((dynamic_full_root, "anchor"))
     if dynamic_inference_root and exists(dynamic_inference_root):
         roots.append((dynamic_inference_root, "inference"))
+
+    scene_id_filter = set(scene_ids) if scene_ids else None
 
     for root, default_role in roots:
         ledger_uri = f"{root.rstrip('/')}/_state/dynamic/ledger.parquet"
@@ -199,6 +211,8 @@ def _load_era5_anchors(
             scene_id = prov.get("item_key") or row.item_id.replace(
                 f"{_ERA5_LEDGER_SOURCE}_", "", 1,
             )
+            if scene_id_filter is not None and scene_id not in scene_id_filter:
+                continue
             role = row.role or default_role
             anchors.append(
                 Era5AnchorValue(
@@ -428,18 +442,21 @@ def run_dwd_validation(
     periods_raw = cfg_dict.get("periods") or ["historical", "recent"]
     periods = [str(p) for p in periods_raw]  # type: ignore[union-attr]
 
+    scene_ids_raw = cfg_dict.get("scene_ids") or []
+    scene_ids = [str(s) for s in scene_ids_raw] if scene_ids_raw else None  # type: ignore[union-attr]
+
     if not manifest_uri:
         log_event(_logger, logging.ERROR, "validation_manifest_missing")
         return 1
 
-    anchors_df = load_anchors_from_manifest(manifest_uri)
+    anchors_df = load_anchors_from_manifest(manifest_uri, scene_ids=scene_ids)
     log_event(_logger, logging.INFO, "validation_anchors_loaded",
               n_anchors=int(len(anchors_df)))
 
     full_root = _str(cfg_dict.get("dynamic_full_root"))
     inference_root_raw = cfg_dict.get("dynamic_inference_root")
     inference_root_str = str(inference_root_raw) if inference_root_raw else None
-    era5_anchors = _load_era5_anchors(full_root, inference_root_str)
+    era5_anchors = _load_era5_anchors(full_root, inference_root_str, scene_ids=scene_ids)
     log_event(_logger, logging.INFO, "validation_era5_loaded",
               n_era5_anchors=len(era5_anchors),
               full_root=full_root,
