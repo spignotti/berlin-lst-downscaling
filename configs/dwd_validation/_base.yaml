@@ -1,0 +1,41 @@
+# @package _global_
+# Base config for DWD-vs-ERA5 validation.
+#
+# The DWD validation pipeline is read-only against the published dynamic
+# pipeline outputs. It does NOT touch the dynamic pipeline itself and
+# never feeds DWD data into training or normalisation.
+
+# Manifest URI — REQUIRED. Published v3 manifest bundle with Landsat anchors.
+manifest_uri: null
+
+# Dynamic run roots to validate against. Each root must contain a
+# completed dynamic run ledger (_state/dynamic/ledger.parquet) and the
+# corresponding era5_land scene COG + provenance.
+# Defaults point to the published historical + inference runs on GCS.
+dynamic_full_root: "gs://berlin-lst-data/dynamic/full"
+dynamic_inference_root: "gs://berlin-lst-data/dynamic/inference/2026"
+
+# Where the validation output is published. Local or gs://.
+output_root: "data/dwd_validation"
+
+# Berlin boundary polygon used to select DWD stations inside the AOI.
+aoi_uri: "data/boundaries/berlin_landesgrenze.geojson"
+
+# DWD request window. Inclusive bounds in UTC.
+start_date: "2017-01-01T00:00:00Z"
+end_date: "2026-12-31T23:59:59Z"
+
+# Wetterdienst settings: hourly air temperature, both historical and recent periods.
+parameters: [["hourly", "temperature_air"]]
+periods: ["historical", "recent"]
+
+# Logging
+logging_level: INFO
+
+# Hydra overrides
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false

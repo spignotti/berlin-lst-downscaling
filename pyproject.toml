@@ -29,6 +29,8 @@ dependencies = [
     # dynamic pipeline (ERA5-Land ingestion)
     "cdsapi>=0.7.7",
     "netcdf4>=1.7.3",
+    # DWD station validation
+    "wetterdienst>=0.128.0,<0.129",
 ]
 
 [build-system]
