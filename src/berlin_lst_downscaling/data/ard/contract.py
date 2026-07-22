@@ -61,18 +61,6 @@ class Contract:
         return str(self.schema_version)
 
 
-# ── flag-band shared spec ────────────────────────────────────────────
-
-_FLAG_BAND_SPEC = BandSpec(
-    name="flag",
-    dtype="uint8",
-    nodata=None,  # fill is encoded in bit 0 of the flag itself
-    description=(
-        "Quality flag (bitmask): "
-        "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated"
-    ),
-)
-
 # ── factories ────────────────────────────────────────────────────────
 
 

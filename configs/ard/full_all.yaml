@@ -9,10 +9,5 @@ mode: full
 target_resolution_low: 100          # Landsat LST native
 target_resolution_high: 10          # Sentinel-2
 
-ecostress:
-  enabled: true
-  persist_stage: false
-
 aoi:
-  enabled: true
   min_overlap_px: 50

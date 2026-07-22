@@ -22,6 +22,7 @@ from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.paths import (
     derived_ledger_path,
+    derived_product_cog,
     derived_product_dir,
 )
 from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
@@ -241,8 +242,8 @@ def _run_dsm_products(
 
     # Combined DSM — depends on building and vegetation DSMs
     from berlin_lst_downscaling.data.io.storage import exists
-    bldg_cog = _product_cog(derived_root, bldg_item, geometry_id)
-    veg_cog = _product_cog(derived_root, veg_item, geometry_id)
+    bldg_cog = derived_product_cog(derived_root, bldg_item, geometry_id)
+    veg_cog = derived_product_cog(derived_root, veg_item, geometry_id)
 
     if exists(bldg_cog) and exists(veg_cog):
         combined_item = "combined_dsm"
@@ -319,9 +320,9 @@ def _run_horizon_svf(
     svf_n_dir = cfg.get("svf_n_directions", 16)
 
     # Component DSM COGs
-    bldg_dsm_cog = _product_cog(derived_root, "building_dsm", geometry_id)
-    veg_dsm_cog = _product_cog(derived_root, "vegetation_dsm", geometry_id)
-    combined_cog = _product_cog(derived_root, "combined_dsm", geometry_id)
+    bldg_dsm_cog = derived_product_cog(derived_root, "building_dsm", geometry_id)
+    veg_dsm_cog = derived_product_cog(derived_root, "vegetation_dsm", geometry_id)
+    combined_cog = derived_product_cog(derived_root, "combined_dsm", geometry_id)
 
     # Building horizon — from building_dsm
     if exists(bldg_dsm_cog):
@@ -486,12 +487,6 @@ def _run_horizon_svf(
 
 
 # ── helpers ──────────────────────────────────────────────────────────
-
-
-def _product_cog(root: str, product: str, geometry_id: str) -> str:
-    """Build the COG URI for a derived product."""
-    from berlin_lst_downscaling.data.secondary.paths import derived_product_cog
-    return derived_product_cog(root, product, geometry_id)
 
 
 def _banner(

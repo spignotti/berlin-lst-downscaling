@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -169,11 +170,10 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 
 
 def run(cfg: DictConfig, run_id: str | None = None) -> int:
-    """Execute the ARD pipeline — manifest-driven only (mode=full).
+    """Execute the ARD pipeline — manifest-driven (mode=full).
 
-    Smoke mode was removed in favor of manifest-driven smoke using
-    ``smoke_primary`` config which builds a 3-row manifest then runs
-    ``mode=full``.
+    ``smoke_primary`` builds a 3-row manifest and runs ``mode=full``
+    end-to-end.
 
     Returns 0 on success, 1 if any scene failed.
     """
@@ -197,7 +197,6 @@ def run(cfg: DictConfig, run_id: str | None = None) -> int:
     )
     log_event(_logger, logging.INFO, "qa_report", **report)
 
-    # Note: ledger persists per-transition via upsert — no batch write needed
     return 0 if failed_count == 0 else 1
 
 
@@ -271,7 +270,7 @@ def _process_manifest(
             "year": yr,
         }
 
-    max_attempts = cfg.get("max_scene_attempts", 3)
+    max_attempts = int(cfg.max_scene_attempts)
     todo = reconcile(scenes, ledger, contract, max_attempts=max_attempts)
     log_event(_logger, logging.INFO, "manifest_todo",
         source=source,
@@ -305,11 +304,8 @@ def _resolve_manifest_items(
     For PC STAC sources (Landsat/Sentinel-2), tries to resolve directly
     from item_href first (faster, avoids catalog search). Falls back to
     ID-based search if item_href is missing.
-    Returns None for ECOSTRESS or when resolution fails.
+    Returns None when resolution fails; ECOSTRESS callers skip this path.
     """
-    if source == "ecostress":
-        return None
-
     from berlin_lst_downscaling.data.acquisition.pc_client import (
         resolve_exact_item,
         resolve_item_from_href,
@@ -358,7 +354,7 @@ def _process_ecostress_todo(
     from berlin_lst_downscaling.data.io.staging import StageSession
 
     stage_base = cfg.get("ecostress.stage_base", "data/smoke/ecostress_stage")
-    with StageSession(stage_base, run_id=run_id) as stage:
+    with StageSession(stage_base, run_id=run_id) as stage:  # StageSession cleans up on exit
         for scene_id, _src, year, _reason in todo:
             try:
                 download_and_stage_granule(scene_id, stage)
@@ -399,9 +395,7 @@ def _run_scene(
     Parameters
     ----------
     items :
-        Pre-fetched STAC items for the scene. Passed to acquisition
-        loaders when provided (manifest-driven ``mode=full``).
-        When ``None`` (smoke mode), the loader searches by date.
+        Pre-fetched STAC items for the scene (manifest-driven).
     scene_date :
         Overrides ``cfg.scene_date`` for this scene. Used by
         ``mode=full`` where each manifest row carries its own date.
@@ -529,10 +523,6 @@ def _run_scene(
                     aoi_uri=aoi_uri,
                     error=str(_exc),
                 )
-        else:
-            aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
-            aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
-            aoi_total_px = aoi_overlap_px = aoi_clear_frac = None
 
         # Low-overlap warning: valid data covers a small fraction of the AOI intersection.
         # This catches off-target swaths where the COG covers the AOI bbox but LST is NaN.
@@ -770,8 +760,8 @@ def _acquisition_datetime(
 
 
 def _is_nan(val: float) -> bool:
-    """Check if a float is NaN without importing math."""
-    return val != val
+    """Check if *val* is NaN."""
+    return math.isnan(val)
 
 
 def _int_or_none(val) -> int | None:

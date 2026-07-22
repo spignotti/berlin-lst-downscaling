@@ -1,9 +1,4 @@
-"""Solar position computation — from STAC properties or datetime + lat/lon.
-
-Provides a single function :func:`solar_position` that accepts either
-a source parameter (trying STAC ``view:sun_*`` first) or a
-datetime + lat/lon pair for the NOAA fallback algorithm.
-"""
+"""Solar position computation — datetime + lat/lon via NOAA algorithm."""
 
 from __future__ import annotations
 
@@ -49,21 +44,6 @@ def solar_position(
         lon = _AOI_CENTROID[1]
 
     return _noaa_solar_position(dt, lat, lon)
-
-
-def extract_solar_from_stac(
-    properties: dict,
-) -> tuple[float, float] | None:
-    """Extract ``(azimuth_deg, elevation_deg)`` from STAC properties.
-
-    Returns ``None`` if either property is missing (caller should fall
-    back to NOAA computation).
-    """
-    az = properties.get("view:sun_azimuth")
-    el = properties.get("view:sun_elevation")
-    if az is not None and el is not None:
-        return (float(az), float(el))
-    return None
 
 
 # ── NOAA solar position algorithm (simplified) ───────────────────────
@@ -131,5 +111,4 @@ def _noaa_solar_position(dt: datetime, lat_deg: float, lon_deg: float) -> tuple[
 
 __all__ = [
     "solar_position",
-    "extract_solar_from_stac",
 ]

@@ -32,9 +32,7 @@ from __future__ import annotations
 # under pathlib.
 
 _STATIC_ROOT = "ard/static"
-_DYNAMIC_ROOT = "ard/dynamic"
 _RAW_ROOT = "_raw/secondary"
-_STAGING_ROOT = "_staging/secondary"
 _QA_ROOT = "qa/secondary"
 
 
@@ -48,16 +46,6 @@ def raw_dir(root: str, source: str, period: str) -> str:
         <root>/_raw/secondary/versiegelung/2021/
     """
     return f"{root.rstrip('/')}/{_RAW_ROOT}/{source}/{period}"
-
-
-def staging_dir(root: str, source: str, run_id: str) -> str:
-    """Return the staging directory for a source and run.
-
-    .. code-block:: text
-
-        <root>/_staging/secondary/versiegelung/run_abc/
-    """
-    return f"{root.rstrip('/')}/{_STAGING_ROOT}/{source}/{run_id}"
 
 
 def static_dir(root: str, category: str, source: str, vintage: str) -> str:
@@ -106,15 +94,6 @@ def product_completion_path(
     return f"{product_dir(root, category, source, vintage)}/complete.json"
 
 
-def dynamic_dir(root: str, source: str, scene_id: str) -> str:
-    """Return the directory for a scene-keyed dynamic product.
-
-    Used for future dynamic sources (ERA5, scene-level shadows).
-    Currently not consumed by the active runners.
-    """
-    return f"{root.rstrip('/')}/{_DYNAMIC_ROOT}/{source}/{scene_id}"
-
-
 def qa_dir(root: str, run_id: str) -> str:
     """Return the QA report directory for a run."""
     return f"{root.rstrip('/')}/{_QA_ROOT}/{run_id}"
@@ -132,14 +111,12 @@ def ledger_path(root: str) -> str:
 
 __all__ = [
     "raw_dir",
-    "staging_dir",
     "static_dir",
     "product_dir",
     "product_cog_path",
     "product_stac_path",
     "product_provenance_path",
     "product_completion_path",
-    "dynamic_dir",
     "qa_dir",
     "qa_report_path",
     "ledger_path",
@@ -168,21 +145,6 @@ def source_product_cog(root: str, source: str, revision: str) -> str:
     return f"{source_product_dir(root, source, revision)}/{source}_{revision}.tif"
 
 
-def source_product_stac(root: str, source: str, revision: str) -> str:
-    """Return the STAC Item URI for a Pipeline A source product."""
-    return f"{source_product_dir(root, source, revision)}/{source}_{revision}.stac.json"
-
-
-def source_product_provenance(root: str, source: str, revision: str) -> str:
-    """Return the provenance URI for a Pipeline A source product."""
-    return f"{source_product_dir(root, source, revision)}/provenance.json"
-
-
-def source_product_completion(root: str, source: str, revision: str) -> str:
-    """Return the completion marker URI for a Pipeline A source product."""
-    return f"{source_product_dir(root, source, revision)}/complete.json"
-
-
 def derived_product_dir(root: str, product: str, geometry_id: str) -> str:
     """Return the Pipeline B derived product directory.
 
@@ -206,13 +168,3 @@ def derived_ledger_path(root: str) -> str:
 def source_ledger_path(root: str) -> str:
     """Return the Pipeline A ledger path."""
     return f"{root.rstrip('/')}/{_STATE_ROOT}/sources/ledger.parquet"
-
-
-def source_qa_report_path(root: str, run_id: str) -> str:
-    """Return the Pipeline A QA report path."""
-    return f"{root.rstrip('/')}/qa/static/sources/{run_id}/report.json"
-
-
-def derived_qa_report_path(root: str, run_id: str) -> str:
-    """Return the Pipeline B QA report path."""
-    return f"{root.rstrip('/')}/qa/static/derived/{run_id}/report.json"

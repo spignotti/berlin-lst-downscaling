@@ -34,13 +34,12 @@ def write_cog_atomic(
     dst: str,
     contract: Contract,
     overwrite: bool = False,
-    bands_order: list[str] | None = None,
 ) -> str:
     """Write a multi-band COG atomically.
 
-    The COG is assembled from bands in ``ds`` (or ``bands_order`` if
-    given), written to a local temp file, then pushed via
-    ``atomic_write`` to *dst* (local path or GCS URI).
+    Bands are written in ``ds.data_vars`` order. The file is written to a
+    local temp, then pushed via ``atomic_write`` to *dst* (local path or
+    GCS URI).
 
     Parameters
     ----------
@@ -56,9 +55,6 @@ def write_cog_atomic(
     overwrite :
         If ``False`` and *dst* exists, a :class:`FileExistsError`
         is raised.
-    bands_order :
-        Band variable names in order they should appear in the COG.
-        Defaults to ``list(ds.data_vars)``.
 
     Returns
     -------
@@ -68,7 +64,7 @@ def write_cog_atomic(
     if exists(dst) and not overwrite:
         raise FileExistsError(dst)
 
-    bands = bands_order or [str(k) for k in ds.data_vars]
+    bands = [str(k) for k in ds.data_vars]
     arrays: list[tuple[str, np.ndarray]] = []
     h = w = 0
     crs = None

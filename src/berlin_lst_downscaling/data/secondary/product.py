@@ -222,15 +222,6 @@ def finalize_secondary_product(
 ) -> ProductArtifacts:
     """Write the four final artifacts for a secondary product.
 
-    Parameters
-    ----------
-    product_dir_override :
-        If given, use this as the product directory instead of
-        constructing it from ``output_root/category/source/item_key``.
-        Used by Pipeline A to write to ``ard/static/sources/`` layout.
-    """
-    """Write the four final artifacts for a secondary product.
-
     Order of writes:
 
     1. COG (atomic) at the final product path.
@@ -239,7 +230,10 @@ def finalize_secondary_product(
     4. STAC Item JSON (atomic) at the final product path.
     5. Completion marker JSON (atomic) — **written last**.
 
-    Raises on COG validation failure.  Callers should catch and mark the
+    ``product_dir_override`` lets Pipeline A write to its dedicated layout
+    instead of the default ``ard/static/{category}/{source}/{item_key}``.
+
+    Raises on COG validation failure. Callers should catch and mark the
     ledger row as ``failed``.
     """
     completed_at = datetime.now(UTC).isoformat()
