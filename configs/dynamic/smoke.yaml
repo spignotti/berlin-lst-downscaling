@@ -2,10 +2,15 @@ defaults:
   - _base
   - _self_
 
-# Smoke test: real-data local subset
+# Smoke test: real-data local subset, one fixed Landsat anchor.
 source_root: "data/static/sources/smoke"
 derived_root: "data/static/derived/smoke"
 output_root: "data/dynamic/smoke"
 
-# manifest_uri must be provided on command line:
+# Single deterministic scene — must exist in the supplied manifest.
+# The Landsat anchor used for the full cloud-smoke suite.
+scene_ids:
+  - "LC08_L2SP_192023_20170526_02_T1"
+
+# manifest_uri must be provided on the command line:
 #   manifest_uri=data/ard/manifests/v3/.../manifest.parquet

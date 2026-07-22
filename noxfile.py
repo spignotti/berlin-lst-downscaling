@@ -117,11 +117,10 @@ def typecheck(session: nox.Session) -> None:
 def smoke_primary(session: nox.Session) -> None:
     """Run manifest-driven smoke test for all 3 sources locally.
 
-    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), then runs the
-    ARD pipeline.  The pipeline downloads + stages ECOSTRESS from CMR
-    automatically via ``_process_ecostress_todo``.
-
-    Final COGs land in ``data/smoke/primary/ard/``.
+    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), runs the ARD
+    pipeline twice to confirm ledger idempotency, then asserts that the
+    ledger contains three rows in status ``done`` and runs the
+    standalone validator.
     """
     manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
@@ -129,19 +128,62 @@ def smoke_primary(session: nox.Session) -> None:
 
     _write_smoke_manifest(manifest_path)
 
-    # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
-    # automatically by the pipeline's _process_ecostress_todo path.
-    session.run(
-        "uv", "run", "python", "scripts/run_ard.py",
-        "--config-name", "smoke_primary",
-        f"manifest_uri={manifest_path}",
-        f"output_root={output_root}",
-        "+ecostress.persist_stage=true",  # keep stage for inspection
-        external=True,
-    )
+    for _ in range(2):
+        # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
+        # automatically by the pipeline's _process_ecostress_todo path.
+        session.run(
+            "uv", "run", "python", "scripts/run_ard.py",
+            "--config-name", "smoke_primary",
+            f"manifest_uri={manifest_path}",
+            f"output_root={output_root}",
+            "+ecostress.persist_stage=true",  # keep stage for inspection
+            external=True,
+        )
 
     print(f"\nSmoke-primary output: {output_root}/ledger.parquet")
     print("Expected: 3 scenes with status=done")
+
+    _assert_ard_done(session, output_root, expected=3)
+    session.run(
+        "uv", "run", "python", "scripts/validate_ard.py",
+        f"--ledger={output_root}/ledger.parquet",
+        external=True,
+    )
+
+
+def _assert_ard_done(session: nox.Session, output_root: str, expected: int) -> None:
+    """Assert that *output_root*/ledger.parquet has *expected* ``done`` rows."""
+    session.run(
+        "uv", "run", "python", "-c",
+        (
+            "import sys, pyarrow.parquet as pq; "
+            f"tbl = pq.read_table('{output_root}/ledger.parquet'); "
+            "done = sum(1 for s in tbl.column('status').to_pylist() if s == 'done'); "
+            "print(f'ledger done rows: {done}'); "
+            "sys.exit(0 if done == " + str(expected) + " else 1)"
+        ),
+        external=True,
+    )
+
+
+def _assert_dynamic_done(session: nox.Session, output_root: str, expected: int) -> None:
+    """Assert that *output_root* has *expected* done scenes across all dynamic sources."""
+    session.run(
+        "uv", "run", "python", "-c",
+        (
+            "import sys, pyarrow.parquet as pq; "
+            f"tbl = pq.read_table('{output_root.rstrip('/')}/_state/dynamic/ledger.parquet'); "
+            "from collections import Counter; "
+            "rows = list(zip(tbl.column('source').to_pylist(), tbl.column('status').to_pylist())); "
+            "counts = Counter(rows); "
+            "for src in ('era5_land', 'shadow_building', 'shadow_vegetation'): "
+            "    print(f'{src}: {counts.get((src, \"done\"), 0)}'); "
+            "ok = all(counts.get((s, 'done'), 0) >= " + str(expected)
+            + " for s in ('era5_land', 'shadow_building', 'shadow_vegetation')); "
+            "sys.exit(0 if ok else 1)"
+        ),
+        external=True,
+    )
 
 
 # ── Szenen-Selektion ─────────────────────────────────────────────────
@@ -555,20 +597,37 @@ def cloud_static_derived(session: nox.Session) -> None:
 def smoke_dynamic(session: nox.Session) -> None:
     """Run dynamic pipeline smoke test locally.
 
+    Processes a single fixed Landsat anchor (see configs/dynamic/smoke.yaml),
+    runs the pipeline twice to confirm ledger idempotency, asserts all
+    three dynamic sources reach status ``done``, and then runs the
+    standalone validator.
+
     Requires:
     - Local static smoke products (run smoke-static-sources + smoke-static-derived first)
     - CDS API access (~/.cdsapirc or CDS_API_KEY env)
+    - Manifest bundle that contains the smoke scene_id
 
     Usage:
         uv run nox -s smoke-dynamic -- \
             data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
     """
     manifest_uri = session.posargs[0] if session.posargs else ""
+    output_root = "data/dynamic/smoke"
 
+    for _ in range(2):
+        session.run(
+            "uv", "run", "python", "scripts/run_dynamic.py",
+            "--config-name", "smoke",
+            f"manifest_uri={manifest_uri}",
+            f"output_root={output_root}",
+            external=True,
+        )
+
+    _assert_dynamic_done(session, output_root, expected=1)
     session.run(
-        "uv", "run", "python", "scripts/run_dynamic.py",
-        "--config-name", "smoke",
-        f"manifest_uri={manifest_uri}",
+        "uv", "run", "python", "scripts/validate_dynamic.py",
+        f"--output-root={output_root}",
+        "--expected-scenes", "1",
         external=True,
     )
 
