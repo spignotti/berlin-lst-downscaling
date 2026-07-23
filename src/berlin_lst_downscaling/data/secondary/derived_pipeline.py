@@ -206,9 +206,8 @@ def _run_dsm_products(
             artifacts = finalize_secondary_product(
                 prepared,
                 grid,
-                derived_root,
+                prod_dir,
                 run_id,
-                product_dir_override=prod_dir,
             )
             led.upsert(
                 SecondaryLedgerRow(
@@ -275,9 +274,8 @@ def _run_dsm_products(
             artifacts = finalize_secondary_product(
                 prepared,
                 grid,
-                derived_root,
+                prod_dir,
                 run_id,
-                product_dir_override=prod_dir,
             )
             led.upsert(
                 SecondaryLedgerRow(
@@ -350,9 +348,8 @@ def _run_dsm_products(
                 artifacts = finalize_secondary_product(
                     prepared,
                     grid,
-                    derived_root,
+                    prod_dir,
                     run_id,
-                    product_dir_override=prod_dir,
                 )
                 led.upsert(
                     SecondaryLedgerRow(
@@ -459,9 +456,8 @@ def _run_horizon_svf(
                 artifacts = finalize_secondary_product(
                     prepared,
                     grid,
-                    derived_root,
+                    prod_dir,
                     run_id,
-                    product_dir_override=prod_dir,
                 )
                 led.upsert(
                     SecondaryLedgerRow(
@@ -546,9 +542,8 @@ def _run_horizon_svf(
                 artifacts = finalize_secondary_product(
                     prepared,
                     grid,
-                    derived_root,
+                    prod_dir,
                     run_id,
-                    product_dir_override=prod_dir,
                 )
                 led.upsert(
                     SecondaryLedgerRow(
@@ -633,9 +628,8 @@ def _run_horizon_svf(
                 artifacts = finalize_secondary_product(
                     prepared,
                     grid,
-                    derived_root,
+                    prod_dir,
                     run_id,
-                    product_dir_override=prod_dir,
                 )
                 led.upsert(
                     SecondaryLedgerRow(

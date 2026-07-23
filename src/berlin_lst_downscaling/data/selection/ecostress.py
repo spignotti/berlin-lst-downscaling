@@ -15,7 +15,6 @@ from berlin_lst_downscaling.data.acquisition.ecostress import (
 
 # Berlin bbox (WGS84) for overlap computation
 _BERLIN_BBOX = (13.08, 52.34, 13.76, 52.68)
-_BERLIN_AREA = (_BERLIN_BBOX[2] - _BERLIN_BBOX[0]) * (_BERLIN_BBOX[3] - _BERLIN_BBOX[1])
 
 
 def search_ecostress(

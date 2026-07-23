@@ -31,12 +31,6 @@ from rasterio.warp import transform_bounds
 from berlin_lst_downscaling.data.ard.contract import Contract
 from berlin_lst_downscaling.data.ard.writer import write_cog_atomic
 from berlin_lst_downscaling.data.io import atomic_write
-from berlin_lst_downscaling.data.secondary.paths import (
-    product_cog_path,
-    product_completion_path,
-    product_provenance_path,
-    product_stac_path,
-)
 from berlin_lst_downscaling.data.secondary.validate import validate_secondary_cog
 
 # STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0).
@@ -216,11 +210,14 @@ def build_provenance(
 def finalize_secondary_product(
     prepared: PreparedSecondaryProduct,
     grid: GeoBox,
-    output_root: str,
+    product_dir: str,
     run_id: str,
-    product_dir_override: str | None = None,
 ) -> ProductArtifacts:
     """Write the four final artifacts for a secondary product.
+
+    ``product_dir`` must already be the resolved canonical layout —
+    callers pass one of ``secondary/paths.py:source_product_dir`` or
+    ``derived_product_dir`` so the same shape is used at every callsite.
 
     Order of writes:
 
@@ -230,50 +227,18 @@ def finalize_secondary_product(
     4. STAC Item JSON (atomic) at the final product path.
     5. Completion marker JSON (atomic) — **written last**.
 
-    ``product_dir_override`` lets Pipeline A write to its dedicated layout
-    instead of the default ``ard/static/{category}/{source}/{item_key}``.
-
     Raises on COG validation failure. Callers should catch and mark the
     ledger row as ``failed``.
     """
     completed_at = datetime.now(UTC).isoformat()
+    base = product_dir.rstrip("/")
+    cog_uri = f"{base}/{prepared.source}_{prepared.item_key}.tif"
+    provenance_uri = f"{base}/provenance.json"
+    stac_uri = f"{base}/{prepared.source}_{prepared.item_key}.stac.json"
+    completion_uri = f"{base}/complete.json"
 
-    if product_dir_override is not None:
-        base = product_dir_override.rstrip("/")
-        cog_uri = f"{base}/{prepared.source}_{prepared.item_key}.tif"
-        provenance_uri = f"{base}/provenance.json"
-        stac_uri = f"{base}/{prepared.source}_{prepared.item_key}.stac.json"
-        completion_uri = f"{base}/complete.json"
-    else:
-        cog_uri = product_cog_path(
-            output_root,
-            prepared.category,
-            prepared.source,
-            prepared.item_key,
-        )
-        provenance_uri = product_provenance_path(
-            output_root,
-            prepared.category,
-            prepared.source,
-            prepared.item_key,
-        )
-        stac_uri = product_stac_path(
-            output_root,
-            prepared.category,
-            prepared.source,
-            prepared.item_key,
-        )
-        completion_uri = product_completion_path(
-            output_root,
-            prepared.category,
-            prepared.source,
-            prepared.item_key,
-        )
-
-    # ── 1. write COG ─────────────────────────────────────────────────
     write_cog_atomic(prepared.dataset, cog_uri, prepared.contract, overwrite=True)
 
-    # ── 2. validate ──────────────────────────────────────────────────
     vig = validate_secondary_cog(cog_uri, prepared.contract, grid)
     if not vig.ok:
         raise ValueError(

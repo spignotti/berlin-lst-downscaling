@@ -13,7 +13,6 @@ from typing import Any
 
 from berlin_lst_downscaling.data.io import atomic_write, exists
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
-from berlin_lst_downscaling.data.secondary.paths import qa_report_path
 
 
 def secondary_qa_report(
@@ -80,7 +79,7 @@ def persist_secondary_report(
     output_root: str,
 ) -> str:
     """Persist the QA report as JSON under ``qa/secondary/{run_id}/``."""
-    uri = qa_report_path(output_root, report["run_id"])
+    uri = f"{output_root.rstrip('/')}/qa/secondary/{report['run_id']}/report.json"
     atomic_write(uri, json.dumps(report, indent=2), overwrite=True)
     return uri
 

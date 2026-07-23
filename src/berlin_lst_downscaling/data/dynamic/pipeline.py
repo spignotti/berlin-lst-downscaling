@@ -184,7 +184,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                         )
                         prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
                         artifacts = finalize_secondary_product(
-                            prepared, grid, output_root, run_id, product_dir_override=prod_dir
+                            prepared, grid, prod_dir, run_id
                         )
                         led.upsert(
                             SecondaryLedgerRow(
@@ -296,9 +296,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                 artifacts = finalize_secondary_product(
                                     prepared,
                                     grid,
-                                    output_root,
+                                    prod_dir,
                                     run_id,
-                                    product_dir_override=prod_dir,
                                 )
                                 led.upsert(
                                     SecondaryLedgerRow(

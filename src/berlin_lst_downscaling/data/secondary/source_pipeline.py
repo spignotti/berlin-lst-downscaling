@@ -23,10 +23,7 @@ from berlin_lst_downscaling.common.grid import canon_grid_10m, smoke_grid
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
-from berlin_lst_downscaling.data.secondary.paths import (
-    ledger_path,
-    source_product_dir,
-)
+from berlin_lst_downscaling.data.secondary.paths import source_product_dir
 from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
 from berlin_lst_downscaling.data.secondary.reports import (
     format_secondary_report,
@@ -47,7 +44,7 @@ def run_sources(cfg: DictConfig, run_id: str | None = None) -> int:
 
     _banner(cfg, run_id, source_root)
 
-    led = SecondaryLedger.open(ledger_path(source_root))
+    led = SecondaryLedger.open(f"{source_root.rstrip('/')}/ledger.parquet")
 
     sources: list[str] = list(cfg.get("sources", []))
     if not sources:
@@ -152,9 +149,8 @@ def _run_imperviousness(
             artifacts = finalize_secondary_product(
                 prepared,
                 grid,
-                source_root,
+                prod_dir,
                 run_id,
-                product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
@@ -257,9 +253,8 @@ def _run_vegetation_height(
             artifacts = finalize_secondary_product(
                 prepared,
                 grid,
-                source_root,
+                prod_dir,
                 run_id,
-                product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
@@ -369,9 +364,8 @@ def _run_terrain_height(
             artifacts = finalize_secondary_product(
                 prepared,
                 grid,
-                source_root,
+                prod_dir,
                 run_id,
-                product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
@@ -481,9 +475,8 @@ def _run_lod2_morphology(
             artifacts = finalize_secondary_product(
                 prepared,
                 grid,
-                source_root,
+                prod_dir,
                 run_id,
-                product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
