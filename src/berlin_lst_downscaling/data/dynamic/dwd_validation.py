@@ -492,9 +492,7 @@ def run_dwd_validation(
 
     full_root = _str(cfg_dict.get("dynamic_full_root"))
     if not full_root:
-        raise ValueError(
-            "dynamic_full_root is required (complete dynamic full run root)"
-        )
+        raise ValueError("dynamic_full_root is required (complete dynamic full run root)")
     inference_root_raw = cfg_dict.get("dynamic_inference_root")
     inference_root_str = str(inference_root_raw) if inference_root_raw else None
 
@@ -516,8 +514,7 @@ def run_dwd_validation(
     # a published ERA5 value or DWD reports incomplete input upstream.
     anchor_scene_ids = {a.scene_id for a in era5_anchors}
     missing = [
-        sid for sid in set(anchors_df["scene_id"].astype(str))
-        if sid not in anchor_scene_ids
+        sid for sid in set(anchors_df["scene_id"].astype(str)) if sid not in anchor_scene_ids
     ]
     if missing:
         log_event(

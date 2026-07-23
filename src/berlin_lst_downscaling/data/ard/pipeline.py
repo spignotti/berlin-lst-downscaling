@@ -15,7 +15,6 @@ Supported sources: ``landsat-c2-l2``, ``sentinel-2-l2a``, ``ecostress``.
 
 from __future__ import annotations
 
-import io
 import logging
 import math
 import time
@@ -207,23 +206,27 @@ def _process_manifest(
 ) -> None:
     """Process scenes listed in a manifest Parquet (mode=full).
 
-    Reads the v3 manifest schema, validates the bundle, and resolves
+    Loads the canonical v3 bundle, validates it once, and resolves
     exact STAC items from item_href before passing them to loaders.
     """
-    from berlin_lst_downscaling.data.io import exists
+    import pyarrow.compute as pc  # type: ignore[attr-defined]
 
-    manifest_uri = cfg.get("manifest_uri") or f"{cfg.output_root}/manifest.parquet"
-    if not exists(manifest_uri):
+    from berlin_lst_downscaling.data.io.storage import exists as _exists
+    from berlin_lst_downscaling.data.selection.validate import load_bundle
+
+    manifest_uri = cfg.get("manifest_uri")
+    if not manifest_uri or not _exists(manifest_uri):
         raise FileNotFoundError(
-            f"mode=full requires a manifest at {manifest_uri}. Run Szenen-Selektion first."
+            f"mode=full requires the published manifest bundle at {manifest_uri!r}"
         )
 
-    import pyarrow.compute as pc  # type: ignore[attr-defined]
-    import pyarrow.parquet as pq
-
-    from berlin_lst_downscaling.data.io import read_bytes
-
-    tbl = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
+    bundle, validation = load_bundle(manifest_uri, require_item_href=True)
+    if not validation.ok:
+        raise RuntimeError(
+            "manifest bundle validation failed: "
+            + "; ".join(validation.errors)
+        )
+    tbl = bundle.manifest_table
     if tbl.num_rows == 0:
         return
 

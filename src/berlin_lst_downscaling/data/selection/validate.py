@@ -1,4 +1,4 @@
-"""Manifest bundle validator — offline + optional upstream identity checks.
+"""Manifest bundle validator — bundle loader + offline + optional upstream checks.
 
 Validates a manifest/pairings/report bundle for structural integrity,
 policy compliance, and cross-reference consistency before publication
@@ -7,6 +7,8 @@ or ARD consumption.
 
 from __future__ import annotations
 
+import hashlib
+import io
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -20,6 +22,78 @@ from berlin_lst_downscaling.data.selection.schema import (
     MANIFEST_SCHEMA,
     PAIRINGS_SCHEMA,
 )
+
+
+def _file_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+@dataclass
+class LoadedBundle:
+    """Bundle loaded and structurally validated from a manifest URI."""
+
+    bundle_dir: str
+    manifest_table: pa.Table
+    pairings_table: pa.Table
+    report: dict
+
+
+def load_bundle(
+    manifest_uri: str,
+    *,
+    require_item_href: bool = True,
+    restrict_to_roles: list[str] | None = None,
+) -> tuple[LoadedBundle, ValidationResult]:
+    """Load every artifact of the canonical v3 bundle from a single root.
+
+    Derives ``<root>/pairings.parquet`` and ``<root>/manifest_report.json``
+    from ``manifest_uri``. Re-orders the manifest to anchor rows when
+    ``restrict_to_roles`` is supplied so downstream coupling consumers
+    receive an opinionated view.
+
+    Returns the loaded bundle and a single aggregated ValidationResult.
+    The bundle is still returned even on errors so consumers can inspect
+    the failing input.
+    """
+    from berlin_lst_downscaling.data.io.storage import read_bytes
+
+    if manifest_uri.endswith("manifest.parquet"):
+        bundle_dir = manifest_uri[: -len("manifest.parquet")]
+    else:
+        bundle_dir = manifest_uri.rstrip("/") + "/"
+    pairings_uri = bundle_dir + "pairings.parquet"
+    report_uri = bundle_dir + "manifest_report.json"
+
+    import pyarrow.parquet as pq
+
+    manifest_bytes = read_bytes(manifest_uri)
+    pairings_bytes = read_bytes(pairings_uri)
+    try:
+        report = __import__("json").loads(read_bytes(report_uri))
+    except Exception as exc:
+        return (
+            LoadedBundle(bundle_dir, pa.table({}), pa.table({}), {}),
+            ValidationResult(errors=[f"manifest_report.json unreadable: {exc}"]),
+        )
+
+    manifest_table = pq.read_table(io.BytesIO(manifest_bytes))
+    pairings_table = pq.read_table(io.BytesIO(pairings_bytes))
+
+    result = ValidationResult()
+    result.errors.extend(
+        validate_manifest_table(manifest_table, require_item_href=require_item_href).errors
+    )
+    result.errors.extend(validate_pairings_table(pairings_table, manifest_table).errors)
+    mf_hash = _file_hash(manifest_bytes)
+    pf_hash = _file_hash(pairings_bytes)
+    result.errors.extend(validate_report_json(report, mf_hash, pf_hash).errors)
+
+    if restrict_to_roles:
+        roles = manifest_table.column("role").to_pylist()
+        keep = pa.array([r in restrict_to_roles for r in roles])
+        manifest_table = manifest_table.filter(keep)
+
+    return LoadedBundle(bundle_dir, manifest_table, pairings_table, report), result
 
 
 @dataclass

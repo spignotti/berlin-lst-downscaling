@@ -1,20 +1,19 @@
-"""Dynamic manifest reader — select Landsat anchors from v3 manifest bundle.
+"""Dynamic manifest reader — Landsat anchors from the v3 bundle.
 
-The v3 manifest bundle contains manifest.parquet + pairings.parquet.
-This module reads only the manifest and filters to Landsat anchor rows,
-which are the input for dynamic product generation.
+The dynamic pipeline reads the canonical v3 manifest bundle through
+``selection.validate.load_bundle`` and filters to anchor scenes.
+The pairings and report artifacts are validated together so a
+single bundle load is trusted for both ARD and downstream coupling.
 """
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 
-import pyarrow.parquet as pq
-
 from berlin_lst_downscaling.data.io.storage import exists, read_bytes
+from berlin_lst_downscaling.data.selection.validate import load_bundle
 
 # Default study period — can be overridden via years parameter
 _DEFAULT_YEARS = list(range(2017, 2026))
@@ -57,20 +56,21 @@ def load_landsat_anchors(
     scene_ids: list[str] | None = None,
     dataset_role: str | None = None,
 ) -> ManifestReport:
-    """Load Landsat anchor scenes from a v3 manifest bundle.
+    """Load Landsat anchor scenes from the canonical v3 manifest bundle.
 
     Parameters
     ----------
     manifest_uri :
-        URI to manifest.parquet (local or ``gs://``).
+        URI to ``manifest.parquet``. Sibling ``pairings.parquet`` and
+        ``manifest_report.json`` are loaded and validated together via
+        :func:`selection.validate.load_bundle`.
     years :
         Restrict to these years.  Defaults to 2017–2025.
     scene_ids :
-        Restrict to these scene IDs. If given, only these scenes are returned
-        (after year/role filtering).
+        Restrict to these scene IDs (skips year filter).
     dataset_role :
-        If given, attach this role to all returned scenes (e.g. ``"inference"``).
-        Stored on ``DynamicScene.role`` for downstream ledger/STAC propagation.
+        If given, attach this role to every returned scene. Stored on
+        ``DynamicScene.role`` for downstream ledger/STAC propagation.
 
     Returns
     -------
@@ -83,18 +83,19 @@ def load_landsat_anchors(
     errors: list[str] = []
 
     if not exists(manifest_uri):
-        return ManifestReport([], 0, "", [f"Manifest not found: {manifest_uri}"])
+        return ManifestReport(
+            scenes=[], total_rows=0, manifest_hash="",
+            errors=[f"Manifest not found: {manifest_uri}"],
+        )
 
-    try:
-        raw = read_bytes(manifest_uri)
-        table = pq.read_table(io.BytesIO(raw))
-    except Exception as exc:
-        return ManifestReport([], 0, "", [f"Failed to read manifest: {exc}"])
+    bundle, validation = load_bundle(manifest_uri, require_item_href=True)
+    if not validation.ok:
+        return ManifestReport(
+            scenes=[], total_rows=0, manifest_hash="",
+            errors=validation.errors,
+        )
+    table = bundle.manifest_table
 
-    total_rows = table.num_rows
-    manifest_hash = sha256(raw).hexdigest()[:16]
-
-    # Filter to Landsat anchors
     import pyarrow as pa
     import pyarrow.compute as pc
 
@@ -104,8 +105,6 @@ def load_landsat_anchors(
 
     source_col = table.column("source")
     role_col = table.column("role")
-
-    # When scene_ids are provided, skip year filter (find scenes by ID only)
     if scene_ids:
         mask = _pcand(
             _pceq(source_col, "landsat-c2-l2"),
@@ -122,27 +121,22 @@ def load_landsat_anchors(
         )
     filtered = table.filter(mask)
 
-    # Optional: restrict to specific scene IDs
     if scene_ids:
-        scene_id_col = filtered.column("scene_id")
-        sid_mask = _pcin(scene_id_col, value_set=pa.array(scene_ids))
-        filtered = filtered.filter(sid_mask)
+        filtered = filtered.filter(
+            _pcin(filtered.column("scene_id"), value_set=pa.array(scene_ids))
+        )
 
-    # Convert to DynamicScene objects
+    total_rows = bundle.manifest_table.num_rows
+    manifest_hash = sha256(read_bytes(manifest_uri)).hexdigest()[:16]
+
     scenes: list[DynamicScene] = []
     for i in range(filtered.num_rows):
         row = filtered.slice(i, 1)
         d = row.to_pydict()
 
-        try:
-            dt_raw = d["acquisition_datetime"][0]
-            if dt_raw.tzinfo is None:
-                dt = dt_raw.replace(tzinfo=UTC)
-            else:
-                dt = dt_raw.astimezone(UTC)
-        except Exception:
-            errors.append(f"Row {i}: invalid acquisition_datetime")
-            continue
+        dt_raw = d["acquisition_datetime"][0]
+        dt = dt_raw if dt_raw.tzinfo else dt_raw.replace(tzinfo=UTC)
+        dt = dt.astimezone(UTC)
 
         scenes.append(
             DynamicScene(
