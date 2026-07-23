@@ -47,11 +47,11 @@ def load_ledger(output_root: str) -> dict:
 
     sources = table.column("source").to_pylist()
     statuses = table.column("status").to_pylist()
-    has_role = "role" in table.column_names
-    roles = table.column("role").to_pylist() if has_role else [None] * table.num_rows
+    roles = table.column("role").to_pylist()
 
     counts = Counter(zip(sources, statuses, strict=False))
     non_done = []
+    missing_role = 0
     for i in range(table.num_rows):
         row = table.slice(i, 1).to_pydict()
         if row["status"][0] != "done":
@@ -62,14 +62,17 @@ def load_ledger(output_root: str) -> dict:
                 "attempts": int(row["attempts"][0]),
                 "last_error": row["last_error"][0],
             })
+        if row["role"][0] is None:
+            missing_role += 1
 
-    role_counts = Counter(r for r in roles if r is not None)
+    role_counts = Counter(roles)
 
     return {
         "total_rows": table.num_rows,
         "counts": dict(counts),
         "non_done": non_done,
         "role_counts": dict(role_counts),
+        "missing_role": missing_role,
     }
 
 
@@ -122,10 +125,14 @@ def main() -> int:
             )
 
     # Check role consistency
-    if args.expected_role and ledger["role_counts"]:
+    if ledger["missing_role"] > 0:
+        errors.append(
+            f"{ledger['missing_role']} rows have a null role (required)"
+        )
+    if args.expected_role:
         for role, count in ledger["role_counts"].items():
             if role != args.expected_role:
-                warnings.append(f"Unexpected role '{role}': {count} items")
+                errors.append(f"Unexpected role '{role}': {count} items")
 
     # Report
     if errors:

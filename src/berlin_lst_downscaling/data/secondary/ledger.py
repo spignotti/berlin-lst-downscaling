@@ -29,10 +29,8 @@ _pcinv = pc.invert  # type: ignore[attr-defined]
 
 _STATUSES = {"pending", "exporting", "done", "failed", "skipped"}
 
-# decision: schema v2 adds nullable STAC/provenance/completion URIs so
-# ``reconcile()`` can guard against partial publication.  Existing v1
-# Parquets are auto-migrated at open time by filling nulls for the
-# missing columns.
+# decision: nullable STAC/provenance/completion URIs let ``reconcile()``
+# guard against partial publication.
 _SCHEMA = pa.schema([
     pa.field("item_id", pa.string(), nullable=False),
     pa.field("source", pa.string(), nullable=False),
@@ -50,8 +48,6 @@ _SCHEMA = pa.schema([
     pa.field("updated_at", pa.timestamp("us", tz="UTC")),
     pa.field("role", pa.string()),
 ])
-
-SCHEMA_VERSION = 3
 
 # ── row type ─────────────────────────────────────────────────────────
 
@@ -96,10 +92,9 @@ class SecondaryLedger:
         rows = ledger.items_for_source("versiegelung")
     """
 
-    def __init__(self, path: str, table: pa.Table, schema_version: int = 1) -> None:
+    def __init__(self, path: str, table: pa.Table) -> None:
         self._path = path
         self._table = table
-        self.schema_version = schema_version
 
     # ── factory ─────────────────────────────────────────────────
 
@@ -107,24 +102,21 @@ class SecondaryLedger:
     def open(cls, path: str) -> SecondaryLedger:
         """Open an existing Parquet ledger or create a new empty one.
 
-        Existing v1 Parquets (without ``stac_uri`` / ``provenance_uri`` /
-        ``completion_uri`` columns) are auto-migrated by filling nulls
-        for the missing columns at read time.
+        Reads must match the current schema exactly — there is no
+        version-migration path. Create-only callers receive an empty
+        current-schema table.
         """
-        schema_version = 1
         if exists(path):
             raw = read_bytes(path)
-            if len(raw) > 0:
-                table = pq.read_table(io.BytesIO(raw))
-                schema_version = 1  # legacy files written before v2
-                table, schema_version = _migrate(table)
-            else:
-                table = pa.Table.from_pylist([], schema=_SCHEMA)
-                schema_version = SCHEMA_VERSION
+            table = pq.read_table(io.BytesIO(raw))
+            if not table.schema.equals(_SCHEMA, check_metadata=False):
+                raise ValueError(
+                    f"Secondary ledger schema mismatch at {path!r}: "
+                    f"expected {_SCHEMA}, got {table.schema}"
+                )
         else:
             table = pa.Table.from_pylist([], schema=_SCHEMA)
-            schema_version = SCHEMA_VERSION
-        return cls(path, table, schema_version)
+        return cls(path, table)
 
     # ── queries ─────────────────────────────────────────────────
 
@@ -264,24 +256,6 @@ def _rows_from_table(tbl: pa.Table) -> list[SecondaryLedgerRow]:
             role=_opt_str(d, "role"),
         ))
     return rows
-
-
-def _migrate(table: pa.Table) -> tuple[pa.Table, int]:
-    """Add missing v2/v3 columns as null.
-
-    Returns ``(table, schema_version)``.  If the table is already v3-
-    compatible, no columns are added.
-    """
-    added = []
-    for name in ("stac_uri", "provenance_uri", "completion_uri", "role"):
-        if name not in table.column_names:
-            added.append(
-                pa.array([None] * table.num_rows, type=pa.string())
-            )
-    if not added:
-        return table, SCHEMA_VERSION
-    new_columns = list(table.columns) + added
-    return pa.Table.from_arrays(new_columns, schema=_SCHEMA), SCHEMA_VERSION
 
 
 def _opt_str(d: dict, key: str) -> str | None:

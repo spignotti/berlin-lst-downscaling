@@ -179,7 +179,7 @@ def _load_era5_anchors(
 
     scene_id_filter = set(scene_ids) if scene_ids else None
 
-    for root, default_role in roots:
+    for root, expected_role in roots:
         ledger_uri = f"{root.rstrip('/')}/_state/dynamic/ledger.parquet"
         if not exists(ledger_uri):
             log_event(_logger, logging.WARNING, "validation_ledger_missing",
@@ -213,7 +213,9 @@ def _load_era5_anchors(
             )
             if scene_id_filter is not None and scene_id not in scene_id_filter:
                 continue
-            role = row.role or default_role
+            if row.role != expected_role:
+                continue
+            role = row.role
             anchors.append(
                 Era5AnchorValue(
                     scene_id=scene_id,
