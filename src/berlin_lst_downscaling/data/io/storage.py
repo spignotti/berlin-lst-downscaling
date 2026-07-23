@@ -284,6 +284,7 @@ def atomic_upload(
     local_path: Path | str,
     dst: str,
     overwrite: bool = True,
+    if_generation_match: int | None = None,
 ) -> str:
     """Atomically upload a local file to GCS or copy it locally.
 
@@ -306,6 +307,10 @@ def atomic_upload(
         Final output URI (local path or ``gs://...``).
     overwrite :
         If ``False`` and *dst* exists, a :class:`FileExistsError` is raised.
+    if_generation_match :
+        GCS precondition: succeed only if the destination's current
+        generation equals this value. Pass ``0`` to require the object
+        to be absent (used for immutable bundle publication).
 
     Returns
     -------
@@ -318,7 +323,7 @@ def atomic_upload(
         raise FileNotFoundError(f"Source file not found: {src_path}")
 
     if loc.scheme == "gcs":
-        _atomic_upload_gcs(src_path, loc.uri, overwrite)
+        _atomic_upload_gcs(src_path, loc.uri, overwrite, if_generation_match)
     else:
         _atomic_upload_local(src_path, loc.uri, overwrite)
 
@@ -345,7 +350,12 @@ def _atomic_upload_local(local_path: Path, dst_uri: str, overwrite: bool) -> Non
     _prune_tmp(tmp_dir, max_age_s=3600)
 
 
-def _atomic_upload_gcs(local_path: Path, dst_uri: str, overwrite: bool) -> None:
+def _atomic_upload_gcs(
+    local_path: Path,
+    dst_uri: str,
+    overwrite: bool,
+    if_generation_match: int | None,
+) -> None:
     """Upload a file to GCS atomically via temp object + rename."""
     bucket_name, key = _parse_gs_uri(dst_uri)
     client = _gcs_client()
@@ -360,10 +370,12 @@ def _atomic_upload_gcs(local_path: Path, dst_uri: str, overwrite: bool) -> None:
     ).as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key)
+    _gcs_upload_file_with_retry(
+        tmp_blob, local_path, bucket, key, if_generation_match
+    )
 
 
-def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key):
+def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match):
     """Upload file to GCS with retries for transient failures."""
     from tenacity import (
         retry,
@@ -381,7 +393,9 @@ def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key):
     def _do_upload():
         try:
             tmp_blob.upload_from_filename(str(local_path))
-            bucket.copy_blob(tmp_blob, bucket, key)
+            bucket.copy_blob(
+                tmp_blob, bucket, key, if_generation_match=if_generation_match
+            )
         except Exception:
             try:
                 tmp_blob.delete()
