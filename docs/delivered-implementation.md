@@ -71,9 +71,7 @@ input before opening ledgers:
 
 ```bash
 uv run python scripts/validate_manifest.py \
-    --manifest gs://...-r2/manifest.parquet \
-    --pairings gs://...-r2/pairings.parquet \
-    --report gs://...-r2/manifest_report.json
+    --manifest gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet
 
 uv run python scripts/validate_dynamic.py \
     --output-root gs://berlin-lst-data/dynamic/full/dyn-20260721T092945-4a4de9 \
@@ -82,6 +80,20 @@ uv run python scripts/validate_dynamic.py \
 uv run python scripts/validate_dynamic.py \
     --output-root gs://berlin-lst-data/dynamic/inference/2026/dyn-inf-r4-20260722T203148 \
     --expected-role inference --expected-scenes 21
+```
+
+## Memory-bounded Dynamic runner
+
+`scripts/run_dynamic_isolated.py` runs the Dynamic pipeline with one
+child process per scene, capping memory at roughly 1.2 GB per scene.
+Use it on machines that cannot load the full pipeline worker; the
+shared output root and ledger keep it idempotent.
+
+```bash
+uv run python scripts/run_dynamic_isolated.py \
+    --manifest-uri gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet \
+    --output-root gs://berlin-lst-data/dynamic/full/<run-id> \
+    --config-name full --years 2017-2025
 ```
 
 ## Smoke gates

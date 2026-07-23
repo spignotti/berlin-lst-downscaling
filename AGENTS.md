@@ -44,10 +44,8 @@ configs/                       # Hydra configs (ARD + selection + static_sources
                                #   + static_derived + dynamic + dwd_validation)
 scripts/                       # Entry points (run_ard.py, run_static_sources.py,
                                #   run_static_derived.py, run_dynamic.py,
-                               #   run_dwd_validation.py, build_manifest.py,
-                               #   validators, isolated runner)
-scripts/spikes/                # Ad-hoc experiments (kept for reference)
-notebooks/                     # EDA notebooks
+                               #   run_dynamic_isolated.py, run_dwd_validation.py,
+                               #   build_manifest.py, validators)
 ```
 
 See `docs/delivered-implementation.md` for the canonical pipeline
@@ -65,7 +63,7 @@ normalisation.
 
 ```bash
 uv run python scripts/run_dwd_validation.py \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/.../manifest.parquet \
+    manifest_uri=gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet \
     dynamic_full_root=gs://berlin-lst-data/dynamic/full \
     dynamic_inference_root=gs://berlin-lst-data/dynamic/inference/2026 \
     output_root=gs://berlin-lst-data/dwd_validation \
