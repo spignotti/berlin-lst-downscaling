@@ -130,19 +130,14 @@ def write_bundle(
         anchor = pair["anchor"]
         s2 = pair["s2"]
         dt_seconds = int(abs((anchor["datetime"] - s2["datetime"]).total_seconds()))
-        l_clear = pair.get("landsat_clear_px") or anchor.get("aoi_clear_px") or 0
-        j_clear = pair.get("joint_clear_px") or 0
-        j_frac = pair.get("joint_clear_frac") or pair.get("clear_frac") or 0.0
-        score = pair.get("score") or 0.0
-
         pairing_rows.append({
             "landsat_scene_id": anchor["scene_id"],
             "sentinel2_scene_id": s2["scene_id"],
             "dt_seconds": dt_seconds,
-            "landsat_clear_px": l_clear,
-            "joint_clear_px": j_clear,
-            "joint_clear_frac": j_frac,
-            "score": score,
+            "landsat_clear_px": int(pair["landsat_clear_px"]),
+            "joint_clear_px": int(pair["joint_clear_px"]),
+            "joint_clear_frac": float(pair["joint_clear_frac"]),
+            "score": float(pair["score"]),
         })
 
     # ── Build tables ───────────────────────────────────────────────────

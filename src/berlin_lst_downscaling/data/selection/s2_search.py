@@ -141,6 +141,8 @@ def match_s2_candidates_with_clear_frac(
             c["aoi_clear_px"] = None
             c["aoi_total_px"] = None
             c["aoi_clear_frac"] = None
+            c["landsat_clear_px"] = None
+            c["joint_clear_px"] = None
             candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
         else:
             cf, counts = result
@@ -148,6 +150,8 @@ def match_s2_candidates_with_clear_frac(
             c["aoi_clear_px"] = counts.get("intersect_px")
             c["aoi_total_px"] = counts.get("aoi_px")
             c["aoi_clear_frac"] = cf
+            c["landsat_clear_px"] = counts.get("l8_clear_px")
+            c["joint_clear_px"] = counts.get("intersect_px")
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
 
     # Log structured diagnostic event for this anchor
