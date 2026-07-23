@@ -67,16 +67,27 @@ _logger = logging.getLogger(__name__)
 
 def _run_couple(cfg: DictConfig) -> None:
     """Run full pixel-coupled manifest generation."""
-    log_event(_logger, logging.INFO, "start", mode="couple",
-        years=list(cfg.years), months=list(cfg.months), bbox=list(cfg.bbox))
+    log_event(
+        _logger,
+        logging.INFO,
+        "start",
+        mode="couple",
+        years=list(cfg.years),
+        months=list(cfg.months),
+        bbox=list(cfg.bbox),
+    )
 
     # ── 1. Build Landsat anchors ─────────────────────────────────────────────
     log_event(_logger, logging.INFO, "searching_anchors")
     anchors, anchor_stats = build_anchors(cfg)
-    log_event(_logger, logging.INFO, "anchors_found",
-        n_total=anchor_stats['n_total'],
-        n_kept=anchor_stats['n_kept'],
-        n_dropped=anchor_stats['n_dropped'])
+    log_event(
+        _logger,
+        logging.INFO,
+        "anchors_found",
+        n_total=anchor_stats["n_total"],
+        n_kept=anchor_stats["n_kept"],
+        n_dropped=anchor_stats["n_dropped"],
+    )
     if not anchors:
         log_event(_logger, logging.ERROR, "no_anchors")
         raise SystemExit(1)
@@ -92,8 +103,7 @@ def _run_couple(cfg: DictConfig) -> None:
         try:
             with open(ckpt_path, "rb") as f:
                 s2_by_anchor = pickle.load(f)  # noqa: S301 — internal checkpoint, not untrusted
-            log_event(_logger, logging.INFO, "checkpoint_resumed",
-                n_anchors=len(s2_by_anchor))
+            log_event(_logger, logging.INFO, "checkpoint_resumed", n_anchors=len(s2_by_anchor))
         except Exception:
             log_event(_logger, logging.WARNING, "checkpoint_load_failed")
             s2_by_anchor = {}
@@ -107,9 +117,14 @@ def _run_couple(cfg: DictConfig) -> None:
             candidates = match_s2_candidates_with_clear_frac(anchor, l8_items, cfg)
             return anchor["scene_id"], candidates
         except Exception as exc:
-            log_event(_logger, logging.ERROR, "anchor_failed",
-                scene_id=anchor.get('scene_id', '???'), error=str(exc),
-                exc_info=True)
+            log_event(
+                _logger,
+                logging.ERROR,
+                "anchor_failed",
+                scene_id=anchor.get("scene_id", "???"),
+                error=str(exc),
+                exc_info=True,
+            )
             return anchor["scene_id"], []
 
     # Filter anchors already processed in a previous run
@@ -128,8 +143,14 @@ def _run_couple(cfg: DictConfig) -> None:
                 Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
                 with open(ckpt_path, "wb") as f:
                     pickle.dump(s2_by_anchor, f)
-                log_event(_logger, logging.INFO, "s2_progress",
-                    done=done_count, total=n_total, last_scene=scene_id)
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "s2_progress",
+                    done=done_count,
+                    total=n_total,
+                    last_scene=scene_id,
+                )
 
     # Delete checkpoint on successful completion
     Path(ckpt_path).unlink(missing_ok=True)
@@ -138,14 +159,14 @@ def _run_couple(cfg: DictConfig) -> None:
     # ── 3. Score + Tie-Break + Drop ──────────────────────────────────────────
     log_event(_logger, logging.INFO, "coupling")
     coupled, dropped = couple_all(anchors, s2_by_anchor, cfg)
-    log_event(_logger, logging.INFO, "coupling_done",
-        n_coupled=len(coupled), n_dropped=len(dropped))
+    log_event(
+        _logger, logging.INFO, "coupling_done", n_coupled=len(coupled), n_dropped=len(dropped)
+    )
 
     # ── 4. ECOSTRESS validation granules (fixed allowlist) ──────────────
     log_event(_logger, logging.INFO, "resolving_ecostress")
     eco_granules = _resolve_ecostress_allowlist(cfg)
-    log_event(_logger, logging.INFO, "ecostress_resolved",
-        n_granules=len(eco_granules))
+    log_event(_logger, logging.INFO, "ecostress_resolved", n_granules=len(eco_granules))
 
     # ── 5. Write manifest bundle ────────────────────────────────────────
     log_event(_logger, logging.INFO, "writing_bundle")
@@ -165,7 +186,9 @@ def _run_couple(cfg: DictConfig) -> None:
         )
 
     result = write_bundle(
-        coupled, dropped, eco_granules,
+        coupled,
+        dropped,
+        eco_granules,
         manifest_path=manifest_out,
         pairings_path=pairings_out,
         report_path=report_out,
@@ -174,7 +197,10 @@ def _run_couple(cfg: DictConfig) -> None:
     )
 
     coupling_rate = result.n_coupled / result.n_anchors if result.n_anchors > 0 else 0.0
-    log_event(_logger, logging.INFO, "bundle_written",
+    log_event(
+        _logger,
+        logging.INFO,
+        "bundle_written",
         n_anchors_total=anchor_stats["n_total"],
         n_anchors_kept_after_pixel_filter=anchor_stats["n_kept"],
         n_anchors_dropped_pixel_filter=anchor_stats["n_dropped"],
@@ -185,7 +211,8 @@ def _run_couple(cfg: DictConfig) -> None:
         coupling_rate_observed=round(coupling_rate, 4),
         manifest_path=result.manifest_path,
         pairings_path=result.pairings_path,
-        report_path=result.report_path)
+        report_path=result.report_path,
+    )
 
 
 def _resolve_landsat_items(anchor: dict, cfg) -> list:
@@ -224,21 +251,22 @@ def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
     for gid in ids:
         dt = parse_granule_datetime(gid)
         if dt is None:
-            log_event(_logger, logging.WARNING, "ecostress_datetime_parse_failed",
-                granule_id=gid)
+            log_event(_logger, logging.WARNING, "ecostress_datetime_parse_failed", granule_id=gid)
             continue
         mgrs = parse_granule_mgrs(gid)
-        granules.append({
-            "granule_id": gid,
-            "source": "ecostress",
-            "year": dt.year,
-            "datetime": dt,
-            "date": dt.strftime("%Y-%m-%d"),
-            "dt_hours": 0.0,
-            "mgrs_tile": mgrs,
-            "overlap_frac": 1.0,
-            "clear_frac": None,
-        })
+        granules.append(
+            {
+                "granule_id": gid,
+                "source": "ecostress",
+                "year": dt.year,
+                "datetime": dt,
+                "date": dt.strftime("%Y-%m-%d"),
+                "dt_hours": 0.0,
+                "mgrs_tile": mgrs,
+                "overlap_frac": 1.0,
+                "clear_frac": None,
+            }
+        )
     return granules
 
 
@@ -247,19 +275,24 @@ def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
 
 def _run_scan(cfg: DictConfig) -> None:
     """Run metadata-only volume scan."""
-    log_event(_logger, logging.INFO, "start", mode="scan",
-        years=list(cfg.years), months=list(cfg.months))
+    log_event(
+        _logger, logging.INFO, "start", mode="scan", years=list(cfg.years), months=list(cfg.months)
+    )
 
     log_event(_logger, logging.INFO, "running_scan")
     report = run_scan(cfg)
 
-    log_event(_logger, logging.INFO, "scan_done",
+    log_event(
+        _logger,
+        logging.INFO,
+        "scan_done",
         n_landsat_total=report.n_landsat_total,
         n_landsat_coupled=report.n_landsat_coupled,
         n_landsat_dropped=report.n_landsat_dropped,
         n_s2_candidates=report.n_s2_candidates,
         n_ecostress_matches=report.n_ecostress_matches,
-        est_total_gb=report.est_total_gb)
+        est_total_gb=report.est_total_gb,
+    )
 
 
 # ── Hydra main ────────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ Usage
     uv run python scripts/run_static_sources.py --config-name full \
         source_root=gs://berlin-lst-data/static/sources/full
 """
+
 from __future__ import annotations
 
 import logging

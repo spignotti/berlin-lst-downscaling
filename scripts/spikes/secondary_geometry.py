@@ -42,7 +42,7 @@ def make_synthetic_dsm(
         bw = rng.integers(3, 6)
         bh = rng.integers(3, 6)
         h = rng.uniform(building_height * 0.5, building_height * 1.5)
-        terrain[by:by + bh, bx:bx + bw] = h
+        terrain[by : by + bh, bx : bx + bw] = h
 
     return terrain
 
@@ -97,8 +97,7 @@ def main() -> None:
         print(f"Benchmarking: {n_dir} directions, {radius}m radius...")
         r = benchmark_horizon(dsm, n_dir, radius)
         results.append(r)
-        print(f"  {r['elapsed_s']}s, peak {r['peak_mb']} MB, "
-              f"angles {r['min_cd']}–{r['max_cd']} cd")
+        print(f"  {r['elapsed_s']}s, peak {r['peak_mb']} MB, angles {r['min_cd']}–{r['max_cd']} cd")
         print()
 
     print("=" * 60)

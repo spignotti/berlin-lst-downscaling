@@ -46,8 +46,11 @@ def main() -> int:
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--pairings", required=True)
     parser.add_argument("--report", required=False)
-    parser.add_argument("--resolve-upstream", action="store_true",
-                        help="Resolve PC/CMR item identity (requires network)")
+    parser.add_argument(
+        "--resolve-upstream",
+        action="store_true",
+        help="Resolve PC/CMR item identity (requires network)",
+    )
     args = parser.parse_args()
 
     from berlin_lst_downscaling.data.selection.validate import (

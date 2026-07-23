@@ -19,6 +19,7 @@ Usage:
         --config-name inference_2026 \
         --years 2026
 """
+
 from __future__ import annotations
 
 import argparse
@@ -73,8 +74,10 @@ def run_single_scene(
     """Run exactly one scene through run_dynamic.py as a subprocess."""
     script = Path(__file__).resolve().parent / "run_dynamic.py"
     cmd = [
-        sys.executable, str(script),
-        "--config-name", config_name,
+        sys.executable,
+        str(script),
+        "--config-name",
+        config_name,
         f"manifest_uri={manifest_uri}",
         f"output_root={output_root}",
         f"scene_ids=[{scene_id}]",
@@ -100,18 +103,22 @@ def run_single_scene(
             # Extract last few lines of stderr for error context
             err_tail = "\n".join(result.stderr.strip().splitlines()[-5:])
             return SceneResult(
-                scene_id=scene_id, ok=False, duration_s=duration,
+                scene_id=scene_id,
+                ok=False,
+                duration_s=duration,
                 error=f"exit {result.returncode}: {err_tail}",
             )
     except subprocess.TimeoutExpired:
         return SceneResult(
-            scene_id=scene_id, ok=False,
+            scene_id=scene_id,
+            ok=False,
             duration_s=time.perf_counter() - t0,
             error="timeout (600s)",
         )
     except Exception as e:
         return SceneResult(
-            scene_id=scene_id, ok=False,
+            scene_id=scene_id,
+            ok=False,
             duration_s=time.perf_counter() - t0,
             error=str(e),
         )
@@ -122,13 +129,14 @@ def main() -> int:
     parser.add_argument("--manifest-uri", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--config-name", default="full")
-    parser.add_argument("--years", nargs="*", type=int, default=None,
-                        help="Year range, e.g. 2017 2025")
+    parser.add_argument(
+        "--years", nargs="*", type=int, default=None, help="Year range, e.g. 2017 2025"
+    )
     parser.add_argument("--dataset-role", default=None)
-    parser.add_argument("--resume", action="store_true",
-                        help="Skip scenes with done status in ledger")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Print scene list without executing")
+    parser.add_argument(
+        "--resume", action="store_true", help="Skip scenes with done status in ledger"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Print scene list without executing")
     args = parser.parse_args()
 
     # Load scene list
@@ -155,8 +163,11 @@ def main() -> int:
             }
             before = len(scene_ids)
             scene_ids = [s for s in scene_ids if s not in done]
-            print(f"[isolated] Resume: {before} → {len(scene_ids)} scenes "
-                  f"({before - len(scene_ids)} already done)", flush=True)
+            print(
+                f"[isolated] Resume: {before} → {len(scene_ids)} scenes "
+                f"({before - len(scene_ids)} already done)",
+                flush=True,
+            )
         except Exception as e:
             print(f"[isolated] Resume check failed: {e}", flush=True)
 
@@ -167,8 +178,11 @@ def main() -> int:
     for i, scene_id in enumerate(scene_ids, 1):
         print(f"\n[isolated] [{i}/{len(scene_ids)}] {scene_id}", flush=True)
         result = run_single_scene(
-            scene_id, args.manifest_uri, args.output_root,
-            args.config_name, args.dataset_role,
+            scene_id,
+            args.manifest_uri,
+            args.output_root,
+            args.config_name,
+            args.dataset_role,
         )
         summary.results.append(result)
 
@@ -177,27 +191,31 @@ def main() -> int:
             print(f"[isolated]   OK ({result.duration_s:.1f}s)", flush=True)
         else:
             summary.failed += 1
-            print(f"[isolated]   FAILED ({result.duration_s:.1f}s): {result.error}",
-                  flush=True)
+            print(f"[isolated]   FAILED ({result.duration_s:.1f}s): {result.error}", flush=True)
 
         # Progress every 10 scenes
         if i % 10 == 0 or i == len(scene_ids):
             elapsed = time.perf_counter() - t_start
             rate = i / elapsed * 60
-            print(f"[isolated] Progress: {i}/{len(scene_ids)} "
-                  f"({summary.succeeded} ok, {summary.failed} fail) "
-                  f"rate={rate:.1f}/min elapsed={elapsed:.0f}s", flush=True)
+            print(
+                f"[isolated] Progress: {i}/{len(scene_ids)} "
+                f"({summary.succeeded} ok, {summary.failed} fail) "
+                f"rate={rate:.1f}/min elapsed={elapsed:.0f}s",
+                flush=True,
+            )
 
     summary.total_duration_s = time.perf_counter() - t_start
 
     # Final summary
-    print(f"\n{'='*60}", flush=True)
+    print(f"\n{'=' * 60}", flush=True)
     print("[isolated] SUMMARY", flush=True)
     print(f"  Total:     {summary.total}", flush=True)
     print(f"  Succeeded: {summary.succeeded}", flush=True)
     print(f"  Failed:    {summary.failed}", flush=True)
-    print(f"  Duration:  {summary.total_duration_s:.0f}s "
-          f"({summary.total_duration_s/60:.1f}min)", flush=True)
+    print(
+        f"  Duration:  {summary.total_duration_s:.0f}s ({summary.total_duration_s / 60:.1f}min)",
+        flush=True,
+    )
 
     if summary.failed > 0:
         print("\nFailed scenes:", flush=True)
@@ -207,21 +225,26 @@ def main() -> int:
 
     # Write summary JSON
     import tempfile
+
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     summary_path = Path(tempfile.gettempdir()) / f"isolated_summary_{ts}.json"
     with open(summary_path, "w") as f:
-        json.dump({
-            "output_root": args.output_root,
-            "config_name": args.config_name,
-            "total": summary.total,
-            "succeeded": summary.succeeded,
-            "failed": summary.failed,
-            "duration_s": summary.total_duration_s,
-            "failed_scenes": [
-                {"scene_id": r.scene_id, "error": r.error}
-                for r in summary.results if not r.ok
-            ],
-        }, f, indent=2, default=str)
+        json.dump(
+            {
+                "output_root": args.output_root,
+                "config_name": args.config_name,
+                "total": summary.total,
+                "succeeded": summary.succeeded,
+                "failed": summary.failed,
+                "duration_s": summary.total_duration_s,
+                "failed_scenes": [
+                    {"scene_id": r.scene_id, "error": r.error} for r in summary.results if not r.ok
+                ],
+            },
+            f,
+            indent=2,
+            default=str,
+        )
     print(f"\nSummary saved: {summary_path}", flush=True)
 
     return 0 if summary.failed == 0 else 1

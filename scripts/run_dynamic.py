@@ -9,13 +9,14 @@ Usage
 -----
     # Local smoke test (requires local static smoke products + CDS access)
     uv run python scripts/run_dynamic.py --config-name smoke \
-        manifest_uri=data/ard/manifests/v3/.../manifest.parquet
+        manifest_uri=data/ard/manifests/v3/...-r2/manifest.parquet
 
     # Full run on VM
+    #   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
     uv run python scripts/run_dynamic.py --config-name full \
-        manifest_uri=gs://berlin-lst-data/manifests/v3/.../manifest.parquet \
         output_root=gs://berlin-lst-data/dynamic/full
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,10 +28,18 @@ from omegaconf import DictConfig
 from berlin_lst_downscaling.data.dynamic.pipeline import run_dynamic
 from berlin_lst_downscaling.data.io import RunLogSession
 
+_logger = logging.getLogger(__name__)
 
-@hydra.main(config_path="../configs/dynamic", config_name="default", version_base=None)
+
+@hydra.main(config_path="../configs/dynamic", config_name="full", version_base=None)
 def main(cfg: DictConfig) -> int:
-    """Hydra entry point — dispatch to dynamic pipeline."""
+    """Hydra entry point — dispatch to the Dynamic pipeline."""
+    manifest_uri = cfg.get("manifest_uri")
+    if not manifest_uri:
+        raise SystemExit(
+            "manifest_uri is required — provide the published bundle, e.g.\n"
+            "  manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet"
+        )
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)

@@ -9,6 +9,7 @@ Usage:
         --local-root data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z \
         --publish-root gs://berlin-lst-data/manifests/v3/bundle-abc123-20260718T120000
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,10 +29,12 @@ def _file_hash(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish manifest bundle to GCS")
-    parser.add_argument("--local-root", required=True,
-                        help="Local directory containing the bundle")
-    parser.add_argument("--publish-root", required=True,
-                        help="GCS URI to publish to (e.g. gs://bucket/manifests/v3/bundle-id)")
+    parser.add_argument("--local-root", required=True, help="Local directory containing the bundle")
+    parser.add_argument(
+        "--publish-root",
+        required=True,
+        help="GCS URI to publish to (e.g. gs://bucket/manifests/v3/bundle-id)",
+    )
     args = parser.parse_args()
 
     local = Path(args.local_root)
@@ -55,8 +58,10 @@ def main() -> int:
     manifest_gcs = f"{publish}/manifest.parquet"
     if exists(manifest_gcs):
         print(f"ERROR: Bundle already published at {publish}", file=sys.stderr)
-        print("Published manifest bundles are immutable — use a new "
-              "publish-root suffix (e.g. -r2).", file=sys.stderr)
+        print(
+            "Published manifest bundles are immutable — use a new publish-root suffix (e.g. -r2).",
+            file=sys.stderr,
+        )
         return 1
 
     # Pre-flight: validate the local bundle before upload.
@@ -106,8 +111,9 @@ def main() -> int:
 
     # Report last — this is the publication marker
     print("  Uploading manifest_report.json (publication marker)...")
-    atomic_upload(report_local, f"{publish}/manifest_report.json", overwrite=False,
-                  if_generation_match=0)
+    atomic_upload(
+        report_local, f"{publish}/manifest_report.json", overwrite=False, if_generation_match=0
+    )
 
     # Remote validation — re-read from GCS and verify
     print("\nVerifying published bundle...")
@@ -141,8 +147,10 @@ def main() -> int:
                 for e in r.errors:
                     print(f"  {e}", file=sys.stderr)
                 return 1
-        print(f"  Remote validation passed: {manifest_table.num_rows} manifest rows, "
-              f"{pairings_table.num_rows} pairings")
+        print(
+            f"  Remote validation passed: {manifest_table.num_rows} manifest rows, "
+            f"{pairings_table.num_rows} pairings"
+        )
     except Exception as exc:
         print(f"WARNING: Remote validation failed: {exc}", file=sys.stderr)
         print("Bundle was published but could not be verified.", file=sys.stderr)

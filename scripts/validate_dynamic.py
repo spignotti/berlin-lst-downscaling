@@ -22,6 +22,7 @@ Usage:
         --output-root gs://berlin-lst-data/dynamic/full/<run-id> \\
         --progress-only
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,8 +40,10 @@ def load_ledger(output_root: str) -> dict:
     # Handle both local and GCS paths
     if ledger_path.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import read_bytes
+
         raw = read_bytes(ledger_path)
         import io
+
         table = pq.read_table(io.BytesIO(raw))
     else:
         table = pq.read_table(ledger_path)
@@ -55,13 +58,15 @@ def load_ledger(output_root: str) -> dict:
     for i in range(table.num_rows):
         row = table.slice(i, 1).to_pydict()
         if row["status"][0] != "done":
-            non_done.append({
-                "item_id": row["item_id"][0],
-                "source": row["source"][0],
-                "status": row["status"][0],
-                "attempts": int(row["attempts"][0]),
-                "last_error": row["last_error"][0],
-            })
+            non_done.append(
+                {
+                    "item_id": row["item_id"][0],
+                    "source": row["source"][0],
+                    "status": row["status"][0],
+                    "attempts": int(row["attempts"][0]),
+                    "last_error": row["last_error"][0],
+                }
+            )
         if row["role"][0] is None:
             missing_role += 1
 
@@ -126,9 +131,7 @@ def main() -> int:
 
     # Check role consistency
     if ledger["missing_role"] > 0:
-        errors.append(
-            f"{ledger['missing_role']} rows have a null role (required)"
-        )
+        errors.append(f"{ledger['missing_role']} rows have a null role (required)")
     if args.expected_role:
         for role, count in ledger["role_counts"].items():
             if role is None or role == args.expected_role:

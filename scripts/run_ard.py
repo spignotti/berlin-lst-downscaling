@@ -27,28 +27,37 @@ from uuid import uuid4
 import hydra
 from omegaconf import DictConfig
 
-from berlin_lst_downscaling.data.ard.pipeline import run as ard_run
+from berlin_lst_downscaling.data.ard.pipeline import run
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/ard", config_name="default", version_base=None)
+@hydra.main(config_path="../configs/ard", config_name="full_all", version_base=None)
 def main(cfg: DictConfig) -> int:
-    """Hydra entry point — dispatch to ard_run."""
+    """Hydra entry point — dispatch to the ARD pipeline."""
+    manifest_uri = cfg.get("manifest_uri")
+    if not manifest_uri:
+        raise SystemExit(
+            "manifest_uri is required — provide the published bundle, e.g.\n"
+            "  manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet"
+        )
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
 
     with RunLogSession(output_root, pipeline="ard", run_id=run_id, level=level):
-        log_event(_logger, logging.INFO, "config",
+        log_event(
+            _logger,
+            logging.INFO,
+            "config",
             mode=cfg.mode,
             sources=list(cfg.sources),
             output_root=output_root,
-            manifest_uri=cfg.get("manifest_uri", "N/A"),
+            manifest_uri=manifest_uri,
             bbox=list(cfg.bbox),
         )
-        return ard_run(cfg, run_id=run_id)
+        return run(cfg, run_id=run_id)
 
 
 if __name__ == "__main__":
