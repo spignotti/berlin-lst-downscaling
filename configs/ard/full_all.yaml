@@ -1,0 +1,13 @@
+# @package _global_
+# Full ARD run — all three sources from a v3 manifest bundle.
+defaults:
+  - _base
+  - _self_
+
+sources: ["landsat-c2-l2", "sentinel-2-l2a", "ecostress"]
+mode: full
+target_resolution_low: 100          # Landsat LST native
+target_resolution_high: 10          # Sentinel-2
+
+aoi:
+  min_overlap_px: 50

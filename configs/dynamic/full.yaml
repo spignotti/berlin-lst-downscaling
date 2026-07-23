@@ -1,0 +1,13 @@
+defaults:
+  - _base
+  - _self_
+
+# Full retrospective run — all 2017–2025 Landsat anchors.
+# Invoke on the VM with the canonical manifest bundle.
+#   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
+years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+dataset_role: anchor
+expected_scene_count: 324
+source_root: "gs://berlin-lst-data/static/sources/full"
+derived_root: "gs://berlin-lst-data/static/derived/full"
+output_root: "gs://berlin-lst-data/dynamic/full"

@@ -1,0 +1,18 @@
+defaults:
+  - _base
+  - _self_
+
+# Local real-data smoke: 2×2 km aligned subset.
+# Both imperviousness vintages, VH 2020, one DGM tile, four intersecting LoD2 tiles.
+mode: full
+source_root: "data/static/sources/smoke"
+sources:
+  - imperviousness
+  - vegetation_height
+  - terrain_height
+  - lod2_morphology
+smoke_tile_count: 4  # process enough tiles for good coverage of the subset grid
+
+# WGS84 bbox (west, south, east, north) covering DGM1_404_5816 tile area.
+# Produces a 208×208 px canonical-aligned subset grid (0.24% of full AOI).
+smoke_grid_bbox: [13.586225, 52.467717, 13.616234, 52.486040]

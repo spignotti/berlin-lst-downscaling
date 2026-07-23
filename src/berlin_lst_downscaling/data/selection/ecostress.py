@@ -15,8 +15,6 @@ from berlin_lst_downscaling.data.acquisition.ecostress import (
 
 # Berlin bbox (WGS84) for overlap computation
 _BERLIN_BBOX = (13.08, 52.34, 13.76, 52.68)
-_BERLIN_AREA = (_BERLIN_BBOX[2] - _BERLIN_BBOX[0]) * (_BERLIN_BBOX[3] - _BERLIN_BBOX[1])
-
 
 def search_ecostress(
     start: str,
@@ -90,7 +88,6 @@ def search_ecostress(
     matches.sort(key=lambda m: m["datetime"])
     return matches
 
-
 def _footprint_overlap(
     granule: dict,
     bbox: tuple[float, float, float, float],
@@ -121,7 +118,6 @@ def _footprint_overlap(
     except Exception:
         return 1.0
 
-
 def _ensure_earthdata_login() -> None:
     """Authenticate with NASA Earthdata, raising RuntimeError on failure."""
     try:
@@ -132,6 +128,5 @@ def _ensure_earthdata_login() -> None:
             f"earthaccess.login()'` interactively once to cache credentials. "
             f"Detail: {exc}"
         ) from exc
-
 
 __all__ = ["search_ecostress", "parse_granule_datetime", "parse_granule_mgrs"]

@@ -21,7 +21,6 @@ from berlin_lst_downscaling.data.ard.paths import (
 from berlin_lst_downscaling.data.ard.pipeline import run as ard_run
 from berlin_lst_downscaling.data.ard.reports import qa_report
 from berlin_lst_downscaling.data.ard.solar_position import (
-    extract_solar_from_stac,
     solar_position,
 )
 from berlin_lst_downscaling.data.ard.writer import (
@@ -42,7 +41,6 @@ __all__ = [
     "mask_landsat",
     "mask_s2",
     "solar_position",
-    "extract_solar_from_stac",
     "write_cog_atomic",
     "write_flag_cog_atomic",
     "write_stac_atomic",

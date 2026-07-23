@@ -17,6 +17,9 @@ cloud_dilation_px: 2              # morphological dilation radius for cloud buff
 # Cloud-shadow projection (S2 directional offset)
 cloud_base_height_m: 1000          # assumed cloud base height for shadow offset
 
+# Attempt ceiling — scenes exceeding this many attempts become exhausted
+max_scene_attempts: 3
+
 # ECOSTRESS (disabled in default; enabled per ecostress source config)
 ecostress:
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
@@ -26,10 +29,12 @@ ecostress:
 manifest_uri: null                  # explicit manifest path (or resolved from output_root)
 output_root: "data/ard"            # source-specific subdirectory set per source config
 
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
 # AOI (Berlin boundary)
 aoi:
   mask_base: "data/boundaries"     # base path for aoi_10m.tif and aoi_100m.tif
-  enabled: true                    # compute AOI metrics per scene (default-on)
   min_overlap_px: 50               # warn if COG∩AOI < this many pixels (catches off-target swaths)
 
 # Hydra overrides (suppress run dir and cwd changes)

@@ -24,6 +24,13 @@ dependencies = [
     "pyarrow>=24.0.0",
     "scipy>=1.17.1",
     "tenacity>=8.0",
+    "numba>=0.60,<0.61",
+    "xarray-spatial>=0.10.16",
+    # dynamic pipeline (ERA5-Land ingestion)
+    "cdsapi>=0.7.7",
+    "netcdf4>=1.7.3",
+    # DWD station validation
+    "wetterdienst>=0.128.0,<0.129",
 ]
 
 [build-system]
@@ -36,10 +43,6 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
-
-[tool.ruff.lint.per-file-ignores]
-"notebooks/*" = ["ALL"]
-"scripts/spikes/*" = ["ALL"]
 
 [tool.pyright]
 venvPath = "."

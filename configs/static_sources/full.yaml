@@ -1,0 +1,13 @@
+defaults:
+  - _base
+  - _self_
+
+# Full run — all static sources against production root.
+# On the VM: uv run python scripts/run_static_sources.py --config-name full \
+#     source_root=gs://berlin-lst-data/static/sources/full
+mode: full
+sources:
+  - imperviousness
+  - vegetation_height
+  - terrain_height
+  - lod2_morphology

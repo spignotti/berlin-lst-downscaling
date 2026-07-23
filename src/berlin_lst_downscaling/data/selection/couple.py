@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 def couple_all(
     anchors: list[dict],
@@ -24,7 +26,6 @@ def couple_all(
             dropped.append(result)
 
     return coupled, dropped
-
 
 def couple_one_anchor(
     anchor: dict,
@@ -59,18 +60,17 @@ def couple_one_anchor(
     scored: list[tuple[dict, float]] = []
     for c in s2_candidates:
         cf = c.get("clear_frac")
-        if cf is None or cf != cf:  # NaN guard
-            cf = 0.0
+        if cf is None or math.isnan(cf):
+            continue
         score = cf - lam * (c["dt_days"] / 3.0)
         scored.append((c, score))
 
-    # Sort: descending score, then ascending dt_days (tie-break)
-    scored.sort(key=lambda x: (-x[1], x[0]["dt_days"]))
-    best_candidate, best_score = scored[0]
+    # Sort: descending score, then ascending dt_days, then scene_id (final tie-break)
+    scored.sort(key=lambda x: (-x[1], x[0]["dt_days"], x[0]["scene_id"]))
 
-    max_clear_frac = max((c.get("clear_frac") or 0.0) for c, _ in scored)
+    max_clear_frac = max((c["clear_frac"] for c, _ in scored), default=0.0)
 
-    if max_clear_frac < min_cf:
+    if not scored or max_clear_frac < min_cf:
         return {
             "status": "dropped",
             "anchor": anchor,
@@ -82,11 +82,18 @@ def couple_one_anchor(
             "ecostress": [],
         }
 
+    best_candidate, best_score = scored[0]
+    l_clear = best_candidate.get("landsat_clear_px") or 0
+    j_clear = best_candidate.get("joint_clear_px") or 0
+    j_frac = best_candidate["clear_frac"]
     return {
         "status": "coupled",
         "anchor": anchor,
         "s2": best_candidate,
-        "clear_frac": best_candidate.get("clear_frac") or 0.0,
+        "clear_frac": j_frac,
+        "landsat_clear_px": l_clear,
+        "joint_clear_px": j_clear,
+        "joint_clear_frac": j_frac,
         "score": best_score,
         "ecostress": [],  # filled in by ecostress_subset step
     }

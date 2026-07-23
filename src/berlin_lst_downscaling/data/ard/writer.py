@@ -24,23 +24,21 @@ import xarray as xr
 from rasterio.enums import Resampling
 
 from berlin_lst_downscaling.data.ard.contract import Contract
-from berlin_lst_downscaling.data.io.storage import atomic_write, exists
+from berlin_lst_downscaling.data.io.storage import atomic_upload, atomic_write, exists
 
 # ── COG write (main band file, float32) ──────────────────────────────
-
 
 def write_cog_atomic(
     ds: xr.Dataset,
     dst: str,
     contract: Contract,
     overwrite: bool = False,
-    bands_order: list[str] | None = None,
 ) -> str:
     """Write a multi-band COG atomically.
 
-    The COG is assembled from bands in ``ds`` (or ``bands_order`` if
-    given), written to a local temp file, then pushed via
-    ``atomic_write`` to *dst* (local path or GCS URI).
+    Bands are written in ``ds.data_vars`` order. The file is written to a
+    local temp, then pushed via ``atomic_write`` to *dst* (local path or
+    GCS URI).
 
     Parameters
     ----------
@@ -56,9 +54,6 @@ def write_cog_atomic(
     overwrite :
         If ``False`` and *dst* exists, a :class:`FileExistsError`
         is raised.
-    bands_order :
-        Band variable names in order they should appear in the COG.
-        Defaults to ``list(ds.data_vars)``.
 
     Returns
     -------
@@ -68,7 +63,7 @@ def write_cog_atomic(
     if exists(dst) and not overwrite:
         raise FileExistsError(dst)
 
-    bands = bands_order or [str(k) for k in ds.data_vars]
+    bands = [str(k) for k in ds.data_vars]
     arrays: list[tuple[str, np.ndarray]] = []
     h = w = 0
     crs = None
@@ -86,7 +81,13 @@ def write_cog_atomic(
     dtypes = [ds[name].values.squeeze().dtype for name in bands]
     common_dtype = _common_dtype(dtypes)
 
-    nodata = float("nan") if "float" in common_dtype else None
+    # Derive nodata: float → NaN, integer → contract's first band nodata
+    if "float" in common_dtype:
+        nodata = float("nan")
+    elif contract.output_bands:
+        nodata = contract.output_bands[0].nodata
+    else:
+        nodata = None
 
     profile = _build_profile(
         common_dtype=common_dtype,
@@ -114,15 +115,12 @@ def write_cog_atomic(
             with rasterio.open(dst_tmp, "r+") as tmp:
                 tmp.build_overviews(ov_levels, Resampling.average)
 
-        # Read bytes and push via atomic_write
-        cog_bytes = dst_tmp.read_bytes()
-        atomic_write(dst, cog_bytes, overwrite=overwrite)
+        # Upload via streaming (no full-COG-in-RAM for large multi-band files)
+        atomic_upload(dst_tmp, dst, overwrite=overwrite)
 
     return dst
 
-
 # ── COG write (flag band, uint8) ─────────────────────────────────────
-
 
 def write_flag_cog_atomic(
     flag_da: xr.DataArray,
@@ -163,14 +161,11 @@ def write_flag_cog_atomic(
             tmp.write(arr_2d, 1)
             tmp.set_band_description(1, "flag")
 
-        cog_bytes = dst_tmp.read_bytes()
-        atomic_write(dst, cog_bytes, overwrite=overwrite)
+        atomic_upload(dst_tmp, dst, overwrite=overwrite)
 
     return dst
 
-
 # ── STAC item ────────────────────────────────────────────────────────
-
 
 def write_stac_atomic(
     stac_item: dict[str, Any],
@@ -202,9 +197,7 @@ def write_stac_atomic(
 
     return dst
 
-
 # ── helpers ──────────────────────────────────────────────────────────
-
 
 def _build_profile(
     common_dtype: str,
@@ -235,7 +228,6 @@ def _build_profile(
         profile["nodata"] = nodata
     return profile
 
-
 def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
     """Return a single dtype string that all bands can be cast to."""
     dt_set = set(str(d) for d in dtypes)
@@ -246,7 +238,6 @@ def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
     sizes = [int(d[-2:]) for d in dt_set if d[-2:].isdigit()]
     max_bits = max(sizes) if sizes else 8
     return f"uint{max_bits}"
-
 
 __all__ = [
     "write_cog_atomic",

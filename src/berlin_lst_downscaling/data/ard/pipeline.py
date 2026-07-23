@@ -15,13 +15,11 @@ Supported sources: ``landsat-c2-l2``, ``sentinel-2-l2a``, ``ecostress``.
 
 from __future__ import annotations
 
-import io
-import json
-import sys
+import logging
+import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -46,9 +44,11 @@ from berlin_lst_downscaling.data.ard.writer import (
     write_flag_cog_atomic,
     write_stac_atomic,
 )
+from berlin_lst_downscaling.data.io import log_event
+
+_logger = logging.getLogger(__name__)
 
 # ── per-source runner registry ───────────────────────────────────────
-
 
 def _run_landsat_scene(
     scene_id: str,
@@ -79,7 +79,6 @@ def _run_landsat_scene(
     masked = mask_landsat(ds, cfg)
     return masked
 
-
 def _run_sentinel2_scene(
     scene_id: str,
     source: str,
@@ -107,12 +106,10 @@ def _run_sentinel2_scene(
             f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
             f"Date {effective_date!r} or bbox may not cover the requested scene."
         )
-    # Solar position for directional cloud-shadow projection
     # S2 uses NOAA computation (PC items lack view:sun_*)
     az, el = _solar_for_scene(ds, cfg)
     masked = mask_s2(ds, cfg, az, el)
     return masked
-
 
 def _run_ecostress_scene(
     scene_id: str,
@@ -144,17 +141,14 @@ def _run_ecostress_scene(
         resolution=resolution,
     )
 
-    # Assert the requested granule was loaded
     if scene_id not in loaded_ids:
         raise RuntimeError(
             f"Granule {scene_id!r} not in loaded IDs {loaded_ids}. "
             "Check that the granule exists in the raw_dir."
         )
 
-    # No solar position needed — ECOSTRESS LST is atmospherically corrected
     masked = mask_ecostress(ds, cfg)
     return masked
-
 
 # Registry maps source key → per-source runner function.
 # Each runner returns a masked xr.Dataset ready for COG writing.
@@ -166,21 +160,20 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 
 # ── main entry ───────────────────────────────────────────────────────
 
+def run(cfg: DictConfig, run_id: str | None = None) -> int:
+    """Execute the ARD pipeline — manifest-driven (mode=full).
 
-def run(cfg: DictConfig) -> int:
-    """Execute the ARD pipeline — manifest-driven only (mode=full).
-
-    Smoke mode was removed in favor of manifest-driven smoke using
-    ``smoke_primary`` config which builds a 3-row manifest then runs
-    ``mode=full``.
+    ``smoke_primary`` builds a 3-row manifest and runs ``mode=full``
+    end-to-end.
 
     Returns 0 on success, 1 if any scene failed.
     """
-    run_id = uuid4().hex[:8]
+    if run_id is None:
+        run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
 
     led = Ledger.open(f"{output_root}/ledger.parquet")
-    _log(cfg, run_id, "start", {"mode": cfg.mode, "sources": list(cfg.sources)})
+    log_event(_logger, logging.INFO, "start", mode=cfg.mode, sources=list(cfg.sources))
 
     sources = list(cfg.sources)
 
@@ -188,16 +181,11 @@ def run(cfg: DictConfig) -> int:
         contract = contract_for_source(source)
         _process_manifest(source, contract, cfg, led, run_id)
 
-    # Final QA report
     report = qa_report(led, cfg, run_id)
-    failed_count = sum(
-        report.get("per_source", {}).get(s, {}).get("failed", 0) for s in sources
-    )
-    _log(cfg, run_id, "qa_report", report)
+    failed_count = sum(report.get("per_source", {}).get(s, {}).get("failed", 0) for s in sources)
+    log_event(_logger, logging.INFO, "qa_report", **report)
 
-    # Note: ledger persists per-transition via upsert — no batch write needed
     return 0 if failed_count == 0 else 1
-
 
 def _process_manifest(
     source: str,
@@ -206,22 +194,29 @@ def _process_manifest(
     ledger: Ledger,
     run_id: str,
 ) -> None:
-    """Process scenes listed in a manifest Parquet (mode=full)."""
-    from berlin_lst_downscaling.data.io import exists
+    """Process scenes listed in a manifest Parquet (mode=full).
 
-    manifest_uri = cfg.get("manifest_uri") or f"{cfg.output_root}/manifest.parquet"
-    if not exists(manifest_uri):
+    Loads the canonical v3 bundle, validates it once, and resolves
+    exact STAC items from item_href before passing them to loaders.
+    """
+    import pyarrow.compute as pc  # type: ignore[attr-defined]
+
+    from berlin_lst_downscaling.data.io.storage import exists as _exists
+    from berlin_lst_downscaling.data.selection.validate import load_bundle
+
+    manifest_uri = cfg.get("manifest_uri")
+    if not manifest_uri or not _exists(manifest_uri):
         raise FileNotFoundError(
-            f"mode=full requires a manifest at {manifest_uri}. "
-            "Run Szenen-Selektion first."
+            f"mode=full requires the published manifest bundle at {manifest_uri!r}"
         )
 
-    import pyarrow.compute as pc  # type: ignore[attr-defined]
-    import pyarrow.parquet as pq
-
-    from berlin_lst_downscaling.data.io import read_bytes
-
-    tbl = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
+    bundle, validation = load_bundle(manifest_uri, require_item_href=True)
+    if not validation.ok:
+        raise RuntimeError(
+            "manifest bundle validation failed: "
+            + "; ".join(validation.errors)
+        )
+    tbl = bundle.manifest_table
     if tbl.num_rows == 0:
         return
 
@@ -230,35 +225,109 @@ def _process_manifest(
     if rows.num_rows == 0:
         return
 
-    # Collect manifest rows per source — always carry scene_id + year
+    # Collect manifest rows — carry scene_id, year, item_href, acq time
     scenes: list[tuple[str, str, int]] = []
-    scene_dates: dict[str, str | None] = {}  # scene_id → date (optional)
+    scene_meta: dict[str, dict] = {}
     for i in range(rows.num_rows):
         r = rows.slice(i, 1).to_pydict()
         sid = str(r["scene_id"][0])
-        scenes.append((sid, source, int(r["year"][0])))
-        # Optional date column (forward-compatible schema extension)
-        _dt = r.get("date", [None])[0]
-        scene_dates[sid] = str(_dt) if _dt is not None else None
+        yr = int(r["year"][0])
+        scenes.append((sid, source, yr))
 
-    todo = reconcile(scenes, ledger, contract)
-    _log(cfg, run_id, "manifest_todo", {
-        "source": source,
-        "total": len(scenes),
-        "n_todo": len(todo),
-    })
+        # Extract v3 fields
+        href = r.get("item_href", [None])[0]
+        acq_dt = r.get("acquisition_datetime", [None])[0]
+        scene_meta[sid] = {
+            "item_href": href,
+            "acquisition_datetime": acq_dt,
+            "year": yr,
+        }
+
+    max_attempts = int(cfg.max_scene_attempts)
+    todo = reconcile(scenes, ledger, contract, max_attempts=max_attempts)
+    log_event(
+        _logger,
+        logging.INFO,
+        "manifest_todo",
+        source=source,
+        total=len(scenes),
+        n_todo=len(todo),
+    )
 
     if source == "ecostress":
         _process_ecostress_todo(
-            todo, source, contract, cfg, ledger, run_id, scene_dates,
+            todo,
+            source,
+            contract,
+            cfg,
+            ledger,
+            run_id,
+            scene_meta,
         )
     else:
         for scene_id, _source, year, _reason in todo:
+            meta = scene_meta.get(scene_id, {})
+            # Resolve exact STAC item from manifest HREF
+            items = _resolve_manifest_items(scene_id, source, meta)
             _run_scene(
-                scene_id, source, year, contract, cfg, ledger, run_id,
-                scene_date=scene_dates.get(scene_id),
+                scene_id,
+                source,
+                year,
+                contract,
+                cfg,
+                ledger,
+                run_id,
+                items=items,
+                scene_date=meta.get("acquisition_datetime"),
             )
 
+def _resolve_manifest_items(
+    scene_id: str,
+    source: str,
+    meta: dict,
+) -> list[Any] | None:
+    """Resolve exact STAC items from manifest metadata.
+
+    For PC STAC sources (Landsat/Sentinel-2), tries to resolve directly
+    from item_href first (faster, avoids catalog search). Falls back to
+    ID-based search if item_href is missing.
+    Returns None when resolution fails; ECOSTRESS callers skip this path.
+    """
+    from berlin_lst_downscaling.data.acquisition.pc_client import (
+        resolve_exact_item,
+        resolve_item_from_href,
+    )
+
+    item_href = meta.get("item_href")
+
+    # Try direct HREF resolution first (preferred path)
+    if item_href:
+        try:
+            item = resolve_item_from_href(item_href, expected_id=scene_id)
+            return [item]
+        except Exception as exc:
+            log_event(
+                _logger,
+                logging.WARNING,
+                "href_resolve_failed",
+                scene_id=scene_id,
+                item_href=item_href,
+                error=str(exc),
+            )
+
+    # Fallback: resolve by ID from catalog
+    try:
+        item = resolve_exact_item(collection=source, scene_id=scene_id)
+        return [item]
+    except Exception as exc:
+        log_event(
+            _logger,
+            logging.WARNING,
+            "exact_item_resolve_failed",
+            scene_id=scene_id,
+            error=str(exc),
+        )
+        return None
 
 def _process_ecostress_todo(
     todo: list[tuple[str, str, int, str]],
@@ -267,7 +336,7 @@ def _process_ecostress_todo(
     cfg: DictConfig,
     ledger: Ledger,
     run_id: str,
-    scene_dates: dict[str, str | None],
+    scene_meta: dict[str, dict],
 ) -> None:
     """Process ECOSTRESS scenes with pipeline-internal staging.
 
@@ -280,29 +349,36 @@ def _process_ecostress_todo(
     from berlin_lst_downscaling.data.io.staging import StageSession
 
     stage_base = cfg.get("ecostress.stage_base", "data/smoke/ecostress_stage")
-    with StageSession(stage_base, run_id=run_id) as stage:
+    with StageSession(stage_base, run_id=run_id) as stage:  # StageSession cleans up on exit
         for scene_id, _src, year, _reason in todo:
             try:
                 download_and_stage_granule(scene_id, stage)
                 granule_raw_dir = str(stage.uri.uri)
             except Exception as exc:
-                _log(cfg, run_id, "scene_failed", {
-                    "scene_id": scene_id,
-                    "source": source,
-                    "error": f"Stage download failed: {exc}",
-                })
+                log_event(
+                    _logger,
+                    logging.WARNING,
+                    "scene_failed",
+                    scene_id=scene_id,
+                    source=source,
+                    error=f"Stage download failed: {exc}",
+                )
                 continue
 
             _run_scene(
-                scene_id, source, year, contract, cfg, ledger, run_id,
-                scene_date=scene_dates.get(scene_id),
+                scene_id,
+                source,
+                year,
+                contract,
+                cfg,
+                ledger,
+                run_id,
+                scene_date=scene_meta.get(scene_id, {}).get("acquisition_datetime"),
                 ecostress_raw_dir=granule_raw_dir,
             )
         # Stage cleaned up automatically on StageSession.__exit__
 
-
 # ── per-scene processing ─────────────────────────────────────────────
-
 
 def _run_scene(
     scene_id: str,
@@ -321,9 +397,7 @@ def _run_scene(
     Parameters
     ----------
     items :
-        Pre-fetched STAC items for the scene. Passed to acquisition
-        loaders when provided (manifest-driven ``mode=full``).
-        When ``None`` (smoke mode), the loader searches by date.
+        Pre-fetched STAC items for the scene (manifest-driven).
     scene_date :
         Overrides ``cfg.scene_date`` for this scene. Used by
         ``mode=full`` where each manifest row carries its own date.
@@ -333,27 +407,26 @@ def _run_scene(
         downloaded and staged on demand.
     """
     effective_date = scene_date or cfg.scene_date
-    _log(cfg, run_id, "scene_start", {
-        "scene_id": scene_id,
-        "source": source,
-        "scene_date": effective_date,
-    })
+    log_event(
+        _logger,
+        logging.INFO,
+        "scene_start",
+        scene_id=scene_id,
+        source=source,
+        scene_date=effective_date,
+    )
     t0 = time.perf_counter()
 
-    # Mark as exporting (crash recovery entry)
-    # Note: attempts is auto-managed by upsert (increments from existing)
-    ledger.upsert(
+    _attempts = ledger.begin_attempt(
         LedgerRow(
             scene_id=scene_id,
             source=source,
             year=year,
-            status="exporting",
             run_id=run_id,
         )
     )
 
     try:
-        # ── LOAD & MASK via per-source runner ──
         runner = _RUNNERS.get(source)
         if runner is None:
             raise ValueError(f"Unknown source: {source}")
@@ -371,8 +444,7 @@ def _run_scene(
             ecostress_raw_dir=ecostress_raw_dir,
         )
 
-        # ── WRITE MAIN COG ──
-        _log(cfg, run_id, "scene_writing", {"scene_id": scene_id, "source": source})
+        log_event(_logger, logging.INFO, "scene_writing", scene_id=scene_id, source=source)
         root = str(cfg.output_root)
         cog_dst = cog_path(root, source, year, scene_id)
 
@@ -386,13 +458,11 @@ def _run_scene(
 
         write_cog_atomic(ds_data, cog_dst, contract, overwrite=True)
 
-        # ── WRITE FLAG COG (separate uint8 file) ──
         flag_dst = flag_path(root, source, year, scene_id)
         if flag_da is not None and contract.flag_mode == "separate":
             write_flag_cog_atomic(flag_da, flag_dst, contract, overwrite=True)
 
-        # ── COG STRUCTURAL VALIDATION ──
-        # Determine expected canonical grid from source resolution
+        # Canonical grid per source
         if source == "landsat-c2-l2":
             expected_grid = canon_grid_for_resolution(100)
         elif source == "sentinel-2-l2a":
@@ -404,20 +474,15 @@ def _run_scene(
 
         vig = validate_cog(cog_dst, contract, expected_grid)
         if vig.ok:
-            _log(cfg, run_id, "cog_validated", {"scene_id": scene_id, "source": source})
+            log_event(_logger, logging.INFO, "cog_validated", scene_id=scene_id, source=source)
         else:
-            raise RuntimeError(
-                f"COG validation failed: {'; '.join(vig.errors)}"
-            )
+            raise RuntimeError(f"COG validation failed: {'; '.join(vig.errors)}")
 
         if flag_da is not None and contract.flag_mode == "separate":
             vif = validate_flag_cog(flag_dst, expected_grid)
             if not vif.ok:
-                raise RuntimeError(
-                    f"Flag COG validation failed: {'; '.join(vif.errors)}"
-                )
+                raise RuntimeError(f"Flag COG validation failed: {'; '.join(vif.errors)}")
 
-        # ── COMPUTE AOI METRICS ──
         aoi_clear_px: int | None = None
         aoi_cloudy_px: int | None = None
         aoi_shadow_px: int | None = None
@@ -433,51 +498,54 @@ def _run_scene(
                 if source == "landsat-c2-l2"
                 else int(cfg.target_resolution_high)
             )
-            aoi_base = cfg.get("aoi.mask_base", "data/boundaries")
-            aoi_uri = f"{aoi_base}/aoi_{aoi_res}m.tif"
+            aoi_base = str(cfg.aoi.mask_base)
+            aoi_uri = f"{aoi_base.rstrip('/')}/aoi_{aoi_res}m.tif"
             try:
                 _raw = compute_aoi_metrics(flag_dst, aoi_uri, contract)
-                # int fields (clear/cloudy/shadow/cirrus/saturated/fill/total/overlap)
-                for _key in (
-                    "aoi_clear_px", "aoi_cloudy_px", "aoi_shadow_px",
-                    "aoi_cirrus_px", "aoi_saturated_px", "aoi_fill_px",
-                    "aoi_total_px", "aoi_overlap_px",
-                ):
-                    _v = _raw.get(_key)
-                    locals()[_key] = None if _v is None else int(_v)
-                _v = _raw.get("aoi_clear_frac")
-                aoi_clear_frac = None if _v is None else float(_v)
+                aoi_clear_px = _int_or_none(_raw.get("aoi_clear_px"))
+                aoi_cloudy_px = _int_or_none(_raw.get("aoi_cloudy_px"))
+                aoi_shadow_px = _int_or_none(_raw.get("aoi_shadow_px"))
+                aoi_cirrus_px = _int_or_none(_raw.get("aoi_cirrus_px"))
+                aoi_saturated_px = _int_or_none(_raw.get("aoi_saturated_px"))
+                aoi_fill_px = _int_or_none(_raw.get("aoi_fill_px"))
+                aoi_total_px = _int_or_none(_raw.get("aoi_total_px"))
+                aoi_overlap_px = _int_or_none(_raw.get("aoi_overlap_px"))
+                aoi_clear_frac = _float_or_none(_raw.get("aoi_clear_frac"))
             except Exception as _exc:
                 # AOI metrics are best-effort; log and continue without them
-                _log(cfg, run_id, "aoi_metrics_error", {
-                    "scene_id": scene_id,
-                    "aoi_uri": aoi_uri,
-                    "error": str(_exc),
-                })
-        else:
-            aoi_clear_px = aoi_cloudy_px = aoi_shadow_px = None
-            aoi_cirrus_px = aoi_saturated_px = aoi_fill_px = None
-            aoi_total_px = aoi_overlap_px = aoi_clear_frac = None
+                log_event(
+                    _logger,
+                    logging.WARNING,
+                    "aoi_metrics_error",
+                    scene_id=scene_id,
+                    aoi_uri=aoi_uri,
+                    error=str(_exc),
+                )
 
-        # Low-overlap warning: valid data covers a small fraction of the AOI intersection.
-        # This catches off-target swaths where the COG covers the AOI bbox but LST is NaN.
-        min_overlap = cfg.get("aoi", {}).get("min_overlap_px", None)
-        if aoi_overlap_px is not None and min_overlap is not None and aoi_overlap_px < min_overlap:
-            _log(cfg, run_id, "low_aoi_overlap", {
-                "scene_id": scene_id,
-                "aoi_overlap_px": aoi_overlap_px,
-                "min_overlap_px": min_overlap,
-            })
+        min_overlap = int(cfg.aoi.min_overlap_px)
+        if aoi_overlap_px is not None and aoi_overlap_px < min_overlap:
+            log_event(
+                _logger,
+                logging.WARNING,
+                "low_aoi_overlap",
+                scene_id=scene_id,
+                aoi_overlap_px=aoi_overlap_px,
+                min_overlap_px=min_overlap,
+            )
 
-        # ── BUILD + WRITE STAC ──
         stac_dst = stac_path(root, source, year, scene_id)
         stac_item = _build_stac_item(
-            scene_id, source, year, masked, contract, cog_dst, cfg,
+            scene_id,
+            source,
+            year,
+            masked,
+            contract,
+            cog_dst,
+            cfg,
             flag_dst=flag_dst if contract.flag_mode == "separate" else None,
         )
         write_stac_atomic(stac_item, stac_dst, overwrite=True)
 
-        # ── UPDATE LEDGER ──
         elapsed = time.perf_counter() - t0
         ledger.upsert(
             LedgerRow(
@@ -485,6 +553,7 @@ def _run_scene(
                 source=source,
                 year=year,
                 path_cog=cog_dst,
+                path_flag=flag_dst if contract.flag_mode == "separate" else None,
                 path_stac=stac_dst,
                 status="done",
                 schema_hash=contract.schema_version_str(),
@@ -503,23 +572,29 @@ def _run_scene(
             )
         )
         _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
-        _log(cfg, run_id, "scene_done", {
-            "scene_id": scene_id,
-            "source": source,
-            "attempts": _attempts,
-            "elapsed_s": round(elapsed, 2),
-        })
+        log_event(
+            _logger,
+            logging.INFO,
+            "scene_done",
+            scene_id=scene_id,
+            source=source,
+            attempts=_attempts,
+            elapsed_s=round(elapsed, 2),
+        )
 
     except Exception as exc:
         elapsed = time.perf_counter() - t0
         _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
-        _log(cfg, run_id, "scene_failed", {
-            "scene_id": scene_id,
-            "source": source,
-            "attempts": _attempts,
-            "error": str(exc),
-            "elapsed_s": round(elapsed, 2),
-        })
+        log_event(
+            _logger,
+            logging.ERROR,
+            "scene_failed",
+            scene_id=scene_id,
+            source=source,
+            attempts=_attempts,
+            error=str(exc),
+            elapsed_s=round(elapsed, 2),
+        )
         # Note: attempts is auto-managed by upsert
         ledger.upsert(
             LedgerRow(
@@ -534,9 +609,7 @@ def _run_scene(
         )
         # do not re-raise — outer loop continues
 
-
 # ── solar position ───────────────────────────────────────────────────
-
 
 def _solar_for_scene(
     ds: xr.Dataset,
@@ -554,13 +627,14 @@ def _solar_for_scene(
     except (IndexError, AttributeError, ValueError):
         date_str = cfg.scene_date
         dt = datetime.fromisoformat(date_str).replace(
-            hour=10, minute=0, second=0, tzinfo=UTC,
+            hour=10,
+            minute=0,
+            second=0,
+            tzinfo=UTC,
         )
     return solar_position(dt)
 
-
 # ── STAC item builder ────────────────────────────────────────────────
-
 
 def _build_stac_item(
     scene_id: str,
@@ -594,15 +668,14 @@ def _build_stac_item(
     bbox_4326 = transform_bounds(crs, "EPSG:4326", *bounds)
 
     resolution = (
-        cfg.target_resolution_low if source == "landsat-c2-l2"
-        else cfg.target_resolution_high
+        cfg.target_resolution_low if source == "landsat-c2-l2" else cfg.target_resolution_high
     )
 
     assets: dict[str, Any] = {}
     # Data bands from contract.output_bands (flag is separate)
     for spec in contract.output_bands:
-        # NaN nodata → None in JSON (STAC spec compatibility)
-        nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
+        # STAC spec stores NaN nodata as JSON null.
+        nodata = None if spec.nodata is not None and math.isnan(spec.nodata) else spec.nodata
         assets[spec.name] = {
             "href": cog_path_rel,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
@@ -653,9 +726,7 @@ def _build_stac_item(
         },
         "properties": {
             "datetime": (
-                acq_dt.isoformat()
-                if acq_dt
-                else f"{cfg.get('scene_date', str(year))}T00:00:00Z"
+                acq_dt.isoformat() if acq_dt else f"{cfg.get('scene_date', str(year))}T00:00:00Z"
             ),
             "crs": str(crs),
             "proj:epsg": crs.to_epsg(),
@@ -671,9 +742,7 @@ def _build_stac_item(
 
     return item
 
-
 # ── STAC helpers ─────────────────────────────────────────────────────
-
 
 def _acquisition_datetime(
     masked: xr.Dataset,
@@ -692,37 +761,21 @@ def _acquisition_datetime(
     except (IndexError, AttributeError, ValueError):
         return None
 
+def _int_or_none(val) -> int | None:
+    """Convert value to int, returning None for None or NaN."""
+    if val is None:
+        return None
+    if isinstance(val, float) and val != val:  # NaN
+        return None
+    return int(val)
 
-def _is_nan(val: float) -> bool:
-    """Check if a float is NaN without importing math."""
-    return val != val
-
-
-# ── logging ──────────────────────────────────────────────────────────
-
-
-def _log(cfg: DictConfig, run_id: str, event: str, data: dict[str, Any]) -> None:
-    """Emit a structured JSON log line to stderr and append to run log file."""
-    entry = {
-        "run_id": run_id,
-        "event": event,
-        "timestamp": datetime.now(UTC).isoformat(),
-        **data,
-    }
-    line = json.dumps(entry)
-
-    print(line, file=sys.stderr)
-
-    logging_root = cfg.get("logging_dir", cfg.output_root)
-    # For GCS output_root, default logs to local ./logs/ directory
-    if str(logging_root).startswith("gs://"):
-        logging_root = "./logs"
-    log_dir = Path(logging_root) / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / f"{run_id}.jsonl"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
-
+def _float_or_none(val) -> float | None:
+    """Convert value to float, returning None for None or NaN."""
+    if val is None:
+        return None
+    if isinstance(val, float) and val != val:  # NaN
+        return None
+    return float(val)
 
 __all__ = [
     "run",

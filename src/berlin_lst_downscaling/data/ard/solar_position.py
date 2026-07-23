@@ -1,9 +1,4 @@
-"""Solar position computation — from STAC properties or datetime + lat/lon.
-
-Provides a single function :func:`solar_position` that accepts either
-a source parameter (trying STAC ``view:sun_*`` first) or a
-datetime + lat/lon pair for the NOAA fallback algorithm.
-"""
+"""Solar position computation — datetime + lat/lon via NOAA algorithm."""
 
 from __future__ import annotations
 
@@ -17,9 +12,7 @@ _DEG = 180.0 / math.pi
 
 _AOI_CENTROID = (52.51, 13.42)  # Berlin approximate centroid (lat, lon)
 
-
 # ── public API ───────────────────────────────────────────────────────
-
 
 def solar_position(
     dt: datetime,
@@ -50,26 +43,9 @@ def solar_position(
 
     return _noaa_solar_position(dt, lat, lon)
 
-
-def extract_solar_from_stac(
-    properties: dict,
-) -> tuple[float, float] | None:
-    """Extract ``(azimuth_deg, elevation_deg)`` from STAC properties.
-
-    Returns ``None`` if either property is missing (caller should fall
-    back to NOAA computation).
-    """
-    az = properties.get("view:sun_azimuth")
-    el = properties.get("view:sun_elevation")
-    if az is not None and el is not None:
-        return (float(az), float(el))
-    return None
-
-
 # ── NOAA solar position algorithm (simplified) ───────────────────────
 # Based on the NOAA Solar Calculator / ESRL algorithm.
 # Accuracy ~ ±1° — sufficient for shadow-offset projection at 10 m.
-
 
 def _noaa_solar_position(dt: datetime, lat_deg: float, lon_deg: float) -> tuple[float, float]:
     """Compute solar azimuth (from N) and elevation (above horizon)."""
@@ -128,8 +104,6 @@ def _noaa_solar_position(dt: datetime, lat_deg: float, lon_deg: float) -> tuple[
 
     return (az, elevation)
 
-
 __all__ = [
     "solar_position",
-    "extract_solar_from_stac",
 ]

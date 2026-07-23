@@ -23,7 +23,6 @@ from berlin_lst_downscaling.data.ard.contract import Contract
 # Minimum valid-pixel fraction to pass the "not all-NaN" check
 _MIN_VALID_FRAC = 0.01
 
-
 @dataclass
 class ValidationResult:
     """Result of a single COG validation."""
@@ -36,7 +35,6 @@ class ValidationResult:
     def fail(self, msg: str) -> None:
         self.ok = False
         self.errors.append(msg)
-
 
 def validate_cog(
     uri: str,
@@ -86,10 +84,7 @@ def validate_cog(
     # ── 5. Shape ───────────────────────────────────────────────────────────
     ex, ey = expected_grid.shape.x, expected_grid.shape.y
     if width != ex or height != ey:
-        result.fail(
-            f"Shape mismatch: got ({width}, {height}), "
-            f"expected ({ex}, {ey})"
-        )
+        result.fail(f"Shape mismatch: got ({width}, {height}), expected ({ex}, {ey})")
 
     # ── 6. Origin alignment ────────────────────────────────────────────────
     ex_off = expected_grid.transform.xoff
@@ -103,7 +98,6 @@ def validate_cog(
         )
 
     return result
-
 
 def validate_flag_cog(
     uri: str,
@@ -123,13 +117,6 @@ def validate_flag_cog(
 
     try:
         with rasterio.open(uri) as src:
-            pass
-    except Exception as exc:
-        result.fail(f"Could not open flag COG: {exc}")
-        return result
-
-    try:
-        with rasterio.open(uri) as src:
             crs = str(src.crs).upper() if src.crs else "None"
             count = src.count
             dtype = src.dtypes[0] if src.dtypes else "None"
@@ -137,14 +124,13 @@ def validate_flag_cog(
             height = src.height
             transform = src.transform
     except Exception as exc:
-        result.fail(f"Failed to read flag COG metadata: {exc}")
+        result.fail(f"Could not open or read flag COG metadata: {exc}")
         return result
 
     # CRS
     if crs != "EPSG:25833":
         result.fail(f"Flag COG CRS mismatch: got {crs!r}, expected 'EPSG:25833'")
 
-    # Single uint8
     if count != 1:
         result.fail(f"Flag COG band count: got {count}, expected 1")
     if dtype != "uint8":
@@ -153,12 +139,8 @@ def validate_flag_cog(
     # ── 4. Shape ───────────────────────────────────────────────────────────
     ex, ey = expected_grid.shape.x, expected_grid.shape.y
     if width != ex or height != ey:
-        result.fail(
-            f"Flag COG shape mismatch: got ({width}, {height}), "
-            f"expected ({ex}, {ey})"
-        )
+        result.fail(f"Flag COG shape mismatch: got ({width}, {height}), expected ({ex}, {ey})")
 
-    # Origin
     ex_off = expected_grid.transform.xoff
     ey_off = expected_grid.transform.yoff
     if abs(transform.xoff - ex_off) > 0.01 or abs(transform.yoff - ey_off) > 0.01:
@@ -169,9 +151,7 @@ def validate_flag_cog(
 
     return result
 
-
 # ── internal helpers ──────────────────────────────────────────────────
-
 
 def _check_nan(src: rasterio.DatasetReader, result: ValidationResult) -> None:
     """Check that the first band is not completely NaN.
@@ -195,7 +175,6 @@ def _check_nan(src: rasterio.DatasetReader, result: ValidationResult) -> None:
     except Exception as exc:
         result.fail(f"NaN check failed for band 1: {exc}")
 
-
 def format_validation_report(
     results: list[ValidationResult],
 ) -> str:
@@ -213,7 +192,6 @@ def format_validation_report(
         for err in r.errors:
             lines.append(f"         - {err}")
     return "\n".join(lines)
-
 
 __all__ = [
     "ValidationResult",

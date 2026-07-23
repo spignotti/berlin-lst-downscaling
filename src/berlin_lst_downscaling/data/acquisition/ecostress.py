@@ -63,7 +63,6 @@ RE_GRANULE = re.compile(
     r"_(?P<rev>\d+)$",
 )
 
-
 def parse_granule_datetime(granule_id: str) -> datetime | None:
     """Extract UTC acquisition datetime from a granule ID, or None if unparseable."""
     m = RE_GRANULE.match(granule_id)
@@ -74,9 +73,7 @@ def parse_granule_datetime(granule_id: str) -> datetime | None:
     except ValueError:
         return None
 
-
 # ── public API ───────────────────────────────────────────────────────
-
 
 def load_ecostress_scene(
     granule_id: str,
@@ -186,14 +183,15 @@ def load_ecostress_scene(
 
         minx, miny, maxx, maxy = transform_bounds("EPSG:4326", str(gbox.crs), *bbox)
         ds_out = ds_out.rio.clip_box(
-            minx=minx, miny=miny, maxx=maxx, maxy=maxy,
+            minx=minx,
+            miny=miny,
+            maxx=maxx,
+            maxy=maxy,
         )
 
     return ds_out, [granule_id]
 
-
 # ── internal helpers ──────────────────────────────────────────────────
-
 
 def _resolve_granule_uri(raw_dir: str, granule_id: str, layer: str) -> str:
     """Return the URI string for a granule layer TIF.
@@ -218,17 +216,13 @@ def _resolve_granule_uri(raw_dir: str, granule_id: str, layer: str) -> str:
         # Local POSIX
         return f"{raw_str}/{granule_id}/{granule_leaf}"
 
-
 def _assert_granule_layer_exists(uri: str) -> None:
     """Raise FileNotFoundError if the URI cannot be opened by rasterio."""
     try:
         with rasterio.open(uri):
             pass
     except Exception as exc:  # rasterio raises RasterioIOError on 404 / ENOENT on missing
-        raise FileNotFoundError(
-            f"ECOSTRESS L2T layer not found or not readable: {uri}"
-        ) from exc
-
+        raise FileNotFoundError(f"ECOSTRESS L2T layer not found or not readable: {uri}") from exc
 
 def download_and_stage_granule(
     granule_id: str,
@@ -299,7 +293,6 @@ def download_and_stage_granule(
 
     return str(stage.uri.uri)
 
-
 def _download_to_tmp(
     granule: dict,
     tmp_dir: Path,
@@ -311,20 +304,20 @@ def _download_to_tmp(
     Retries up to 3 times with exponential backoff.
     """
     store = Store(auth=auth)
+    last_exc: Exception | None = None
     for attempt in range(3):
         try:
             downloaded = store.get([granule], local_path=str(tmp_dir), threads=4)  # type: ignore[arg-type]
             return [Path(p) for p in downloaded if p]
         except Exception as exc:
+            last_exc = exc
             if attempt < 2:
                 import time as _time
-                _time.sleep(2 ** attempt)
-            else:
-                raise RuntimeError(
-                    f"Download failed after 3 attempts for {granule['meta']['native-id']}: {exc}"
-                ) from exc
-    raise RuntimeError("Unreachable — download retry loop exhausted.")
 
+                _time.sleep(2**attempt)
+    raise RuntimeError(
+        f"Download failed after 3 attempts for {granule['meta']['native-id']}: {last_exc}"
+    ) from last_exc
 
 def parse_granule_mgrs(granule_id: str) -> str | None:
     """Extract MGRS tile from a granule ID (e.g. 33UUU)."""
@@ -333,11 +326,9 @@ def parse_granule_mgrs(granule_id: str) -> str | None:
         return parts[5]
     return None
 
-
 __all__ = [
     "load_ecostress_scene",
     "download_and_stage_granule",
     "parse_granule_datetime",
     "parse_granule_mgrs",
 ]
-

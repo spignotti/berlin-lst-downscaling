@@ -19,7 +19,6 @@ from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_
 _S2_COLLECTION = "sentinel-2-l2a"
 _S2_BANDS = ["B02", "B03", "B04", "B08", "SCL"]
 
-
 def load_s2_scene(
     date: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,

@@ -1,0 +1,12 @@
+defaults:
+  - _base
+  - _self_
+
+# Cloud smoke: deterministic 1-scene test against GCS
+source_root: "gs://berlin-lst-data/static/sources/full"
+derived_root: "gs://berlin-lst-data/static/derived/full"
+output_root: "gs://berlin-lst-data/dynamic/smoke"
+
+# Fixed scene for reproducible testing
+scene_ids:
+  - "LC08_L2SP_192023_20170526_02_T1"

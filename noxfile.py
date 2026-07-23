@@ -20,43 +20,76 @@ _SMOKE_ROWS = [
     {
         "scene_id": "LC09_L2SP_193024_20240629_02_T1",
         "source": "landsat-c2-l2",
+        "role": "anchor",
+        "platform": "landsat-9",
         "year": 2024,
-        "status": "coupled",
-        "date": "2024-06-29",
+        "item_href": "https://planetarycomputer.microsoft.com/api/stac/data/landsat-c2-l2/items/LC09_L2SP_193024_20240629_02_T1",
+        "aoi_clear_px": 5000,
+        "aoi_total_px": 10000,
+        "aoi_clear_frac": 0.5,
     },
     {
         "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
         "source": "sentinel-2-l2a",
+        "role": "predictor",
+        "platform": "sentinel-2",
         "year": 2024,
-        "status": "coupled",
-        "date": "2024-06-29",
+        "item_href": "https://planetarycomputer.microsoft.com/api/stac/data/sentinel-2-l2a/items/S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+        "aoi_clear_px": 6000,
+        "aoi_total_px": 10000,
+        "aoi_clear_frac": 0.6,
     },
     {
         "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
         "source": "ecostress",
+        "role": "validation",
+        "platform": "ecostress",
         "year": 2018,
-        "status": "coupled",
-        "date": "2018-07-30",
+        "item_href": None,
+        "aoi_clear_px": None,
+        "aoi_total_px": None,
+        "aoi_clear_frac": None,
+    },
+]
+
+_SMOKE_PAIRINGS = [
+    {
+        "landsat_scene_id": "LC09_L2SP_193024_20240629_02_T1",
+        "sentinel2_scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+        "dt_seconds": 3600,
+        "landsat_clear_px": 5000,
+        "joint_clear_px": 4000,
+        "joint_clear_frac": 0.8,
+        "score": 0.7,
     },
 ]
 
 
 def _write_smoke_manifest(manifest_path: str) -> None:
-    """Write the 3-row smoke manifest to *manifest_path* (Parquet)."""
+    """Write the 3-row v3 smoke manifest to *manifest_path* (Parquet)."""
     import os
 
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from berlin_lst_downscaling.data.selection.schema import MANIFEST_SCHEMA
+
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-    schema = pa.schema([
-        pa.field("scene_id", pa.string(), nullable=False),
-        pa.field("source", pa.string(), nullable=False),
-        pa.field("year", pa.int32(), nullable=False),
-        pa.field("status", pa.string(), nullable=False),
-        pa.field("date", pa.string(), nullable=True),
-    ])
-    table = pa.Table.from_pylist(_SMOKE_ROWS, schema=schema)
+
+    # Add missing datetime field (required by schema)
+    from datetime import UTC, datetime
+
+    for row in _SMOKE_ROWS:
+        if "acquisition_datetime" not in row:
+            row["acquisition_datetime"] = datetime(2024, 6, 29, 10, 20, 0, tzinfo=UTC)
+        if "cloud_cover" not in row:
+            row["cloud_cover"] = None
+        if "solar_azimuth" not in row:
+            row["solar_azimuth"] = None
+        if "solar_elevation" not in row:
+            row["solar_elevation"] = None
+
+    table = pa.Table.from_pylist(_SMOKE_ROWS, schema=MANIFEST_SCHEMA)
     pq.write_table(table, manifest_path)
     print(f"Manifest written: {manifest_path}")
 
@@ -84,11 +117,10 @@ def typecheck(session: nox.Session) -> None:
 def smoke_primary(session: nox.Session) -> None:
     """Run manifest-driven smoke test for all 3 sources locally.
 
-    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), then runs the
-    ARD pipeline.  The pipeline downloads + stages ECOSTRESS from CMR
-    automatically via ``_process_ecostress_todo``.
-
-    Final COGs land in ``data/smoke/primary/ard/``.
+    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), runs the ARD
+    pipeline twice to confirm ledger idempotency, then asserts that the
+    ledger contains three rows in status ``done`` and runs the
+    standalone validator.
     """
     manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
@@ -96,51 +128,97 @@ def smoke_primary(session: nox.Session) -> None:
 
     _write_smoke_manifest(manifest_path)
 
-    # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
-    # automatically by the pipeline's _process_ecostress_todo path.
-    session.run(
-        "uv", "run", "python", "scripts/run_ard.py",
-        "--config-name", "smoke_primary",
-        f"manifest_uri={manifest_path}",
-        f"output_root={output_root}",
-        "+ecostress.persist_stage=true",  # keep stage for inspection
-        external=True,
-    )
+    for _ in range(2):
+        # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
+        # automatically by the pipeline's _process_ecostress_todo path.
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_ard.py",
+            "--config-name",
+            "smoke_primary",
+            f"manifest_uri={manifest_path}",
+            f"output_root={output_root}",
+            external=True,
+        )
 
     print(f"\nSmoke-primary output: {output_root}/ledger.parquet")
     print("Expected: 3 scenes with status=done")
+
+    _assert_ard_done(session, output_root, expected=3)
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/validate_ard.py",
+        f"--ledger={output_root}/ledger.parquet",
+        external=True,
+    )
+
+
+def _assert_ard_done(session: nox.Session, output_root: str, expected: int) -> None:
+    """Assert that *output_root*/ledger.parquet has *expected* ``done`` rows."""
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "-c",
+        (
+            "import sys, pyarrow.parquet as pq; "
+            f"tbl = pq.read_table('{output_root}/ledger.parquet'); "
+            "done = sum(1 for s in tbl.column('status').to_pylist() if s == 'done'); "
+            "print(f'ledger done rows: {done}'); "
+            "sys.exit(0 if done == " + str(expected) + " else 1)"
+        ),
+        external=True,
+    )
+
+
+def _assert_dynamic_done(session: nox.Session, output_root: str, expected: int) -> None:
+    """Assert that *output_root* has *expected* done scenes across all dynamic sources."""
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "-c",
+        (
+            "import sys, pyarrow.parquet as pq; "
+            f"tbl = pq.read_table('{output_root.rstrip('/')}/_state/dynamic/ledger.parquet'); "
+            "from collections import Counter; "
+            "rows = list(zip(tbl.column('source').to_pylist(), tbl.column('status').to_pylist())); "
+            "counts = Counter(rows); "
+            "for src in ('era5_land', 'shadow_building', 'shadow_vegetation'): "
+            "    print(f'{src}: {counts.get((src, \"done\"), 0)}'); "
+            "ok = all(counts.get((s, 'done'), 0) >= "
+            + str(expected)
+            + " for s in ('era5_land', 'shadow_building', 'shadow_vegetation')); "
+            "sys.exit(0 if ok else 1)"
+        ),
+        external=True,
+    )
 
 
 # ── Szenen-Selektion ─────────────────────────────────────────────────
 
 
-@nox.session(venv_backend="none", name="smoke-selection-2024")
-def smoke_selection_2024(session: nox.Session) -> None:
-    """Run Szenen-Selektion coupling on Mai–Sep 2024.
+@nox.session(venv_backend="none", name="smoke-selection-couple")
+def smoke_selection_couple(session: nox.Session) -> None:
+    """Run Szenen-Selektion coupling against the bounded ARD smoke bundle.
 
-    Validates the coupling logic across the full configured season.
-    Uses SCL-based cloud detection (the only method).
-    Writes ``data/smoke/manifest_2024.parquet``.
+    Produces a local couple-mode bundle whose manifest rows feed ARD's
+    bounded smoke-primary run. The bundle remains in
+    ``data/manifest_build/v3/smoke`` — it is never published.
     """
     session.run(
-        "uv", "run", "python", "scripts/build_manifest.py",
-        "--config-dir", "configs/selection",
-        "--config-name", "smoke_2024_mai_sep",
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none", name="selection-scan")
-def selection_scan(session: nox.Session) -> None:
-    """Run full metadata-only volume scan (2017–2025, Mai–Sep).
-
-    Writes ``data/ard/scan_report.{json,md}`` with counts and GB estimates.
-    No pixel loads — PC STAC + CMR metadata only.
-    """
-    session.run(
-        "uv", "run", "python", "scripts/build_manifest.py",
-        "--config-dir", "configs/selection",
-        "--config-name", "full_2017_2025",
+        "uv",
+        "run",
+        "python",
+        "scripts/build_manifest.py",
+        "output_root=data/manifest_build/v3/smoke",
+        "years=[2024]",
+        "months=[6,7]",
+        "cutoff_utc=2024-07-31T23:59:59Z",
         external=True,
     )
 
@@ -170,7 +248,10 @@ def cloud_pilot(session: nox.Session) -> None:
 
     # ── pre-flight: GCS reachable ─────────────────────────────────────
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
@@ -185,30 +266,43 @@ def cloud_pilot(session: nox.Session) -> None:
 
     # Step 2: Stage ECOSTRESS fixture to GCS
     session.run(
-        "uv", "run", "python", "scripts/download_ecostress_fixture.py",
-        "--tile", "33UUU",
-        "--date", "2018-07-30",
-        "--stage-dir", stage_base,
-        "--run-id", run_id,
+        "uv",
+        "run",
+        "python",
+        "scripts/download_ecostress_fixture.py",
+        "--tile",
+        "33UUU",
+        "--date",
+        "2018-07-30",
+        "--stage-dir",
+        stage_base,
+        "--run-id",
+        run_id,
         external=True,
     )
 
     # Step 3: Run the unified ARD pipeline (reads ECOSTRESS from GCS stage,
     # AOI from GCS — exercises the full cloud-read path)
     session.run(
-        "uv", "run", "python", "scripts/run_ard.py",
-        "--config-name", "smoke_primary",
+        "uv",
+        "run",
+        "python",
+        "scripts/run_ard.py",
+        "--config-name",
+        "smoke_primary",
         f"manifest_uri={manifest_path}",
         f"output_root={output_root}/smoke_primary",
         f"ecostress.raw_dir={eco_stage}",
-        "+ecostress.persist_stage=true",
         "aoi.mask_base=gs://berlin-lst-data/boundaries",
         external=True,
     )
 
     # Step 4: Clean up ECOSTRESS GCS stage
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         f"""
 import sys; sys.path.insert(0, 'src')
 from berlin_lst_downscaling.data.io.staging import StageSession
@@ -220,7 +314,10 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
 
     # Step 5: Verify final COGs landed in GCS
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "import sys\n"
             "from google.cloud import storage\n"
@@ -237,29 +334,492 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
     )
 
 
-@nox.session(venv_backend="none", name="upload-manifest")
-def upload_manifest(session: nox.Session) -> None:
-    """Upload a local manifest.parquet to ``gs://berlin-lst-data/manifests/``.
+# ── Secondary-data pipeline ──────────────────────────────────────────
 
-    Usage::
 
-        uv run nox -s upload-manifest -- data/ard/manifest.parquet
+def _verify_local_artifacts(
+    session: nox.Session,
+    output_root: str,
+    required_suffixes: tuple[str, ...],
+) -> None:
+    """Check that every required artifact is present under a local root."""
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "-c",
+        f"""import sys
+from pathlib import Path
+required_suffixes = {required_suffixes!r}
+root = Path({output_root!r})
+if not root.exists():
+    print(f'Missing output root: {{root}}')
+    sys.exit(1)
+all_paths = [str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()]
+missing = []
+for s in required_suffixes:
+    if s == 'ledger.parquet':
+        if not any(p == s for p in all_paths):
+            missing.append(s)
+    elif s == 'report.json':
+        if not any(p.endswith('/report.json') for p in all_paths):
+            missing.append(s)
+    elif not any(p.endswith(s) for p in all_paths):
+        missing.append(s)
+print(f'Artifacts under {{root}}:')
+for p in sorted(all_paths):
+    print(f'  {{p}}')
+if missing:
+    print(f'Missing required artifacts: {{missing}}')
+    sys.exit(1)
+print('All required artifacts present.')
+""",
+        external=True,
+    )
 
-    Prints the GCS URI to pass as ``manifest_uri=...`` for a cloud full run.
+
+def _preflight_gcs(session: nox.Session) -> None:
+    """Confirm ADC + the bucket are reachable before a cloud run."""
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "-c",
+        (
+            "from google.cloud import storage; "
+            "client = storage.Client(); "
+            "bucket = client.get_bucket('berlin-lst-data'); "
+            "print('Bucket reachable:', bucket.name)"
+        ),
+        external=True,
+    )
+
+
+def _verify_gcs_artifacts(
+    session: nox.Session,
+    run_id: str,
+    required_suffixes: tuple[str, ...],
+    prefix: str = "secondary/smoke/{run_id}/",
+) -> None:
+    """Check that every required blob exists under a GCS run prefix."""
+    prefix = prefix.format(run_id=run_id)
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "-c",
+        f"""import sys
+from google.cloud import storage
+client = storage.Client()
+bucket = client.get_bucket('berlin-lst-data')
+prefix = '{prefix}'
+blobs = list(bucket.list_blobs(prefix=prefix))
+print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
+print(f'  {{len(blobs)}} blob(s)')
+for b in blobs:
+    print(f'  {{b.name}} ({{b.size}} bytes)')
+required_suffixes = {required_suffixes!r}
+names = [b.name for b in blobs]
+missing = []
+for s in required_suffixes:
+    if s == 'ledger.parquet':
+        if not any(n.endswith('ledger.parquet') for n in names):
+            missing.append(s)
+    elif s == 'report.json':
+        if not any(n.endswith('report.json') for n in names):
+            missing.append(s)
+    elif not any(n.endswith(s) for n in names):
+        missing.append(s)
+if missing:
+    print(f'Missing required blobs: {{missing}}')
+    sys.exit(1)
+""",
+        external=True,
+    )
+
+
+# ── static source pipeline ──────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-static-sources")
+def smoke_static_sources(session: nox.Session) -> None:
+    """Run Pipeline A locally with real data on a small aligned subset.
+
+    Downloads all 4 source products (imperviousness, VH, DGM, LoD2) for
+    a 2×2 km representative extent, writes final products, validates.
+    Runs twice to confirm idempotency.
     """
+    output_root = "data/static/sources/smoke"
+
+    for _ in range(2):
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_static_sources.py",
+            "--config-name",
+            "smoke",
+            f"source_root={output_root}",
+            external=True,
+        )
+
+    _verify_local_artifacts(
+        session,
+        output_root,
+        required_suffixes=(
+            # imperviousness
+            "ard/static/sources/imperviousness/2016/imperviousness_2016.tif",
+            "ard/static/sources/imperviousness/2016/complete.json",
+            "ard/static/sources/imperviousness/2021/imperviousness_2021.tif",
+            "ard/static/sources/imperviousness/2021/complete.json",
+            # vegetation height
+            "ard/static/sources/vegetation_height/2020/vegetation_height_2020.tif",
+            "ard/static/sources/vegetation_height/2020/complete.json",
+            # terrain height
+            "ard/static/sources/terrain_height/2021/terrain_height_2021.tif",
+            "ard/static/sources/terrain_height/2021/complete.json",
+            # LoD2 morphology
+            "ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif",
+            "ard/static/sources/lod2_morphology/2024/complete.json",
+            # report + ledger
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-static-sources")
+def cloud_static_sources(session: nox.Session) -> None:
+    """Run Pipeline A against GCS with all source products.
+
+    Requires ADC / Workload Identity. Creates a unique run prefix,
+    processes all 4 source products, then verifies all artifacts via GCS.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = f"stat-src-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    source_root = f"gs://berlin-lst-data/static/sources/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    for _ in range(2):
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_static_sources.py",
+            "--config-name",
+            "smoke",
+            f"source_root={source_root}",
+            external=True,
+        )
+
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        prefix=f"static/sources/smoke/{run_id}/",
+        required_suffixes=(
+            "ard/static/sources/imperviousness/2016/imperviousness_2016.tif",
+            "ard/static/sources/imperviousness/2016/complete.json",
+            "ard/static/sources/imperviousness/2021/imperviousness_2021.tif",
+            "ard/static/sources/imperviousness/2021/complete.json",
+            "ard/static/sources/vegetation_height/2020/vegetation_height_2020.tif",
+            "ard/static/sources/vegetation_height/2020/complete.json",
+            "ard/static/sources/terrain_height/2021/terrain_height_2021.tif",
+            "ard/static/sources/terrain_height/2021/complete.json",
+            "ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif",
+            "ard/static/sources/lod2_morphology/2024/complete.json",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
+@nox.session(venv_backend="none", name="smoke-static-derived")
+def smoke_static_derived(session: nox.Session) -> None:
+    """Run Pipeline B locally against Pipeline-A smoke output.
+
+    Consumes existing local Pipeline-A smoke products and produces
+    building/vegetation/combined DSMs, horizons, and SVF.
+    Runs twice to confirm idempotency.
+    """
+    output_root = "data/static/derived/smoke"
+
+    for _ in range(2):
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_static_derived.py",
+            "--config-name",
+            "smoke",
+            f"derived_root={output_root}",
+            external=True,
+        )
+
+    _verify_local_artifacts(
+        session,
+        output_root,
+        required_suffixes=(
+            "building_dsm",
+            "vegetation_dsm",
+            "combined_dsm",
+            "horizon_building",
+            "horizon_vegetation",
+            "svf",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-static-derived")
+def cloud_static_derived(session: nox.Session) -> None:
+    """Run Pipeline B (derived geometry) against GCS.
+
+    Consumes finalized Pipeline A source products and produces
+    building/vegetation/combined DSMs, horizons, and SVF.
+    Requires ADC / Workload Identity.
+
+    Usage:
+        uv run nox -s cloud-static-derived -- \
+            gs://berlin-lst-data/static/sources/smoke/...
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    source_root = (
+        session.posargs[0] if session.posargs else "gs://berlin-lst-data/static/sources/full"
+    )
+
+    run_id = f"stat-drv-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    derived_root = f"gs://berlin-lst-data/static/derived/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/run_static_derived.py",
+        "--config-name",
+        "smoke",
+        f"source_root={source_root}",
+        f"derived_root={derived_root}",
+        external=True,
+    )
+
+    _verify_gcs_artifacts(
+        session,
+        run_id,
+        prefix=f"static/derived/smoke/{run_id}/",
+        required_suffixes=(
+            "building_dsm",
+            "vegetation_dsm",
+            "combined_dsm",
+            "horizon_building",
+            "horizon_vegetation",
+            "svf",
+            "report.json",
+            "ledger.parquet",
+        ),
+    )
+
+
+# ── Dynamic scene pipeline ──────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-dynamic")
+def smoke_dynamic(session: nox.Session) -> None:
+    """Run dynamic pipeline smoke test locally.
+
+    Processes a single fixed Landsat anchor (see configs/dynamic/smoke.yaml),
+    runs the pipeline twice to confirm ledger idempotency, asserts all
+    three dynamic sources reach status ``done``, and then runs the
+    standalone validator.
+
+    Requires:
+    - Local static smoke products (run smoke-static-sources + smoke-static-derived first)
+    - CDS API access (~/.cdsapirc or CDS_API_KEY env)
+    - Manifest bundle that contains the smoke scene_id
+
+    Usage:
+        uv run nox -s smoke-dynamic -- \
+            data/manifest_build/v3/smoke/manifest.parquet
+    """
+    manifest_uri = session.posargs[0] if session.posargs else ""
+    output_root = "data/dynamic/smoke"
+
+    for _ in range(2):
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_dynamic.py",
+            "--config-name",
+            "smoke",
+            f"manifest_uri={manifest_uri}",
+            f"output_root={output_root}",
+            external=True,
+        )
+
+    _assert_dynamic_done(session, output_root, expected=1)
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/validate_dynamic.py",
+        f"--output-root={output_root}",
+        "--expected-scenes",
+        "1",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-smoke-dynamic")
+def cloud_smoke_dynamic(session: nox.Session) -> None:
+    """Run a deterministic 1-scene dynamic smoke test against GCS.
+
+    Uses cloud_smoke.yaml config with a fixed scene ID.
+    Output goes to gs://berlin-lst-data/dynamic/smoke/<run_id>/.
+
+    Requires:
+    - ADC / Workload Identity
+    - Published v3 manifest
+    - Published static source + derived products
+    - CDS API access for ERA5-Land download
+
+    Usage:
+        uv run nox -s cloud-smoke-dynamic -- \
+            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    manifest_uri = session.posargs[0] if session.posargs else ""
+
+    run_id = f"dyn-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    output_root = f"gs://berlin-lst-data/dynamic/smoke/{run_id}"
+
+    _preflight_gcs(session)
+
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/run_dynamic.py",
+        "--config-name",
+        "cloud_smoke",
+        f"manifest_uri={manifest_uri}",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none", name="cloud-dynamic")
+def cloud_dynamic(session: nox.Session) -> None:
+    """Run dynamic pipeline against GCS (all 324 scenes).
+
+    Requires:
+    - ADC / Workload Identity
+    - Published v3 manifest
+    - Published static source + derived products
+    - CDS API access for ERA5-Land download
+
+    Usage:
+        uv run nox -s cloud-dynamic -- \
+            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    manifest_uri = session.posargs[0] if session.posargs else ""
+
+    run_id = f"dyn-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    output_root = f"gs://berlin-lst-data/dynamic/full/{run_id}"
+
+    _preflight_gcs(session)
+
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/run_dynamic.py",
+        "--config-name",
+        "full",
+        f"manifest_uri={manifest_uri}",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+
+# ── DWD validation ────────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-dwd-validation")
+def smoke_dwd_validation(session: nox.Session) -> None:
+    """Run a bounded DWD-vs-ERA5 validation smoke locally.
+
+    Uses a single fixed Landsat anchor and a one-day DWD window
+    (see ``configs/dwd_validation/smoke.yaml``) so the run completes
+    quickly without external credentials beyond DWD availability.
+
+    Usage:
+        uv run nox -s smoke-dwd-validation -- \\
+            data/manifest_build/v3/smoke/manifest.parquet \\
+            gs://berlin-lst-data/dynamic/full/<run_id>
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    if len(session.posargs) < 2:
+        session.error(
+            "Provide the manifest URI and the dynamic full root: "
+            "nox -s smoke-dwd-validation -- <manifest_uri> <dynamic_full_root>"
+        )
+    manifest_uri = session.posargs[0]
+    full_root = session.posargs[1]
+    inference_root = session.posargs[2] if len(session.posargs) > 2 else ""
+
+    output_root = (
+        f"data/dwd_validation/smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
+        f"{uuid.uuid4().hex[:6]}"
+    )
+
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/run_dwd_validation.py",
+        "--config-name",
+        "smoke",
+        f"manifest_uri={manifest_uri}",
+        f"dynamic_full_root={full_root}",
+        f"dynamic_inference_root={inference_root}",
+        f"output_root={output_root}",
+        external=True,
+    )
+
+    # The validation run writes to <output_root>/runs/dwd/<run_id>/ and
+    # <output_root>/_raw/dwd/<run_id>/. The completion marker signals
+    # successful publication.
+    _assert_dwd_complete(session, output_root)
+
+
+def _assert_dwd_complete(session: nox.Session, output_root: str) -> None:
+    """Assert the DWD validation run produced a complete.json marker."""
     from pathlib import Path
 
-    args = session.posargs
-    if not args:
-        session.error(
-            "Provide a local manifest path: "
-            "nox -s upload-manifest -- data/ard/manifest.parquet",
-        )
-    local = Path(args[0])
-    if not local.is_file():
-        session.error(f"Manifest not found: {local}")
-
-    dst = f"gs://berlin-lst-data/manifests/{local.name}"
-    session.run("gcloud", "storage", "cp", str(local), dst, external=True)
-    session.log(f"Uploaded: {dst}")
-    session.log(f"Use: manifest_uri={dst}")
+    completion = next(Path(output_root).glob("runs/dwd/*/complete.json"), None)
+    if completion is None:
+        session.error(f"DWD validation produced no completion marker under {output_root}/runs/dwd/")
+    print(f"DWD validation complete: {completion}")

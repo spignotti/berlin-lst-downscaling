@@ -101,14 +101,16 @@ def main(
         ..., "--date", help="Acquisition date YYYY-MM-DD. Repeatable, matched 1:1 with --tile."
     ),
     stage_dir: str = typer.Option(
-        ..., "--stage-dir",
+        ...,
+        "--stage-dir",
         help=(
             "Stage root URI. Local POSIX path, gs://bucket/path, or ~/.mnt/path (FUSE). "
             "Granules are written to {stage_dir}/{run_id}/{granule_id}/."
         ),
     ),
     run_id: str | None = typer.Option(
-        None, "--run-id",
+        None,
+        "--run-id",
         help="Unique run identifier (auto-generated if not set).",
     ),
 ) -> None:
@@ -239,8 +241,7 @@ def _footprint_overlap(granule) -> float:
         )
         if not rects:
             typer.echo(
-                "  WARNING: No bounding rectangles in CMR response"
-                " — skipping overlap check.",
+                "  WARNING: No bounding rectangles in CMR response — skipping overlap check.",
             )
             return 1.0  # permissive on missing metadata
         r = rects[0]

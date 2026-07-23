@@ -1,0 +1,16 @@
+defaults:
+  - _base
+  - _self_
+
+# Bounded DWD-vs-ERA5 validation: a single fixed Landsat anchor keeps
+# the query window to one day. ``manifest_uri`` must point at a
+# manifest bundle that contains the scene_id below.
+scene_ids:
+  - "LC08_L2SP_192023_20170526_02_T1"
+
+# Tight window around the anchor acquisition (2017-05-26 10:17 UTC).
+start_date: "2017-05-26T00:00:00Z"
+end_date: "2017-05-27T23:59:59Z"
+
+# Local output keeps the smoke self-contained.
+output_root: "data/dwd_validation/smoke"

@@ -1,22 +1,31 @@
 """Sentinel-2 candidate search — ±window_days around each Landsat anchor.
 
-This module provides two functions:
+Two public entry points:
 
 1. ``match_s2_candidates`` — lightweight STAC search returning candidate
-   metadata (scene_id, datetime, dt_days, cloud_cover).  Used by
-   ``run_scan`` where pixel loads are not needed.
+   metadata (scene_id, datetime, dt_days, cloud_cover). Used by
+   ``data/selection/anchors.build_anchors``.
 
 2. ``match_s2_candidates_with_clear_frac`` — same search but also
    computes pixel-wise ``clear_frac`` for each candidate on the
-   canonical 10-m EPSG:25833 grid.  Used by the coupling step.
+   canonical 10-m EPSG:25833 grid. Used by the coupling step.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import logging
+from datetime import timedelta
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
+from berlin_lst_downscaling.data.io import log_event
+from berlin_lst_downscaling.data.selection._time import (
+    parse_cutoff as _parse_cutoff,
+)
+from berlin_lst_downscaling.data.selection._time import (
+    parse_item_datetime as _parse_item_datetime,
+)
 
+_logger = logging.getLogger(__name__)
 
 def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     """Return S2 L2A candidates within ±window_days of anchor's acquisition.
@@ -31,6 +40,12 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     anchor_dt = anchor["datetime"]
     start_dt = anchor_dt - timedelta(days=window_days)
     end_dt = anchor_dt + timedelta(days=window_days)
+
+    # Clamp end_dt to cutoff if provided
+    cutoff_str = cfg.get("cutoff_utc")
+    cutoff_dt = _parse_cutoff(cutoff_str) if cutoff_str else None
+    if cutoff_dt and end_dt > cutoff_dt:
+        end_dt = cutoff_dt
 
     start_str = start_dt.strftime("%Y-%m-%d")
     end_str = end_dt.strftime("%Y-%m-%d")
@@ -49,6 +64,9 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
 
         dt_days = abs((dt_utc - anchor_dt).total_seconds()) / 86400.0
         if dt_days > window_days + 1e-6:
+            continue
+        # Cutoff filter for S2 items
+        if cutoff_dt is not None and dt_utc > cutoff_dt:
             continue
 
         cloud_cover = item.properties.get("eo:cloud_cover")
@@ -71,7 +89,6 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     candidates.sort(key=lambda c: c["dt_days"])
     return candidates
 
-
 def match_s2_candidates_with_clear_frac(
     anchor: dict,
     l8_items: list,
@@ -82,9 +99,6 @@ def match_s2_candidates_with_clear_frac(
     Loads Landsat + S2 via odc.stac and computes clear_frac per candidate.
     Reuses the same l8_items for all candidates (the anchor scene).
     """
-    import json
-    import sys
-
     candidates = match_s2_candidates(anchor, cfg)
     if not candidates:
         return candidates
@@ -118,40 +132,50 @@ def match_s2_candidates_with_clear_frac(
             cf_by_dt[dt] = (cf, counts)
         except Exception as exc:
             cf_by_dt[dt] = None
-            import traceback
-
-            print(
-                f"  [clear_frac error] anchor {anchor.get('scene_id', '?')} "
-                f"dt={dt}: {exc}",
-                file=sys.stderr,
+            log_event(
+                _logger,
+                logging.WARNING,
+                "clear_frac_failed",
+                scene_id=anchor.get("scene_id", "?"),
+                dt=str(dt),
+                error=str(exc),
+                exc_info=True,
             )
-            traceback.print_exc(file=sys.stderr)
 
-    # Assign clear_frac to all candidates sharing each datetime
     candidate_diagnostics = []
     for c in candidates:
         result = cf_by_dt.get(c["datetime"])
         if result is None:
             c["clear_frac"] = None
+            c["aoi_clear_px"] = None
+            c["aoi_total_px"] = None
+            c["aoi_clear_frac"] = None
+            c["landsat_clear_px"] = None
+            c["joint_clear_px"] = None
             candidate_diagnostics.append(_cf_diagnostic_entry(c, None, None))
         else:
             cf, counts = result
             c["clear_frac"] = cf
+            c["aoi_clear_px"] = counts.get("intersect_px")
+            c["aoi_total_px"] = counts.get("aoi_px")
+            c["aoi_clear_frac"] = cf
+            c["landsat_clear_px"] = counts.get("l8_clear_px")
+            c["joint_clear_px"] = counts.get("intersect_px")
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
 
     # Log structured diagnostic event for this anchor
-    event = {
-        "event": "clear_frac_diagnostic",
-        "anchor_id": anchor["scene_id"],
-        "anchor_date": anchor["date"],
-        "n_candidates": len(candidate_diagnostics),
-        "n_unique_dts": len(unique_dts),
-        "candidates": candidate_diagnostics,
-    }
-    print(json.dumps(event), file=sys.stderr)
+    log_event(
+        _logger,
+        logging.INFO,
+        "clear_frac_diagnostic",
+        anchor_id=anchor["scene_id"],
+        anchor_date=anchor["date"],
+        n_candidates=len(candidate_diagnostics),
+        n_unique_dts=len(unique_dts),
+        candidates=candidate_diagnostics,
+    )
 
     return candidates
-
 
 def _cf_diagnostic_entry(candidate: dict, clear_frac: float | None, counts: dict | None) -> dict:
     entry = {
@@ -170,7 +194,6 @@ def _cf_diagnostic_entry(candidate: dict, clear_frac: float | None, counts: dict
             }
         )
     return entry
-
 
 def _resolve_s2_items(
     datetimes: list,
@@ -200,14 +223,3 @@ def _resolve_s2_items(
             result[dt] = items
 
     return result
-
-
-def _parse_item_datetime(item) -> datetime | None:
-    """Extract UTC datetime from a STAC item."""
-    dt_str = item.properties.get("datetime")
-    if dt_str is None:
-        return None
-    try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-    except ValueError:
-        return None

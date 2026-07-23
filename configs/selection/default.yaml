@@ -1,5 +1,0 @@
-# @package _global_
-# Default config: full coupling, all years/seasons.
-defaults:
-  - _base
-  - _self_

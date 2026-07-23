@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import planetary_computer
+import pystac
 import pystac_client
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 
 def get_catalog() -> pystac_client.Client:
@@ -19,7 +25,6 @@ def get_catalog() -> pystac_client.Client:
         "https://planetarycomputer.microsoft.com/api/stac/v1/",
         modifier=planetary_computer.sign_inplace,
     )
-
 
 @retry(
     stop=stop_after_attempt(3),
@@ -51,3 +56,109 @@ def stac_load(**kwargs):
 
     kwargs.setdefault("patch_url", planetary_computer.sign_url)
     return odc.stac.load(**kwargs)
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    reraise=True,
+)
+def pc_search(
+    collections: list[str],
+    bbox: tuple[float, float, float, float] | None = None,
+    datetime: str | None = None,
+    ids: list[str] | None = None,
+    query: dict | None = None,
+    max_items: int | None = None,
+) -> list:
+    """Search PC STAC with bounded retry on transient network failures.
+
+    Retries only on ConnectionError/TimeoutError; other exceptions
+    (4xx, invalid parameters) propagate immediately.
+
+    Returns a list of pystac.Item objects.
+    """
+    cat = get_catalog()
+    kwargs: dict = {"collections": collections}
+    if bbox is not None:
+        kwargs["bbox"] = bbox
+    if datetime is not None:
+        kwargs["datetime"] = datetime
+    if ids is not None:
+        kwargs["ids"] = ids
+    if query is not None:
+        kwargs["query"] = query
+    if max_items is not None:
+        kwargs["max_items"] = max_items
+
+    search = cat.search(**kwargs)
+    items = list(search.items())
+    return items
+
+def resolve_exact_item(
+    collection: str,
+    scene_id: str,
+) -> pystac.Item:
+    """Resolve a single exact STAC item by collection and ID.
+
+    Raises RuntimeError if the item is not found or the returned ID
+    does not match the requested one.
+    """
+    items = pc_search(
+        collections=[collection],
+        ids=[scene_id],
+        max_items=1,
+    )
+    if not items:
+        raise RuntimeError(f"STAC item {scene_id!r} not found in collection {collection!r}")
+    item = items[0]
+    if item.id != scene_id:
+        raise RuntimeError(f"STAC returned item {item.id!r} but expected {scene_id!r}")
+    return item
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    reraise=True,
+)
+def resolve_item_from_href(
+    item_href: str,
+    expected_id: str | None = None,
+) -> pystac.Item:
+    """Resolve a STAC item directly from its HREF (no search required).
+
+    Uses ``pystac.STACObject.from_file`` to fetch the item JSON from the
+    exact URL stored in the manifest. This avoids redundant catalog searches
+    and guarantees the exact item identity.
+
+    Parameters
+    ----------
+    item_href :
+        Absolute URL to the STAC item JSON (from manifest ``item_href``).
+    expected_id :
+        If provided, verify the loaded item's ID matches this value.
+
+    Raises
+    ------
+    RuntimeError
+        If the item cannot be loaded or the ID does not match.
+    """
+    item = pystac.STACObject.from_file(item_href)
+    if not isinstance(item, pystac.Item):
+        raise RuntimeError(
+            f"HREF {item_href!r} did not resolve to a STAC Item (got {type(item).__name__})"
+        )
+    if expected_id is not None and item.id != expected_id:
+        raise RuntimeError(f"Item at {item_href!r} has id={item.id!r}, expected {expected_id!r}")
+    # Sign assets for Planetary Computer access
+    planetary_computer.sign_inplace(item)
+    return item
+
+__all__ = [
+    "get_catalog",
+    "stac_load",
+    "pc_search",
+    "resolve_exact_item",
+    "resolve_item_from_href",
+]

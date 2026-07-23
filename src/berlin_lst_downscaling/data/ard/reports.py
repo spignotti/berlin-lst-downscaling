@@ -47,14 +47,21 @@ def qa_report(
                 stac_missing += 1
 
         # Flag COG existence
+        flag_ok = 0
         flag_missing = 0
         for r in rows:
-            if r.status != "done" or not r.path_cog:
+            if r.status != "done":
                 continue
-            # Path-based suffix replacement breaks for gs:// URIs (Path strips double slash).
-            # Flag path always follows deterministic naming: cog.tif → cog.flag.tif
-            flag_uri = r.path_cog.replace(".tif", ".flag.tif")
-            if not exists(flag_uri):
+            if r.path_flag and exists(r.path_flag):
+                flag_ok += 1
+            elif r.path_cog:
+                # Flag path follows deterministic naming
+                flag_uri = r.path_cog.replace(".tif", ".flag.tif")
+                if exists(flag_uri):
+                    flag_ok += 1
+                else:
+                    flag_missing += 1
+            else:
                 flag_missing += 1
 
         # AOI aggregate metrics (schema v4 — only for done scenes with metrics)
@@ -78,6 +85,7 @@ def qa_report(
             **counts,
             "cog_exists": cog_ok,
             "cog_missing": cog_missing,
+            "flag_exists": flag_ok,
             "flag_missing": flag_missing,
             "stac_exists": stac_ok,
             "stac_missing": stac_missing,
@@ -85,7 +93,11 @@ def qa_report(
         }
 
     failed = sum(
-        per_source[s].get("failed", 0) + per_source[s].get("cog_missing", 0)
+        per_source[s].get("failed", 0)
+        + per_source[s].get("exhausted", 0)
+        + per_source[s].get("cog_missing", 0)
+        + per_source[s].get("flag_missing", 0)
+        + per_source[s].get("stac_missing", 0)
         for s in (sources or per_source)
         if s in per_source
     )
@@ -99,7 +111,6 @@ def qa_report(
     }
 
     return report
-
 
 __all__ = [
     "qa_report",

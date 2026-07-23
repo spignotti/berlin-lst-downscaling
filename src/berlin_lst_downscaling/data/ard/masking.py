@@ -18,10 +18,8 @@ from berlin_lst_downscaling.data.ard.contract import contract_for_source
 
 # ── Landsat ─────────────────────────────────────────────────────────##
 
-
 _LS_ST_SCALE = 0.00341802  # USGS Collection 2 Level-2 ST scale
 _LS_ST_OFFSET = 149.0  # K
-
 
 def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
     """Return boolean array — True = pixel is clear of cloud/shadow/cirrus/fill.
@@ -48,7 +46,6 @@ def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
     fill = qa & 1
     return ~(fill.astype(bool) | cloudy | shadow.astype(bool) | cirrus.astype(bool))
 
-
 def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """Apply Landsat ARD masking: ST (Kelvin) + flag band.
 
@@ -66,18 +63,15 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """
     contract = contract_for_source("landsat-c2-l2")
 
-    # --- derive flag from qa_pixel ---
     qa = ds["qa_pixel"].values.squeeze().astype(np.uint16)
     flag = np.zeros(qa.shape, dtype=np.uint8)
 
-    # Per-bit breakdown for per-flag-type attribution
     cloud_raw = (qa >> 3) & 1
     cloud_conf = (qa >> 8) & 0b11
     cloudy = (cloud_raw != 0) & (cloud_conf >= 2)
     shadow = (qa >> 4) & 1
     cirrus = (qa >> 2) & 1
 
-    # Set per-type flags
     flag[(qa & 1) != 0] |= contract.FLAG_FILL
     flag[cloudy] |= contract.FLAG_CLOUDY
     flag[shadow.astype(bool)] |= contract.FLAG_SHADOW
@@ -91,14 +85,12 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
         # dilated buffer → fill bit
         flag[buffered & ~cloudy] |= contract.FLAG_FILL
 
-    # --- ST band ---
     raw = ds["lwir11"].values.squeeze().astype(np.float32)
     # DN=0 is fill in USGS C2 L2 ST; not always caught by QA_PIXEL bit 0
     flag[raw == 0] |= contract.FLAG_FILL
     st_kelvin = raw * _LS_ST_SCALE + _LS_ST_OFFSET
     st_kelvin[(flag & contract.FLAG_FILL) != 0] = float("nan")
 
-    # --- build output Dataset ---
     coords = dict(ds.coords)
     dims = ds.dims
 
@@ -124,12 +116,9 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
 
     return out
 
-
 # ── Sentinel-2 ───────────────────────────────────────────────────────##
 
-
 _S2_DN_SCALE = 1.0 / 10000.0  # Baseline 04.00 scaled reflectance
-
 
 def mask_s2(
     ds: xr.Dataset,
@@ -157,7 +146,6 @@ def mask_s2(
     """
     contract = contract_for_source("sentinel-2-l2a")
 
-    # --- flag from SCL (Scene Classification Layer) ---
     # SCL comes as float32 from odc.stac.load; round to int for class values
     scl_raw = ds["SCL"].values.squeeze()
     scl = np.round(scl_raw).astype(np.uint8)
@@ -178,7 +166,6 @@ def mask_s2(
     # saturated
     flag[scl == 1] |= contract.FLAG_SATURATED
 
-    # --- directional cloud-shadow projection ---
     cloud_mask = (scl == 8) | (scl == 9)
     if cloud_mask.any() and sun_elevation_deg > 0.5:
         transform = ds.rio.transform()
@@ -191,7 +178,6 @@ def mask_s2(
         )
         flag[proj_mask] |= contract.FLAG_SHADOW
 
-    # --- scale reflectance bands ---
     bands_10m = ["B02", "B03", "B04", "B08"]
     scaled = {}
     for b in bands_10m:
@@ -202,7 +188,6 @@ def mask_s2(
         arr[(flag & contract.FLAG_FILL) != 0] = float("nan")
         scaled[b] = arr
 
-    # --- build output Dataset ---
     coords = dict(ds.coords)
     dims = ds.dims
     out_vars = {}
@@ -225,9 +210,7 @@ def mask_s2(
 
     return out
 
-
 # ── cloud-shadow projection (directional offset, not ray-cast) ───────##
-
 
 def _project_cloud_shadow(
     cloud_mask: np.ndarray,
@@ -280,9 +263,7 @@ def _project_cloud_shadow(
     )
     return shifted > 0.5
 
-
 # ── ECOSTRESS ───────────────────────────────────────────────────────##
-
 
 def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """Apply ECOSTRESS L2T masking: LST + flag band from cloud/water/QC layers.
@@ -332,10 +313,8 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     flag[qc_low2 == 3] |= contract.FLAG_FILL  # pixel not produced
     flag[qc_low2 == 1] |= contract.FLAG_CLOUDY  # TES degraded (conservative)
 
-    # Apply fill to LST band
     lst_arr[(flag & contract.FLAG_FILL) != 0] = float("nan")
 
-    # Build output Dataset
     coords = dict(ds.coords)
     dims = ds.dims
 
@@ -354,13 +333,11 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
         },
         coords=coords,
     )
-    # Propagate CRS via rioxarray
     for var in out.data_vars:
         out[var].rio.write_crs(ds.rio.crs, inplace=True)
         out[var].rio.write_transform(ds.rio.transform(), inplace=True)
 
     return out
-
 
 _FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated"
 

@@ -1,0 +1,7 @@
+defaults:
+  - _base
+  - _self_
+
+# Local smoke — consumes Pipeline-A local smoke output.
+source_root: "data/static/sources/smoke"
+derived_root: "data/static/derived/smoke"

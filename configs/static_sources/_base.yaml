@@ -1,0 +1,30 @@
+# @package _global_
+# Pipeline A: static source products — base config.
+
+mode: full                    # fixture | full
+
+# Source product root (local path or GCS bucket prefix)
+source_root: "data/static/sources"
+
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
+# Disk budget (peak scratch, GiB)
+peak_scratch_gb: 8
+disk_budget_gb: 20
+
+# Geometry ID — frozen upstream revision key for downstream lineage
+geometry_id: "dgm1-2021__lod2-2024__vh-2020"
+
+# Smoke subset grid (WGS84 bbox: west, south, east, north).
+# When set, all sources use a cropped canonical-aligned grid instead of
+# the full Berlin AOI.  Only for local real-data smoke tests.
+# smoke_grid_bbox: null
+
+# Hydra overrides
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false

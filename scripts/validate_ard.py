@@ -30,8 +30,9 @@ import pyarrow.parquet as pq
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate ARD COGs from ledger")
     parser.add_argument("--ledger", required=True, help="Path to ledger.parquet")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Show all scenes, not just failed")
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Show all scenes, not just failed"
+    )
     args = parser.parse_args()
 
     # ── Load ledger ────────────────────────────────────────────────────
@@ -71,13 +72,19 @@ def main() -> int:
         source = row["source"]
         scene_id = row["scene_id"]
         cog_uri = row.get("path_cog")
-        flag_uri = cog_uri.replace(".tif", ".flag.tif") if cog_uri else None
+        flag_uri = row.get("path_flag")
+        if not flag_uri and cog_uri:
+            flag_uri = cog_uri.replace(".tif", ".flag.tif")
 
         if not cog_uri:
-            results.append(ValidationResult(
-                scene_id=scene_id, source=source, ok=False,
-                errors=["No path_cog in ledger"],
-            ))
+            results.append(
+                ValidationResult(
+                    scene_id=scene_id,
+                    source=source,
+                    ok=False,
+                    errors=["No path_cog in ledger"],
+                )
+            )
             continue
 
         res = _RES_MAP.get(source, 10)

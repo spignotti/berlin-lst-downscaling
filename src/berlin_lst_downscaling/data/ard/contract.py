@@ -9,7 +9,6 @@ _NAN = float("nan")
 
 # ── band / tiling specs ──────────────────────────────────────────────
 
-
 @dataclass(frozen=True)
 class BandSpec:
     """Description of one band in the output COG."""
@@ -18,7 +17,8 @@ class BandSpec:
     dtype: str
     nodata: float | None
     description: str
-
+    unit: str = ""
+    valid_range: tuple[float, float] | None = None  # (min, max) inclusive
 
 @dataclass(frozen=True)
 class TilingSpec:
@@ -29,9 +29,7 @@ class TilingSpec:
     compress: str = "deflate"
     predictor: int = 2
 
-
 # ── contract ─────────────────────────────────────────────────────────
-
 
 @dataclass(frozen=True)
 class Contract:
@@ -58,21 +56,7 @@ class Contract:
         """Return schema version as a string for ledger/STAC storage."""
         return str(self.schema_version)
 
-
-# ── flag-band shared spec ────────────────────────────────────────────
-
-_FLAG_BAND_SPEC = BandSpec(
-    name="flag",
-    dtype="uint8",
-    nodata=None,  # fill is encoded in bit 0 of the flag itself
-    description=(
-        "Quality flag (bitmask): "
-        "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated"
-    ),
-)
-
 # ── factories ────────────────────────────────────────────────────────
-
 
 def contract_for_source(source: str) -> Contract:
     """Return the :class:`Contract` for a given sensor source key.
@@ -85,10 +69,9 @@ def contract_for_source(source: str) -> Contract:
         target_crs="EPSG:25833",
         output_bands=_bands,  # flag band is separate (own uint8 COG)
         tiling=TilingSpec(),
-        schema_version=5,
+        schema_version=6,
         flag_mode="separate",
     )
-
 
 # ── per-source band lists ────────────────────────────────────────────
 
