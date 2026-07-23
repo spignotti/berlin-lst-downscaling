@@ -1,14 +1,14 @@
 """Sentinel-2 candidate search — ±window_days around each Landsat anchor.
 
-This module provides two functions:
+Two public entry points:
 
 1. ``match_s2_candidates`` — lightweight STAC search returning candidate
-   metadata (scene_id, datetime, dt_days, cloud_cover).  Used by
-   ``run_scan`` where pixel loads are not needed.
+   metadata (scene_id, datetime, dt_days, cloud_cover). Used by
+   ``data/selection/anchors.build_anchors``.
 
 2. ``match_s2_candidates_with_clear_frac`` — same search but also
    computes pixel-wise ``clear_frac`` for each candidate on the
-   canonical 10-m EPSG:25833 grid.  Used by the coupling step.
+   canonical 10-m EPSG:25833 grid. Used by the coupling step.
 """
 
 from __future__ import annotations

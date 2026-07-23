@@ -13,4 +13,4 @@ scene_ids:
   - "LC08_L2SP_192023_20170526_02_T1"
 
 # manifest_uri must be provided on the command line:
-#   manifest_uri=data/ard/manifests/v3/.../manifest.parquet
+#   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet

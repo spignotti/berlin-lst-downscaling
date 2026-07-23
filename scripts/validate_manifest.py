@@ -8,17 +8,17 @@
 
 Usage
 -----
-    # Offline validation (no network)
+    # Offline validation (no network) — point at the published bundle root.
     uv run python scripts/validate_manifest.py \
-        --manifest data/ard/manifest.parquet \
-        --pairings data/ard/pairings.parquet \
-        --report data/ard/manifest_report.json
+        --manifest gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet \
+        --pairings gs://berlin-lst-data/manifests/v3/...-r2/pairings.parquet \
+        --report gs://berlin-lst-data/manifests/v3/...-r2/manifest_report.json
 
     # With upstream PC/CMR identity resolution
     uv run python scripts/validate_manifest.py \
-        --manifest data/ard/manifest.parquet \
-        --pairings data/ard/pairings.parquet \
-        --report data/ard/manifest_report.json \
+        --manifest gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet \
+        --pairings gs://berlin-lst-data/manifests/v3/...-r2/pairings.parquet \
+        --report gs://berlin-lst-data/manifests/v3/...-r2/manifest_report.json \
         --resolve-upstream
 """
 

@@ -5,18 +5,15 @@
 
 """Unified ARD pipeline entry point — Hydra-driven, mode=full only.
 
-Replaces ``run_ard_landsat.py``, ``run_ard_sentinel2.py``,
-``run_ard_ecostress.py``.
-
 Usage
 -----
     # Smoke test (manifest-driven, all sources)
     uv run python scripts/run_ard.py --config-name smoke_primary \
         manifest_uri=data/smoke/primary/manifest.parquet
 
-    # Single-source run (e.g. Landsat full)
-    uv run python scripts/run_ard.py --config-name landsat/default \
-        mode=full manifest_uri=data/ard/manifest.parquet
+    # Production
+    #   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
+    uv run python scripts/run_ard.py --config-name full_all
 """
 
 from __future__ import annotations

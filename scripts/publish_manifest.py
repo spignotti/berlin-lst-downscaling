@@ -6,7 +6,7 @@ manifest_report.json last as the publication marker.
 
 Usage:
     uv run python scripts/publish_manifest.py \
-        --local-root data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z \
+        --local-root data/manifest_build/v3/2017-2026-cutoff-20260717T235959Z \
         --publish-root gs://berlin-lst-data/manifests/v3/bundle-abc123-20260718T120000
 """
 

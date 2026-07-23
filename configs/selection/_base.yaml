@@ -9,8 +9,6 @@ months: [5, 6, 7, 8, 9]               # May – September (1-indexed)
 cutoff_utc: null                       # required for current-year runs; e.g. "2026-07-17T23:59:59Z"
 
 # ── Pipeline mode ─────────────────────────────────────────────────────────────
-# "couple" → full pixel-coupled manifest
-# "scan"   → metadata-only volume scan, writes scan_report.{json,md}
 mode: couple
 
 # ── Platform filter ──────────────────────────────────────────────────────────
@@ -57,11 +55,9 @@ aoi:
   mask_base: "data/boundaries"   # base path for aoi_10m.tif
 
 # ── Output ───────────────────────────────────────────────────────────────────
-manifest_out: "data/ard/manifest.parquet"
-pairings_out: "data/ard/pairings.parquet"
-report_out: "data/ard/manifest_report.json"
-scan_out_dir: "data/ard"
-output_root: "data/ard"           # shared root; manifest_out resolved relative to this
+# Required output root. Production runs MUST override this so immutable
+# published bundle prefixes are never overwritten.
+output_root: null
 checkpoint_dir: null              # override per config; defaults to {output_root}/checkpoints
 
 # Logging

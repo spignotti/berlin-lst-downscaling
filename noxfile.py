@@ -132,8 +132,12 @@ def smoke_primary(session: nox.Session) -> None:
         # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
         # automatically by the pipeline's _process_ecostress_todo path.
         session.run(
-            "uv", "run", "python", "scripts/run_ard.py",
-            "--config-name", "smoke_primary",
+            "uv",
+            "run",
+            "python",
+            "scripts/run_ard.py",
+            "--config-name",
+            "smoke_primary",
             f"manifest_uri={manifest_path}",
             f"output_root={output_root}",
             "+ecostress.persist_stage=true",  # keep stage for inspection
@@ -145,7 +149,10 @@ def smoke_primary(session: nox.Session) -> None:
 
     _assert_ard_done(session, output_root, expected=3)
     session.run(
-        "uv", "run", "python", "scripts/validate_ard.py",
+        "uv",
+        "run",
+        "python",
+        "scripts/validate_ard.py",
         f"--ledger={output_root}/ledger.parquet",
         external=True,
     )
@@ -154,7 +161,10 @@ def smoke_primary(session: nox.Session) -> None:
 def _assert_ard_done(session: nox.Session, output_root: str, expected: int) -> None:
     """Assert that *output_root*/ledger.parquet has *expected* ``done`` rows."""
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "import sys, pyarrow.parquet as pq; "
             f"tbl = pq.read_table('{output_root}/ledger.parquet'); "
@@ -169,7 +179,10 @@ def _assert_ard_done(session: nox.Session, output_root: str, expected: int) -> N
 def _assert_dynamic_done(session: nox.Session, output_root: str, expected: int) -> None:
     """Assert that *output_root* has *expected* done scenes across all dynamic sources."""
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "import sys, pyarrow.parquet as pq; "
             f"tbl = pq.read_table('{output_root.rstrip('/')}/_state/dynamic/ledger.parquet'); "
@@ -178,7 +191,8 @@ def _assert_dynamic_done(session: nox.Session, output_root: str, expected: int) 
             "counts = Counter(rows); "
             "for src in ('era5_land', 'shadow_building', 'shadow_vegetation'): "
             "    print(f'{src}: {counts.get((src, \"done\"), 0)}'); "
-            "ok = all(counts.get((s, 'done'), 0) >= " + str(expected)
+            "ok = all(counts.get((s, 'done'), 0) >= "
+            + str(expected)
             + " for s in ('era5_land', 'shadow_building', 'shadow_vegetation')); "
             "sys.exit(0 if ok else 1)"
         ),
@@ -189,33 +203,23 @@ def _assert_dynamic_done(session: nox.Session, output_root: str, expected: int) 
 # ── Szenen-Selektion ─────────────────────────────────────────────────
 
 
-@nox.session(venv_backend="none", name="smoke-selection-2024")
-def smoke_selection_2024(session: nox.Session) -> None:
-    """Run Szenen-Selektion coupling on Mai–Sep 2024.
+@nox.session(venv_backend="none", name="smoke-selection-couple")
+def smoke_selection_couple(session: nox.Session) -> None:
+    """Run Szenen-Selektion coupling against the bounded ARD smoke bundle.
 
-    Validates the coupling logic across the full configured season.
-    Uses SCL-based cloud detection (the only method).
-    Writes ``data/smoke/manifest_2024.parquet``.
+    Produces a local couple-mode bundle whose manifest rows feed ARD's
+    bounded smoke-primary run. The bundle remains in
+    ``data/manifest_build/v3/smoke`` — it is never published.
     """
     session.run(
-        "uv", "run", "python", "scripts/build_manifest.py",
-        "--config-dir", "configs/selection",
-        "--config-name", "smoke_2024_mai_sep",
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none", name="selection-scan")
-def selection_scan(session: nox.Session) -> None:
-    """Run full metadata-only volume scan (2017–2025, Mai–Sep).
-
-    Writes ``data/ard/scan_report.{json,md}`` with counts and GB estimates.
-    No pixel loads — PC STAC + CMR metadata only.
-    """
-    session.run(
-        "uv", "run", "python", "scripts/build_manifest.py",
-        "--config-dir", "configs/selection",
-        "--config-name", "full_2017_2025",
+        "uv",
+        "run",
+        "python",
+        "scripts/build_manifest.py",
+        "output_root=data/manifest_build/v3/smoke",
+        "years=[2024]",
+        "months=[6,7]",
+        "cutoff_utc=2024-07-31T23:59:59Z",
         external=True,
     )
 
@@ -245,7 +249,10 @@ def cloud_pilot(session: nox.Session) -> None:
 
     # ── pre-flight: GCS reachable ─────────────────────────────────────
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
@@ -260,19 +267,30 @@ def cloud_pilot(session: nox.Session) -> None:
 
     # Step 2: Stage ECOSTRESS fixture to GCS
     session.run(
-        "uv", "run", "python", "scripts/download_ecostress_fixture.py",
-        "--tile", "33UUU",
-        "--date", "2018-07-30",
-        "--stage-dir", stage_base,
-        "--run-id", run_id,
+        "uv",
+        "run",
+        "python",
+        "scripts/download_ecostress_fixture.py",
+        "--tile",
+        "33UUU",
+        "--date",
+        "2018-07-30",
+        "--stage-dir",
+        stage_base,
+        "--run-id",
+        run_id,
         external=True,
     )
 
     # Step 3: Run the unified ARD pipeline (reads ECOSTRESS from GCS stage,
     # AOI from GCS — exercises the full cloud-read path)
     session.run(
-        "uv", "run", "python", "scripts/run_ard.py",
-        "--config-name", "smoke_primary",
+        "uv",
+        "run",
+        "python",
+        "scripts/run_ard.py",
+        "--config-name",
+        "smoke_primary",
         f"manifest_uri={manifest_path}",
         f"output_root={output_root}/smoke_primary",
         f"ecostress.raw_dir={eco_stage}",
@@ -283,7 +301,10 @@ def cloud_pilot(session: nox.Session) -> None:
 
     # Step 4: Clean up ECOSTRESS GCS stage
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         f"""
 import sys; sys.path.insert(0, 'src')
 from berlin_lst_downscaling.data.io.staging import StageSession
@@ -295,7 +316,10 @@ with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
 
     # Step 5: Verify final COGs landed in GCS
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "import sys\n"
             "from google.cloud import storage\n"
@@ -322,7 +346,10 @@ def _verify_local_artifacts(
 ) -> None:
     """Check that every required artifact is present under a local root."""
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         f"""import sys
 from pathlib import Path
 required_suffixes = {required_suffixes!r}
@@ -356,7 +383,10 @@ print('All required artifacts present.')
 def _preflight_gcs(session: nox.Session) -> None:
     """Confirm ADC + the bucket are reachable before a cloud run."""
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
@@ -376,7 +406,10 @@ def _verify_gcs_artifacts(
     """Check that every required blob exists under a GCS run prefix."""
     prefix = prefix.format(run_id=run_id)
     session.run(
-        "uv", "run", "python", "-c",
+        "uv",
+        "run",
+        "python",
+        "-c",
         f"""import sys
 from google.cloud import storage
 client = storage.Client()
@@ -422,8 +455,12 @@ def smoke_static_sources(session: nox.Session) -> None:
 
     for _ in range(2):
         session.run(
-            "uv", "run", "python", "scripts/run_static_sources.py",
-            "--config-name", "smoke",
+            "uv",
+            "run",
+            "python",
+            "scripts/run_static_sources.py",
+            "--config-name",
+            "smoke",
             f"source_root={output_root}",
             external=True,
         )
@@ -465,19 +502,19 @@ def cloud_static_sources(session: nox.Session) -> None:
 
     session.env.setdefault("UV_ENV_FILE", ".env")
 
-    run_id = (
-        f"stat-src-"
-        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
-        f"{uuid.uuid4().hex[:6]}"
-    )
+    run_id = f"stat-src-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     source_root = f"gs://berlin-lst-data/static/sources/smoke/{run_id}"
 
     _preflight_gcs(session)
 
     for _ in range(2):
         session.run(
-            "uv", "run", "python", "scripts/run_static_sources.py",
-            "--config-name", "smoke",
+            "uv",
+            "run",
+            "python",
+            "scripts/run_static_sources.py",
+            "--config-name",
+            "smoke",
             f"source_root={source_root}",
             external=True,
         )
@@ -515,8 +552,12 @@ def smoke_static_derived(session: nox.Session) -> None:
 
     for _ in range(2):
         session.run(
-            "uv", "run", "python", "scripts/run_static_derived.py",
-            "--config-name", "smoke",
+            "uv",
+            "run",
+            "python",
+            "scripts/run_static_derived.py",
+            "--config-name",
+            "smoke",
             f"derived_root={output_root}",
             external=True,
         )
@@ -554,20 +595,22 @@ def cloud_static_derived(session: nox.Session) -> None:
 
     session.env.setdefault("UV_ENV_FILE", ".env")
 
-    source_root = session.posargs[0] if session.posargs else "gs://berlin-lst-data/static/sources/full"
-
-    run_id = (
-        f"stat-drv-"
-        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
-        f"{uuid.uuid4().hex[:6]}"
+    source_root = (
+        session.posargs[0] if session.posargs else "gs://berlin-lst-data/static/sources/full"
     )
+
+    run_id = f"stat-drv-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     derived_root = f"gs://berlin-lst-data/static/derived/smoke/{run_id}"
 
     _preflight_gcs(session)
 
     session.run(
-        "uv", "run", "python", "scripts/run_static_derived.py",
-        "--config-name", "smoke",
+        "uv",
+        "run",
+        "python",
+        "scripts/run_static_derived.py",
+        "--config-name",
+        "smoke",
         f"source_root={source_root}",
         f"derived_root={derived_root}",
         external=True,
@@ -616,8 +659,12 @@ def smoke_dynamic(session: nox.Session) -> None:
 
     for _ in range(2):
         session.run(
-            "uv", "run", "python", "scripts/run_dynamic.py",
-            "--config-name", "smoke",
+            "uv",
+            "run",
+            "python",
+            "scripts/run_dynamic.py",
+            "--config-name",
+            "smoke",
             f"manifest_uri={manifest_uri}",
             f"output_root={output_root}",
             external=True,
@@ -625,9 +672,13 @@ def smoke_dynamic(session: nox.Session) -> None:
 
     _assert_dynamic_done(session, output_root, expected=1)
     session.run(
-        "uv", "run", "python", "scripts/validate_dynamic.py",
+        "uv",
+        "run",
+        "python",
+        "scripts/validate_dynamic.py",
         f"--output-root={output_root}",
-        "--expected-scenes", "1",
+        "--expected-scenes",
+        "1",
         external=True,
     )
 
@@ -656,18 +707,18 @@ def cloud_smoke_dynamic(session: nox.Session) -> None:
 
     manifest_uri = session.posargs[0] if session.posargs else ""
 
-    run_id = (
-        f"dyn-smoke-"
-        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
-        f"{uuid.uuid4().hex[:6]}"
-    )
+    run_id = f"dyn-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     output_root = f"gs://berlin-lst-data/dynamic/smoke/{run_id}"
 
     _preflight_gcs(session)
 
     session.run(
-        "uv", "run", "python", "scripts/run_dynamic.py",
-        "--config-name", "cloud_smoke",
+        "uv",
+        "run",
+        "python",
+        "scripts/run_dynamic.py",
+        "--config-name",
+        "cloud_smoke",
         f"manifest_uri={manifest_uri}",
         f"output_root={output_root}",
         external=True,
@@ -695,18 +746,18 @@ def cloud_dynamic(session: nox.Session) -> None:
 
     manifest_uri = session.posargs[0] if session.posargs else ""
 
-    run_id = (
-        f"dyn-"
-        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-"
-        f"{uuid.uuid4().hex[:6]}"
-    )
+    run_id = f"dyn-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     output_root = f"gs://berlin-lst-data/dynamic/full/{run_id}"
 
     _preflight_gcs(session)
 
     session.run(
-        "uv", "run", "python", "scripts/run_dynamic.py",
-        "--config-name", "full",
+        "uv",
+        "run",
+        "python",
+        "scripts/run_dynamic.py",
+        "--config-name",
+        "full",
         f"manifest_uri={manifest_uri}",
         f"output_root={output_root}",
         external=True,
@@ -747,8 +798,12 @@ def smoke_dwd_validation(session: nox.Session) -> None:
     )
 
     session.run(
-        "uv", "run", "python", "scripts/run_dwd_validation.py",
-        "--config-name", "smoke",
+        "uv",
+        "run",
+        "python",
+        "scripts/run_dwd_validation.py",
+        "--config-name",
+        "smoke",
         f"manifest_uri={manifest_uri}",
         f"dynamic_full_root={full_root}",
         f"dynamic_inference_root={inference_root}",
@@ -768,7 +823,5 @@ def _assert_dwd_complete(session: nox.Session, output_root: str) -> None:
 
     completion = next(Path(output_root).glob("runs/dwd/*/complete.json"), None)
     if completion is None:
-        session.error(
-            f"DWD validation produced no completion marker under {output_root}/runs/dwd/"
-        )
+        session.error(f"DWD validation produced no completion marker under {output_root}/runs/dwd/")
     print(f"DWD validation complete: {completion}")
