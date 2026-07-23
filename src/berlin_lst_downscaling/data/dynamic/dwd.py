@@ -133,8 +133,14 @@ def _inventory_to_dataframe(inventory: list[DwdStationInventory]) -> pd.DataFram
     if not inventory:
         return pd.DataFrame(
             columns=[
-                "station_id", "name", "latitude", "longitude",
-                "height", "start_date", "end_date", "in_request_window",
+                "station_id",
+                "name",
+                "latitude",
+                "longitude",
+                "height",
+                "start_date",
+                "end_date",
+                "in_request_window",
             ],
         )
     return pd.DataFrame(
@@ -172,8 +178,10 @@ def _bbox_for_polygon(geom) -> tuple[float, float, float, float]:
 
 
 def _in_window(
-    start: datetime | None, end: datetime | None,
-    query_start: datetime, query_end: datetime,
+    start: datetime | None,
+    end: datetime | None,
+    query_start: datetime,
+    query_end: datetime,
 ) -> bool:
     """Return True if [start, end] overlaps the query window."""
     if start is not None and start > query_end:
@@ -223,7 +231,10 @@ def _wetterdienst_request(
 
 
 def _collect_stations(
-    period: str, aoi_geom, query_start: datetime, query_end: datetime,
+    period: str,
+    aoi_geom,
+    query_start: datetime,
+    query_end: datetime,
 ) -> list[DwdStationInventory]:
     bbox = _bbox_for_polygon(aoi_geom)
     req = _wetterdienst_request(period, query_start, query_end)
@@ -248,7 +259,10 @@ def _collect_stations(
                 start_date=record["start_date"],
                 end_date=record["end_date"],
                 in_request_window=_in_window(
-                    record["start_date"], record["end_date"], query_start, query_end,
+                    record["start_date"],
+                    record["end_date"],
+                    query_start,
+                    query_end,
                 ),
             )
         )
@@ -274,13 +288,17 @@ def _collect_observations(
         lf = req.values.all().df  # type: ignore[attr-defined]
         df = lf.collect() if hasattr(lf, "collect") else lf  # type: ignore[attr-defined]
     except Exception as exc:
-        log_event(_logger, logging.WARNING, "dwd_values_failed",
-                  period=period, error=str(exc))
+        log_event(_logger, logging.WARNING, "dwd_values_failed", period=period, error=str(exc))
         return []
     keep = {"station_id", "date", "value", "quality"}
     if not keep.issubset(set(df.columns)):
-        log_event(_logger, logging.WARNING, "dwd_values_schema_unexpected",
-                  period=period, columns=list(df.columns))
+        log_event(
+            _logger,
+            logging.WARNING,
+            "dwd_values_schema_unexpected",
+            period=period,
+            columns=list(df.columns),
+        )
         return []
     df = df.select(list(keep))
     out: list[DwdObservation] = []
@@ -365,13 +383,15 @@ def fetch_dwd_temperature(
             if (station.start_date, station.end_date) < (existing.start_date, existing.end_date):
                 inventory_rows[station.station_id] = station
 
-    stations_in_window = [
-        s for s in inventory_rows.values() if s.in_request_window
-    ]
+    stations_in_window = [s for s in inventory_rows.values() if s.in_request_window]
     station_ids = [s.station_id for s in stations_in_window]
-    log_event(_logger, logging.INFO, "dwd_stations_selected",
-              n_stations=len(inventory_rows),
-              n_in_window=len(stations_in_window))
+    log_event(
+        _logger,
+        logging.INFO,
+        "dwd_stations_selected",
+        n_stations=len(inventory_rows),
+        n_in_window=len(stations_in_window),
+    )
 
     historical_obs: list[DwdObservation] = []
     recent_obs: list[DwdObservation] = []
@@ -381,10 +401,14 @@ def fetch_dwd_temperature(
         recent_obs = _collect_observations("recent", station_ids, start_utc, end_utc)
 
     observations = _merge_historical_recent(historical_obs, recent_obs)
-    log_event(_logger, logging.INFO, "dwd_observations_collected",
-              historical=len(historical_obs),
-              recent=len(recent_obs),
-              merged=len(observations))
+    log_event(
+        _logger,
+        logging.INFO,
+        "dwd_observations_collected",
+        historical=len(historical_obs),
+        recent=len(recent_obs),
+        merged=len(observations),
+    )
 
     return DwdFetchResult(
         inventory=list(inventory_rows.values()),

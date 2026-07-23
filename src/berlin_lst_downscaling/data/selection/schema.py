@@ -28,49 +28,55 @@ ALLOWED_SOURCES = {"landsat-c2-l2", "sentinel-2-l2a", "ecostress"}
 ALLOWED_ROLES = {"anchor", "predictor", "validation"}
 
 # Required ECOSTRESS validation granules (2018-08-25 only)
-ECOSTRESS_VALIDATION_IDS = frozenset({
-    "ECOv002_L2T_LSTE_00770_009_32UQD_20180825T082058_0712_01",
-    "ECOv002_L2T_LSTE_00770_009_33UUU_20180825T082058_0712_01",
-    "ECOv002_L2T_LSTE_00770_009_33UVU_20180825T082058_0712_01",
-    "ECOv002_L2T_LSTE_00771_005_32UQD_20180825T095710_0712_01",
-    "ECOv002_L2T_LSTE_00771_005_33UUU_20180825T095710_0712_01",
-    "ECOv002_L2T_LSTE_00771_005_33UVU_20180825T095710_0712_01",
-})
+ECOSTRESS_VALIDATION_IDS = frozenset(
+    {
+        "ECOv002_L2T_LSTE_00770_009_32UQD_20180825T082058_0712_01",
+        "ECOv002_L2T_LSTE_00770_009_33UUU_20180825T082058_0712_01",
+        "ECOv002_L2T_LSTE_00770_009_33UVU_20180825T082058_0712_01",
+        "ECOv002_L2T_LSTE_00771_005_32UQD_20180825T095710_0712_01",
+        "ECOv002_L2T_LSTE_00771_005_33UUU_20180825T095710_0712_01",
+        "ECOv002_L2T_LSTE_00771_005_33UVU_20180825T095710_0712_01",
+    }
+)
 
 # ── manifest.parquet schema v3 ────────────────────────────────────────
 
-MANIFEST_SCHEMA = pa.schema([
-    # Primary key (with `source`)
-    pa.field("scene_id", pa.string(), nullable=False),
-    pa.field("source", pa.string(), nullable=False),
-    # Classification
-    pa.field("role", pa.string(), nullable=False),  # anchor | predictor | validation
-    pa.field("platform", pa.string(), nullable=False),
-    pa.field("year", pa.int32(), nullable=False),
-    pa.field("acquisition_datetime", pa.timestamp("us", tz="UTC"), nullable=False),
-    # STAC identity — exact item reference
-    pa.field("item_href", pa.string(), nullable=True),  # required for PC STAC rows
-    # AOI clear-fraction metrics (required for anchor/predictor)
-    pa.field("aoi_clear_px", pa.int64(), nullable=True),
-    pa.field("aoi_total_px", pa.int64(), nullable=True),
-    pa.field("aoi_clear_frac", pa.float32(), nullable=True),
-    # Diagnostic metadata (not used as gate)
-    pa.field("cloud_cover", pa.float32(), nullable=True),
-    pa.field("solar_azimuth", pa.float32(), nullable=True),
-    pa.field("solar_elevation", pa.float32(), nullable=True),
-])
+MANIFEST_SCHEMA = pa.schema(
+    [
+        # Primary key (with `source`)
+        pa.field("scene_id", pa.string(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        # Classification
+        pa.field("role", pa.string(), nullable=False),  # anchor | predictor | validation
+        pa.field("platform", pa.string(), nullable=False),
+        pa.field("year", pa.int32(), nullable=False),
+        pa.field("acquisition_datetime", pa.timestamp("us", tz="UTC"), nullable=False),
+        # STAC identity — exact item reference
+        pa.field("item_href", pa.string(), nullable=True),  # required for PC STAC rows
+        # AOI clear-fraction metrics (required for anchor/predictor)
+        pa.field("aoi_clear_px", pa.int64(), nullable=True),
+        pa.field("aoi_total_px", pa.int64(), nullable=True),
+        pa.field("aoi_clear_frac", pa.float32(), nullable=True),
+        # Diagnostic metadata (not used as gate)
+        pa.field("cloud_cover", pa.float32(), nullable=True),
+        pa.field("solar_azimuth", pa.float32(), nullable=True),
+        pa.field("solar_elevation", pa.float32(), nullable=True),
+    ]
+)
 
 # ── pairings.parquet schema v1 ────────────────────────────────────────
 
-PAIRINGS_SCHEMA = pa.schema([
-    pa.field("landsat_scene_id", pa.string(), nullable=False),
-    pa.field("sentinel2_scene_id", pa.string(), nullable=False),
-    pa.field("dt_seconds", pa.int64(), nullable=False),
-    pa.field("landsat_clear_px", pa.int64(), nullable=False),
-    pa.field("joint_clear_px", pa.int64(), nullable=False),
-    pa.field("joint_clear_frac", pa.float32(), nullable=False),
-    pa.field("score", pa.float32(), nullable=False),
-])
+PAIRINGS_SCHEMA = pa.schema(
+    [
+        pa.field("landsat_scene_id", pa.string(), nullable=False),
+        pa.field("sentinel2_scene_id", pa.string(), nullable=False),
+        pa.field("dt_seconds", pa.int64(), nullable=False),
+        pa.field("landsat_clear_px", pa.int64(), nullable=False),
+        pa.field("joint_clear_px", pa.int64(), nullable=False),
+        pa.field("joint_clear_frac", pa.float32(), nullable=False),
+        pa.field("score", pa.float32(), nullable=False),
+    ]
+)
 
 
 # ── policy fingerprinting ─────────────────────────────────────────────
@@ -85,22 +91,25 @@ def policy_fingerprint(cfg: Any) -> str:
     """
     import json
 
-    payload = json.dumps({
-        "platforms": sorted(cfg.get("platforms", ["landsat-8", "landsat-9"])),
-        "years": sorted(cfg.get("years", [])),
-        "months": sorted(cfg.get("months", [])),
-        "bbox": list(cfg.get("bbox", [])),
-        "landsat_collection": cfg.get("landsat", {}).get("collection", "landsat-c2-l2"),
-        "landsat_min_clear_frac": (
-            cfg.get("landsat", {}).get("anchor", {}).get("min_clear_frac", 0.05)
-        ),
-        "s2_collection": cfg.get("sentinel2", {}).get("collection", "sentinel-2-l2a"),
-        "s2_min_clear_frac": cfg.get("sentinel2", {}).get("min_clear_frac", 0.05),
-        "s2_window_days": cfg.get("sentinel2", {}).get("window_days", 3),
-        "s2_score_lambda": cfg.get("sentinel2", {}).get("score", {}).get("lambda", 0.1),
-        "cutoff_utc": cfg.get("cutoff_utc", ""),
-        "ecostress_ids": sorted(ECOSTRESS_VALIDATION_IDS),
-    }, sort_keys=True)
+    payload = json.dumps(
+        {
+            "platforms": sorted(cfg.get("platforms", ["landsat-8", "landsat-9"])),
+            "years": sorted(cfg.get("years", [])),
+            "months": sorted(cfg.get("months", [])),
+            "bbox": list(cfg.get("bbox", [])),
+            "landsat_collection": cfg.get("landsat", {}).get("collection", "landsat-c2-l2"),
+            "landsat_min_clear_frac": (
+                cfg.get("landsat", {}).get("anchor", {}).get("min_clear_frac", 0.05)
+            ),
+            "s2_collection": cfg.get("sentinel2", {}).get("collection", "sentinel-2-l2a"),
+            "s2_min_clear_frac": cfg.get("sentinel2", {}).get("min_clear_frac", 0.05),
+            "s2_window_days": cfg.get("sentinel2", {}).get("window_days", 3),
+            "s2_score_lambda": cfg.get("sentinel2", {}).get("score", {}).get("lambda", 0.1),
+            "cutoff_utc": cfg.get("cutoff_utc", ""),
+            "ecostress_ids": sorted(ECOSTRESS_VALIDATION_IDS),
+        },
+        sort_keys=True,
+    )
     return sha256(payload.encode()).hexdigest()[:16]
 
 

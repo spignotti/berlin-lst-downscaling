@@ -69,9 +69,7 @@ def resolve_source_products(
             if r is not None:
                 report.resolved.append(r)
             else:
-                report.errors.append(
-                    f"{src}/{rev}: missing artifacts at {source_root}"
-                )
+                report.errors.append(f"{src}/{rev}: missing artifacts at {source_root}")
 
     return report
 
@@ -82,10 +80,7 @@ def _check_source(
     revision: str,
 ) -> ResolvedSource | None:
     """Check that a source/revision has all four artifacts."""
-    base = (
-        f"{source_root.rstrip('/')}/ard/static/sources"
-        f"/{source}/{revision}"
-    )
+    base = f"{source_root.rstrip('/')}/ard/static/sources/{source}/{revision}"
     cog = f"{base}/{source}_{revision}.tif"
     stac = f"{base}/{source}_{revision}.stac.json"
     prov = f"{base}/provenance.json"

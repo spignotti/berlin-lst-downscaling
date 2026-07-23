@@ -4,6 +4,7 @@ Both the Landsat-anchor loader and the S2-candidate loader rely on
 these utilities; centralising them prevents drift between the two
 call sites.
 """
+
 from __future__ import annotations
 
 from datetime import datetime

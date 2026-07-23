@@ -113,14 +113,10 @@ def resolve_exact_item(
         max_items=1,
     )
     if not items:
-        raise RuntimeError(
-            f"STAC item {scene_id!r} not found in collection {collection!r}"
-        )
+        raise RuntimeError(f"STAC item {scene_id!r} not found in collection {collection!r}")
     item = items[0]
     if item.id != scene_id:
-        raise RuntimeError(
-            f"STAC returned item {item.id!r} but expected {scene_id!r}"
-        )
+        raise RuntimeError(f"STAC returned item {item.id!r} but expected {scene_id!r}")
     return item
 
 
@@ -155,13 +151,10 @@ def resolve_item_from_href(
     item = pystac.STACObject.from_file(item_href)
     if not isinstance(item, pystac.Item):
         raise RuntimeError(
-            f"HREF {item_href!r} did not resolve to a STAC Item "
-            f"(got {type(item).__name__})"
+            f"HREF {item_href!r} did not resolve to a STAC Item (got {type(item).__name__})"
         )
     if expected_id is not None and item.id != expected_id:
-        raise RuntimeError(
-            f"Item at {item_href!r} has id={item.id!r}, expected {expected_id!r}"
-        )
+        raise RuntimeError(f"Item at {item_href!r} has id={item.id!r}, expected {expected_id!r}")
     # Sign assets for Planetary Computer access
     planetary_computer.sign_inplace(item)
     return item

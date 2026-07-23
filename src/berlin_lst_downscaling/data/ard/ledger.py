@@ -30,30 +30,32 @@ _pcinv = pc.invert  # type: ignore[attr-defined]
 
 _STATUSES = {"pending", "exporting", "done", "failed", "skipped", "exhausted"}
 
-_SCHEMA = pa.schema([
-    pa.field("scene_id", pa.string(), nullable=False),
-    pa.field("source", pa.string(), nullable=False),
-    pa.field("year", pa.int32(), nullable=False),
-    pa.field("path_cog", pa.string()),
-    pa.field("path_flag", pa.string()),
-    pa.field("path_stac", pa.string()),
-    pa.field("status", pa.string(), nullable=False),
-    pa.field("schema_hash", pa.string()),
-    pa.field("schema_version", pa.int32()),
-    pa.field("attempts", pa.int32()),
-    pa.field("last_error", pa.string()),
-    pa.field("run_id", pa.string()),
-    pa.field("updated_at", pa.timestamp("us", tz="UTC")),
-    pa.field("aoi_clear_px", pa.int32()),
-    pa.field("aoi_cloudy_px", pa.int32()),
-    pa.field("aoi_shadow_px", pa.int32()),
-    pa.field("aoi_cirrus_px", pa.int32()),
-    pa.field("aoi_saturated_px", pa.int32()),
-    pa.field("aoi_fill_px", pa.int32()),
-    pa.field("aoi_total_px", pa.int32()),
-    pa.field("aoi_clear_frac", pa.float64()),
-    pa.field("aoi_overlap_px", pa.int32()),
-])
+_SCHEMA = pa.schema(
+    [
+        pa.field("scene_id", pa.string(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("year", pa.int32(), nullable=False),
+        pa.field("path_cog", pa.string()),
+        pa.field("path_flag", pa.string()),
+        pa.field("path_stac", pa.string()),
+        pa.field("status", pa.string(), nullable=False),
+        pa.field("schema_hash", pa.string()),
+        pa.field("schema_version", pa.int32()),
+        pa.field("attempts", pa.int32()),
+        pa.field("last_error", pa.string()),
+        pa.field("run_id", pa.string()),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
+        pa.field("aoi_clear_px", pa.int32()),
+        pa.field("aoi_cloudy_px", pa.int32()),
+        pa.field("aoi_shadow_px", pa.int32()),
+        pa.field("aoi_cirrus_px", pa.int32()),
+        pa.field("aoi_saturated_px", pa.int32()),
+        pa.field("aoi_fill_px", pa.int32()),
+        pa.field("aoi_total_px", pa.int32()),
+        pa.field("aoi_clear_frac", pa.float64()),
+        pa.field("aoi_overlap_px", pa.int32()),
+    ]
+)
 
 SCHEMA_VERSION = 6
 
@@ -126,8 +128,7 @@ class Ledger:
             table = pq.read_table(io.BytesIO(raw))
             if not table.schema.equals(_SCHEMA, check_metadata=False):
                 raise ValueError(
-                    f"Ledger schema mismatch at {path!r}: "
-                    f"expected {_SCHEMA}, got {table.schema}"
+                    f"Ledger schema mismatch at {path!r}: expected {_SCHEMA}, got {table.schema}"
                 )
         else:
             table = pa.Table.from_pylist([], schema=_SCHEMA)
@@ -190,9 +191,7 @@ class Ledger:
 
     def _upsert_row(self, row: LedgerRow) -> None:
         """Internal: insert/update and persist."""
-        new_row = pa.Table.from_pylist(
-            [_row_to_dict(row)], schema=_SCHEMA
-        )
+        new_row = pa.Table.from_pylist([_row_to_dict(row)], schema=_SCHEMA)
 
         if self._table.num_rows == 0:
             self._table = new_row
@@ -201,9 +200,7 @@ class Ledger:
                 _pceq(self._table.column("scene_id"), row.scene_id),
                 _pceq(self._table.column("source"), row.source),
             )
-            self._table = pa.concat_tables(
-                [self._table.filter(_pcinv(existing_mask)), new_row]
-            )
+            self._table = pa.concat_tables([self._table.filter(_pcinv(existing_mask)), new_row])
 
         self._write_atomic()
 

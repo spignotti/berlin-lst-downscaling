@@ -71,58 +71,64 @@ def write_bundle(
         s2 = pair["s2"]
 
         # Anchor row (unique per Landsat scene)
-        manifest_rows.append({
-            "scene_id": anchor["scene_id"],
-            "source": "landsat-c2-l2",
-            "role": "anchor",
-            "platform": _extract_platform(anchor["scene_id"]),
-            "year": anchor["year"],
-            "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
-            "item_href": anchor.get("item_href"),
-            "aoi_clear_px": anchor.get("aoi_clear_px"),
-            "aoi_total_px": anchor.get("aoi_total_px"),
-            "aoi_clear_frac": anchor.get("aoi_clear_frac"),
-            "cloud_cover": anchor.get("cloud_cover"),
-            "solar_azimuth": anchor.get("sun_azimuth"),
-            "solar_elevation": anchor.get("sun_elevation"),
-        })
+        manifest_rows.append(
+            {
+                "scene_id": anchor["scene_id"],
+                "source": "landsat-c2-l2",
+                "role": "anchor",
+                "platform": _extract_platform(anchor["scene_id"]),
+                "year": anchor["year"],
+                "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
+                "item_href": anchor.get("item_href"),
+                "aoi_clear_px": anchor.get("aoi_clear_px"),
+                "aoi_total_px": anchor.get("aoi_total_px"),
+                "aoi_clear_frac": anchor.get("aoi_clear_frac"),
+                "cloud_cover": anchor.get("cloud_cover"),
+                "solar_azimuth": anchor.get("sun_azimuth"),
+                "solar_elevation": anchor.get("sun_elevation"),
+            }
+        )
 
         # S2 predictor row (deduplicated — one row per unique S2 scene)
         if s2["scene_id"] not in seen_s2:
             seen_s2.add(s2["scene_id"])
-            manifest_rows.append({
-                "scene_id": s2["scene_id"],
-                "source": "sentinel-2-l2a",
-                "role": "predictor",
-                "platform": "sentinel-2",
-                "year": s2["year"],
-                "acquisition_datetime": _naive_to_utc(s2["datetime"]),
-                "item_href": s2.get("item_href"),
-                "aoi_clear_px": s2.get("aoi_clear_px"),
-                "aoi_total_px": s2.get("aoi_total_px"),
-                "aoi_clear_frac": s2.get("aoi_clear_frac"),
-                "cloud_cover": s2.get("cloud_cover"),
-                "solar_azimuth": None,
-                "solar_elevation": None,
-            })
+            manifest_rows.append(
+                {
+                    "scene_id": s2["scene_id"],
+                    "source": "sentinel-2-l2a",
+                    "role": "predictor",
+                    "platform": "sentinel-2",
+                    "year": s2["year"],
+                    "acquisition_datetime": _naive_to_utc(s2["datetime"]),
+                    "item_href": s2.get("item_href"),
+                    "aoi_clear_px": s2.get("aoi_clear_px"),
+                    "aoi_total_px": s2.get("aoi_total_px"),
+                    "aoi_clear_frac": s2.get("aoi_clear_frac"),
+                    "cloud_cover": s2.get("cloud_cover"),
+                    "solar_azimuth": None,
+                    "solar_elevation": None,
+                }
+            )
 
     # ECOSTRESS validation rows (exactly six unique IDs)
     for eco in ecostress_granules:
-        manifest_rows.append({
-            "scene_id": eco["granule_id"],
-            "source": "ecostress",
-            "role": "validation",
-            "platform": "ecostress",
-            "year": eco["year"],
-            "acquisition_datetime": _naive_to_utc(eco["datetime"]),
-            "item_href": None,
-            "aoi_clear_px": None,
-            "aoi_total_px": None,
-            "aoi_clear_frac": None,
-            "cloud_cover": None,
-            "solar_azimuth": None,
-            "solar_elevation": None,
-        })
+        manifest_rows.append(
+            {
+                "scene_id": eco["granule_id"],
+                "source": "ecostress",
+                "role": "validation",
+                "platform": "ecostress",
+                "year": eco["year"],
+                "acquisition_datetime": _naive_to_utc(eco["datetime"]),
+                "item_href": None,
+                "aoi_clear_px": None,
+                "aoi_total_px": None,
+                "aoi_clear_frac": None,
+                "cloud_cover": None,
+                "solar_azimuth": None,
+                "solar_elevation": None,
+            }
+        )
 
     # ── Build pairings rows ────────────────────────────────────────────
     pairing_rows: list[dict] = []
@@ -130,15 +136,17 @@ def write_bundle(
         anchor = pair["anchor"]
         s2 = pair["s2"]
         dt_seconds = int(abs((anchor["datetime"] - s2["datetime"]).total_seconds()))
-        pairing_rows.append({
-            "landsat_scene_id": anchor["scene_id"],
-            "sentinel2_scene_id": s2["scene_id"],
-            "dt_seconds": dt_seconds,
-            "landsat_clear_px": int(pair["landsat_clear_px"]),
-            "joint_clear_px": int(pair["joint_clear_px"]),
-            "joint_clear_frac": float(pair["joint_clear_frac"]),
-            "score": float(pair["score"]),
-        })
+        pairing_rows.append(
+            {
+                "landsat_scene_id": anchor["scene_id"],
+                "sentinel2_scene_id": s2["scene_id"],
+                "dt_seconds": dt_seconds,
+                "landsat_clear_px": int(pair["landsat_clear_px"]),
+                "joint_clear_px": int(pair["joint_clear_px"]),
+                "joint_clear_frac": float(pair["joint_clear_frac"]),
+                "score": float(pair["score"]),
+            }
+        )
 
     # ── Build tables ───────────────────────────────────────────────────
     # Sort for deterministic output: anchors by scene_id, then predictors
@@ -161,15 +169,11 @@ def write_bundle(
 
     vr = validate_manifest_table(manifest_table, require_item_href=True)
     if not vr.ok:
-        raise ValueError(
-            "Manifest validation failed:\n" + "\n".join(vr.errors)
-        )
+        raise ValueError("Manifest validation failed:\n" + "\n".join(vr.errors))
 
     pr = validate_pairings_table(pairings_table, manifest_table)
     if not pr.ok:
-        raise ValueError(
-            "Pairings validation failed:\n" + "\n".join(pr.errors)
-        )
+        raise ValueError("Pairings validation failed:\n" + "\n".join(pr.errors))
 
     # ── Write bundle ───────────────────────────────────────────────────
     _ensure_dir(manifest_path)
@@ -204,14 +208,12 @@ def write_bundle(
             "ecostress": n_eco,
             "manifest_rows": len(manifest_rows),
             "pairing_rows": len(pairing_rows),
-            "unique_landsat": len({
-                r["scene_id"] for r in manifest_rows
-                if r["source"] == "landsat-c2-l2"
-            }),
-            "unique_s2": len({
-                r["scene_id"] for r in manifest_rows
-                if r["source"] == "sentinel-2-l2a"
-            }),
+            "unique_landsat": len(
+                {r["scene_id"] for r in manifest_rows if r["source"] == "landsat-c2-l2"}
+            ),
+            "unique_s2": len(
+                {r["scene_id"] for r in manifest_rows if r["source"] == "sentinel-2-l2a"}
+            ),
             "unique_ecostress": n_eco,
         },
         "dropped_reasons": _summarize_dropped(dropped),

@@ -41,14 +41,8 @@ from berlin_lst_downscaling.data.secondary.product import (
 # ── official URLs (verified live 2026-07-14) ──────────────────────────
 
 IMPERVIOUSNESS_URLS: dict[int, str] = {
-    2016: (
-        "https://gdi.berlin.de/data/ua_versiegelung_2016/atom/"
-        "Versiegelung_Raster_2016.zip"
-    ),
-    2021: (
-        "https://gdi.berlin.de/data/ua_versiegelung_2021/atom/"
-        "Versiegelung_Raster_2021.zip"
-    ),
+    2016: ("https://gdi.berlin.de/data/ua_versiegelung_2016/atom/Versiegelung_Raster_2016.zip"),
+    2021: ("https://gdi.berlin.de/data/ua_versiegelung_2021/atom/Versiegelung_Raster_2021.zip"),
 }
 
 # ── class-code lookup (verified from actual rasters) ──────────────────
@@ -82,15 +76,15 @@ def contract_for_imperviousness() -> Contract:
     return Contract(
         source="imperviousness",
         target_crs="EPSG:25833",
-    output_bands=(
-        BandSpec(
-            name="imperviousness",
-            dtype="float32",
-            nodata=float("nan"),
-            valid_range=(-0.01, 100.01),
-            description="Sealing degree in percent (0–100)",
+        output_bands=(
+            BandSpec(
+                name="imperviousness",
+                dtype="float32",
+                nodata=float("nan"),
+                valid_range=(-0.01, 100.01),
+                description="Sealing degree in percent (0–100)",
+            ),
         ),
-    ),
         tiling=TilingSpec(),
         schema_version=1,
         flag_mode="none",
@@ -222,11 +216,7 @@ def prepare_imperviousness(
             "native_codes_observed": observed,
         },
         qa_stats={
-            "valid_frac": (
-                round(float(len(valid)) / dst_arr.size, 4)
-                if dst_arr.size > 0
-                else 0.0
-            ),
+            "valid_frac": (round(float(len(valid)) / dst_arr.size, 4) if dst_arr.size > 0 else 0.0),
             "min": float(valid.min()) if len(valid) > 0 else None,
             "max": float(valid.max()) if len(valid) > 0 else None,
             "shape": list(dst_arr.shape),
@@ -268,9 +258,7 @@ def _zip_tiff_open(zip_path: Path):
     with _zf.ZipFile(zip_path) as z:
         tif_names = [n for n in z.namelist() if n.lower().endswith((".tif", ".tiff"))]
         if not tif_names:
-            raise ValueError(
-                f"No GeoTIFF member found in {zip_path}. Members: {z.namelist()}"
-            )
+            raise ValueError(f"No GeoTIFF member found in {zip_path}. Members: {z.namelist()}")
         if len(tif_names) != 1:
             raise ValueError(
                 f"Expected exactly one GeoTIFF member; got {len(tif_names)}: {tif_names}"

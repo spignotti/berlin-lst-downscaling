@@ -28,10 +28,7 @@ def secondary_qa_report(
     :func:`persist_secondary_report`.
     """
     if sources is None:
-        sources = list(set(
-            row.source
-            for row in _all_ledger_rows(ledger)
-        ))
+        sources = list(set(row.source for row in _all_ledger_rows(ledger)))
 
     per_source: dict[str, dict[str, Any]] = {}
     for src in sources:
@@ -39,23 +36,18 @@ def secondary_qa_report(
         rows = ledger.items_for_source(src)
 
         output_ok = sum(
-            1 for r in rows
-            if r.status == "done" and r.output_uri and exists(r.output_uri)
+            1 for r in rows if r.status == "done" and r.output_uri and exists(r.output_uri)
         )
         output_missing = sum(
-            1 for r in rows
-            if r.status == "done" and (not r.output_uri or not exists(r.output_uri))
+            1 for r in rows if r.status == "done" and (not r.output_uri or not exists(r.output_uri))
         )
         completed = sum(
-            1 for r in rows
-            if r.status == "done"
-            and r.completion_uri
-            and exists(r.completion_uri)
+            1 for r in rows if r.status == "done" and r.completion_uri and exists(r.completion_uri)
         )
         incomplete = sum(
-            1 for r in rows
-            if r.status == "done"
-            and (not r.completion_uri or not exists(r.completion_uri))
+            1
+            for r in rows
+            if r.status == "done" and (not r.completion_uri or not exists(r.completion_uri))
         )
 
         per_source[src] = {

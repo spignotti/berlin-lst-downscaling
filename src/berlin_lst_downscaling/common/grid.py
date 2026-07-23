@@ -89,6 +89,7 @@ def grid_from_cog(uri: str) -> GeoBox:
 
     with rasterio.open(uri) as src:
         from odc.geo.geobox import GeoBox as _GB
+
         return _GB.from_rio(src)
 
 

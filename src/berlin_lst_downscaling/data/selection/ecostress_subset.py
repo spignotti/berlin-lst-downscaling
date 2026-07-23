@@ -63,8 +63,14 @@ def build_ecostress_subset(
         bbox=tuple(cfg.bbox),
         version=cfg.ecostress.version,
     )
-    log_event(_logger, logging.INFO, "cmr_ecostress_query",
-        n_granules=len(all_granules), min_year=min_year, max_year=max_year)
+    log_event(
+        _logger,
+        logging.INFO,
+        "cmr_ecostress_query",
+        n_granules=len(all_granules),
+        min_year=min_year,
+        max_year=max_year,
+    )
 
     result: dict[str, list[dict]] = {}
 
@@ -107,6 +113,7 @@ def build_ecostress_subset(
                         continue
                 except Exception as exc:
                     import warnings
+
                     warnings.warn(f"clear_frac failed for {g['granule_id']}: {exc}", stacklevel=2)
 
             g["dt_hours"] = dt_hours

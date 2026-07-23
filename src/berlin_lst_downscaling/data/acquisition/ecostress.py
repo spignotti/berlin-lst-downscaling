@@ -186,7 +186,10 @@ def load_ecostress_scene(
 
         minx, miny, maxx, maxy = transform_bounds("EPSG:4326", str(gbox.crs), *bbox)
         ds_out = ds_out.rio.clip_box(
-            minx=minx, miny=miny, maxx=maxx, maxy=maxy,
+            minx=minx,
+            miny=miny,
+            maxx=maxx,
+            maxy=maxy,
         )
 
     return ds_out, [granule_id]
@@ -225,9 +228,7 @@ def _assert_granule_layer_exists(uri: str) -> None:
         with rasterio.open(uri):
             pass
     except Exception as exc:  # rasterio raises RasterioIOError on 404 / ENOENT on missing
-        raise FileNotFoundError(
-            f"ECOSTRESS L2T layer not found or not readable: {uri}"
-        ) from exc
+        raise FileNotFoundError(f"ECOSTRESS L2T layer not found or not readable: {uri}") from exc
 
 
 def download_and_stage_granule(
@@ -320,7 +321,8 @@ def _download_to_tmp(
             last_exc = exc
             if attempt < 2:
                 import time as _time
-                _time.sleep(2 ** attempt)
+
+                _time.sleep(2**attempt)
     raise RuntimeError(
         f"Download failed after 3 attempts for {granule['meta']['native-id']}: {last_exc}"
     ) from last_exc
@@ -340,4 +342,3 @@ __all__ = [
     "parse_granule_datetime",
     "parse_granule_mgrs",
 ]
-

@@ -166,15 +166,27 @@ def _load_era5_anchors(
 ) -> list[Era5AnchorValue]:
     """Load published ERA5 anchor t2m values from the dynamic ledgers.
 
+    Both ``dynamic_full_root`` and ``dynamic_inference_root`` must point
+    to completed run roots (their ``_state/dynamic/ledger.parquet`` must
+    exist). Missing or non-existent run roots are an error — DWD validates
+    the published state, not a partially-set-up directory.
+
     ``scene_ids`` optionally restricts to a fixed set of scenes (matches
     against ``item_key`` in the published provenance) — used by the
     bounded DWD smoke to skip full-period queries.
     """
+    if not dynamic_full_root:
+        raise ValueError("dynamic_full_root is required")
     anchors: list[Era5AnchorValue] = []
     roots: list[tuple[str, str]] = []
-    if exists(dynamic_full_root):
-        roots.append((dynamic_full_root, "anchor"))
-    if dynamic_inference_root and exists(dynamic_inference_root):
+    full_ledger = f"{dynamic_full_root.rstrip('/')}/_state/dynamic/ledger.parquet"
+    if not exists(full_ledger):
+        raise ValueError(f"Dynamic full ledger not found: {full_ledger}")
+    roots.append((dynamic_full_root, "anchor"))
+    if dynamic_inference_root:
+        inf_ledger = f"{dynamic_inference_root.rstrip('/')}/_state/dynamic/ledger.parquet"
+        if not exists(inf_ledger):
+            raise ValueError(f"Dynamic inference ledger not found: {inf_ledger}")
         roots.append((dynamic_inference_root, "inference"))
 
     scene_id_filter = set(scene_ids) if scene_ids else None
@@ -182,8 +194,7 @@ def _load_era5_anchors(
     for root, expected_role in roots:
         ledger_uri = f"{root.rstrip('/')}/_state/dynamic/ledger.parquet"
         if not exists(ledger_uri):
-            log_event(_logger, logging.WARNING, "validation_ledger_missing",
-                      root=root)
+            log_event(_logger, logging.WARNING, "validation_ledger_missing", root=root)
             continue
         ledger = SecondaryLedger.open(ledger_uri)
         for row in ledger.items_for_source(_ERA5_LEDGER_SOURCE):
@@ -194,8 +205,13 @@ def _load_era5_anchors(
             try:
                 prov = _read_json(row.provenance_uri)
             except Exception as exc:
-                log_event(_logger, logging.WARNING, "validation_provenance_failed",
-                          scene_id=row.item_id, error=str(exc))
+                log_event(
+                    _logger,
+                    logging.WARNING,
+                    "validation_provenance_failed",
+                    scene_id=row.item_id,
+                    error=str(exc),
+                )
                 continue
             qa_stats = prov.get("qa_stats") or {}
             t2m_val = qa_stats.get("t2m_scene")
@@ -209,7 +225,9 @@ def _load_era5_anchors(
             except ValueError:
                 continue
             scene_id = prov.get("item_key") or row.item_id.replace(
-                f"{_ERA5_LEDGER_SOURCE}_", "", 1,
+                f"{_ERA5_LEDGER_SOURCE}_",
+                "",
+                1,
             )
             if scene_id_filter is not None and scene_id not in scene_id_filter:
                 continue
@@ -239,9 +257,17 @@ def _join_anchors_with_dwd(
     if not anchors:
         return pd.DataFrame(
             columns=[
-                "scene_id", "acquisition_utc", "match_hour_utc", "era5_t2m_k",
-                "era5_role", "dwd_period", "dwd_period_kind",
-                "station_id", "dwd_temperature_c", "dwd_quality", "match_state",
+                "scene_id",
+                "acquisition_utc",
+                "match_hour_utc",
+                "era5_t2m_k",
+                "era5_role",
+                "dwd_period",
+                "dwd_period_kind",
+                "station_id",
+                "dwd_temperature_c",
+                "dwd_quality",
+                "match_state",
             ],
         )
     rows = []
@@ -308,8 +334,7 @@ def _join_anchors_with_dwd(
 def _summarise(comparison_df: pd.DataFrame, fetch: DwdFetchResult) -> ValidationSummary:
     matched = comparison_df[comparison_df["match_state"] == "matched"]
     diffs_c = (
-        matched["era5_t2m_k"].astype(float) - 273.15
-        - matched["dwd_temperature_c"].astype(float)
+        matched["era5_t2m_k"].astype(float) - 273.15 - matched["dwd_temperature_c"].astype(float)
     )
     bias = float(diffs_c.mean()) if not diffs_c.empty else None
     mae = float(np.mean(np.abs(diffs_c))) if not diffs_c.empty else None
@@ -320,7 +345,8 @@ def _summarise(comparison_df: pd.DataFrame, fetch: DwdFetchResult) -> Validation
         matched = matched.assign(_diff_c=diffs_c)
         for sid, sub in matched.groupby("station_id"):
             station = next(
-                (s for s in fetch.inventory if s.station_id == sid), None,
+                (s for s in fetch.inventory if s.station_id == sid),
+                None,
             )
             diffs = sub["_diff_c"]
             per_station.append(
@@ -345,10 +371,16 @@ def _summarise(comparison_df: pd.DataFrame, fetch: DwdFetchResult) -> Validation
                     ),
                 }
             )
-    n_obs_hist = int(fetch.observations_df["dwd_period"].eq("historical").sum()) \
-        if not fetch.observations_df.empty else 0
-    n_obs_recent = int(fetch.observations_df["dwd_period"].eq("recent").sum()) \
-        if not fetch.observations_df.empty else 0
+    n_obs_hist = (
+        int(fetch.observations_df["dwd_period"].eq("historical").sum())
+        if not fetch.observations_df.empty
+        else 0
+    )
+    n_obs_recent = (
+        int(fetch.observations_df["dwd_period"].eq("recent").sum())
+        if not fetch.observations_df.empty
+        else 0
+    )
 
     if comparison_df.empty:
         n_pairs_total = 0
@@ -435,12 +467,16 @@ def run_dwd_validation(
         cfg_dict.get("aoi_uri"),
         "data/boundaries/berlin_landesgrenze.geojson",
     )
-    start_date = _ensure_utc(datetime.fromisoformat(
-        _str(cfg_dict.get("start_date")).replace("Z", "+00:00"),
-    ))
-    end_date = _ensure_utc(datetime.fromisoformat(
-        _str(cfg_dict.get("end_date")).replace("Z", "+00:00"),
-    ))
+    start_date = _ensure_utc(
+        datetime.fromisoformat(
+            _str(cfg_dict.get("start_date")).replace("Z", "+00:00"),
+        )
+    )
+    end_date = _ensure_utc(
+        datetime.fromisoformat(
+            _str(cfg_dict.get("end_date")).replace("Z", "+00:00"),
+        )
+    )
     periods_raw = cfg_dict.get("periods") or ["historical", "recent"]
     periods = [str(p) for p in periods_raw]  # type: ignore[union-attr]
 
@@ -452,20 +488,45 @@ def run_dwd_validation(
         return 1
 
     anchors_df = load_anchors_from_manifest(manifest_uri, scene_ids=scene_ids)
-    log_event(_logger, logging.INFO, "validation_anchors_loaded",
-              n_anchors=int(len(anchors_df)))
+    log_event(_logger, logging.INFO, "validation_anchors_loaded", n_anchors=int(len(anchors_df)))
 
     full_root = _str(cfg_dict.get("dynamic_full_root"))
+    if not full_root:
+        raise ValueError(
+            "dynamic_full_root is required (complete dynamic full run root)"
+        )
     inference_root_raw = cfg_dict.get("dynamic_inference_root")
     inference_root_str = str(inference_root_raw) if inference_root_raw else None
+
     era5_anchors = _load_era5_anchors(full_root, inference_root_str, scene_ids=scene_ids)
-    log_event(_logger, logging.INFO, "validation_era5_loaded",
-              n_era5_anchors=len(era5_anchors),
-              full_root=full_root,
-              inference_root=inference_root_str)
+    log_event(
+        _logger,
+        logging.INFO,
+        "validation_era5_loaded",
+        n_era5_anchors=len(era5_anchors),
+        full_root=full_root,
+        inference_root=inference_root_str,
+    )
 
     if not era5_anchors:
         log_event(_logger, logging.ERROR, "validation_no_era5_anchors")
+        return 1
+
+    # Reject silently missing ERA5 coverage: every manifest anchor must match
+    # a published ERA5 value or DWD reports incomplete input upstream.
+    anchor_scene_ids = {a.scene_id for a in era5_anchors}
+    missing = [
+        sid for sid in set(anchors_df["scene_id"].astype(str))
+        if sid not in anchor_scene_ids
+    ]
+    if missing:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "validation_missing_era5_anchors",
+            n_missing=len(missing),
+            sample=sorted(missing)[:10],
+        )
         return 1
 
     # Expand the DWD window to cover all anchor times plus a 1-hour safety
@@ -579,7 +640,9 @@ def run_dwd_validation(
     )
 
     log_event(
-        _logger, logging.INFO, "validation_done",
+        _logger,
+        logging.INFO,
+        "validation_done",
         n_pairs=summary.n_pairs_total,
         n_matched=summary.n_pairs_matched,
         bias=summary.bias_celsius,

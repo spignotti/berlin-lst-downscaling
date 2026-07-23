@@ -168,7 +168,6 @@ def _ensure_month_cached(
     fname = f"era5_land_{year:04d}{month:02d}.nc"
     target = local_dir / fname
 
-
     if target.exists() and target.stat().st_size > 0:
         return target
 
@@ -184,16 +183,24 @@ def _ensure_month_cached(
     try:
         _download_era5_month(year, month, target)
         elapsed = time.perf_counter() - t0
-        log_event(_logger, logging.INFO, "era5_downloaded",
-                  year=year, month=month, elapsed_s=round(elapsed, 1),
-                  size_mb=round(target.stat().st_size / 1024 / 1024, 1))
+        log_event(
+            _logger,
+            logging.INFO,
+            "era5_downloaded",
+            year=year,
+            month=month,
+            elapsed_s=round(elapsed, 1),
+            size_mb=round(target.stat().st_size / 1024 / 1024, 1),
+        )
         # Upload to GCS cache via streaming (no full-file RAM load)
         from berlin_lst_downscaling.data.io.storage import atomic_upload
+
         atomic_upload(target, cache_path, overwrite=False)
         return target
     except Exception as exc:
-        log_event(_logger, logging.ERROR, "era5_download_failed",
-                  year=year, month=month, error=str(exc))
+        log_event(
+            _logger, logging.ERROR, "era5_download_failed", year=year, month=month, error=str(exc)
+        )
         return None
 
 
@@ -313,12 +320,14 @@ def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
         else:
             # All other hours: (ssrd[t] - ssrd[t-1]) / 3600
             hourly[t] = (
-                (ssrd.data[t].astype(np.float64) - ssrd.data[t - 1].astype(np.float64))
-                / 3600.0
+                (ssrd.data[t].astype(np.float64) - ssrd.data[t - 1].astype(np.float64)) / 3600.0
             ).astype(np.float32)
 
     return xr.DataArray(
-        hourly, coords=ssrd.coords, dims=ssrd.dims, attrs=ssrd.attrs,
+        hourly,
+        coords=ssrd.coords,
+        dims=ssrd.dims,
+        attrs=ssrd.attrs,
     )
 
 
@@ -365,9 +374,7 @@ def _extract_era5_at_scene(
 
     antecedent_val = float(np.nanmean(window_data))
     if not np.isfinite(antecedent_val):
-        raise ValueError(
-            f"Antecedent value is non-finite for acquisition {acq_np}"
-        )
+        raise ValueError(f"Antecedent value is non-finite for acquisition {acq_np}")
 
     return t2m_val, ssrd_val, antecedent_val
 
@@ -412,8 +419,7 @@ def prepare_era5_scene(
 
     if (acq_year, acq_month) not in nc_paths:
         raise ValueError(
-            f"Cannot process {scene_id}: ERA5 cache missing for "
-            f"{acq_year}-{acq_month:02d}"
+            f"Cannot process {scene_id}: ERA5 cache missing for {acq_year}-{acq_month:02d}"
         )
 
     # ── 2. decode and concatenate months ──────────────────────────────
@@ -431,7 +437,8 @@ def prepare_era5_scene(
 
     try:
         primary_ds = _decode_monthly_era5(
-            nc_paths[(acq_year, acq_month)], time_slice=time_slice,
+            nc_paths[(acq_year, acq_month)],
+            time_slice=time_slice,
         )
 
         # Find variables and validate
@@ -475,7 +482,8 @@ def prepare_era5_scene(
         prev_month_key = months_needed[1] if len(months_needed) > 1 else None
         if prev_month_key and prev_month_key in nc_paths:
             prev_ds = _decode_monthly_era5(
-                nc_paths[prev_month_key], time_slice=time_slice,
+                nc_paths[prev_month_key],
+                time_slice=time_slice,
             )
             prev_t2m = prev_ds[t2m_var].isel(latitude=lat_idx, longitude=lon_idx)
             prev_ssrd = prev_ds[ssrd_var].isel(latitude=lat_idx, longitude=lon_idx)
@@ -494,16 +502,16 @@ def prepare_era5_scene(
         time_vals = t2m_cell[time_dim].values
         acq_np = np.datetime64(acq_hour)
         if not np.any(np.abs(time_vals - acq_np) < np.timedelta64(2, "h")):
-            raise ValueError(
-                f"ERA5 time range does not cover acquisition {acq_hour}"
-            )
+            raise ValueError(f"ERA5 time range does not cover acquisition {acq_hour}")
 
         # ── 3. convert SSRD to hourly W/m² on 1D cell only ─────────
         hourly_ssrd = _ssrd_to_hourly(ssrd_cell)
 
         # ── 4. extract scene values from 1D cell ───────────────────
         t2m_val, ssrd_val, antecedent_val = _extract_era5_at_scene(
-            t2m_cell, hourly_ssrd, acq_hour,
+            t2m_cell,
+            hourly_ssrd,
+            acq_hour,
         )
 
     finally:
@@ -535,9 +543,15 @@ def prepare_era5_scene(
     t2m_ds = t2m_ds.rio.write_transform(grid.transform)
 
     # Scene channel values for logging/QA
-    log_event(_logger, logging.DEBUG, "era5_scene_values",
-              scene_id=scene_id, t2m=round(t2m_val, 2),
-              ssrd=round(ssrd_val, 2), ssrd_antecedent=round(antecedent_val, 2))
+    log_event(
+        _logger,
+        logging.DEBUG,
+        "era5_scene_values",
+        scene_id=scene_id,
+        t2m=round(t2m_val, 2),
+        ssrd=round(ssrd_val, 2),
+        ssrd_antecedent=round(antecedent_val, 2),
+    )
 
     retrieved_at = datetime.now(UTC).isoformat()
     doy = acquisition_dt.timetuple().tm_yday

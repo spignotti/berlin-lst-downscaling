@@ -236,7 +236,8 @@ def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | No
 
 
 def _parse_buildings_from_tile(
-    zip_path: Path, asset: AtomAsset,
+    zip_path: Path,
+    asset: AtomAsset,
 ) -> list[ParsedBuilding]:
     """Parse all buildings from a CityGML tile ZIP."""
     buildings: list[ParsedBuilding] = []
@@ -266,7 +267,8 @@ def _parse_buildings_from_tile(
 
 
 def _extract_building(
-    building_elem: ET.Element, ns: dict[str, str],
+    building_elem: ET.Element,
+    ns: dict[str, str],
 ) -> ParsedBuilding | None:
     """Extract footprint and height from a Building element."""
     bid = building_elem.get(
@@ -435,22 +437,33 @@ def prepare_lod2_morphology(
     for i, asset in enumerate(manifest.assets):
         if (i + 1) % 50 == 0:
             log_event(
-                _logger, logging.DEBUG, "lod2_tile_progress",
-                done=i+1, total=len(manifest.assets),
+                _logger,
+                logging.DEBUG,
+                "lod2_tile_progress",
+                done=i + 1,
+                total=len(manifest.assets),
                 buildings=total_buildings,
             )
 
         receipt = _process_lod2_tile(
-            asset, grid, sum_arr, sumsq_arr, count_arr, area_arr, max_arr,
+            asset,
+            grid,
+            sum_arr,
+            sumsq_arr,
+            count_arr,
+            area_arr,
+            max_arr,
             output_root,
         )
-        tile_receipts.append({
-            "filename": asset.filename,
-            "easting": asset.easting,
-            "northing": asset.northing,
-            "checksum": receipt.checksum,
-            "byte_count": receipt.byte_count,
-        })
+        tile_receipts.append(
+            {
+                "filename": asset.filename,
+                "easting": asset.easting,
+                "northing": asset.northing,
+                "checksum": receipt.checksum,
+                "byte_count": receipt.byte_count,
+            }
+        )
         all_checksums.append(receipt.checksum)
 
     # ── 3. compute final morphology bands ────────────────────────────
@@ -506,9 +519,7 @@ def prepare_lod2_morphology(
         },
         qa_stats={
             "valid_frac": (
-                round(float(len(valid_mean)) / mean_arr.size, 4)
-                if mean_arr.size > 0
-                else 0.0
+                round(float(len(valid_mean)) / mean_arr.size, 4) if mean_arr.size > 0 else 0.0
             ),
             "min_height": float(valid_mean.min()) if len(valid_mean) > 0 else None,
             "max_height": float(valid_mean.max()) if len(valid_mean) > 0 else None,
@@ -551,7 +562,13 @@ def _process_lod2_tile(
 
     buildings = _parse_buildings_from_tile(zip_path, asset)
     n = _accumulate_buildings(
-        buildings, grid, sum_arr, sumsq_arr, count_arr, area_arr, max_arr,
+        buildings,
+        grid,
+        sum_arr,
+        sumsq_arr,
+        count_arr,
+        area_arr,
+        max_arr,
     )
     log_event(_logger, logging.DEBUG, "lod2_tile_done", filename=asset.filename, buildings=n)
 

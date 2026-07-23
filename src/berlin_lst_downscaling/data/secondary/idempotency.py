@@ -41,9 +41,7 @@ def reconcile(
 
         if row.status == "done" and row.config_hash == config_hash:
             output_ok = row.output_uri and exists(row.output_uri)
-            completion_ok = (
-                row.completion_uri and exists(row.completion_uri)
-            )
+            completion_ok = row.completion_uri and exists(row.completion_uri)
             if output_ok and completion_ok:
                 continue
             if output_ok and not completion_ok:

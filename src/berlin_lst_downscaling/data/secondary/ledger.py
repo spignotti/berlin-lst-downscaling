@@ -31,23 +31,25 @@ _STATUSES = {"pending", "exporting", "done", "failed", "skipped"}
 
 # decision: nullable STAC/provenance/completion URIs let ``reconcile()``
 # guard against partial publication.
-_SCHEMA = pa.schema([
-    pa.field("item_id", pa.string(), nullable=False),
-    pa.field("source", pa.string(), nullable=False),
-    pa.field("period_or_vintage", pa.string(), nullable=False),
-    pa.field("status", pa.string(), nullable=False),
-    pa.field("run_id", pa.string()),
-    pa.field("attempts", pa.int32()),
-    pa.field("config_hash", pa.string()),
-    pa.field("checksum", pa.string()),
-    pa.field("output_uri", pa.string()),
-    pa.field("stac_uri", pa.string()),
-    pa.field("provenance_uri", pa.string()),
-    pa.field("completion_uri", pa.string()),
-    pa.field("last_error", pa.string()),
-    pa.field("updated_at", pa.timestamp("us", tz="UTC")),
-    pa.field("role", pa.string()),
-])
+_SCHEMA = pa.schema(
+    [
+        pa.field("item_id", pa.string(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("period_or_vintage", pa.string(), nullable=False),
+        pa.field("status", pa.string(), nullable=False),
+        pa.field("run_id", pa.string()),
+        pa.field("attempts", pa.int32()),
+        pa.field("config_hash", pa.string()),
+        pa.field("checksum", pa.string()),
+        pa.field("output_uri", pa.string()),
+        pa.field("stac_uri", pa.string()),
+        pa.field("provenance_uri", pa.string()),
+        pa.field("completion_uri", pa.string()),
+        pa.field("last_error", pa.string()),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
+        pa.field("role", pa.string()),
+    ]
+)
 
 # ── row type ─────────────────────────────────────────────────────────
 
@@ -155,9 +157,7 @@ class SecondaryLedger:
         else:
             row.attempts = 1
 
-        new_row = pa.Table.from_pylist(
-            [_row_to_dict(row)], schema=_SCHEMA
-        )
+        new_row = pa.Table.from_pylist([_row_to_dict(row)], schema=_SCHEMA)
 
         if self._table.num_rows == 0:
             self._table = new_row
@@ -169,9 +169,7 @@ class SecondaryLedger:
                 ),
                 _pceq(self._table.column("period_or_vintage"), row.period_or_vintage),
             )
-            self._table = pa.concat_tables(
-                [self._table.filter(_pcinv(existing_mask)), new_row]
-            )
+            self._table = pa.concat_tables([self._table.filter(_pcinv(existing_mask)), new_row])
 
         self._write_atomic()
 
@@ -238,23 +236,25 @@ def _rows_from_table(tbl: pa.Table) -> list[SecondaryLedgerRow]:
     rows: list[SecondaryLedgerRow] = []
     for i in range(tbl.num_rows):
         d = tbl.slice(i, 1).to_pydict()
-        rows.append(SecondaryLedgerRow(
-            item_id=str(d["item_id"][0]),
-            source=str(d["source"][0]),
-            period_or_vintage=str(d["period_or_vintage"][0]),
-            status=str(d["status"][0]),
-            run_id=_opt_str(d, "run_id"),
-            attempts=int(d["attempts"][0]),
-            config_hash=_opt_str(d, "config_hash"),
-            checksum=_opt_str(d, "checksum"),
-            output_uri=_opt_str(d, "output_uri"),
-            stac_uri=_opt_str(d, "stac_uri"),
-            provenance_uri=_opt_str(d, "provenance_uri"),
-            completion_uri=_opt_str(d, "completion_uri"),
-            last_error=_opt_str(d, "last_error"),
-            updated_at=_opt_dt(d, "updated_at"),
-            role=_opt_str(d, "role"),
-        ))
+        rows.append(
+            SecondaryLedgerRow(
+                item_id=str(d["item_id"][0]),
+                source=str(d["source"][0]),
+                period_or_vintage=str(d["period_or_vintage"][0]),
+                status=str(d["status"][0]),
+                run_id=_opt_str(d, "run_id"),
+                attempts=int(d["attempts"][0]),
+                config_hash=_opt_str(d, "config_hash"),
+                checksum=_opt_str(d, "checksum"),
+                output_uri=_opt_str(d, "output_uri"),
+                stac_uri=_opt_str(d, "stac_uri"),
+                provenance_uri=_opt_str(d, "provenance_uri"),
+                completion_uri=_opt_str(d, "completion_uri"),
+                last_error=_opt_str(d, "last_error"),
+                updated_at=_opt_dt(d, "updated_at"),
+                role=_opt_str(d, "role"),
+            )
+        )
     return rows
 
 

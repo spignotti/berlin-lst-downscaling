@@ -118,8 +118,11 @@ def prepare_svf(
 
     # Compute SVF
     log_event(
-        _logger, logging.INFO, "svf_computing",
-        max_radius=max_radius, n_directions=n_directions,
+        _logger,
+        logging.INFO,
+        "svf_computing",
+        max_radius=max_radius,
+        n_directions=n_directions,
     )
     svf_data = sky_view_factor(
         dsm_da,
@@ -159,10 +162,7 @@ def prepare_svf(
             "retrieved_at": retrieved_at,
         },
         qa_stats={
-            "valid_frac": (
-                round(float(len(valid)) / svf_arr.size, 4)
-                if svf_arr.size > 0 else 0.0
-            ),
+            "valid_frac": (round(float(len(valid)) / svf_arr.size, 4) if svf_arr.size > 0 else 0.0),
             "min": float(valid.min()) if len(valid) > 0 else None,
             "max": float(valid.max()) if len(valid) > 0 else None,
             "mean": float(np.nanmean(valid)) if len(valid) > 0 else None,

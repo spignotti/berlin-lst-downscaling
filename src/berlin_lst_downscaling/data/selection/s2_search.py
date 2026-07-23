@@ -134,9 +134,15 @@ def match_s2_candidates_with_clear_frac(
             cf_by_dt[dt] = (cf, counts)
         except Exception as exc:
             cf_by_dt[dt] = None
-            log_event(_logger, logging.WARNING, "clear_frac_failed",
-                scene_id=anchor.get('scene_id', '?'),
-                dt=str(dt), error=str(exc), exc_info=True)
+            log_event(
+                _logger,
+                logging.WARNING,
+                "clear_frac_failed",
+                scene_id=anchor.get("scene_id", "?"),
+                dt=str(dt),
+                error=str(exc),
+                exc_info=True,
+            )
 
     # Assign clear_frac and AOI metrics to all candidates sharing each datetime
     candidate_diagnostics = []
@@ -161,12 +167,16 @@ def match_s2_candidates_with_clear_frac(
             candidate_diagnostics.append(_cf_diagnostic_entry(c, cf, counts))
 
     # Log structured diagnostic event for this anchor
-    log_event(_logger, logging.INFO, "clear_frac_diagnostic",
+    log_event(
+        _logger,
+        logging.INFO,
+        "clear_frac_diagnostic",
         anchor_id=anchor["scene_id"],
         anchor_date=anchor["date"],
         n_candidates=len(candidate_diagnostics),
         n_unique_dts=len(unique_dts),
-        candidates=candidate_diagnostics)
+        candidates=candidate_diagnostics,
+    )
 
     return candidates
 
@@ -218,4 +228,3 @@ def _resolve_s2_items(
             result[dt] = items
 
     return result
-

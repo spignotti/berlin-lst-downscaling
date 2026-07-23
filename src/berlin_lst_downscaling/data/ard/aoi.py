@@ -71,9 +71,7 @@ def compute_aoi_metrics(
     # grid (same CRS, same transform, same pixel grid).
     # Note: provide destination array to avoid conflict between dst_transform
     # and dst_width/dst_height in rasterio's reproject API.
-    destination = np.empty(
-        (flag_profile["height"], flag_profile["width"]), dtype=aoi_data.dtype
-    )
+    destination = np.empty((flag_profile["height"], flag_profile["width"]), dtype=aoi_data.dtype)
     aoi_data, _ = rwarp.reproject(
         source=aoi_data,
         src_transform=aoi_transform,

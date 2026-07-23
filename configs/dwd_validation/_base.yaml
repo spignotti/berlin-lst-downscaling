@@ -8,12 +8,12 @@
 # Manifest URI — REQUIRED. Published v3 manifest bundle with Landsat anchors.
 manifest_uri: null
 
-# Dynamic run roots to validate against. Each root must contain a
-# completed dynamic run ledger (_state/dynamic/ledger.parquet) and the
-# corresponding era5_land scene COG + provenance.
-# Defaults point to the published historical + inference runs on GCS.
-dynamic_full_root: "gs://berlin-lst-data/dynamic/full"
-dynamic_inference_root: "gs://berlin-lst-data/dynamic/inference/2026"
+# Exact dynamic run roots to validate against. Each must contain a
+# completed run with role-stamped ledger + era5_land scene COGs.
+# In production both must be provided on the command line — DWD
+# refuses to validate an absent or incomplete run.
+dynamic_full_root: null
+dynamic_inference_root: null
 
 # Where the validation output is published. Local or gs://.
 output_root: "data/dwd_validation"

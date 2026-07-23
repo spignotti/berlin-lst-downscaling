@@ -65,11 +65,21 @@ def run_sources(cfg: DictConfig, run_id: str | None = None) -> int:
             failed += _run_vegetation_height(led, cfg, run_id, source_root, grid)
         elif source == "terrain_height":
             failed += _run_terrain_height(
-                led, cfg, run_id, source_root, smoke_count, grid,
+                led,
+                cfg,
+                run_id,
+                source_root,
+                smoke_count,
+                grid,
             )
         elif source == "lod2_morphology":
             failed += _run_lod2_morphology(
-                led, cfg, run_id, source_root, smoke_count, grid,
+                led,
+                cfg,
+                run_id,
+                source_root,
+                smoke_count,
+                grid,
             )
         else:
             log_event(_logger, logging.WARNING, "unknown_source", source=source)
@@ -118,15 +128,21 @@ def _run_imperviousness(
             continue
 
         reason = todo[0][3]
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="imperviousness",
-            period_or_vintage=str(vintage), status="exporting",
-            run_id=run_id,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="imperviousness",
+                period_or_vintage=str(vintage),
+                status="exporting",
+                run_id=run_id,
+            )
+        )
 
         try:
             log_event(
-                _logger, logging.INFO, "processing",
+                _logger,
+                logging.INFO,
+                "processing",
                 source="imperviousness",
                 vintage=vintage,
                 reason=reason,
@@ -134,34 +150,52 @@ def _run_imperviousness(
             prepared = prepare_imperviousness(vintage, source_root, run_id, grid=grid)
             prod_dir = source_product_dir(source_root, "imperviousness", str(vintage))
             artifacts = finalize_secondary_product(
-                prepared, grid, source_root, run_id,
+                prepared,
+                grid,
+                source_root,
+                run_id,
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
-                _logger, logging.ERROR, "failed",
+                _logger,
+                logging.ERROR,
+                "failed",
                 source="imperviousness",
                 vintage=vintage,
                 error=str(exc),
             )
-            led.upsert(SecondaryLedgerRow(
-                item_id=item_id, source="imperviousness",
-                period_or_vintage=str(vintage), status="failed",
-                run_id=run_id, last_error=str(exc),
-            ))
+            led.upsert(
+                SecondaryLedgerRow(
+                    item_id=item_id,
+                    source="imperviousness",
+                    period_or_vintage=str(vintage),
+                    status="failed",
+                    run_id=run_id,
+                    last_error=str(exc),
+                )
+            )
             failed += 1
             continue
 
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="imperviousness",
-            period_or_vintage=str(vintage), status="done",
-            run_id=run_id, config_hash=c_hash,
-            output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
-            provenance_uri=artifacts.provenance_uri,
-            completion_uri=artifacts.completion_uri,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="imperviousness",
+                period_or_vintage=str(vintage),
+                status="done",
+                run_id=run_id,
+                config_hash=c_hash,
+                output_uri=artifacts.cog_uri,
+                stac_uri=artifacts.stac_uri,
+                provenance_uri=artifacts.provenance_uri,
+                completion_uri=artifacts.completion_uri,
+            )
+        )
         log_event(
-            _logger, logging.INFO, "done",
+            _logger,
+            logging.INFO,
+            "done",
             source="imperviousness",
             vintage=vintage,
             output_uri=artifacts.cog_uri,
@@ -199,15 +233,21 @@ def _run_vegetation_height(
             continue
 
         reason = todo[0][3]
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="vegetation_height",
-            period_or_vintage=str(vintage), status="exporting",
-            run_id=run_id,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="vegetation_height",
+                period_or_vintage=str(vintage),
+                status="exporting",
+                run_id=run_id,
+            )
+        )
 
         try:
             log_event(
-                _logger, logging.INFO, "processing",
+                _logger,
+                logging.INFO,
+                "processing",
                 source="vegetation_height",
                 vintage=vintage,
                 reason=reason,
@@ -215,34 +255,52 @@ def _run_vegetation_height(
             prepared = prepare_vegetation_height(vintage, source_root, run_id, grid=grid)
             prod_dir = source_product_dir(source_root, "vegetation_height", str(vintage))
             artifacts = finalize_secondary_product(
-                prepared, grid, source_root, run_id,
+                prepared,
+                grid,
+                source_root,
+                run_id,
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
-                _logger, logging.ERROR, "failed",
+                _logger,
+                logging.ERROR,
+                "failed",
                 source="vegetation_height",
                 vintage=vintage,
                 error=str(exc),
             )
-            led.upsert(SecondaryLedgerRow(
-                item_id=item_id, source="vegetation_height",
-                period_or_vintage=str(vintage), status="failed",
-                run_id=run_id, last_error=str(exc),
-            ))
+            led.upsert(
+                SecondaryLedgerRow(
+                    item_id=item_id,
+                    source="vegetation_height",
+                    period_or_vintage=str(vintage),
+                    status="failed",
+                    run_id=run_id,
+                    last_error=str(exc),
+                )
+            )
             failed += 1
             continue
 
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="vegetation_height",
-            period_or_vintage=str(vintage), status="done",
-            run_id=run_id, config_hash=c_hash,
-            output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
-            provenance_uri=artifacts.provenance_uri,
-            completion_uri=artifacts.completion_uri,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="vegetation_height",
+                period_or_vintage=str(vintage),
+                status="done",
+                run_id=run_id,
+                config_hash=c_hash,
+                output_uri=artifacts.cog_uri,
+                stac_uri=artifacts.stac_uri,
+                provenance_uri=artifacts.provenance_uri,
+                completion_uri=artifacts.completion_uri,
+            )
+        )
         log_event(
-            _logger, logging.INFO, "done",
+            _logger,
+            logging.INFO,
+            "done",
             source="vegetation_height",
             vintage=vintage,
             output_uri=artifacts.cog_uri,
@@ -281,52 +339,80 @@ def _run_terrain_height(
             continue
 
         reason = todo[0][3]
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="terrain_height",
-            period_or_vintage=str(vintage), status="exporting",
-            run_id=run_id,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="terrain_height",
+                period_or_vintage=str(vintage),
+                status="exporting",
+                run_id=run_id,
+            )
+        )
 
         try:
             log_event(
-                _logger, logging.INFO, "processing",
+                _logger,
+                logging.INFO,
+                "processing",
                 source="terrain_height",
                 vintage=vintage,
                 reason=reason,
             )
             prepared = prepare_terrain_height(
-                vintage, source_root, run_id, smoke_tile_count=smoke_tile_count, grid=grid,
+                vintage,
+                source_root,
+                run_id,
+                smoke_tile_count=smoke_tile_count,
+                grid=grid,
             )
             prod_dir = source_product_dir(source_root, "terrain_height", str(vintage))
             artifacts = finalize_secondary_product(
-                prepared, grid, source_root, run_id,
+                prepared,
+                grid,
+                source_root,
+                run_id,
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
-                _logger, logging.ERROR, "failed",
+                _logger,
+                logging.ERROR,
+                "failed",
                 source="terrain_height",
                 vintage=vintage,
                 error=str(exc),
             )
-            led.upsert(SecondaryLedgerRow(
-                item_id=item_id, source="terrain_height",
-                period_or_vintage=str(vintage), status="failed",
-                run_id=run_id, last_error=str(exc),
-            ))
+            led.upsert(
+                SecondaryLedgerRow(
+                    item_id=item_id,
+                    source="terrain_height",
+                    period_or_vintage=str(vintage),
+                    status="failed",
+                    run_id=run_id,
+                    last_error=str(exc),
+                )
+            )
             failed += 1
             continue
 
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="terrain_height",
-            period_or_vintage=str(vintage), status="done",
-            run_id=run_id, config_hash=c_hash,
-            output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
-            provenance_uri=artifacts.provenance_uri,
-            completion_uri=artifacts.completion_uri,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="terrain_height",
+                period_or_vintage=str(vintage),
+                status="done",
+                run_id=run_id,
+                config_hash=c_hash,
+                output_uri=artifacts.cog_uri,
+                stac_uri=artifacts.stac_uri,
+                provenance_uri=artifacts.provenance_uri,
+                completion_uri=artifacts.completion_uri,
+            )
+        )
         log_event(
-            _logger, logging.INFO, "done",
+            _logger,
+            logging.INFO,
+            "done",
             source="terrain_height",
             vintage=vintage,
             output_uri=artifacts.cog_uri,
@@ -365,52 +451,80 @@ def _run_lod2_morphology(
             continue
 
         reason = todo[0][3]
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="lod2_morphology",
-            period_or_vintage=str(vintage), status="exporting",
-            run_id=run_id,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="lod2_morphology",
+                period_or_vintage=str(vintage),
+                status="exporting",
+                run_id=run_id,
+            )
+        )
 
         try:
             log_event(
-                _logger, logging.INFO, "processing",
+                _logger,
+                logging.INFO,
+                "processing",
                 source="lod2_morphology",
                 vintage=vintage,
                 reason=reason,
             )
             prepared = prepare_lod2_morphology(
-                vintage, source_root, run_id, smoke_tile_count=smoke_tile_count, grid=grid,
+                vintage,
+                source_root,
+                run_id,
+                smoke_tile_count=smoke_tile_count,
+                grid=grid,
             )
             prod_dir = source_product_dir(source_root, "lod2_morphology", str(vintage))
             artifacts = finalize_secondary_product(
-                prepared, grid, source_root, run_id,
+                prepared,
+                grid,
+                source_root,
+                run_id,
                 product_dir_override=prod_dir,
             )
         except Exception as exc:
             log_event(
-                _logger, logging.ERROR, "failed",
+                _logger,
+                logging.ERROR,
+                "failed",
                 source="lod2_morphology",
                 vintage=vintage,
                 error=str(exc),
             )
-            led.upsert(SecondaryLedgerRow(
-                item_id=item_id, source="lod2_morphology",
-                period_or_vintage=str(vintage), status="failed",
-                run_id=run_id, last_error=str(exc),
-            ))
+            led.upsert(
+                SecondaryLedgerRow(
+                    item_id=item_id,
+                    source="lod2_morphology",
+                    period_or_vintage=str(vintage),
+                    status="failed",
+                    run_id=run_id,
+                    last_error=str(exc),
+                )
+            )
             failed += 1
             continue
 
-        led.upsert(SecondaryLedgerRow(
-            item_id=item_id, source="lod2_morphology",
-            period_or_vintage=str(vintage), status="done",
-            run_id=run_id, config_hash=c_hash,
-            output_uri=artifacts.cog_uri, stac_uri=artifacts.stac_uri,
-            provenance_uri=artifacts.provenance_uri,
-            completion_uri=artifacts.completion_uri,
-        ))
+        led.upsert(
+            SecondaryLedgerRow(
+                item_id=item_id,
+                source="lod2_morphology",
+                period_or_vintage=str(vintage),
+                status="done",
+                run_id=run_id,
+                config_hash=c_hash,
+                output_uri=artifacts.cog_uri,
+                stac_uri=artifacts.stac_uri,
+                provenance_uri=artifacts.provenance_uri,
+                completion_uri=artifacts.completion_uri,
+            )
+        )
         log_event(
-            _logger, logging.INFO, "done",
+            _logger,
+            logging.INFO,
+            "done",
             source="lod2_morphology",
             vintage=vintage,
             output_uri=artifacts.cog_uri,
@@ -438,5 +552,12 @@ def _resolve_grid(cfg: DictConfig):
 
 
 def _banner(cfg: DictConfig, run_id: str, source_root: str) -> None:
-    log_event(_logger, logging.INFO, "run_start",
-        pipeline="static-sources", mode=cfg.mode, run_id=run_id, source_root=source_root)
+    log_event(
+        _logger,
+        logging.INFO,
+        "run_start",
+        pipeline="static-sources",
+        mode=cfg.mode,
+        run_id=run_id,
+        source_root=source_root,
+    )

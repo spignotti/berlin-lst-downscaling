@@ -176,5 +176,3 @@ def run_scan(cfg) -> ScanReport:
         est_total_gb=round(est_total_gb, 2),
         metadata_json=str(json_path),
     )
-
-

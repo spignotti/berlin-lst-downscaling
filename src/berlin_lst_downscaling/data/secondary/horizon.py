@@ -220,12 +220,18 @@ def prepare_horizon(
     # Compute horizon cube
     n_azimuths = 36
     log_event(
-        _logger, logging.INFO, "horizon_computing",
-        component=component, n_azimuths=n_azimuths,
+        _logger,
+        logging.INFO,
+        "horizon_computing",
+        component=component,
+        n_azimuths=n_azimuths,
         max_radius_m=max_radius_m,
     )
     horizon_cube = _compute_horizon_cube(
-        dsm_data, _CELL_SIZE_M, max_radius_m, n_azimuths,
+        dsm_data,
+        _CELL_SIZE_M,
+        max_radius_m,
+        n_azimuths,
     )
 
     # Build canonical xr.Dataset with one variable per azimuth band
@@ -263,10 +269,7 @@ def prepare_horizon(
             "retrieved_at": retrieved_at,
         },
         qa_stats={
-            "valid_frac": (
-                round(float(len(valid)) / b0.size, 4)
-                if b0.size > 0 else 0.0
-            ),
+            "valid_frac": (round(float(len(valid)) / b0.size, 4) if b0.size > 0 else 0.0),
             "min_angle_cd": int(valid.min()) if len(valid) > 0 else None,
             "max_angle_cd": int(valid.max()) if len(valid) > 0 else None,
             "shape": list(horizon_cube.shape),

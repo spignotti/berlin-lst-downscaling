@@ -144,18 +144,23 @@ def prepare_terrain_height(
     for i, asset in enumerate(manifest.assets):
         if (i + 1) % 50 == 0:
             log_event(
-                _logger, logging.DEBUG, "dgm_tile_progress",
-                done=i+1, total=len(manifest.assets),
+                _logger,
+                logging.DEBUG,
+                "dgm_tile_progress",
+                done=i + 1,
+                total=len(manifest.assets),
             )
 
         receipt = _process_tile(asset, dst_arr, grid, output_root)
-        tile_receipts.append({
-            "filename": asset.filename,
-            "easting": asset.easting,
-            "northing": asset.northing,
-            "checksum": receipt.checksum,
-            "byte_count": receipt.byte_count,
-        })
+        tile_receipts.append(
+            {
+                "filename": asset.filename,
+                "easting": asset.easting,
+                "northing": asset.northing,
+                "checksum": receipt.checksum,
+                "byte_count": receipt.byte_count,
+            }
+        )
         all_checksums.append(receipt.checksum)
 
     # ── 3. compute combined checksum ─────────────────────────────────
@@ -193,11 +198,7 @@ def prepare_terrain_height(
             "vertical_datum": "DHHN2016",
         },
         qa_stats={
-            "valid_frac": (
-                round(float(len(valid)) / dst_arr.size, 4)
-                if dst_arr.size > 0
-                else 0.0
-            ),
+            "valid_frac": (round(float(len(valid)) / dst_arr.size, 4) if dst_arr.size > 0 else 0.0),
             "min": float(valid.min()) if len(valid) > 0 else None,
             "max": float(valid.max()) if len(valid) > 0 else None,
             "shape": list(dst_arr.shape),
@@ -261,7 +262,8 @@ def _process_tile(
 
 
 def _read_xyz_zip(
-    zip_path: Path, asset: AtomAsset,
+    zip_path: Path,
+    asset: AtomAsset,
 ) -> tuple[np.ndarray, object]:
     """Read XYZ CSV from a DGM tile ZIP and return a north-up 2-D array."""
     from rasterio.transform import from_origin
@@ -274,9 +276,7 @@ def _read_xyz_zip(
             data = np.loadtxt(f, dtype=np.float64)
 
     if data.ndim != 2 or data.shape[1] != 3:
-        raise ValueError(
-            f"{asset.filename}: expected M×3 XYZ array, got shape {data.shape}"
-        )
+        raise ValueError(f"{asset.filename}: expected M×3 XYZ array, got shape {data.shape}")
     if data.shape[0] == 0:
         raise ValueError(f"{asset.filename}: empty XYZ data")
 
@@ -330,7 +330,9 @@ def _read_xyz_zip(
 
 
 def _validate_xyz_coords(
-    x_vals: np.ndarray, y_vals: np.ndarray, asset: AtomAsset,
+    x_vals: np.ndarray,
+    y_vals: np.ndarray,
+    asset: AtomAsset,
 ) -> None:
     """Validate XYZ coordinate spacing and general extents."""
     # Check Y spacing (should be 1.0 m)
@@ -338,18 +340,14 @@ def _validate_xyz_coords(
     if len(y_unique) > 1:
         y_step = float(np.median(np.diff(y_unique)))
         if abs(y_step - 1.0) > 0.01:
-            raise ValueError(
-                f"{asset.filename}: Y spacing {y_step:.3f} m, expected 1.0 m"
-            )
+            raise ValueError(f"{asset.filename}: Y spacing {y_step:.3f} m, expected 1.0 m")
 
     # Check X spacing (should be 1.0 m)
     x_unique = np.unique(x_vals)
     if len(x_unique) > 1:
         x_step = float(np.median(np.diff(x_unique)))
         if abs(x_step - 1.0) > 0.01:
-            raise ValueError(
-                f"{asset.filename}: X spacing {x_step:.3f} m, expected 1.0 m"
-            )
+            raise ValueError(f"{asset.filename}: X spacing {x_step:.3f} m, expected 1.0 m")
 
     # Sanity: tile should be near the declared origin (within 2 km)
     x_min, x_max = float(x_vals.min()), float(x_vals.max())

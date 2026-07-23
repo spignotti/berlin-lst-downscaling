@@ -111,8 +111,7 @@ def build_anchors(cfg) -> tuple[list, dict]:
         )
 
     if n_skipped_platform > 0:
-        log_event(_logger, logging.INFO, "platform_skipped",
-            n_skipped=n_skipped_platform)
+        log_event(_logger, logging.INFO, "platform_skipped", n_skipped=n_skipped_platform)
 
     # ── Pixel-wise anchor fitness gate ─────────────────────────────────────
     min_cf = getattr(cfg.landsat.anchor, "min_clear_frac", 0.0)
@@ -166,8 +165,9 @@ def _filter_by_pixel_clear_frac(
         try:
             with open(ckpt_path, "rb") as f:
                 cf_cache = pickle.load(f)  # noqa: S301 — internal checkpoint
-            log_event(_logger, logging.INFO, "anchor_filter_checkpoint_resumed",
-                n_cached=len(cf_cache))
+            log_event(
+                _logger, logging.INFO, "anchor_filter_checkpoint_resumed", n_cached=len(cf_cache)
+            )
         except Exception:
             log_event(_logger, logging.WARNING, "anchor_filter_checkpoint_load_failed")
             cf_cache = {}
@@ -177,8 +177,14 @@ def _filter_by_pixel_clear_frac(
 
     if todo:
         done = len(cf_cache)
-        log_event(_logger, logging.INFO, "anchor_filter_processing",
-            n_todo=len(todo), n_total=n_total, min_clear_frac=min_clear_frac)
+        log_event(
+            _logger,
+            logging.INFO,
+            "anchor_filter_processing",
+            n_todo=len(todo),
+            n_total=n_total,
+            min_clear_frac=min_clear_frac,
+        )
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {pool.submit(compute_anchor_clear_frac, a, cfg): a for a in todo}
             for future in as_completed(futures):
@@ -190,8 +196,14 @@ def _filter_by_pixel_clear_frac(
                     cf_cache[anchor["scene_id"]] = result
                 done += 1
                 if done % 20 == 0 or done == n_total:
-                    log_event(_logger, logging.INFO, "anchor_filter_progress",
-                        done=done, n_total=n_total, last_scene=anchor['scene_id'])
+                    log_event(
+                        _logger,
+                        logging.INFO,
+                        "anchor_filter_progress",
+                        done=done,
+                        n_total=n_total,
+                        last_scene=anchor["scene_id"],
+                    )
                 if done % 50 == 0:
                     Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
                     with open(ckpt_path, "wb") as f:
@@ -214,12 +226,23 @@ def _filter_by_pixel_clear_frac(
         else:
             dropped.append(anchor)
             cf_str = f"{cf:.3f}" if cf is not None else "N/A"
-            log_event(_logger, logging.DEBUG, "anchor_dropped",
-                scene_id=anchor['scene_id'], clear_frac=cf_str,
-                min_clear_frac=min_clear_frac)
+            log_event(
+                _logger,
+                logging.DEBUG,
+                "anchor_dropped",
+                scene_id=anchor["scene_id"],
+                clear_frac=cf_str,
+                min_clear_frac=min_clear_frac,
+            )
 
-    log_event(_logger, logging.INFO, "anchor_filter_done",
-        n_kept=len(kept), n_total=len(anchors), min_clear_frac=min_clear_frac)
+    log_event(
+        _logger,
+        logging.INFO,
+        "anchor_filter_done",
+        n_kept=len(kept),
+        n_total=len(anchors),
+        min_clear_frac=min_clear_frac,
+    )
 
     # Delete checkpoint on successful completion
     Path(ckpt_path).unlink(missing_ok=True)

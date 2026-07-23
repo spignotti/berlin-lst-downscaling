@@ -200,9 +200,7 @@ def _atomic_write_gcs(uri: str, data: bytes, overwrite: bool) -> None:
     if not overwrite and final_blob.exists():
         raise FileExistsError(uri)
 
-    tmp_key = (
-        Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}"
-    ).as_posix()
+    tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
     _gcs_upload_with_retry(tmp_blob, data, bucket, key)
@@ -220,9 +218,11 @@ def _gcs_upload_with_retry(tmp_blob, data, bucket, key):
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=2, min=1, max=60),
-        retry=retry_if_exception_type((
-            Exception,  # google.api_core.exceptions 429/503 inherit from Exception
-        )),
+        retry=retry_if_exception_type(
+            (
+                Exception,  # google.api_core.exceptions 429/503 inherit from Exception
+            )
+        ),
         reraise=True,
     )
     def _do_upload():
@@ -346,14 +346,10 @@ def _atomic_upload_gcs(
     if not overwrite and final_blob.exists():
         raise FileExistsError(dst_uri)
 
-    tmp_key = (
-        Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}"
-    ).as_posix()
+    tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_file_with_retry(
-        tmp_blob, local_path, bucket, key, if_generation_match
-    )
+    _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match)
 
 
 def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match):
@@ -374,9 +370,7 @@ def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation
     def _do_upload():
         try:
             tmp_blob.upload_from_filename(str(local_path))
-            bucket.copy_blob(
-                tmp_blob, bucket, key, if_generation_match=if_generation_match
-            )
+            bucket.copy_blob(tmp_blob, bucket, key, if_generation_match=if_generation_match)
         except Exception:
             try:
                 tmp_blob.delete()

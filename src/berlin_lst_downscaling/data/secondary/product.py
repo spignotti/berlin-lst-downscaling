@@ -246,16 +246,28 @@ def finalize_secondary_product(
         completion_uri = f"{base}/complete.json"
     else:
         cog_uri = product_cog_path(
-            output_root, prepared.category, prepared.source, prepared.item_key,
+            output_root,
+            prepared.category,
+            prepared.source,
+            prepared.item_key,
         )
         provenance_uri = product_provenance_path(
-            output_root, prepared.category, prepared.source, prepared.item_key,
+            output_root,
+            prepared.category,
+            prepared.source,
+            prepared.item_key,
         )
         stac_uri = product_stac_path(
-            output_root, prepared.category, prepared.source, prepared.item_key,
+            output_root,
+            prepared.category,
+            prepared.source,
+            prepared.item_key,
         )
         completion_uri = product_completion_path(
-            output_root, prepared.category, prepared.source, prepared.item_key,
+            output_root,
+            prepared.category,
+            prepared.source,
+            prepared.item_key,
         )
 
     # ── 1. write COG ─────────────────────────────────────────────────
@@ -279,7 +291,10 @@ def finalize_secondary_product(
 
     # ── 4. STAC item ─────────────────────────────────────────────────
     stac_item = build_secondary_stac_item(
-        prepared, grid, cog_uri, provenance_uri,
+        prepared,
+        grid,
+        cog_uri,
+        provenance_uri,
     )
     atomic_write(
         stac_uri,

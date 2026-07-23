@@ -49,9 +49,7 @@ VEGETATION_HEIGHT_URLS: dict[int, str] = {
     2020: "https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/veghoehe_2020.zip",
 }
 
-VEGETATION_HEIGHT_ATOM_FEED = (
-    "https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/0.atom"
-)
+VEGETATION_HEIGHT_ATOM_FEED = "https://gdi.berlin.de/data/ua_vegetationshoehen_2020/atom/0.atom"
 VEGETATION_HEIGHT_CSW_RECORD = (
     "https://gdi.berlin.de/geonetwork/srv/ger/csw?"
     "REQUEST=GetRecordById&SERVICE=CSW&VERSION=2.0.2&"
@@ -123,9 +121,7 @@ def prepare_vegetation_height(
     within the AOI are 0; cells outside the AOI remain NaN.
     """
     if vintage != 2020:
-        raise ValueError(
-            f"Only vintage 2020 is available; got {vintage}"
-        )
+        raise ValueError(f"Only vintage 2020 is available; got {vintage}")
 
     url = VEGETATION_HEIGHT_URLS[vintage]
     raw_uri = _raw_zip_uri(output_root, vintage)
@@ -208,9 +204,7 @@ def prepare_vegetation_height(
         source_metadata={
             "archive_url": url,
             "archive_sha256": receipt.checksum,
-            "archive_bytes": int(
-                archive_path.stat().st_size if archive_path.exists() else 0
-            ),
+            "archive_bytes": int(archive_path.stat().st_size if archive_path.exists() else 0),
             "raw_uri": raw_uri,
             "retrieved_at": retrieved_at,
             "license": VEGETATION_HEIGHT_LICENSE,
@@ -223,9 +217,7 @@ def prepare_vegetation_height(
         },
         qa_stats={
             "valid_frac": (
-                round(float(len(valid_mean)) / mean_arr.size, 4)
-                if mean_arr.size > 0
-                else 0.0
+                round(float(len(valid_mean)) / mean_arr.size, 4) if mean_arr.size > 0 else 0.0
             ),
             "min": float(valid_mean.min()) if len(valid_mean) > 0 else None,
             "max": float(valid_mean.max()) if len(valid_mean) > 0 else None,
@@ -285,9 +277,7 @@ def _locate_tiff_member(zip_path: Path) -> str:
         names = z.namelist()
         tif_names = [n for n in names if n.lower().endswith((".tif", ".tiff"))]
         if not tif_names:
-            raise ValueError(
-                f"No GeoTIFF member found in {zip_path}. Members: {names}"
-            )
+            raise ValueError(f"No GeoTIFF member found in {zip_path}. Members: {names}")
         if len(tif_names) != 1:
             raise ValueError(
                 f"Expected exactly one GeoTIFF member; got {len(tif_names)}: {tif_names}"
@@ -322,13 +312,9 @@ def _extract_native_metadata(zip_path: Path) -> dict[str, Any]:
 def _validate_native_metadata(meta: dict[str, Any]) -> None:
     """Fail fast if the native raster does not match the expected contract."""
     if str(meta["crs"]).upper() not in {"EPSG:25833", "25833"}:
-        raise ValueError(
-            f"Native CRS must be EPSG:25833; got {meta['crs']!r}"
-        )
+        raise ValueError(f"Native CRS must be EPSG:25833; got {meta['crs']!r}")
     if abs(meta["res_x"] - 1.0) > 1e-6 or abs(meta["res_y"] - 1.0) > 1e-6:
-        raise ValueError(
-            f"Native resolution must be 1 m; got ({meta['res_x']}, {meta['res_y']})"
-        )
+        raise ValueError(f"Native resolution must be 1 m; got ({meta['res_x']}, {meta['res_y']})")
     if meta["nodata"] is None:
         raise ValueError("Native raster must have NoData defined")
 
@@ -338,8 +324,12 @@ def _validate_native_metadata(meta: dict[str, Any]) -> None:
     # Check that the native raster overlaps the canonical grid (not exact origin coverage)
     grid_right = origin_x + grid.shape.x * abs(grid.transform.a)
     grid_bottom = origin_y - grid.shape.y * abs(grid.transform.e)
-    if not (b["left"] < grid_right and b["right"] > origin_x
-            and b["bottom"] < origin_y and b["top"] > grid_bottom):
+    if not (
+        b["left"] < grid_right
+        and b["right"] > origin_x
+        and b["bottom"] < origin_y
+        and b["top"] > grid_bottom
+    ):
         raise ValueError(
             f"Native bounds {b} do not overlap canonical grid "
             f"({origin_x}, {origin_y}, {grid_right}, {grid_bottom})"

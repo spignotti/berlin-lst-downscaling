@@ -86,10 +86,7 @@ def validate_cog(
     # ── 5. Shape ───────────────────────────────────────────────────────────
     ex, ey = expected_grid.shape.x, expected_grid.shape.y
     if width != ex or height != ey:
-        result.fail(
-            f"Shape mismatch: got ({width}, {height}), "
-            f"expected ({ex}, {ey})"
-        )
+        result.fail(f"Shape mismatch: got ({width}, {height}), expected ({ex}, {ey})")
 
     # ── 6. Origin alignment ────────────────────────────────────────────────
     ex_off = expected_grid.transform.xoff
@@ -146,10 +143,7 @@ def validate_flag_cog(
     # ── 4. Shape ───────────────────────────────────────────────────────────
     ex, ey = expected_grid.shape.x, expected_grid.shape.y
     if width != ex or height != ey:
-        result.fail(
-            f"Flag COG shape mismatch: got ({width}, {height}), "
-            f"expected ({ex}, {ey})"
-        )
+        result.fail(f"Flag COG shape mismatch: got ({width}, {height}), expected ({ex}, {ey})")
 
     # Origin
     ex_off = expected_grid.transform.xoff

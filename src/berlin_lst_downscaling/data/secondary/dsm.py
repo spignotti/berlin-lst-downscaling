@@ -191,8 +191,7 @@ def prepare_building_dsm(
         },
         qa_stats={
             "valid_frac": (
-                round(float(len(valid)) / building_dsm.size, 4)
-                if building_dsm.size > 0 else 0.0
+                round(float(len(valid)) / building_dsm.size, 4) if building_dsm.size > 0 else 0.0
             ),
             "min": float(valid.min()) if len(valid) > 0 else None,
             "max": float(valid.max()) if len(valid) > 0 else None,

@@ -30,9 +30,9 @@ import pyarrow.parquet as pq
 def _read_ledger(output_root: str) -> dict:
     ledger_path = f"{output_root.rstrip('/')}/_state/dynamic/ledger.parquet"
     if ledger_path.startswith("gs://"):
-        from berlin_lst_downscaling.data.io.storage import read_bytes
-
         import io
+
+        from berlin_lst_downscaling.data.io.storage import read_bytes
 
         table = pq.read_table(io.BytesIO(read_bytes(ledger_path)))
     else:

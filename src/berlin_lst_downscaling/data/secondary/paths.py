@@ -77,14 +77,20 @@ def product_stac_path(root: str, category: str, source: str, vintage: str) -> st
 
 
 def product_provenance_path(
-    root: str, category: str, source: str, vintage: str,
+    root: str,
+    category: str,
+    source: str,
+    vintage: str,
 ) -> str:
     """Return the final provenance.json URI for a product."""
     return f"{product_dir(root, category, source, vintage)}/provenance.json"
 
 
 def product_completion_path(
-    root: str, category: str, source: str, vintage: str,
+    root: str,
+    category: str,
+    source: str,
+    vintage: str,
 ) -> str:
     """Return the publication marker URI for a product.
 

@@ -122,17 +122,23 @@ def parse_atom_feed(
                 grid_bottom = grid_top - aoi_grid.shape.y * abs(aoi_grid.transform.e)
 
                 # No intersection if tile is completely outside grid
-                if (easting >= grid_right or tile_e <= grid_left
-                        or northing <= grid_bottom or tile_s >= grid_top):
+                if (
+                    easting >= grid_right
+                    or tile_e <= grid_left
+                    or northing <= grid_bottom
+                    or tile_s >= grid_top
+                ):
                     continue
 
-            assets.append(AtomAsset(
-                url=href,
-                filename=filename,
-                title=title,
-                easting=easting,
-                northing=northing,
-            ))
+            assets.append(
+                AtomAsset(
+                    url=href,
+                    filename=filename,
+                    title=title,
+                    easting=easting,
+                    northing=northing,
+                )
+            )
 
     # Sort by northing (south-to-north), then easting (west-to-east)
     assets.sort(key=lambda a: (a.northing, a.easting))
@@ -152,6 +158,7 @@ def _text(element: ET.Element, tag: str, default: str = "") -> str:
 
 
 # ── manifest persistence ─────────────────────────────────────────────
+
 
 def save_manifest_json(manifest: AtomManifest, path: str) -> None:
     """Save manifest as JSON for reproducibility."""

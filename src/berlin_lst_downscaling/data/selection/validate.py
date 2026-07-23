@@ -75,9 +75,7 @@ def validate_manifest_table(
     seen: set[tuple[str, str]] = set()
     for i, k in enumerate(keys):
         if k in seen:
-            result.errors.append(
-                f"Duplicate (source={k[0]}, scene_id={k[1]}) at row {i}"
-            )
+            result.errors.append(f"Duplicate (source={k[0]}, scene_id={k[1]}) at row {i}")
         seen.add(k)
 
     # Per-row checks
@@ -109,9 +107,7 @@ def validate_manifest_table(
         # ECOSTRESS
         if src == "ecostress":
             if sid not in ECOSTRESS_VALIDATION_IDS:
-                result.errors.append(
-                    f"Row {i}: ECOSTRESS {sid} not in validation allowlist"
-                )
+                result.errors.append(f"Row {i}: ECOSTRESS {sid} not in validation allowlist")
             eco_ids_found.add(sid)
             if role != "validation":
                 result.errors.append(
@@ -121,32 +117,22 @@ def validate_manifest_table(
         # AOI clear fraction (required for anchor/predictor)
         if role in ("anchor", "predictor"):
             if cf is None or (isinstance(cf, float) and cf != cf):
-                result.errors.append(
-                    f"Row {i}: {src} {sid} has no AOI clear_frac"
-                )
+                result.errors.append(f"Row {i}: {src} {sid} has no AOI clear_frac")
             elif cf < 0.05:
-                result.errors.append(
-                    f"Row {i}: {src} {sid} has clear_frac={cf:.4f} < 0.05"
-                )
+                result.errors.append(f"Row {i}: {src} {sid} has clear_frac={cf:.4f} < 0.05")
 
         # item_href required for PC STAC rows
         if require_item_href and src in ("landsat-c2-l2", "sentinel-2-l2a"):
             if href is None or (isinstance(href, str) and not href.strip()):
-                result.errors.append(
-                    f"Row {i}: {src} {sid} missing item_href"
-                )
+                result.errors.append(f"Row {i}: {src} {sid} missing item_href")
 
     # ECOSTRESS completeness
     missing_eco = ECOSTRESS_VALIDATION_IDS - eco_ids_found
     extra_eco = eco_ids_found - ECOSTRESS_VALIDATION_IDS
     if missing_eco:
-        result.errors.append(
-            f"Missing ECOSTRESS validation IDs: {sorted(missing_eco)}"
-        )
+        result.errors.append(f"Missing ECOSTRESS validation IDs: {sorted(missing_eco)}")
     if extra_eco:
-        result.errors.append(
-            f"Extra ECOSTRESS IDs not in allowlist: {sorted(extra_eco)}"
-        )
+        result.errors.append(f"Extra ECOSTRESS IDs not in allowlist: {sorted(extra_eco)}")
 
     return result
 
@@ -182,11 +168,13 @@ def validate_pairings_table(
     m_ids = manifest_table.column("scene_id").to_pylist()
     m_roles = manifest_table.column("role").to_pylist()
     anchor_ids = {
-        sid for sid, src, role in zip(m_ids, m_sources, m_roles, strict=True)
+        sid
+        for sid, src, role in zip(m_ids, m_sources, m_roles, strict=True)
         if src == "landsat-c2-l2" and role == "anchor"
     }
     predictor_ids = {
-        sid for sid, src, role in zip(m_ids, m_sources, m_roles, strict=True)
+        sid
+        for sid, src, role in zip(m_ids, m_sources, m_roles, strict=True)
         if src == "sentinel-2-l2a"
     }
 
@@ -213,9 +201,7 @@ def validate_pairings_table(
 
         # Duplicate landsat_scene_id
         if lid in seen_lids:
-            result.errors.append(
-                f"Pairings row {i}: duplicate landsat_scene_id {lid!r}"
-            )
+            result.errors.append(f"Pairings row {i}: duplicate landsat_scene_id {lid!r}")
         seen_lids.add(lid)
 
         # Count invariants
@@ -223,9 +209,7 @@ def validate_pairings_table(
         jcp = p_jcp[i]
         jcf = p_jcf[i]
         if lcf is None or lcf <= 0:
-            result.errors.append(
-                f"Pairings row {i}: landsat_clear_px must be > 0, got {lcf!r}"
-            )
+            result.errors.append(f"Pairings row {i}: landsat_clear_px must be > 0, got {lcf!r}")
             continue
         if jcp is None or jcp < 0 or jcp > lcf:
             result.errors.append(
@@ -250,9 +234,7 @@ def validate_pairings_table(
     # Every anchor should have exactly one pairing
     for aid in anchor_ids:
         if aid not in seen_lids:
-            result.warnings.append(
-                f"Anchor {aid!r} has no pairing in pairings.parquet"
-            )
+            result.warnings.append(f"Anchor {aid!r} has no pairing in pairings.parquet")
 
     return result
 
@@ -262,9 +244,15 @@ def validate_report_json(report: dict, manifest_hash: str, pairings_hash: str) -
     result = ValidationResult()
 
     required_keys = {
-        "bundle_id", "generated_at", "cutoff_utc", "policy_hash",
-        "schema_version", "manifest_hash", "pairings_hash",
-        "counts", "unresolved_errors",
+        "bundle_id",
+        "generated_at",
+        "cutoff_utc",
+        "policy_hash",
+        "schema_version",
+        "manifest_hash",
+        "pairings_hash",
+        "counts",
+        "unresolved_errors",
     }
     missing = required_keys - set(report.keys())
     if missing:
@@ -272,9 +260,7 @@ def validate_report_json(report: dict, manifest_hash: str, pairings_hash: str) -
         return result
 
     if report["unresolved_errors"] > 0:
-        result.errors.append(
-            f"Report has {report['unresolved_errors']} unresolved errors"
-        )
+        result.errors.append(f"Report has {report['unresolved_errors']} unresolved errors")
 
     if report.get("manifest_hash") != manifest_hash:
         result.errors.append("Report manifest_hash mismatch")

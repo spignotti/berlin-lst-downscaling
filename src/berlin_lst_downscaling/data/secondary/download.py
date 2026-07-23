@@ -26,9 +26,9 @@ from berlin_lst_downscaling.data.io.storage import atomic_upload, exists
 class DownloadReceipt:
     """Result of a successful raw download."""
 
-    uri: str                      # final destination URI
-    byte_count: int               # bytes written (0 when destination pre-existed)
-    checksum: str                 # SHA-256 hex digest
+    uri: str  # final destination URI
+    byte_count: int  # bytes written (0 when destination pre-existed)
+    checksum: str  # SHA-256 hex digest
     local_cache_path: str | None = None  # local path to the archive, if retained
 
 
@@ -86,8 +86,7 @@ def download_to_raw(
 
             if expected_checksum and checksum != expected_checksum:
                 raise ValueError(
-                    f"SHA-256 mismatch for {url}: "
-                    f"expected {expected_checksum}, got {checksum}"
+                    f"SHA-256 mismatch for {url}: expected {expected_checksum}, got {checksum}"
                 )
 
             atomic_upload(tmp_path, destination)

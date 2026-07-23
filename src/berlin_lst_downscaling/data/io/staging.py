@@ -182,7 +182,7 @@ class StageManager:
         bucket: Bucket = client.bucket(bucket_name)
         keys: list[str] = []
         for blob in bucket.list_blobs(prefix=object_prefix):
-            keys.append(blob.name[len(object_prefix):].lstrip("/"))
+            keys.append(blob.name[len(object_prefix) :].lstrip("/"))
         return sorted(keys)
 
     def stage_uri_for(self, key: str) -> str:
