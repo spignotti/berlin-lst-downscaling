@@ -140,7 +140,6 @@ def smoke_primary(session: nox.Session) -> None:
             "smoke_primary",
             f"manifest_uri={manifest_path}",
             f"output_root={output_root}",
-            "+ecostress.persist_stage=true",  # keep stage for inspection
             external=True,
         )
 
@@ -294,7 +293,6 @@ def cloud_pilot(session: nox.Session) -> None:
         f"manifest_uri={manifest_path}",
         f"output_root={output_root}/smoke_primary",
         f"ecostress.raw_dir={eco_stage}",
-        "+ecostress.persist_stage=true",
         "aoi.mask_base=gs://berlin-lst-data/boundaries",
         external=True,
     )
@@ -652,7 +650,7 @@ def smoke_dynamic(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s smoke-dynamic -- \
-            data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+            data/manifest_build/v3/smoke/manifest.parquet
     """
     manifest_uri = session.posargs[0] if session.posargs else ""
     output_root = "data/dynamic/smoke"
@@ -737,7 +735,7 @@ def cloud_dynamic(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s cloud-dynamic -- \
-            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
     """
     import uuid
     from datetime import UTC, datetime
@@ -777,7 +775,7 @@ def smoke_dwd_validation(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s smoke-dwd-validation -- \\
-            data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet \\
+            data/manifest_build/v3/smoke/manifest.parquet \\
             gs://berlin-lst-data/dynamic/full/<run_id>
     """
     import uuid

@@ -64,7 +64,7 @@ def dynamic_qa_report(
             for part in parts:
                 if len(part) == 8 and part.isdigit():
                     year = int(part[:4])
-                    if 2017 <= year <= 2025:
+                    if 2017 <= year <= 2026:
                         year_dist[year] = year_dist.get(year, 0) + 1
                         break
 

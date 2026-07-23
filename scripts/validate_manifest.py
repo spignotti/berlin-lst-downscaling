@@ -6,119 +6,78 @@
 # ///
 """Standalone manifest bundle validator — offline + upstream identity checks.
 
+Loads the canonical v3 bundle (manifest + pairings + report) through the
+shared loader that ARD/Dynamic consume, so validation works for both
+local and gs:// URIs.
+
 Usage
 -----
-    # Offline validation (no network) — point at the published bundle root.
     uv run python scripts/validate_manifest.py \
-        --manifest gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet \
-        --pairings gs://berlin-lst-data/manifests/v3/...-r2/pairings.parquet \
-        --report gs://berlin-lst-data/manifests/v3/...-r2/manifest_report.json
+        --manifest gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet
 
-    # With upstream PC/CMR identity resolution
+    # With upstream PC/CMR identity resolution (network):
     uv run python scripts/validate_manifest.py \
-        --manifest gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet \
-        --pairings gs://berlin-lst-data/manifests/v3/...-r2/pairings.parquet \
-        --report gs://berlin-lst-data/manifests/v3/...-r2/manifest_report.json \
+        --manifest gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet \
         --resolve-upstream
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
-import pyarrow.parquet as pq
-
-from berlin_lst_downscaling.common.util import sha256_file
+from berlin_lst_downscaling.data.selection.validate import (
+    load_bundle,
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate manifest bundle")
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--pairings", required=True)
-    parser.add_argument("--report", required=False)
+    parser.add_argument(
+        "--manifest",
+        required=True,
+        help="Path to manifest.parquet inside a canonical v3 bundle root",
+    )
     parser.add_argument(
         "--resolve-upstream",
         action="store_true",
-        help="Resolve PC/CMR item identity (requires network)",
+        help="Resolve PC STAC item identity (requires network)",
     )
     args = parser.parse_args()
 
-    from berlin_lst_downscaling.data.selection.validate import (
-        validate_manifest_table,
-        validate_pairings_table,
-        validate_report_json,
-    )
+    bundle, result = load_bundle(args.manifest)
 
-    all_ok = True
+    print(f"Bundle root: {bundle.bundle_dir.rstrip('/')}")
+    print(f"  manifest rows:    {bundle.manifest_table.num_rows}")
+    print(f"  pairings rows:    {bundle.pairings_table.num_rows}")
+    print(f"  manifest_report:  {'present' if bundle.report else 'absent'}")
 
-    # ── Load and validate manifest ──────────────────────────────────────
-    print(f"Loading manifest: {args.manifest}")
-    manifest_table = pq.read_table(args.manifest)
-    print(f"  {manifest_table.num_rows} rows, {manifest_table.num_columns} columns")
-
-    r = validate_manifest_table(manifest_table)
-    if not r.ok:
-        all_ok = False
-        for e in r.errors:
-            print(f"  ERROR: {e}", file=sys.stderr)
+    all_ok = result.ok
+    if all_ok:
+        print("  Bundle: OK")
     else:
-        print("  Manifest: OK")
-
-    # ── Load and validate pairings ──────────────────────────────────────
-    print(f"Loading pairings: {args.pairings}")
-    pairings_table = pq.read_table(args.pairings)
-    print(f"  {pairings_table.num_rows} rows, {pairings_table.num_columns} columns")
-
-    r = validate_pairings_table(pairings_table, manifest_table)
-    if not r.ok:
-        all_ok = False
-        for e in r.errors:
+        for e in result.errors:
             print(f"  ERROR: {e}", file=sys.stderr)
-    for w in r.warnings:
+    for w in result.warnings:
         print(f"  WARN: {w}", file=sys.stderr)
-    if r.ok:
-        print("  Pairings: OK")
 
-    # ── Validate report ─────────────────────────────────────────────────
-    if args.report:
-        print(f"Loading report: {args.report}")
-        with open(args.report) as f:
-            report = json.load(f)
-
-        mf_hash = sha256_file(args.manifest)
-        pf_hash = sha256_file(args.pairings)
-
-        r = validate_report_json(report, mf_hash, pf_hash)
-        if not r.ok:
-            all_ok = False
-            for e in r.errors:
-                print(f"  ERROR: {e}", file=sys.stderr)
-        else:
-            print("  Report: OK")
-
-    # ── Upstream resolution ─────────────────────────────────────────────
     if args.resolve_upstream:
-        print("Resolving upstream identities...")
-        upstream_ok = _resolve_pc_items(manifest_table)
-        if not upstream_ok:
-            all_ok = False
+        if bundle.manifest_table.num_rows == 0:
+            print("  No manifest rows to resolve upstream.")
+        else:
+            upstream_ok = _resolve_pc_items(bundle.manifest_table)
+            if not upstream_ok:
+                all_ok = False
 
     if all_ok:
         print("\nAll checks passed.")
         return 0
-    else:
-        print("\nFAILED: errors found in bundle.", file=sys.stderr)
-        return 1
+    print("\nFAILED: errors found in bundle.", file=sys.stderr)
+    return 1
 
 
 def _resolve_pc_items(table) -> bool:
-    """Resolve Planetary Computer STAC items by exact ID (requires network).
-
-    Returns True if all items resolved successfully, False on any error.
-    Uses bounded retries for rate-limited operations.
-    """
+    """Resolve Planetary Computer STAC items by exact ID (requires network)."""
     from tenacity import (
         retry,
         retry_if_exception_type,
@@ -156,14 +115,12 @@ def _resolve_pc_items(table) -> bool:
         reraise=True,
     )
     def _resolve_one(sid, expected_href):
-        # Try direct HREF resolution first (faster, avoids catalog search)
+        # Direct HREF resolution is faster; fall back to catalog search on miss.
         if expected_href:
             try:
-                item = resolve_item_from_href(expected_href, expected_id=sid)
-                return item
-            except Exception:  # noqa: S110 — fallback to catalog search
+                return resolve_item_from_href(expected_href, expected_id=sid)
+            except Exception:  # noqa: S110 — fallback path below
                 pass
-        # Fallback to catalog search
         search = cat.search(
             collections=["landsat-c2-l2"] if "LC" in sid else ["sentinel-2-l2a"],
             ids=[sid],

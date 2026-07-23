@@ -220,31 +220,6 @@ def _process_manifest(
     if tbl.num_rows == 0:
         return
 
-    scene_filter = cfg.get("scene_filter")
-    if scene_filter:
-        filter_ids = (
-            scene_filter.get("landsat_ids", [])
-            if source == "landsat-c2-l2"
-            else scene_filter.get("s2_ids", [])
-            if source == "sentinel-2-l2a"
-            else scene_filter.get("ecostress_ids", [])
-        )
-
-        if filter_ids:
-            filter_set = set(filter_ids)
-            ids = tbl.column("scene_id").to_pylist()
-            keep = [i for i, sid in enumerate(ids) if sid in filter_set]
-            if not keep:
-                log_event(
-                    _logger,
-                    logging.INFO,
-                    "no_scenes_after_filter",
-                    source=source,
-                    filter_ids=filter_ids,
-                )
-                return
-            tbl = tbl.take(keep)
-
     mask = pc.equal(tbl.column("source"), source)  # type: ignore[attr-defined]
     rows = tbl.filter(mask)
     if rows.num_rows == 0:
