@@ -68,11 +68,8 @@ ADC + CDS API access + the published v3 manifest.
 
 ## Documentation
 
-- `docs/preprocessing-pipelines.md` — operations runbook for the four pipelines + DWD.
-- `docs/run-logging.md` — JSONL log path layout and jq recipes.
-- `docs/ard-manifest-schema.md` — v3 manifest schema, role contract, validation.
-- `docs/lod2-vintage-qualification.md` — geometry vintage policy.
-- `docs/data-availability.md`, `docs/additional-data-sources.md` — research records (status notes flag them as pre-shipment analyses).
+- `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest and ledger contracts.
+- `docs/delivered-implementation.md` — pipeline graph, published roots, commands, logging.
 
 ## Stack
 

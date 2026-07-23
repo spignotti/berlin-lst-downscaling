@@ -27,7 +27,7 @@ Qualification
 -------------
 The current ATOM feed (2026-03-26) is a future source for 2017–2025
 scenes.  Historical vintages must be qualified before production use.
-See ``docs/lod2-vintage-qualification.md``.
+See ``docs/data-sources-and-contracts.md``.
 """
 
 from __future__ import annotations
@@ -381,7 +381,7 @@ def prepare_lod2_morphology(
     Parameters
     ----------
     vintage :
-        Vintage year (must be qualified — see docs/lod2-vintage-qualification.md).
+        Vintage year (must be qualified — see docs/data-sources-and-contracts.md).
     output_root :
         Root URI for all outputs.
     run_id :

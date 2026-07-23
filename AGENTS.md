@@ -50,8 +50,10 @@ scripts/spikes/                # Ad-hoc experiments (kept for reference)
 notebooks/                     # EDA notebooks
 ```
 
-See `docs/preprocessing-pipelines.md` for the canonical pipeline
-operations runbook (ARD, A, B, C, DWD validation).
+See `docs/delivered-implementation.md` for the canonical pipeline
+graph, published roots, and operations guide. See
+`docs/data-sources-and-contracts.md` for the data and ledger
+contracts.
 
 ### DWD-vs-ERA5 validation
 

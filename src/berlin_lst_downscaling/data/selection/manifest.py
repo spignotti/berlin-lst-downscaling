@@ -1,4 +1,4 @@
-"""Write manifest bundle per docs/ard-manifest-schema.md (v3).
+"""Write the canonical v3 manifest bundle.
 
 The bundle consists of three artifacts:
   1. ``manifest.parquet`` — one unique executable scene per row.
