@@ -131,8 +131,9 @@ def main() -> int:
         )
     if args.expected_role:
         for role, count in ledger["role_counts"].items():
-            if role != args.expected_role:
-                errors.append(f"Unexpected role '{role}': {count} items")
+            if role is None or role == args.expected_role:
+                continue
+            errors.append(f"Unexpected role '{role}': {count} items")
 
     # Report
     if errors:
