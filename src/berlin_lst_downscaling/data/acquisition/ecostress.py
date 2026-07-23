@@ -311,19 +311,19 @@ def _download_to_tmp(
     Retries up to 3 times with exponential backoff.
     """
     store = Store(auth=auth)
+    last_exc: Exception | None = None
     for attempt in range(3):
         try:
             downloaded = store.get([granule], local_path=str(tmp_dir), threads=4)  # type: ignore[arg-type]
             return [Path(p) for p in downloaded if p]
         except Exception as exc:
+            last_exc = exc
             if attempt < 2:
                 import time as _time
                 _time.sleep(2 ** attempt)
-            else:
-                raise RuntimeError(
-                    f"Download failed after 3 attempts for {granule['meta']['native-id']}: {exc}"
-                ) from exc
-    raise RuntimeError("Unreachable — download retry loop exhausted.")
+    raise RuntimeError(
+        f"Download failed after 3 attempts for {granule['meta']['native-id']}: {last_exc}"
+    ) from last_exc
 
 
 def parse_granule_mgrs(granule_id: str) -> str | None:

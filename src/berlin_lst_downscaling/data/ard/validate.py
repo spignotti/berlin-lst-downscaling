@@ -123,13 +123,6 @@ def validate_flag_cog(
 
     try:
         with rasterio.open(uri) as src:
-            pass
-    except Exception as exc:
-        result.fail(f"Could not open flag COG: {exc}")
-        return result
-
-    try:
-        with rasterio.open(uri) as src:
             crs = str(src.crs).upper() if src.crs else "None"
             count = src.count
             dtype = src.dtypes[0] if src.dtypes else "None"
@@ -137,7 +130,7 @@ def validate_flag_cog(
             height = src.height
             transform = src.transform
     except Exception as exc:
-        result.fail(f"Failed to read flag COG metadata: {exc}")
+        result.fail(f"Could not open or read flag COG metadata: {exc}")
         return result
 
     # CRS

@@ -151,26 +151,23 @@ def _ensure_month_cached(
     month: int,
     run_id: str,
     *,
-    local_dir: Path | None = None,
+    local_dir: Path,
 ) -> Path | None:
     """Ensure a monthly ERA5-Land NetCDF file is available locally.
 
     Returns a local file path for decoding. Downloads from GCS using
-    streaming (no full-file RAM load). Files are written to ``local_dir``
-    if given, otherwise to a new temp directory.
+    streaming (no full-file RAM load). The caller owns ``local_dir`` and
+    is responsible for cleanup.
 
     Parameters
     ----------
-    local_dir : directory to write the .nc file into. Caller is responsible
-        for cleanup. If None, a new temp dir is created (legacy behaviour).
+    local_dir :
+        Directory to write the ``.nc`` file into. Caller-managed.
     """
     cache_path = _cache_nc_path(output_root, year, month)
     fname = f"era5_land_{year:04d}{month:02d}.nc"
+    target = local_dir / fname
 
-    if local_dir is not None:
-        target = local_dir / fname
-    else:
-        target = Path(tempfile.mkdtemp()) / fname
 
     if target.exists() and target.stat().st_size > 0:
         return target
@@ -385,13 +382,14 @@ def prepare_era5_scene(
     run_id: str,
     *,
     grid=None,
-    local_dir: Path | None = None,
+    local_dir: Path,
 ) -> PreparedSecondaryProduct:
     """Prepare ERA5-Land scene channels for a Landsat anchor.
 
     Parameters
     ----------
-    local_dir : directory for ERA5 monthly cache files. Caller manages cleanup.
+    local_dir :
+        Directory for ERA5 monthly cache files. Caller manages cleanup.
     """
     grid = grid or canon_grid_10m()
     c_hash = sha256(f"era5_land:{scene_id}".encode()).hexdigest()[:12]
@@ -537,13 +535,9 @@ def prepare_era5_scene(
     t2m_ds = t2m_ds.rio.write_transform(grid.transform)
 
     # Scene channel values for logging/QA
-    t2m_val_log = t2m_val
-    ssrd_val_log = ssrd_val
-    ant_val_log = antecedent_val
-
     log_event(_logger, logging.DEBUG, "era5_scene_values",
-              scene_id=scene_id, t2m=round(t2m_val_log, 2),
-              ssrd=round(ssrd_val_log, 2), ssrd_antecedent=round(ant_val_log, 2))
+              scene_id=scene_id, t2m=round(t2m_val, 2),
+              ssrd=round(ssrd_val, 2), ssrd_antecedent=round(antecedent_val, 2))
 
     retrieved_at = datetime.now(UTC).isoformat()
     doy = acquisition_dt.timetuple().tm_yday
@@ -566,9 +560,9 @@ def prepare_era5_scene(
             "retrieved_at": retrieved_at,
         },
         qa_stats={
-            "t2m_scene": round(t2m_val_log, 2),
-            "ssrd_scene": round(ssrd_val_log, 2),
-            "ssrd_antecedent_72h_mean": round(ant_val_log, 2),
+            "t2m_scene": round(t2m_val, 2),
+            "ssrd_scene": round(ssrd_val, 2),
+            "ssrd_antecedent_72h_mean": round(antecedent_val, 2),
             "shape": list(shape),
         },
         config_hash=c_hash,

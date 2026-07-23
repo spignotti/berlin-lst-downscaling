@@ -423,7 +423,6 @@ def _run_scene(
     )
 
     try:
-        # ── LOAD & MASK via per-source runner ──
         runner = _RUNNERS.get(source)
         if runner is None:
             raise ValueError(f"Unknown source: {source}")
@@ -441,7 +440,6 @@ def _run_scene(
             ecostress_raw_dir=ecostress_raw_dir,
         )
 
-        # ── WRITE MAIN COG ──
         log_event(_logger, logging.INFO, "scene_writing", scene_id=scene_id, source=source)
         root = str(cfg.output_root)
         cog_dst = cog_path(root, source, year, scene_id)
@@ -456,13 +454,11 @@ def _run_scene(
 
         write_cog_atomic(ds_data, cog_dst, contract, overwrite=True)
 
-        # ── WRITE FLAG COG (separate uint8 file) ──
         flag_dst = flag_path(root, source, year, scene_id)
         if flag_da is not None and contract.flag_mode == "separate":
             write_flag_cog_atomic(flag_da, flag_dst, contract, overwrite=True)
 
-        # ── COG STRUCTURAL VALIDATION ──
-        # Determine expected canonical grid from source resolution
+        # Canonical grid per source
         if source == "landsat-c2-l2":
             expected_grid = canon_grid_for_resolution(100)
         elif source == "sentinel-2-l2a":
@@ -487,7 +483,6 @@ def _run_scene(
                     f"Flag COG validation failed: {'; '.join(vif.errors)}"
                 )
 
-        # ── COMPUTE AOI METRICS ──
         aoi_clear_px: int | None = None
         aoi_cloudy_px: int | None = None
         aoi_shadow_px: int | None = None
@@ -534,7 +529,6 @@ def _run_scene(
                 min_overlap_px=min_overlap,
             )
 
-        # ── BUILD + WRITE STAC ──
         stac_dst = stac_path(root, source, year, scene_id)
         stac_item = _build_stac_item(
             scene_id, source, year, masked, contract, cog_dst, cfg,
@@ -542,7 +536,6 @@ def _run_scene(
         )
         write_stac_atomic(stac_item, stac_dst, overwrite=True)
 
-        # ── UPDATE LEDGER ──
         elapsed = time.perf_counter() - t0
         ledger.upsert(
             LedgerRow(
@@ -667,8 +660,8 @@ def _build_stac_item(
     assets: dict[str, Any] = {}
     # Data bands from contract.output_bands (flag is separate)
     for spec in contract.output_bands:
-        # NaN nodata → None in JSON (STAC spec compatibility)
-        nodata = None if spec.nodata is not None and _is_nan(spec.nodata) else spec.nodata
+        # STAC spec stores NaN nodata as JSON null.
+        nodata = None if spec.nodata is not None and math.isnan(spec.nodata) else spec.nodata
         assets[spec.name] = {
             "href": cog_path_rel,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
@@ -757,11 +750,6 @@ def _acquisition_datetime(
         return datetime.fromtimestamp(ts.timestamp(), tz=UTC)
     except (IndexError, AttributeError, ValueError):
         return None
-
-
-def _is_nan(val: float) -> bool:
-    """Check if *val* is NaN."""
-    return math.isnan(val)
 
 
 def _int_or_none(val) -> int | None:

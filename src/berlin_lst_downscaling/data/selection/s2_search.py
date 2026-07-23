@@ -14,10 +14,16 @@ This module provides two functions:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 from berlin_lst_downscaling.data.io import log_event
+from berlin_lst_downscaling.data.selection._time import (
+    parse_cutoff as _parse_cutoff,
+)
+from berlin_lst_downscaling.data.selection._time import (
+    parse_item_datetime as _parse_item_datetime,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -213,24 +219,3 @@ def _resolve_s2_items(
 
     return result
 
-
-def _parse_cutoff(cutoff_str: str) -> datetime:
-    """Parse a cutoff timestamp as UTC datetime."""
-    try:
-        return datetime.fromisoformat(cutoff_str.replace("Z", "+00:00"))
-    except ValueError as err:
-        raise ValueError(
-            f"Invalid cutoff_utc format: {cutoff_str!r}. "
-            "Expected ISO format, e.g. '2026-07-17T23:59:59Z'."
-        ) from err
-
-
-def _parse_item_datetime(item) -> datetime | None:
-    """Extract UTC datetime from a STAC item."""
-    dt_str = item.properties.get("datetime")
-    if dt_str is None:
-        return None
-    try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-    except ValueError:
-        return None

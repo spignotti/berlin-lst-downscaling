@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 
 import numpy as np
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
@@ -13,6 +12,12 @@ from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog, stac_
 from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.selection._aoi import load_aoi_mask, select_time_slice
+from berlin_lst_downscaling.data.selection._time import (
+    parse_cutoff as _parse_cutoff,
+)
+from berlin_lst_downscaling.data.selection._time import (
+    parse_item_datetime as _parse_item_datetime,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -280,25 +285,4 @@ def compute_anchor_clear_frac(
     return clear_px / total_px, clear_px, total_px
 
 
-def _parse_cutoff(cutoff_str: str) -> datetime:
-    """Parse a cutoff timestamp as UTC datetime."""
-    try:
-        # Handle both "Z" suffix and "+00:00" suffix
-        return datetime.fromisoformat(cutoff_str.replace("Z", "+00:00"))
-    except ValueError as err:
-        raise ValueError(
-            f"Invalid cutoff_utc format: {cutoff_str!r}. "
-            "Expected ISO format, e.g. '2026-07-17T23:59:59Z'."
-        ) from err
-
-
-def _parse_item_datetime(item) -> datetime | None:
-    """Extract UTC datetime from a STAC item's datetime property."""
-    dt_str = item.properties.get("datetime")
-    if dt_str is None:
-        return None
-    # e.g. "2024-06-29T10:15:00Z"
-    try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+# Shared parse helpers live in :mod:`berlin_lst_downscaling.data.selection._time`.
