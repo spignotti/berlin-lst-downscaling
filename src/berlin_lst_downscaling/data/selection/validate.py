@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import pyarrow as pa
 
 from berlin_lst_downscaling.data.selection.schema import (
@@ -193,6 +194,7 @@ def validate_pairings_table(
     p_sids = table.column("sentinel2_scene_id").to_pylist()
     p_jcf = table.column("joint_clear_frac").to_pylist()
     p_lcf = table.column("landsat_clear_px").to_pylist()
+    p_jcp = table.column("joint_clear_px").to_pylist()
 
     seen_lids: set[str] = set()
     for i in range(len(p_lids)):
@@ -216,15 +218,34 @@ def validate_pairings_table(
             )
         seen_lids.add(lid)
 
-        # Score recomputation
-        if p_lcf[i] > 0:
-            expected_jcf = p_jcf[i]
-            if expected_jcf is not None and p_lcf[i] > 0:
-                recomputed = expected_jcf  # joint_clear_px / landsat_clear_px
-                if abs(recomputed - p_jcf[i]) > 1e-6:
-                    result.warnings.append(
-                        f"Pairings row {i}: joint_clear_frac mismatch"
-                    )
+        # Count invariants
+        lcf = p_lcf[i]
+        jcp = p_jcp[i]
+        jcf = p_jcf[i]
+        if lcf is None or lcf <= 0:
+            result.errors.append(
+                f"Pairings row {i}: landsat_clear_px must be > 0, got {lcf!r}"
+            )
+            continue
+        if jcp is None or jcp < 0 or jcp > lcf:
+            result.errors.append(
+                f"Pairings row {i}: joint_clear_px must be in [0, landsat_clear_px]; "
+                f"got {jcp!r} for landsat_clear_px={lcf}"
+            )
+            continue
+        if jcf is None or jcf < 0.0 or jcf > 1.0:
+            result.errors.append(
+                f"Pairings row {i}: joint_clear_frac must be in [0, 1]; got {jcf!r}"
+            )
+            continue
+        # The stored float32 is the authoritative value; require the count/fraction
+        # arithmetic to round-trip exactly through float32.
+        expected = jcp / lcf
+        if abs(float(np.float32(expected)) - float(np.float32(jcf))) > 1e-7:
+            result.errors.append(
+                f"Pairings row {i}: joint_clear_px/landsat_clear_px = {expected!r} "
+                f"does not match joint_clear_frac = {jcf!r}"
+            )
 
     # Every anchor should have exactly one pairing
     for aid in anchor_ids:
