@@ -123,7 +123,7 @@ without re-reading the manifest.
 
 | Output | URI |
 |--------|-----|
-| Manifest bundle | `gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z/` |
+| Manifest bundle (canonical) | `gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/` |
 | Static sources (full) | `gs://berlin-lst-data/static/sources/full/...` |
 | Static derived (full) | `gs://berlin-lst-data/static/derived/full/...` |
 | Dynamic scenes (full) | `gs://berlin-lst-data/dynamic/full/...` |
@@ -173,7 +173,7 @@ uv run nox -s cloud-static-derived
 # One fixed Landsat anchor, runs twice, asserts three done sources,
 # then runs validate_dynamic.py.
 uv run nox -s smoke-dynamic -- \
-    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
 
 # Cloud smoke.
 uv run nox -s cloud-smoke-dynamic -- <manifest_uri>

@@ -11,7 +11,11 @@ process. It consists of three Parquet files published together.
 | `pairings.parquet` | One Landsat→Sentinel-2 relation per anchor |
 | `manifest_report.json` | Publication gate with hashes, counts, policy |
 
-## Schema v3 — manifest.parquet
+The bundle is the only accepted manifest contract. v1/v2 single-file
+manifests are retired — the readers fail fast on non-current schemas
+or on the old single-file layout.
+
+## Manifest — schema_version 3
 
 | Field | Type | Rule |
 |-------|------|------|
@@ -42,17 +46,21 @@ process. It consists of three Parquet files published together.
 Note: File hashes are NOT embedded in Parquet metadata. They appear
 exclusively in `manifest_report.json` to avoid a circular hash contract.
 
-## Schema v1 — pairings.parquet
+## Pairings — schema_version 1 (current)
 
 | Field | Type | Rule |
 |-------|------|------|
 | `landsat_scene_id` | string, non-null | FK to anchor manifest row; unique |
 | `sentinel2_scene_id` | string, non-null | FK to predictor manifest row; may repeat across anchors |
 | `dt_seconds` | int64, non-null | Absolute acquisition delta |
-| `landsat_clear_px` | int64, non-null | Must match anchor manifest metric |
-| `joint_clear_px` | int64, non-null | Pixels clear in both exact items |
-| `joint_clear_frac` | float32, non-null | `joint_clear_px / landsat_clear_px` |
+| `landsat_clear_px` | int64, non-null | Must be > 0 |
+| `joint_clear_px` | int64, non-null | Must satisfy `0 ≤ joint_clear_px ≤ landsat_clear_px` |
+| `joint_clear_frac` | float32, non-null | Must equal `joint_clear_px / landsat_clear_px` exactly through the float32 round-trip; must be in `[0, 1]` |
 | `score` | float32, non-null | `joint_clear_frac − λ · (Δt / 3)` |
+
+`pairings.parquet` is the *current* schema (v1), not a legacy
+contract. The validator rejects rows that violate the count/fraction
+invariant — a tautological mismatch is treated as a hard error.
 
 ## ECOSTRESS
 
@@ -66,7 +74,14 @@ of Landsat→S2 pairings.
 - **AOI gate:** `aoi_clear_frac >= 0.05` (pixel-level QA_PIXEL ∩ Berlin AOI).
 - **Temporal:** May–September. Full seasons 2017–2025; 2026 through explicit `cutoff_utc`.
 
-## Migration
+## Publication and immutability
 
-Schema v1/v2 single-file manifests are retired. Attempting to open
-them with the new pipeline produces a hard error requesting regeneration.
+- Published bundle prefixes are immutable. `scripts/publish_manifest.py`
+  rejects upload if the destination objects already exist (via GCS
+  `if_generation_match=0` precondition).
+- Repairs or regenerated pairings go to a new bundle prefix (e.g. the
+  current canonical bundle is `…-r2/`); the original prefix is
+  retained as a historical artifact and continues to fail the
+  corrected validator.
+- The active bundle for the ARD pipeline is
+  `gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/`.

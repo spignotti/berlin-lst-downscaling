@@ -5,10 +5,9 @@ The manifest bundle consists of three artifacts:
   2. ``pairings.parquet`` — one Landsat→Sentinel-2 relation per anchor.
   3. ``manifest_report.json`` — publication gate with hashes, counts, policy.
 
-Schema versioning:
-  - v1/v2: legacy single-file manifest (retired).
-  - v3: normalized bundle with separate pairings, enforced AOI metrics,
-       explicit platform/cutoff, and policy metadata.
+Schemas:
+  - manifest schema 3 is the only accepted manifest contract.
+  - pairings schema 1 is the only accepted pairings contract.
 """
 
 from __future__ import annotations
@@ -23,8 +22,6 @@ import pyarrow as pa
 SCHEMA_VERSION_MANIFEST = 3
 SCHEMA_VERSION_PAIRINGS = 1
 SCHEMA_VERSION_REPORT = 1
-
-# ── allowed values ────────────────────────────────────────────────────
 
 ALLOWED_LANDSAT_PLATFORMS = {"landsat-8", "landsat-9"}
 ALLOWED_SOURCES = {"landsat-c2-l2", "sentinel-2-l2a", "ecostress"}

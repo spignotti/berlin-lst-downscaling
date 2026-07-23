@@ -57,9 +57,9 @@ uv run nox -s smoke-primary
 uv run nox -s smoke-static-sources
 uv run nox -s smoke-static-derived
 uv run nox -s smoke-dynamic -- \
-    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
 uv run nox -s smoke-dwd-validation -- \
-    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet \
+    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
     gs://berlin-lst-data/dynamic/full/<run_id>
 ```
 
