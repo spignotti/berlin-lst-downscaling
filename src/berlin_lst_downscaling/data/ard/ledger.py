@@ -44,7 +44,6 @@ _SCHEMA = pa.schema([
     pa.field("last_error", pa.string()),
     pa.field("run_id", pa.string()),
     pa.field("updated_at", pa.timestamp("us", tz="UTC")),
-    # AOI metrics (schema v3)
     pa.field("aoi_clear_px", pa.int32()),
     pa.field("aoi_cloudy_px", pa.int32()),
     pa.field("aoi_shadow_px", pa.int32()),
@@ -53,11 +52,9 @@ _SCHEMA = pa.schema([
     pa.field("aoi_fill_px", pa.int32()),
     pa.field("aoi_total_px", pa.int32()),
     pa.field("aoi_clear_frac", pa.float64()),
-    # AOI overlap (schema v4): all pixels in COG∩AOI (including fill)
     pa.field("aoi_overlap_px", pa.int32()),
 ])
 
-# Current schema version
 SCHEMA_VERSION = 6
 
 # ── row type ─────────────────────────────────────────────────────────
@@ -65,7 +62,7 @@ SCHEMA_VERSION = 6
 
 @dataclass
 class LedgerRow:
-    """A single row in the ARD processing ledger (schema v6)."""
+    """A single row in the ARD processing ledger."""
 
     scene_id: str
     source: str
@@ -80,7 +77,6 @@ class LedgerRow:
     last_error: str | None = None
     run_id: str | None = None
     updated_at: datetime | None = None
-    # AOI metrics (schema v3)
     aoi_clear_px: int | None = None
     aoi_cloudy_px: int | None = None
     aoi_shadow_px: int | None = None
@@ -89,7 +85,6 @@ class LedgerRow:
     aoi_fill_px: int | None = None
     aoi_total_px: int | None = None
     aoi_clear_frac: float | None = None
-    # AOI overlap (schema v4): all pixels in COG∩AOI (including fill)
     aoi_overlap_px: int | None = None
 
     def __post_init__(self) -> None:
@@ -112,25 +107,30 @@ class Ledger:
         rows = ledger.scenes_for_source("landsat-c2-l2")
     """
 
-    def __init__(self, path: str, table: pa.Table, schema_version: int = 1) -> None:
+    def __init__(self, path: str, table: pa.Table) -> None:
         self._path = path
         self._table = table
-        self.schema_version = schema_version
 
     # ── factory ─────────────────────────────────────────────────
 
     @classmethod
     def open(cls, path: str) -> Ledger:
-        """Open an existing Parquet ledger or create a new empty one."""
+        """Open an existing Parquet ledger or create a new empty one.
+
+        Reads must match the current schema exactly — there is no
+        version-migration path. Create-only callers receive an empty
+        current-schema table.
+        """
         if exists(path):
             raw = read_bytes(path)
-            if len(raw) > 0:
-                table = pq.read_table(io.BytesIO(raw))
-            else:
-                table = pa.Table.from_pylist([], schema=_SCHEMA)
+            table = pq.read_table(io.BytesIO(raw))
+            if not table.schema.equals(_SCHEMA, check_metadata=False):
+                raise ValueError(
+                    f"Ledger schema mismatch at {path!r}: "
+                    f"expected {_SCHEMA}, got {table.schema}"
+                )
         else:
             table = pa.Table.from_pylist([], schema=_SCHEMA)
-        table = _legacy_schema_fill(table)
         return cls(path, table)
 
     # ── queries ─────────────────────────────────────────────────
@@ -267,7 +267,6 @@ def _row_to_dict(row: LedgerRow) -> dict:
         "last_error": row.last_error,
         "run_id": row.run_id,
         "updated_at": row.updated_at,
-        # AOI metrics (schema v3)
         "aoi_clear_px": row.aoi_clear_px,
         "aoi_cloudy_px": row.aoi_cloudy_px,
         "aoi_shadow_px": row.aoi_shadow_px,
@@ -300,7 +299,6 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
                 last_error=_opt_str(d, "last_error"),
                 run_id=_opt_str(d, "run_id"),
                 updated_at=_opt_dt(d, "updated_at"),
-                # AOI metrics (schema v3)
                 aoi_clear_px=_opt_int(d, "aoi_clear_px"),
                 aoi_cloudy_px=_opt_int(d, "aoi_cloudy_px"),
                 aoi_shadow_px=_opt_int(d, "aoi_shadow_px"),
@@ -313,17 +311,6 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
             )
         )
     return rows
-
-
-def _legacy_schema_fill(tbl: pa.Table) -> pa.Table:
-    """Add missing AOI columns with nulls for pre-v4 rows."""
-    existing_names = {f.name for f in tbl.schema}
-    missing = [f for f in _SCHEMA if f.name not in existing_names]
-    if not missing:
-        return tbl
-    for field in missing:
-        tbl = tbl.append_column(field, pa.nulls(tbl.num_rows, type=field.type))
-    return tbl
 
 
 def _opt_str(d: dict, key: str) -> str | None:
