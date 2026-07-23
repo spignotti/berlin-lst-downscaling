@@ -8,7 +8,6 @@ The bundle consists of three artifacts:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from datetime import UTC, datetime
@@ -17,6 +16,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from berlin_lst_downscaling.common.util import ensure_utc, sha256_file
 from berlin_lst_downscaling.data.selection.schema import (
     MANIFEST_SCHEMA,
     PAIRINGS_SCHEMA,
@@ -78,7 +78,7 @@ def write_bundle(
                 "role": "anchor",
                 "platform": _extract_platform(anchor["scene_id"]),
                 "year": anchor["year"],
-                "acquisition_datetime": _naive_to_utc(anchor["datetime"]),
+                "acquisition_datetime": ensure_utc(anchor["datetime"]),
                 "item_href": anchor.get("item_href"),
                 "aoi_clear_px": anchor.get("aoi_clear_px"),
                 "aoi_total_px": anchor.get("aoi_total_px"),
@@ -99,7 +99,7 @@ def write_bundle(
                     "role": "predictor",
                     "platform": "sentinel-2",
                     "year": s2["year"],
-                    "acquisition_datetime": _naive_to_utc(s2["datetime"]),
+                    "acquisition_datetime": ensure_utc(s2["datetime"]),
                     "item_href": s2.get("item_href"),
                     "aoi_clear_px": s2.get("aoi_clear_px"),
                     "aoi_total_px": s2.get("aoi_total_px"),
@@ -119,7 +119,7 @@ def write_bundle(
                 "role": "validation",
                 "platform": "ecostress",
                 "year": eco["year"],
-                "acquisition_datetime": _naive_to_utc(eco["datetime"]),
+                "acquisition_datetime": ensure_utc(eco["datetime"]),
                 "item_href": None,
                 "aoi_clear_px": None,
                 "aoi_total_px": None,
@@ -184,8 +184,8 @@ def write_bundle(
     pq.write_table(pairings_table, pairings_path)
 
     # Compute full SHA-256 hashes from written files (authoritative in report only)
-    manifest_hash = _file_hash(manifest_path)
-    pairings_hash = _file_hash(pairings_path)
+    manifest_hash = sha256_file(manifest_path)
+    pairings_hash = sha256_file(pairings_path)
 
     # ── Build report ───────────────────────────────────────────────────
     n_coupled = len(coupled)
@@ -250,26 +250,10 @@ def _extract_platform(scene_id: str) -> str:
     return "unknown"
 
 
-def _naive_to_utc(dt: datetime) -> datetime:
-    """Ensure a datetime is timezone-aware UTC; if naive, assume UTC."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
 def _ensure_dir(path: str) -> None:
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
-
-
-def _file_hash(path: str) -> str:
-    """Return full SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _summarize_dropped(dropped: list[dict]) -> dict[str, int]:

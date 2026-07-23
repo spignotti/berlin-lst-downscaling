@@ -7,13 +7,13 @@ or ARD consumption.
 
 from __future__ import annotations
 
-import hashlib
 import io
 from dataclasses import dataclass, field
 
 import numpy as np
 import pyarrow as pa
 
+from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.selection.schema import (
     ALLOWED_LANDSAT_PLATFORMS,
     ALLOWED_ROLES,
@@ -22,10 +22,6 @@ from berlin_lst_downscaling.data.selection.schema import (
     MANIFEST_SCHEMA,
     PAIRINGS_SCHEMA,
 )
-
-
-def _file_hash(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 @dataclass
@@ -84,8 +80,8 @@ def load_bundle(
         validate_manifest_table(manifest_table, require_item_href=require_item_href).errors
     )
     result.errors.extend(validate_pairings_table(pairings_table, manifest_table).errors)
-    mf_hash = _file_hash(manifest_bytes)
-    pf_hash = _file_hash(pairings_bytes)
+    mf_hash = sha256_bytes(manifest_bytes)
+    pf_hash = sha256_bytes(pairings_bytes)
     result.errors.extend(validate_report_json(report, mf_hash, pf_hash).errors)
 
     if restrict_to_roles:

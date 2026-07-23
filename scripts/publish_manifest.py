@@ -13,18 +13,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import io
 import sys
 from pathlib import Path
 
-
-def _file_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+from berlin_lst_downscaling.common.util import sha256_file
 
 
 def main() -> int:
@@ -78,8 +71,8 @@ def main() -> int:
     print("Pre-flight: validating local bundle...")
     mf_table = pq.read_table(manifest_local)
     pf_table = pq.read_table(pairings_local)
-    mf_hash = _file_hash(manifest_local)
-    pf_hash = _file_hash(pairings_local)
+    mf_hash = sha256_file(manifest_local)
+    pf_hash = sha256_file(pairings_local)
     with open(report_local) as f:
         report = _json.load(f)
     errs = []
@@ -129,8 +122,8 @@ def main() -> int:
         report = _json.loads(read_bytes(report_gcs))
 
         # Verify hashes
-        local_mf_hash = _file_hash(manifest_local)
-        local_pf_hash = _file_hash(pairings_local)
+        local_mf_hash = sha256_file(manifest_local)
+        local_pf_hash = sha256_file(pairings_local)
         if report.get("manifest_hash") != local_mf_hash:
             print("ERROR: manifest hash mismatch after publish", file=sys.stderr)
             return 1

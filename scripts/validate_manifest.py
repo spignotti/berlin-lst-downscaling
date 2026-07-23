@@ -25,20 +25,12 @@ Usage
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 
 import pyarrow.parquet as pq
 
-
-def _file_hash(path: str) -> str:
-    """Return SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+from berlin_lst_downscaling.common.util import sha256_file
 
 
 def main() -> int:
@@ -95,8 +87,8 @@ def main() -> int:
         with open(args.report) as f:
             report = json.load(f)
 
-        mf_hash = _file_hash(args.manifest)
-        pf_hash = _file_hash(args.pairings)
+        mf_hash = sha256_file(args.manifest)
+        pf_hash = sha256_file(args.pairings)
 
         r = validate_report_json(report, mf_hash, pf_hash)
         if not r.ok:

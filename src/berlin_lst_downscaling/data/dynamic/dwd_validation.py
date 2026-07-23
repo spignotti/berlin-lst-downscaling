@@ -49,6 +49,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from berlin_lst_downscaling.common.config import BERLIN_BBOX  # noqa: E402
+from berlin_lst_downscaling.common.util import ensure_utc  # noqa: E402
 from berlin_lst_downscaling.data.dynamic.dwd import (  # noqa: E402
     DwdFetchResult,
     fetch_dwd_temperature,
@@ -121,12 +122,6 @@ def _read_json(uri: str) -> dict:
     return json.loads(read_bytes(uri).decode("utf-8"))
 
 
-def _ensure_utc(ts: datetime) -> datetime:
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=UTC)
-    return ts.astimezone(UTC)
-
-
 def load_anchors_from_manifest(
     manifest_uri: str,
     dataset_roles: list[str] | None = None,
@@ -147,7 +142,7 @@ def load_anchors_from_manifest(
     rows = [
         {
             "scene_id": s.scene_id,
-            "acquisition_utc": _ensure_utc(s.acquisition_datetime),
+            "acquisition_utc": ensure_utc(s.acquisition_datetime),
             "role": s.role,
             "year": s.year,
         }
@@ -221,7 +216,7 @@ def _load_era5_anchors(
             if acquisition is None:
                 continue
             try:
-                acq_dt = _ensure_utc(datetime.fromisoformat(acquisition))
+                acq_dt = ensure_utc(datetime.fromisoformat(acquisition))
             except ValueError:
                 continue
             scene_id = prov.get("item_key") or row.item_id.replace(
@@ -467,12 +462,12 @@ def run_dwd_validation(
         cfg_dict.get("aoi_uri"),
         "data/boundaries/berlin_landesgrenze.geojson",
     )
-    start_date = _ensure_utc(
+    start_date = ensure_utc(
         datetime.fromisoformat(
             _str(cfg_dict.get("start_date")).replace("Z", "+00:00"),
         )
     )
-    end_date = _ensure_utc(
+    end_date = ensure_utc(
         datetime.fromisoformat(
             _str(cfg_dict.get("end_date")).replace("Z", "+00:00"),
         )
