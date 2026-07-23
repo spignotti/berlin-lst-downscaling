@@ -63,7 +63,6 @@ _DGM_RE = re.compile(r"DGM1_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
 
 _CONFIG_HASH_PREFIX = "terrain_height:v1:"
 
-
 def contract_for_terrain_height() -> Contract:
     """Return the output Contract for terrain-height COGs."""
     return Contract(
@@ -84,15 +83,12 @@ def contract_for_terrain_height() -> Contract:
         flag_mode="none",
     )
 
-
 def config_hash_for_vintage(vintage: int) -> str:
     """Return a stable config hash for a given vintage."""
     raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
     return sha256(raw.encode()).hexdigest()[:12]
 
-
 # ── prepare ───────────────────────────────────────────────────────────
-
 
 def prepare_terrain_height(
     vintage: int,
@@ -207,9 +203,7 @@ def prepare_terrain_height(
         config_hash=c_hash,
     )
 
-
 # ── tile processing ──────────────────────────────────────────────────
-
 
 def _process_tile(
     asset: AtomAsset,
@@ -259,7 +253,6 @@ def _process_tile(
     dst_arr[valid] = tile_arr[valid]
 
     return receipt
-
 
 def _read_xyz_zip(
     zip_path: Path,
@@ -328,7 +321,6 @@ def _read_xyz_zip(
 
     return arr, transform
 
-
 def _validate_xyz_coords(
     x_vals: np.ndarray,
     y_vals: np.ndarray,
@@ -359,7 +351,6 @@ def _validate_xyz_coords(
             f"({asset.easting}, {asset.northing})"
         )
 
-
 def _validate_tile(arr: np.ndarray, transform: object, asset: AtomAsset) -> None:
     """Validate a DGM tile's shape and coverage."""
     if arr.ndim != 2:
@@ -368,13 +359,11 @@ def _validate_tile(arr: np.ndarray, transform: object, asset: AtomAsset) -> None
     if valid_count == 0:
         raise ValueError(f"{asset.filename}: all NaN — no valid terrain data")
 
-
 def _local_cache_path(output_root: str, filename: str) -> str:
     """Return a writable local cache path for a DGM tile."""
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/dgm/{filename}"
     return f"{output_root}/_raw/secondary/terrain_height/2021/{filename}"
-
 
 __all__ = [
     "config_hash_for_vintage",

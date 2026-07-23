@@ -38,7 +38,6 @@ from typing import Any
 
 # ── context filter ────────────────────────────────────────────────────
 
-
 class _ContextFilter(logging.Filter):
     """Inject pipeline and run_id into every LogRecord processed by a handler."""
 
@@ -52,9 +51,7 @@ class _ContextFilter(logging.Filter):
         record.run_id = self.run_id  # type: ignore[attr-defined]
         return True
 
-
 # ── formatters ────────────────────────────────────────────────────────
-
 
 class _TextFormatter(logging.Formatter):
     """Concise human-readable stderr output."""
@@ -65,7 +62,6 @@ class _TextFormatter(logging.Formatter):
         pipeline = getattr(record, "pipeline", "")
         prefix = f"[{pipeline}] " if pipeline else ""
         return f"{ts} {prefix}{event}"
-
 
 class _JSONLFormatter(logging.Formatter):
     """Structured JSONL output for machine consumption."""
@@ -91,9 +87,7 @@ class _JSONLFormatter(logging.Formatter):
             entry["exception"] = "".join(traceback.format_exception(*record.exc_info))
         return json.dumps(entry, default=str)
 
-
 # ── handlers ──────────────────────────────────────────────────────────
-
 
 class _StderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
     """Stream handler targeting stderr with the text formatter."""
@@ -101,7 +95,6 @@ class _StderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
     def __init__(self) -> None:
         super().__init__(stream=__import__("sys").stderr)
         self.setFormatter(_TextFormatter())
-
 
 class _JSONLFileHandler(logging.FileHandler):  # type: ignore[type-arg]
     """File handler writing JSONL lines."""
@@ -111,9 +104,7 @@ class _JSONLFileHandler(logging.FileHandler):  # type: ignore[type-arg]
         super().__init__(str(path), encoding="utf-8")
         self.setFormatter(_JSONLFormatter())
 
-
 # ── helpers ───────────────────────────────────────────────────────────
-
 
 def run_log_path(
     output_root: str,
@@ -124,7 +115,6 @@ def run_log_path(
     # Always string-based — avoids Path("gs://...") producing gs:/...
     base = output_root.rstrip("/")
     return f"{base}/logs/{pipeline}/{run_id}.jsonl"
-
 
 def log_event(
     logger: logging.Logger,
@@ -139,9 +129,7 @@ def log_event(
     """
     logger.log(level, event, extra={"fields": fields})
 
-
 # ── session ───────────────────────────────────────────────────────────
-
 
 class RunLogSession:
     """Context manager that configures stderr + JSONL logging for a run.
@@ -252,7 +240,6 @@ class RunLogSession:
             raise RuntimeError(
                 f"GCS log publication failed for {self._final_uri}: {upload_exc}"
             ) from upload_exc
-
 
 __all__ = [
     "RunLogSession",

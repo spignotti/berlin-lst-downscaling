@@ -11,7 +11,6 @@ from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
 
 # ── public API ───────────────────────────────────────────────────────
 
-
 def reconcile(
     scenes: list[tuple[str, str, int]],  # (scene_id, source, year)
     ledger: Ledger,
@@ -79,12 +78,10 @@ def reconcile(
 
     return result
 
-
 def _mark_exhausted(ledger: Ledger, row: LedgerRow) -> None:
     """Mark a scene as exhausted in the ledger."""
     row.status = "exhausted"
     ledger.upsert(row)
-
 
 def _files_exist(row: LedgerRow) -> bool:
     """Check that all expected output files exist for a done scene.
@@ -102,7 +99,6 @@ def _files_exist(row: LedgerRow) -> bool:
     if row.path_stac and not exists(row.path_stac):
         return False
     return True
-
 
 __all__ = [
     "reconcile",

@@ -78,9 +78,7 @@ PAIRINGS_SCHEMA = pa.schema(
     ]
 )
 
-
 # ── policy fingerprinting ─────────────────────────────────────────────
-
 
 def policy_fingerprint(cfg: Any) -> str:
     """Return a stable SHA-256 fingerprint of the selection policy.
@@ -112,7 +110,6 @@ def policy_fingerprint(cfg: Any) -> str:
     )
     return sha256(payload.encode()).hexdigest()[:16]
 
-
 def bundle_metadata(
     policy_hash: str,
     cutoff_utc: str,
@@ -132,14 +129,12 @@ def bundle_metadata(
         "generated_at": datetime.now(UTC).isoformat(),
     }
 
-
 def table_metadata(meta: dict[str, str]) -> dict[str, str]:
     """Wrap metadata dict for PyArrow table attachment.
 
     All values must be strings (PyArrow Parquet requirement).
     """
     return {k: str(v) for k, v in meta.items()}
-
 
 __all__ = [
     "SCHEMA_VERSION_MANIFEST",

@@ -35,7 +35,6 @@ class ResolvedGeometry:
     vh_hash: str
     lod2_hash: str
 
-
 @dataclass
 class GeometryResolutionReport:
     """Result of resolving geometry artifacts."""
@@ -46,7 +45,6 @@ class GeometryResolutionReport:
     @property
     def ok(self) -> bool:
         return self.resolved is not None and len(self.errors) == 0
-
 
 def resolve_geometry(
     source_root: str,
@@ -140,7 +138,6 @@ def resolve_geometry(
     )
 
     return GeometryResolutionReport(resolved=resolved, errors=errors)
-
 
 __all__ = [
     "ResolvedGeometry",

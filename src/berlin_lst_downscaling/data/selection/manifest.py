@@ -236,9 +236,7 @@ def write_bundle(
         n_ecostress=n_eco,
     )
 
-
 # ── helpers ──────────────────────────────────────────────────────────
-
 
 def _extract_platform(scene_id: str) -> str:
     """Derive platform from Landsat scene ID prefix."""
@@ -249,12 +247,10 @@ def _extract_platform(scene_id: str) -> str:
         return "landsat-9"
     return "unknown"
 
-
 def _ensure_dir(path: str) -> None:
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)
-
 
 def _summarize_dropped(dropped: list[dict]) -> dict[str, int]:
     """Count dropped anchors by reason."""
@@ -264,9 +260,7 @@ def _summarize_dropped(dropped: list[dict]) -> dict[str, int]:
         reasons[r] = reasons.get(r, 0) + 1
     return reasons
 
-
 # ── result type ──────────────────────────────────────────────────────
-
 
 class BundleResult:
     """Result of writing the manifest bundle."""
@@ -292,7 +286,6 @@ class BundleResult:
         self.n_coupled = n_coupled
         self.n_dropped = n_dropped
         self.n_ecostress = n_ecostress
-
 
 __all__ = [
     "write_bundle",

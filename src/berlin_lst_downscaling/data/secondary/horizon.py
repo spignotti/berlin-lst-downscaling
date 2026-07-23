@@ -52,7 +52,6 @@ _CELL_SIZE_M = 10.0
 
 # ── contract ───────────────────────────────────────────────────────────
 
-
 def contract_for_horizon(building_or_vegetation: str) -> Contract:
     """Return the output Contract for horizon COGs."""
     return Contract(
@@ -74,7 +73,6 @@ def contract_for_horizon(building_or_vegetation: str) -> Contract:
         flag_mode="none",
     )
 
-
 def config_hash_for_horizon(
     component: str,
     max_radius_m: float,
@@ -84,9 +82,7 @@ def config_hash_for_horizon(
     raw = f"horizon:{component}:r={max_radius_m}:u={upstream_hash}"
     return sha256(raw.encode()).hexdigest()[:12]
 
-
 # ── Numba horizon kernel ──────────────────────────────────────────────
-
 
 def _compute_horizon_cube(
     dsm: np.ndarray,
@@ -182,9 +178,7 @@ def _compute_horizon_cube(
     _kernel(dsm, result, offsets_y, offsets_x, cell_size, max_radius_cells, n_azimuths, h, w)
     return result
 
-
 # ── prepare ───────────────────────────────────────────────────────────
-
 
 def prepare_horizon(
     dsm_uri: str,
@@ -277,7 +271,6 @@ def prepare_horizon(
         },
         config_hash=c_hash,
     )
-
 
 __all__ = [
     "config_hash_for_horizon",

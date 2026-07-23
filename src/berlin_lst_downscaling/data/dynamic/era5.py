@@ -65,9 +65,7 @@ _ERA5_GRID_DEG = 0.1
 _BERLIN_LAT = 52.52
 _BERLIN_LON = 13.42
 
-
 # ── helpers ────────────────────────────────────────────────────────────
-
 
 def normalize_acquisition_hour(acquisition_dt: datetime) -> datetime:
     """Round a tz-aware acquisition datetime to the nearest UTC hour.
@@ -87,9 +85,7 @@ def normalize_acquisition_hour(acquisition_dt: datetime) -> datetime:
         return rounded
     return rounded.replace(tzinfo=UTC)
 
-
 # ── contract ───────────────────────────────────────────────────────────
-
 
 def contract_for_era5_scene() -> Contract:
     """Return the output Contract for ERA5 scene COGs (3 bands)."""
@@ -137,13 +133,10 @@ def contract_for_era5_scene() -> Contract:
         flag_mode="none",
     )
 
-
 # ── ERA5 cache management ─────────────────────────────────────────────
-
 
 def _cache_nc_path(output_root: str, year: int, month: int) -> str:
     return era5_cache_path(output_root, year, month)
-
 
 def _ensure_month_cached(
     output_root: str,
@@ -171,12 +164,10 @@ def _ensure_month_cached(
     if target.exists() and target.stat().st_size > 0:
         return target
 
-    # If already cached on GCS, stream-download to local
     if exists(cache_path):
         _download_gcs_to_local(cache_path, target)
         return target
 
-    # Download from CDS, then upload to GCS cache
     log_event(_logger, logging.INFO, "era5_download", year=year, month=month)
     t0 = time.perf_counter()
 
@@ -203,7 +194,6 @@ def _ensure_month_cached(
         )
         return None
 
-
 def _download_gcs_to_local(gcs_uri: str, local_path: Path) -> None:
     """Stream-download a GCS object to a local path (no full-file RAM load)."""
     from google.cloud import storage
@@ -212,7 +202,6 @@ def _download_gcs_to_local(gcs_uri: str, local_path: Path) -> None:
     client = storage.Client()
     blob = client.bucket(bucket_name).blob(key)
     blob.download_to_filename(str(local_path))
-
 
 def _download_era5_month(year: int, month: int, target: Path) -> None:
     """Retrieve a single month of ERA5-Land for Berlin AOI via CDS API.
@@ -245,7 +234,6 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
         str(zip_path),
     )
 
-    # Extract NetCDF from ZIP
     with zipfile.ZipFile(zip_path) as zf:
         nc_names = [n for n in zf.namelist() if n.endswith(".nc")]
         if not nc_names:
@@ -254,9 +242,7 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
         target.write_bytes(zf.read(nc_names[0]))
     zip_path.unlink(missing_ok=True)
 
-
 # ── ERA5 decode and processing ────────────────────────────────────────
-
 
 def _decode_monthly_era5(
     nc_path: str | Path,
@@ -288,7 +274,6 @@ def _decode_monthly_era5(
         ds = ds.sel({time_dim: slice(time_slice[0], time_slice[1])})
 
     return ds
-
 
 def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
     """Convert cumulative SSRD (J/m²) to hourly irradiance (W/m²).
@@ -330,7 +315,6 @@ def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
         attrs=ssrd.attrs,
     )
 
-
 def _extract_era5_at_scene(
     t2m: xr.DataArray,
     ssrd_hourly: xr.DataArray,
@@ -352,7 +336,6 @@ def _extract_era5_at_scene(
     acq_np = np.datetime64(acquisition_dt.replace(tzinfo=None))
     time_dim = "valid_time" if "valid_time" in t2m.dims else "time"
 
-    # Nearest hour
     diffs = np.abs(t2m[time_dim].values - acq_np)
     nearest_idx = int(diffs.argmin())
 
@@ -378,9 +361,7 @@ def _extract_era5_at_scene(
 
     return t2m_val, ssrd_val, antecedent_val
 
-
 # ── public API ─────────────────────────────────────────────────────────
-
 
 def prepare_era5_scene(
     scene_id: str,
@@ -463,7 +444,6 @@ def prepare_era5_scene(
                     f"ERA5 longitude range {lon_range} does not cover Berlin ({_BERLIN_LON})"
                 )
 
-        # Select nearest Berlin cell from primary BEFORE any concat
         has_lat = "latitude" in primary_ds.coords
         has_lon = "longitude" in primary_ds.coords
         lat_vals = primary_ds.latitude.values if has_lat else np.array([_BERLIN_LAT])
@@ -474,7 +454,6 @@ def prepare_era5_scene(
         t2m_cell = primary_ds[t2m_var].isel(latitude=lat_idx, longitude=lon_idx)
         ssrd_cell = primary_ds[ssrd_var].isel(latitude=lat_idx, longitude=lon_idx)
 
-        # Close primary before loading predecessor
         primary_ds.close()
         primary_ds = None
 
@@ -527,7 +506,6 @@ def prepare_era5_scene(
     ssrd_grid = np.full(shape, ssrd_val, dtype=np.float32)
     ant_grid = np.full(shape, antecedent_val, dtype=np.float32)
 
-    # Build xr.Dataset
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
 
@@ -542,7 +520,6 @@ def prepare_era5_scene(
     t2m_ds = t2m_ds.rio.write_crs(str(grid.crs))
     t2m_ds = t2m_ds.rio.write_transform(grid.transform)
 
-    # Scene channel values for logging/QA
     log_event(
         _logger,
         logging.DEBUG,
@@ -592,13 +569,11 @@ def prepare_era5_scene(
         },
     )
 
-
 def _find_var(ds: xr.Dataset, candidates: list[str]) -> str | None:
     for name in candidates:
         if name in ds.data_vars:
             return name
     return None
-
 
 __all__ = [
     "contract_for_era5_scene",

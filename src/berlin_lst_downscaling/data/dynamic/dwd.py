@@ -17,20 +17,12 @@ from __future__ import annotations
 
 import os
 
-# decision: wetterdienst's Settings class uses ``extra="forbid"`` (pydantic
-# v2 default) and reads ``.env`` + every env var, so the Berlin-LST
-# ``.env`` (GCP, W&B, NASA Earthdata) crashes every ``Settings()`` call.
-# Two-step workaround that does not touch wetterdienst:
-#   1. Strip the offending vars from os.environ at import time so the
-#      process sees no surprise values.
-#   2. Patch wetterdienst's ``Settings.model_config`` to ``extra="ignore"``
-#      and ``env_file=None`` so the in-repo ``.env`` cannot pollute it.
-# Both are no-ops when wetterdienst is already configured this way.
-_SAFE_KEYS = (
-    "google_application_credentials",
-    "wandb_api_key",
-    "earthdata_token",
-)
+# decision: wetterdienst's Settings (``extra="forbid"`` pydantic default)
+# reads every env var, so Berlin-LST ``.env`` (GCP, W&B, Earthdata)
+# crashes Settings construction. Strip conflicting keys at import and
+# override Settings.model_config to ``extra="ignore"``, ``env_file=None``.
+# Both steps are no-ops once wetterdienst is already configured this way.
+_SAFE_KEYS = ("google_application_credentials", "wandb_api_key", "earthdata_token")
 for _key in _SAFE_KEYS:
     os.environ.pop(_key, None)
 
@@ -66,7 +58,6 @@ if _current_extra != "ignore":
 
 _logger = logging.getLogger(__name__)
 
-
 @dataclass
 class DwdStationInventory:
     """One DWD station inside the AOI."""
@@ -80,7 +71,6 @@ class DwdStationInventory:
     end_date: datetime | None
     in_request_window: bool
 
-
 @dataclass
 class DwdObservation:
     """One hourly DWD temperature observation."""
@@ -90,7 +80,6 @@ class DwdObservation:
     temperature_c: float
     quality: float | None
     dwd_period: str  # "historical" or "recent"
-
 
 @dataclass
 class DwdFetchResult:
@@ -109,7 +98,6 @@ class DwdFetchResult:
     def station_ids(self) -> list[str]:
         return [s.station_id for s in self.inventory]
 
-
 def _observations_to_dataframe(observations: list[DwdObservation]) -> pd.DataFrame:
     if not observations:
         return pd.DataFrame(
@@ -127,7 +115,6 @@ def _observations_to_dataframe(observations: list[DwdObservation]) -> pd.DataFra
             for o in observations
         ]
     )
-
 
 def _inventory_to_dataframe(inventory: list[DwdStationInventory]) -> pd.DataFrame:
     if not inventory:
@@ -159,7 +146,6 @@ def _inventory_to_dataframe(inventory: list[DwdStationInventory]) -> pd.DataFram
         ]
     )
 
-
 def _load_aoi_polygon(aoi_uri: str):
     """Load the Berlin AOI polygon and ensure WGS84."""
     gdf = gpd.read_file(aoi_uri)
@@ -170,12 +156,10 @@ def _load_aoi_polygon(aoi_uri: str):
         gdf = gdf.to_crs(4326)
     return gdf.union_all()
 
-
 def _bbox_for_polygon(geom) -> tuple[float, float, float, float]:
     minx, miny, maxx, maxy = geom.bounds
     # Pad 0.2° to cover stations right on the AOI edge.
     return (minx - 0.2, miny - 0.2, maxx + 0.2, maxy + 0.2)
-
 
 def _in_window(
     start: datetime | None,
@@ -190,7 +174,6 @@ def _in_window(
         return False
     return True
 
-
 def _request_period_bounds(period: str) -> tuple[datetime, datetime]:
     """Return the (start, end) UTC bounds a wetterdienst period covers."""
     now = datetime.now(UTC)
@@ -200,7 +183,6 @@ def _request_period_bounds(period: str) -> tuple[datetime, datetime]:
         return (now - timedelta(days=500)).replace(hour=0, minute=0, second=0, microsecond=0), now
     msg = f"Unsupported DWD period: {period}"
     raise ValueError(msg)
-
 
 def _wetterdienst_request(
     period: str,
@@ -228,7 +210,6 @@ def _wetterdienst_request(
     if station_ids:
         req = req.filter_by_station_id(station_ids)
     return req
-
 
 def _collect_stations(
     period: str,
@@ -267,7 +248,6 @@ def _collect_stations(
             )
         )
     return rows
-
 
 def _collect_observations(
     period: str,
@@ -324,7 +304,6 @@ def _collect_observations(
         )
     return out
 
-
 def _merge_historical_recent(
     historical: list[DwdObservation],
     recent: list[DwdObservation],
@@ -336,7 +315,6 @@ def _merge_historical_recent(
     for obs in recent:
         by_key.setdefault((obs.station_id, obs.timestamp_utc), obs)
     return list(by_key.values())
-
 
 def fetch_dwd_temperature(
     aoi_uri: str,
@@ -416,7 +394,6 @@ def fetch_dwd_temperature(
         inventory_df=_inventory_to_dataframe(list(inventory_rows.values())),
         observations_df=_observations_to_dataframe(observations),
     )
-
 
 __all__ = [
     "DwdFetchResult",

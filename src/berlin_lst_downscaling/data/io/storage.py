@@ -28,7 +28,6 @@ _logger = logging.getLogger(__name__)
 
 UriLike = Union[str, Path, "OutputLocation"]
 
-
 @dataclass(frozen=True)
 class OutputLocation:
     """Normalised output location with prefix detection.
@@ -66,15 +65,12 @@ class OutputLocation:
         base = str(self.uri).rstrip(sep)
         return OutputLocation(f"{base}{sep}{other}")
 
-
 # ── GCS helpers (lazy import) ────────────────────────────────────────
-
 
 def _gcs_client():
     from google.cloud import storage  # type: ignore[import-untyped]
 
     return storage.Client()
-
 
 def _parse_gs_uri(uri: str) -> tuple[str, str]:
     """Return ``(bucket_name, object_key)``."""
@@ -84,9 +80,7 @@ def _parse_gs_uri(uri: str) -> tuple[str, str]:
         raise ValueError(f"Invalid GCS URI: {uri!r}")
     return parts[0], parts[1]
 
-
 # ── public API ───────────────────────────────────────────────────────
-
 
 def exists(uri: UriLike) -> bool:
     """Return True if the URI exists (local file or GCS blob)."""
@@ -99,7 +93,6 @@ def exists(uri: UriLike) -> bool:
         return blob.exists()
     return _resolve_local(loc.uri).exists()
 
-
 def read_bytes(uri: UriLike) -> bytes:
     """Read the full content at the URI into bytes."""
     loc = _as_loc(uri)
@@ -110,7 +103,6 @@ def read_bytes(uri: UriLike) -> bytes:
         blob = bucket.blob(key)
         return blob.download_as_bytes()
     return _resolve_local(loc.uri).read_bytes()
-
 
 def atomic_write(
     uri: UriLike,
@@ -145,16 +137,13 @@ def atomic_write(
     else:
         _atomic_write_local(loc.uri, data_bytes, overwrite)
 
-
 # ── internals ────────────────────────────────────────────────────────
-
 
 def _as_loc(uri: UriLike) -> OutputLocation:
     """Normalise URI to OutputLocation, handling Path and str."""
     if isinstance(uri, OutputLocation):
         return uri
     return OutputLocation(str(uri))
-
 
 def _to_bytes(data: bytes | BinaryIO | str) -> bytes:
     if isinstance(data, bytes):
@@ -167,10 +156,8 @@ def _to_bytes(data: bytes | BinaryIO | str) -> bytes:
         return chunk.encode("utf-8")
     return bytes(chunk)
 
-
 def _resolve_local(uri: str) -> Path:
     return Path(os.path.expanduser(uri))
-
 
 def _atomic_write_local(uri: str, data: bytes, overwrite: bool) -> None:
     dst = _resolve_local(uri)
@@ -190,7 +177,6 @@ def _atomic_write_local(uri: str, data: bytes, overwrite: bool) -> None:
 
     _prune_tmp(tmp_dir, max_age_s=3600)
 
-
 def _atomic_write_gcs(uri: str, data: bytes, overwrite: bool) -> None:
     bucket_name, key = _parse_gs_uri(uri)
     client = _gcs_client()
@@ -204,7 +190,6 @@ def _atomic_write_gcs(uri: str, data: bytes, overwrite: bool) -> None:
     tmp_blob = bucket.blob(tmp_key)
 
     _gcs_upload_with_retry(tmp_blob, data, bucket, key)
-
 
 def _gcs_upload_with_retry(tmp_blob, data, bucket, key):
     """Upload to GCS with retries for transient failures (429, 503, etc.)."""
@@ -247,7 +232,6 @@ def _gcs_upload_with_retry(tmp_blob, data, bucket, key):
             pass
         raise
 
-
 def _prune_tmp(tmp_dir: Path, max_age_s: int = 3600) -> None:
     """Remove orphaned temp files older than *max_age_s*."""
     import time as _time
@@ -257,9 +241,7 @@ def _prune_tmp(tmp_dir: Path, max_age_s: int = 3600) -> None:
         if p.is_file() and (now - p.stat().st_mtime) > max_age_s:
             p.unlink(missing_ok=True)
 
-
 # ── atomic file upload ────────────────────────────────────────────────
-
 
 def atomic_upload(
     local_path: Path | str,
@@ -310,7 +292,6 @@ def atomic_upload(
 
     return dst
 
-
 def _atomic_upload_local(local_path: Path, dst_uri: str, overwrite: bool) -> None:
     """Copy a file to a local path atomically."""
     dst = _resolve_local(dst_uri)
@@ -329,7 +310,6 @@ def _atomic_upload_local(local_path: Path, dst_uri: str, overwrite: bool) -> Non
         raise
 
     _prune_tmp(tmp_dir, max_age_s=3600)
-
 
 def _atomic_upload_gcs(
     local_path: Path,
@@ -350,7 +330,6 @@ def _atomic_upload_gcs(
     tmp_blob = bucket.blob(tmp_key)
 
     _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match)
-
 
 def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match):
     """Upload file to GCS with retries for transient failures."""
@@ -387,7 +366,6 @@ def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation
         except Exception:  # noqa: S110 — best-effort cleanup
             pass
         raise
-
 
 __all__ = [
     "OutputLocation",

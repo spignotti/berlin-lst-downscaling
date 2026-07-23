@@ -36,7 +36,6 @@ from berlin_lst_downscaling.data.secondary.product import finalize_secondary_pro
 
 _logger = logging.getLogger(__name__)
 
-
 def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the dynamic scene pipeline.
 
@@ -375,7 +374,6 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     return 0 if failed == 0 else 1
-
 
 def _banner(
     cfg: DictConfig,

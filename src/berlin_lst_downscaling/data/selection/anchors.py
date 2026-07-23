@@ -27,7 +27,6 @@ _PLATFORM_MAP = {
     "LC09": "landsat-9",
 }
 
-
 def build_anchors(cfg) -> tuple[list, dict]:
     """Return Landsat C2 L2 scenes as coupling anchors.
 
@@ -131,7 +130,6 @@ def build_anchors(cfg) -> tuple[list, dict]:
         "n_dropped": len(dropped),
     }
     return anchors, stats
-
 
 def _filter_by_pixel_clear_frac(
     anchors: list[dict],
@@ -248,7 +246,6 @@ def _filter_by_pixel_clear_frac(
     Path(ckpt_path).unlink(missing_ok=True)
     return kept, dropped
 
-
 def compute_anchor_clear_frac(
     anchor: dict,
     cfg,
@@ -306,6 +303,5 @@ def compute_anchor_clear_frac(
         return None
     clear_px = int(np.sum(aoi & l8_clear))
     return clear_px / total_px, clear_px, total_px
-
 
 # Shared parse helpers live in :mod:`berlin_lst_downscaling.data.selection._time`.

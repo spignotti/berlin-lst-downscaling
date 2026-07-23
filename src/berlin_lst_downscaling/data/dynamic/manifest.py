@@ -18,7 +18,6 @@ from berlin_lst_downscaling.data.selection.validate import load_bundle
 # Default study period — can be overridden via years parameter
 _DEFAULT_YEARS = list(range(2017, 2026))
 
-
 @dataclass
 class DynamicScene:
     """A Landsat anchor scene selected for dynamic product generation."""
@@ -35,7 +34,6 @@ class DynamicScene:
     solar_azimuth: float | None
     solar_elevation: float | None
 
-
 @dataclass
 class ManifestReport:
     """Result of loading and filtering a manifest for dynamic processing."""
@@ -48,7 +46,6 @@ class ManifestReport:
     @property
     def ok(self) -> bool:
         return len(self.errors) == 0 and len(self.scenes) > 0
-
 
 def load_landsat_anchors(
     manifest_uri: str,
@@ -160,7 +157,6 @@ def load_landsat_anchors(
         manifest_hash=manifest_hash,
         errors=errors,
     )
-
 
 __all__ = [
     "DynamicScene",

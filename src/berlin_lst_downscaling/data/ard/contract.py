@@ -9,7 +9,6 @@ _NAN = float("nan")
 
 # ── band / tiling specs ──────────────────────────────────────────────
 
-
 @dataclass(frozen=True)
 class BandSpec:
     """Description of one band in the output COG."""
@@ -21,7 +20,6 @@ class BandSpec:
     unit: str = ""
     valid_range: tuple[float, float] | None = None  # (min, max) inclusive
 
-
 @dataclass(frozen=True)
 class TilingSpec:
     """COG internal tiling and compression."""
@@ -31,9 +29,7 @@ class TilingSpec:
     compress: str = "deflate"
     predictor: int = 2
 
-
 # ── contract ─────────────────────────────────────────────────────────
-
 
 @dataclass(frozen=True)
 class Contract:
@@ -60,9 +56,7 @@ class Contract:
         """Return schema version as a string for ledger/STAC storage."""
         return str(self.schema_version)
 
-
 # ── factories ────────────────────────────────────────────────────────
-
 
 def contract_for_source(source: str) -> Contract:
     """Return the :class:`Contract` for a given sensor source key.
@@ -78,7 +72,6 @@ def contract_for_source(source: str) -> Contract:
         schema_version=6,
         flag_mode="separate",
     )
-
 
 # ── per-source band lists ────────────────────────────────────────────
 

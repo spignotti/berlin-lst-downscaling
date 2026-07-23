@@ -85,9 +85,7 @@ _CITYGML_NS_MAP = {
     },
 }
 
-
 # ── data classes ──────────────────────────────────────────────────────
-
 
 @dataclass
 class ParsedBuilding:
@@ -97,11 +95,9 @@ class ParsedBuilding:
     footprint: Polygon | MultiPolygon | None
     measured_height: float | None  # metres above ground
 
-
 # ── contract ───────────────────────────────────────────────────────────
 
 _CONFIG_HASH_PREFIX = "lod2_morphology:v1:"
-
 
 def contract_for_lod2_morphology() -> Contract:
     """Return the output Contract for LoD2 morphology COGs (4 bands)."""
@@ -147,15 +143,12 @@ def contract_for_lod2_morphology() -> Contract:
         flag_mode="none",
     )
 
-
 def config_hash_for_vintage(vintage: int) -> str:
     """Return a stable config hash for a given vintage."""
     raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
     return sha256(raw.encode()).hexdigest()[:12]
 
-
 # ── CityGML parsing ──────────────────────────────────────────────────
-
 
 def _detect_citygml_version(content: bytes) -> int:
     """Detect CityGML version from document content."""
@@ -172,7 +165,6 @@ def _detect_citygml_version(content: bytes) -> int:
             return 2
     return 1  # default to 1.0
 
-
 def _parse_gml_ring(coords_text: str, srs_dim: int = 2) -> list[tuple[float, float]]:
     """Parse a GML posList string into (x, y) tuples.
 
@@ -188,7 +180,6 @@ def _parse_gml_ring(coords_text: str, srs_dim: int = 2) -> list[tuple[float, flo
         except (ValueError, IndexError):
             continue
     return coords
-
 
 def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | None:
     """Parse a gml:Polygon element into a Shapely Polygon."""
@@ -234,7 +225,6 @@ def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | No
         pass
     return None
 
-
 def _parse_buildings_from_tile(
     zip_path: Path,
     asset: AtomAsset,
@@ -264,7 +254,6 @@ def _parse_buildings_from_tile(
                     buildings.append(building)
 
     return buildings
-
 
 def _extract_building(
     building_elem: ET.Element,
@@ -320,9 +309,7 @@ def _extract_building(
 
     return ParsedBuilding(building_id=bid, footprint=footprint, measured_height=height)
 
-
 # ── rasterization ─────────────────────────────────────────────────────
-
 
 def _accumulate_buildings(
     buildings: list[ParsedBuilding],
@@ -379,9 +366,7 @@ def _accumulate_buildings(
 
     return len(buildings)
 
-
 # ── prepare ───────────────────────────────────────────────────────────
-
 
 def prepare_lod2_morphology(
     vintage: int,
@@ -531,7 +516,6 @@ def prepare_lod2_morphology(
         config_hash=c_hash,
     )
 
-
 def _process_lod2_tile(
     asset: AtomAsset,
     grid: GeoBox,
@@ -574,13 +558,11 @@ def _process_lod2_tile(
 
     return receipt
 
-
 def _local_cache_path(output_root: str, filename: str) -> str:
     """Return a writable local cache path for a LoD2 tile."""
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/lod2/{filename}"
     return f"{output_root}/_raw/secondary/lod2_morphology/{filename}"
-
 
 __all__ = [
     "config_hash_for_vintage",

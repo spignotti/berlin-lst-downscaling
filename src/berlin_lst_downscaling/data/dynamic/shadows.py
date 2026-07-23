@@ -46,9 +46,7 @@ _NODATA_UINT16 = 65535
 
 _SHADOW_NODATA = 255
 
-
 # ── contract ───────────────────────────────────────────────────────────
-
 
 def contract_for_shadow(component: str) -> Contract:
     """Return the output Contract for shadow COGs."""
@@ -72,9 +70,7 @@ def contract_for_shadow(component: str) -> Contract:
         flag_mode="none",
     )
 
-
 # ── core shadow computation ────────────────────────────────────────────
-
 
 def shadow_from_horizon(
     horizon_uri: str,
@@ -142,9 +138,7 @@ def shadow_from_horizon(
 
     return shadow
 
-
 # ── prepare ───────────────────────────────────────────────────────────
-
 
 def prepare_shadow(
     component: str,
@@ -273,7 +267,6 @@ def prepare_shadow(
             "acquisition:year": scene_year,
         },
     )
-
 
 __all__ = [
     "contract_for_shadow",

@@ -23,7 +23,6 @@ def parse_cutoff(cutoff_str: str) -> datetime:
             "Expected ISO format, e.g. '2026-07-17T23:59:59Z'."
         ) from err
 
-
 def parse_item_datetime(item) -> datetime | None:
     """Extract UTC datetime from a STAC item's datetime property.
 

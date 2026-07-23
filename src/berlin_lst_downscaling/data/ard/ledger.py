@@ -61,7 +61,6 @@ SCHEMA_VERSION = 6
 
 # ── row type ─────────────────────────────────────────────────────────
 
-
 @dataclass
 class LedgerRow:
     """A single row in the ARD processing ledger."""
@@ -95,9 +94,7 @@ class LedgerRow:
         if self.status not in _STATUSES:
             raise ValueError(f"Invalid status: {self.status!r}")
 
-
 # ── ledger ───────────────────────────────────────────────────────────
-
 
 class Ledger:
     """Read-write Parquet ledger for scene status tracking.
@@ -245,9 +242,7 @@ class Ledger:
     def path(self) -> str:
         return self._path
 
-
 # ── helpers ──────────────────────────────────────────────────────────
-
 
 def _row_to_dict(row: LedgerRow) -> dict:
     return {
@@ -274,7 +269,6 @@ def _row_to_dict(row: LedgerRow) -> dict:
         "aoi_clear_frac": row.aoi_clear_frac,
         "aoi_overlap_px": row.aoi_overlap_px,
     }
-
 
 def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
     rows: list[LedgerRow] = []
@@ -309,18 +303,15 @@ def _rows_from_table(tbl: pa.Table) -> list[LedgerRow]:
         )
     return rows
 
-
 def _opt_str(d: dict, key: str) -> str | None:
     val = d[key][0]
     return None if val is None else str(val)
-
 
 def _opt_int(d: dict, key: str) -> int | None:
     val = d.get(key, [None])[0]
     if val is None or isinstance(val, (int, float)) and val != val:  # NaN guard
         return None
     return int(val)
-
 
 def _opt_float(d: dict, key: str) -> float | None:
     val = d.get(key, [None])[0]
@@ -330,7 +321,6 @@ def _opt_float(d: dict, key: str) -> float | None:
         return None
     return float(val)
 
-
 def _opt_dt(d: dict, key: str) -> datetime | None:
     val = d.get(key, [None])[0]
     if val is None:
@@ -339,7 +329,6 @@ def _opt_dt(d: dict, key: str) -> datetime | None:
     if hasattr(val, "as_py"):
         val = val.as_py()
     return val  # type: ignore[return-value]
-
 
 __all__ = [
     "Ledger",

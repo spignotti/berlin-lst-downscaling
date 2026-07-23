@@ -70,7 +70,6 @@ _ALLOWED_CODES: frozenset[int] = frozenset(
     {0, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 100, 101, 102, 103, 110, 255}
 )
 
-
 def contract_for_imperviousness() -> Contract:
     """Return the output Contract for imperviousness COGs."""
     return Contract(
@@ -90,7 +89,6 @@ def contract_for_imperviousness() -> Contract:
         flag_mode="none",
     )
 
-
 def config_hash_for_vintage(vintage: int) -> str:
     """Return a stable config hash for a given vintage.
 
@@ -101,9 +99,7 @@ def config_hash_for_vintage(vintage: int) -> str:
     raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
     return sha256(raw.encode()).hexdigest()[:12]
 
-
 # ── scene-year → vintage mapping ──────────────────────────────────────
-
 
 def vintage_for_scene_year(year: int) -> int:
     """Return the imperviousness vintage that applies to a scene year.
@@ -117,9 +113,7 @@ def vintage_for_scene_year(year: int) -> int:
         return 2016
     return 2021
 
-
 # ── prepare ───────────────────────────────────────────────────────────
-
 
 def prepare_imperviousness(
     vintage: int,
@@ -224,9 +218,7 @@ def prepare_imperviousness(
         config_hash=c_hash,
     )
 
-
 # ── helpers ───────────────────────────────────────────────────────────
-
 
 def _raw_zip_uri(output_root: str, vintage: int) -> str:
     """Return the raw ZIP URI for a vintage."""
@@ -234,7 +226,6 @@ def _raw_zip_uri(output_root: str, vintage: int) -> str:
         f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/"
         f"{vintage}/Versiegelung_Raster_{vintage}.zip"
     )
-
 
 def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
     """Return a writable local cache path even when output_root is GCS.
@@ -248,7 +239,6 @@ def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/imperviousness_{vintage}.zip"
     return _raw_zip_uri(output_root, vintage)
-
 
 @contextlib.contextmanager
 def _zip_tiff_open(zip_path: Path):
@@ -267,7 +257,6 @@ def _zip_tiff_open(zip_path: Path):
     with rasterio.open(f"zip://{zip_path}!/{member}") as src:
         yield src
 
-
 def _validate_codes(observed: list[int]) -> None:
     """Raise ``ValueError`` if any observed code is outside the allowed set."""
     unknown = [code for code in observed if code not in _ALLOWED_CODES]
@@ -277,7 +266,6 @@ def _validate_codes(observed: list[int]) -> None:
             f"Allowed: {sorted(_ALLOWED_CODES)}. "
             "This dataset may use a different encoding."
         )
-
 
 __all__ = [
     "IMPERVIOUSNESS_URLS",

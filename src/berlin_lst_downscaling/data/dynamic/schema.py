@@ -15,7 +15,6 @@ from hashlib import sha256
 ERA5_CHANNELS = ("t2m_scene", "ssrd_scene", "ssrd_antecedent_72h_mean")
 SHADOW_CHANNELS = ("shadow_building", "shadow_vegetation")
 
-
 # ── geometry temporal mode ────────────────────────────────────────────
 
 GEOMETRY_TEMPORAL_MODE = "retrospective_static"
@@ -25,7 +24,6 @@ GEOMETRY_VINTAGES = {
     "terrain_height": "2021",
     "vegetation_height": "2020",
 }
-
 
 def config_hash_for_dynamic(
     manifest_hash: str,
@@ -54,7 +52,6 @@ def config_hash_for_dynamic(
     )
     return sha256(payload.encode()).hexdigest()[:16]
 
-
 def config_hash_for_era5(
     manifest_hash: str,
     geometry_id: str,
@@ -78,7 +75,6 @@ def config_hash_for_era5(
         sort_keys=True,
     )
     return sha256(payload.encode()).hexdigest()[:16]
-
 
 __all__ = [
     "ERA5_CHANNELS",

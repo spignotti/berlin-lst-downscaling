@@ -90,7 +90,6 @@ def compute_clear_frac_with_counts(
     cf = intersect_px / l8_clear_px
     return cf, _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
 
-
 def _counts_dict(
     clear_frac: float,
     aoi_px: int,
@@ -106,7 +105,6 @@ def _counts_dict(
         "intersect_px": intersect_px,
     }
 
-
 def _empty_counts() -> dict:
     return {
         "clear_frac": float("nan"),
@@ -115,7 +113,6 @@ def _empty_counts() -> dict:
         "s2_clear_px": 0,
         "intersect_px": 0,
     }
-
 
 def _landsat_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.ndarray:
     """Return boolean array where True = clear according to QA_PIXEL.
@@ -132,9 +129,7 @@ def _landsat_is_clear(ds: xr.Dataset, anchor_dt: datetime | None = None) -> np.n
     qa = ds["qa_pixel"].values[0].astype(np.uint16)
     return landsat_qa_to_clear_bits(qa)
 
-
 _S2_CLOUD_CLASSES = {0, 1, 3, 8, 9, 10, 11}  # fill, saturated, shadow, cloud, cirrus, snow
-
 
 def _s2_is_clear(
     ds: xr.Dataset,

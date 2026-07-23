@@ -26,10 +26,9 @@ from __future__ import annotations
 # pyright: reportAssignmentType=false
 import os
 
-# decision: see berlin_lst_downscaling.data.dynamic.dwd — strip env vars
-# wetterdienst's pydantic-settings rejects before importing it. Guard
-# here so the module can also be imported by tests / notebooks without
-# first importing dwd.
+# decision: dwd.py applies the wetterdienst workaround at import. Mirror
+# the env-strip here so this module can also be imported standalone (tests,
+# notebooks) without first importing dwd.
 for _key in (
     "google_application_credentials",
     "wandb_api_key",
@@ -73,7 +72,6 @@ _logger = logging.getLogger(__name__)
 
 _ERA5_LEDGER_SOURCE = "era5_land"
 
-
 @dataclass
 class Era5AnchorValue:
     """One Landsat anchor with the ERA5 t2m value at its normalised hour."""
@@ -84,7 +82,6 @@ class Era5AnchorValue:
     era5_role: str | None
     era5_source_root: str | None
     era5_provenance_uri: str | None
-
 
 @dataclass
 class ValidationSummary:
@@ -107,7 +104,6 @@ class ValidationSummary:
     rmse_celsius: float | None
     per_station: list[dict[str, Any]] = field(default_factory=list)
 
-
 def _atomic_write_parquet(df: pd.DataFrame, uri: str) -> None:
     """Write a Parquet file locally or to GCS via ``atomic_write``."""
     buf = df.to_parquet(index=False)
@@ -117,10 +113,8 @@ def _atomic_write_parquet(df: pd.DataFrame, uri: str) -> None:
         payload = buf.getvalue()  # type: ignore[union-attr]
     atomic_write(uri, payload, overwrite=True)
 
-
 def _read_json(uri: str) -> dict:
     return json.loads(read_bytes(uri).decode("utf-8"))
-
 
 def load_anchors_from_manifest(
     manifest_uri: str,
@@ -152,7 +146,6 @@ def load_anchors_from_manifest(
     if dataset_roles is not None:
         df = df[df["role"].isin(dataset_roles)]  # type: ignore[assignment]
     return df
-
 
 def _load_era5_anchors(
     dynamic_full_root: str,
@@ -241,7 +234,6 @@ def _load_era5_anchors(
             )
     return anchors
 
-
 def _join_anchors_with_dwd(
     anchors: list[Era5AnchorValue],
     dwd_obs_df: pd.DataFrame,
@@ -324,7 +316,6 @@ def _join_anchors_with_dwd(
                     }
                 )
     return pd.DataFrame(rows)
-
 
 def _summarise(comparison_df: pd.DataFrame, fetch: DwdFetchResult) -> ValidationSummary:
     matched = comparison_df[comparison_df["match_state"] == "matched"]
@@ -419,10 +410,8 @@ def _summarise(comparison_df: pd.DataFrame, fetch: DwdFetchResult) -> Validation
         per_station=per_station,
     )
 
-
 def _write_text(path: str, text: str) -> None:
     atomic_write(path, text, overwrite=True)
-
 
 def _hash_uri(uri: str) -> str:
     """SHA-256 of an arbitrary URI's content (or path string if missing)."""
@@ -430,7 +419,6 @@ def _hash_uri(uri: str) -> str:
         return sha256(read_bytes(uri)).hexdigest()
     except Exception:
         return sha256(uri.encode("utf-8")).hexdigest()
-
 
 def run_dwd_validation(
     cfg: object,
@@ -644,14 +632,12 @@ def run_dwd_validation(
     )
     return 0
 
-
 def _wetterdienst_version() -> str | None:
     try:
         from wetterdienst import __version__ as version  # type: ignore
     except ImportError:
         return None
     return str(version)
-
 
 __all__ = [
     "Era5AnchorValue",

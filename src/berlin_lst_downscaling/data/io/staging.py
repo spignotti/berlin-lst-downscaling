@@ -66,9 +66,7 @@ if TYPE_CHECKING:
 
 UriLike = str | Path | OutputLocation
 
-
 # ── stage manager ────────────────────────────────────────────────────
-
 
 class StageManager:
     """Manage ephemeral raw-input staging for a single run.
@@ -231,7 +229,6 @@ class StageManager:
         for blob in bucket.list_blobs(prefix=object_prefix):
             blob.delete()
 
-
 class StageSession(StageManager):
     """:class:`StageManager` with a guaranteed cleanup context manager.
 
@@ -270,7 +267,6 @@ class StageSession(StageManager):
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.cleanup()
-
 
 __all__ = [
     "StageManager",

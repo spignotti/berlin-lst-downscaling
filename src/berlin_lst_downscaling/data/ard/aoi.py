@@ -84,7 +84,6 @@ def compute_aoi_metrics(
         resampling=rwarp.Resampling.nearest,
     )
 
-    # Cast to bool for masking
     inside = aoi_data == 1
 
     fill_mask = (flag_data & contract.FLAG_FILL) != 0
@@ -103,10 +102,8 @@ def compute_aoi_metrics(
     aoi_saturated_px = int(np.sum(inside & saturated_mask))
     aoi_clear_px = int(np.sum(inside & clear_mask))
 
-    # Total AOI pixels that are not fill (usable area)
     aoi_total_px = aoi_clear_px + aoi_cloudy_px + aoi_shadow_px + aoi_cirrus_px + aoi_saturated_px
 
-    # All pixels in the COG∩AOI intersection (including fill) — used to detect
     # scenes whose valid data only covers a tiny fraction of the overlap area
     # (e.g. off-target swaths where the COG covers AOI but all LST pixels are NaN).
     aoi_overlap_px = int(np.sum(inside))
@@ -124,7 +121,6 @@ def compute_aoi_metrics(
         "aoi_overlap_px": aoi_overlap_px,
         "aoi_clear_frac": aoi_clear_frac,
     }
-
 
 __all__ = [
     "compute_aoi_metrics",

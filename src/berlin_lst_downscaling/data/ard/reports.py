@@ -112,7 +112,6 @@ def qa_report(
 
     return report
 
-
 __all__ = [
     "qa_report",
 ]

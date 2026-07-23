@@ -39,7 +39,6 @@ from berlin_lst_downscaling.data.secondary.product import (
 
 # ── contract ───────────────────────────────────────────────────────────
 
-
 def contract_for_building_dsm() -> Contract:
     """Return the output Contract for building DSM COGs."""
     return Contract(
@@ -59,7 +58,6 @@ def contract_for_building_dsm() -> Contract:
         schema_version=1,
         flag_mode="none",
     )
-
 
 def contract_for_vegetation_dsm() -> Contract:
     """Return the output Contract for vegetation DSM COGs."""
@@ -81,7 +79,6 @@ def contract_for_vegetation_dsm() -> Contract:
         flag_mode="none",
     )
 
-
 def contract_for_combined_dsm() -> Contract:
     """Return the output Contract for combined DSM COGs."""
     return Contract(
@@ -102,7 +99,6 @@ def contract_for_combined_dsm() -> Contract:
         flag_mode="none",
     )
 
-
 def config_hash_for_dsm(
     dsm_type: str,
     terrain_hash: str,
@@ -113,9 +109,7 @@ def config_hash_for_dsm(
     raw = f"dsm:{dsm_type}:t={terrain_hash}:l={lod2_hash}:v={vh_hash}"
     return sha256(raw.encode()).hexdigest()[:12]
 
-
 # ── upstream product readers ──────────────────────────────────────────
-
 
 def _read_band_by_desc(uri: str, desc: str) -> np.ndarray:
     """Read a band from a COG by its description string.
@@ -129,9 +123,7 @@ def _read_band_by_desc(uri: str, desc: str) -> np.ndarray:
                 return src.read(i).astype(np.float32)
     raise ValueError(f"Band '{desc}' not found in {uri} (bands: {list(descriptions)})")
 
-
 # ── prepare functions ─────────────────────────────────────────────────
-
 
 def prepare_building_dsm(
     terrain_uri: str,
@@ -200,7 +192,6 @@ def prepare_building_dsm(
         config_hash=c_hash,
     )
 
-
 def prepare_vegetation_dsm(
     terrain_uri: str,
     vh_max_uri: str,
@@ -257,7 +248,6 @@ def prepare_vegetation_dsm(
         config_hash=c_hash,
     )
 
-
 def prepare_combined_dsm(
     building_dsm_uri: str,
     vegetation_dsm_uri: str,
@@ -310,9 +300,7 @@ def prepare_combined_dsm(
         config_hash=c_hash,
     )
 
-
 # ── helpers ──────────────────────────────────────────────────────────
-
 
 def _make_ds(grid: GeoBox, band_name: str, data: np.ndarray) -> xr.Dataset:
     """Build a canonical-grid xr.Dataset from a numpy array."""
@@ -325,7 +313,6 @@ def _make_ds(grid: GeoBox, band_name: str, data: np.ndarray) -> xr.Dataset:
     ds = ds.rio.write_crs(str(grid.crs))
     ds = ds.rio.write_transform(grid.transform)
     return ds
-
 
 __all__ = [
     "config_hash_for_dsm",

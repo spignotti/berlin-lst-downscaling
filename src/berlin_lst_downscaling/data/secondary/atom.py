@@ -21,7 +21,6 @@ from odc.geo.geobox import GeoBox
 
 # ── asset record ─────────────────────────────────────────────────────
 
-
 @dataclass
 class AtomAsset:
     """One downloadable tile from an ATOM feed."""
@@ -35,7 +34,6 @@ class AtomAsset:
     byte_count: int = 0
     local_path: str | None = None  # set after download
 
-
 @dataclass
 class AtomManifest:
     """Immutable catalog of all assets in an ATOM feed, optionally AOI-filtered."""
@@ -45,7 +43,6 @@ class AtomManifest:
     feed_title: str
     assets: list[AtomAsset] = field(default_factory=list)
 
-
 # ── coordinate extraction patterns ───────────────────────────────────
 
 # DGM1: DGM1_{E}_{N}.zip  (e.g. DGM1_368_5808.zip)
@@ -54,7 +51,6 @@ _DGM_RE = re.compile(r"DGM1_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
 # LoD2: LoD2_{E}_{N}.zip  (e.g. LoD2_371_5809.zip)
 _LOD2_RE = re.compile(r"LoD2_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
 
-
 def _extract_coords(filename: str, pattern: re.Pattern[str]) -> tuple[int, int] | None:
     """Extract (easting, northing) tile origin from a filename."""
     m = pattern.search(filename)
@@ -62,11 +58,9 @@ def _extract_coords(filename: str, pattern: re.Pattern[str]) -> tuple[int, int] 
         return None
     return int(m.group(1)) * 1000, int(m.group(2)) * 1000
 
-
 # ── ATOM XML parsing ─────────────────────────────────────────────────
 
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
-
 
 def parse_atom_feed(
     feed_url: str,
@@ -150,15 +144,12 @@ def parse_atom_feed(
         assets=assets,
     )
 
-
 def _text(element: ET.Element, tag: str, default: str = "") -> str:
     """Extract text content from an XML element."""
     child = element.find(tag)
     return child.text.strip() if child is not None and child.text else default
 
-
 # ── manifest persistence ─────────────────────────────────────────────
-
 
 def save_manifest_json(manifest: AtomManifest, path: str) -> None:
     """Save manifest as JSON for reproducibility."""
@@ -183,7 +174,6 @@ def save_manifest_json(manifest: AtomManifest, path: str) -> None:
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(data, indent=2))
-
 
 __all__ = [
     "AtomAsset",

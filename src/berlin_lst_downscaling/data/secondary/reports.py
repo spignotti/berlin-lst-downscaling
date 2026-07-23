@@ -73,7 +73,6 @@ def secondary_qa_report(
         "success": failed == 0,
     }
 
-
 def persist_secondary_report(
     report: dict[str, Any],
     output_root: str,
@@ -83,7 +82,6 @@ def persist_secondary_report(
     atomic_write(uri, json.dumps(report, indent=2), overwrite=True)
     return uri
 
-
 def _all_ledger_rows(ledger: SecondaryLedger) -> list:
     """Return all rows from the ledger table."""
     from berlin_lst_downscaling.data.secondary.ledger import _rows_from_table
@@ -92,7 +90,6 @@ def _all_ledger_rows(ledger: SecondaryLedger) -> list:
     if tbl.num_rows == 0:
         return []
     return _rows_from_table(tbl)
-
 
 def format_secondary_report(report: dict[str, Any]) -> str:
     """Format a secondary QA report for console output."""
@@ -118,7 +115,6 @@ def format_secondary_report(report: dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
-
 
 __all__ = [
     "secondary_qa_report",

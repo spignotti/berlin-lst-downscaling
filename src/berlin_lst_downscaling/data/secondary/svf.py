@@ -39,7 +39,6 @@ _logger = logging.getLogger(__name__)
 
 # ── contract ───────────────────────────────────────────────────────────
 
-
 def contract_for_svf() -> Contract:
     """Return the output Contract for SVF COGs."""
     return Contract(
@@ -63,7 +62,6 @@ def contract_for_svf() -> Contract:
         flag_mode="none",
     )
 
-
 def config_hash_for_svf(
     max_radius: int,
     n_directions: int,
@@ -73,9 +71,7 @@ def config_hash_for_svf(
     raw = f"svf:r={max_radius}:d={n_directions}:u={upstream_hash}"
     return sha256(raw.encode()).hexdigest()[:12]
 
-
 # ── prepare ───────────────────────────────────────────────────────────
-
 
 def prepare_svf(
     combined_dsm_uri: str,
@@ -170,7 +166,6 @@ def prepare_svf(
         },
         config_hash=c_hash,
     )
-
 
 __all__ = [
     "config_hash_for_svf",

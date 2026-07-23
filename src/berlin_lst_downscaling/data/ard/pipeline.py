@@ -50,7 +50,6 @@ _logger = logging.getLogger(__name__)
 
 # ── per-source runner registry ───────────────────────────────────────
 
-
 def _run_landsat_scene(
     scene_id: str,
     source: str,
@@ -80,7 +79,6 @@ def _run_landsat_scene(
     masked = mask_landsat(ds, cfg)
     return masked
 
-
 def _run_sentinel2_scene(
     scene_id: str,
     source: str,
@@ -108,12 +106,10 @@ def _run_sentinel2_scene(
             f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
             f"Date {effective_date!r} or bbox may not cover the requested scene."
         )
-    # Solar position for directional cloud-shadow projection
     # S2 uses NOAA computation (PC items lack view:sun_*)
     az, el = _solar_for_scene(ds, cfg)
     masked = mask_s2(ds, cfg, az, el)
     return masked
-
 
 def _run_ecostress_scene(
     scene_id: str,
@@ -145,17 +141,14 @@ def _run_ecostress_scene(
         resolution=resolution,
     )
 
-    # Assert the requested granule was loaded
     if scene_id not in loaded_ids:
         raise RuntimeError(
             f"Granule {scene_id!r} not in loaded IDs {loaded_ids}. "
             "Check that the granule exists in the raw_dir."
         )
 
-    # No solar position needed — ECOSTRESS LST is atmospherically corrected
     masked = mask_ecostress(ds, cfg)
     return masked
-
 
 # Registry maps source key → per-source runner function.
 # Each runner returns a masked xr.Dataset ready for COG writing.
@@ -166,7 +159,6 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 }
 
 # ── main entry ───────────────────────────────────────────────────────
-
 
 def run(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the ARD pipeline — manifest-driven (mode=full).
@@ -189,13 +181,11 @@ def run(cfg: DictConfig, run_id: str | None = None) -> int:
         contract = contract_for_source(source)
         _process_manifest(source, contract, cfg, led, run_id)
 
-    # Final QA report
     report = qa_report(led, cfg, run_id)
     failed_count = sum(report.get("per_source", {}).get(s, {}).get("failed", 0) for s in sources)
     log_event(_logger, logging.INFO, "qa_report", **report)
 
     return 0 if failed_count == 0 else 1
-
 
 def _process_manifest(
     source: str,
@@ -230,7 +220,6 @@ def _process_manifest(
     if tbl.num_rows == 0:
         return
 
-    # Apply scene filter if configured (for cloud smoke)
     scene_filter = cfg.get("scene_filter")
     if scene_filter:
         filter_ids = (
@@ -317,7 +306,6 @@ def _process_manifest(
                 scene_date=meta.get("acquisition_datetime"),
             )
 
-
 def _resolve_manifest_items(
     scene_id: str,
     source: str,
@@ -365,7 +353,6 @@ def _resolve_manifest_items(
             error=str(exc),
         )
         return None
-
 
 def _process_ecostress_todo(
     todo: list[tuple[str, str, int, str]],
@@ -416,9 +403,7 @@ def _process_ecostress_todo(
             )
         # Stage cleaned up automatically on StageSession.__exit__
 
-
 # ── per-scene processing ─────────────────────────────────────────────
-
 
 def _run_scene(
     scene_id: str,
@@ -457,7 +442,6 @@ def _run_scene(
     )
     t0 = time.perf_counter()
 
-    # Mark as exporting (crash recovery entry) with attempt tracking
     _attempts = ledger.begin_attempt(
         LedgerRow(
             scene_id=scene_id,
@@ -539,8 +523,8 @@ def _run_scene(
                 if source == "landsat-c2-l2"
                 else int(cfg.target_resolution_high)
             )
-            aoi_base = cfg.get("aoi.mask_base", "data/boundaries")
-            aoi_uri = f"{aoi_base}/aoi_{aoi_res}m.tif"
+            aoi_base = str(cfg.aoi.mask_base)
+            aoi_uri = f"{aoi_base.rstrip('/')}/aoi_{aoi_res}m.tif"
             try:
                 _raw = compute_aoi_metrics(flag_dst, aoi_uri, contract)
                 aoi_clear_px = _int_or_none(_raw.get("aoi_clear_px"))
@@ -563,10 +547,8 @@ def _run_scene(
                     error=str(_exc),
                 )
 
-        # Low-overlap warning: valid data covers a small fraction of the AOI intersection.
-        # This catches off-target swaths where the COG covers the AOI bbox but LST is NaN.
-        min_overlap = cfg.get("aoi", {}).get("min_overlap_px", None)
-        if aoi_overlap_px is not None and min_overlap is not None and aoi_overlap_px < min_overlap:
+        min_overlap = int(cfg.aoi.min_overlap_px)
+        if aoi_overlap_px is not None and aoi_overlap_px < min_overlap:
             log_event(
                 _logger,
                 logging.WARNING,
@@ -652,9 +634,7 @@ def _run_scene(
         )
         # do not re-raise — outer loop continues
 
-
 # ── solar position ───────────────────────────────────────────────────
-
 
 def _solar_for_scene(
     ds: xr.Dataset,
@@ -679,9 +659,7 @@ def _solar_for_scene(
         )
     return solar_position(dt)
 
-
 # ── STAC item builder ────────────────────────────────────────────────
-
 
 def _build_stac_item(
     scene_id: str,
@@ -789,9 +767,7 @@ def _build_stac_item(
 
     return item
 
-
 # ── STAC helpers ─────────────────────────────────────────────────────
-
 
 def _acquisition_datetime(
     masked: xr.Dataset,
@@ -810,7 +786,6 @@ def _acquisition_datetime(
     except (IndexError, AttributeError, ValueError):
         return None
 
-
 def _int_or_none(val) -> int | None:
     """Convert value to int, returning None for None or NaN."""
     if val is None:
@@ -819,7 +794,6 @@ def _int_or_none(val) -> int | None:
         return None
     return int(val)
 
-
 def _float_or_none(val) -> float | None:
     """Convert value to float, returning None for None or NaN."""
     if val is None:
@@ -827,7 +801,6 @@ def _float_or_none(val) -> float | None:
     if isinstance(val, float) and val != val:  # NaN
         return None
     return float(val)
-
 
 __all__ = [
     "run",
