@@ -8,6 +8,7 @@ their completeness.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from berlin_lst_downscaling.data.io.storage import exists, read_bytes
@@ -87,14 +88,13 @@ def resolve_geometry(
 
         src_uris[name] = cog
 
-        # Read config hash from provenance
-        try:
-            import json
-
-            prov_data = json.loads(read_bytes(prov))
-            src_hashes[name] = prov_data.get("config_hash", "")
-        except Exception:
-            src_hashes[name] = ""
+        # Source products are required to carry a non-empty config_hash.
+        prov_data = json.loads(read_bytes(prov))
+        config_hash = prov_data.get("config_hash", "")
+        if not config_hash:
+            errors.append(f"Source product missing config_hash: {source}/{revision}")
+            continue
+        src_hashes[name] = config_hash
 
     if src_uris.get("terrain_height") is None:
         errors.append("terrain_height required for grid inference")

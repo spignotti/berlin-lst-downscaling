@@ -82,14 +82,15 @@ def contract_for_imperviousness() -> Contract:
     return Contract(
         source="imperviousness",
         target_crs="EPSG:25833",
-        output_bands=(
-            BandSpec(
-                name="imperviousness",
-                dtype="float32",
-                nodata=float("nan"),
-                description="Sealing degree in percent (0–100)",
-            ),
+    output_bands=(
+        BandSpec(
+            name="imperviousness",
+            dtype="float32",
+            nodata=float("nan"),
+            valid_range=(-0.01, 100.01),
+            description="Sealing degree in percent (0–100)",
         ),
+    ),
         tiling=TilingSpec(),
         schema_version=1,
         flag_mode="none",

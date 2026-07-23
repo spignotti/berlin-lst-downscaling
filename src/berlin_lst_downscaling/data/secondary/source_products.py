@@ -23,7 +23,7 @@ class ResolvedSource:
     stac_uri: str
     provenance_uri: str
     completion_uri: str
-    config_hash: str = ""
+    config_hash: str
 
 
 @dataclass
@@ -94,13 +94,10 @@ def _check_source(
     if not all(exists(u) for u in [cog, stac, prov, comp]):
         return None
 
-    # Read config hash from provenance (backward-compatible default)
-    config_hash = ""
-    try:
-        prov_data = json.loads(read_bytes(prov))
-        config_hash = prov_data.get("config_hash", "")
-    except Exception:  # noqa: S110 — best-effort hash read, not critical
-        pass
+    prov_data = json.loads(read_bytes(prov))
+    config_hash = prov_data.get("config_hash", "")
+    if not config_hash:
+        return None
 
     return ResolvedSource(
         source=source,

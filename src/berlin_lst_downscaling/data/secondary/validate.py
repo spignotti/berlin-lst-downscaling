@@ -13,13 +13,6 @@ from odc.geo.geobox import GeoBox
 from berlin_lst_downscaling.data.ard.contract import Contract
 from berlin_lst_downscaling.data.ard.validate import ValidationResult, validate_cog
 
-# Backwards-compat range gate for sources whose contract omits valid_range.
-# Vegetation height and other sources carry valid_range on every band, so
-# the per-band check below is sufficient.
-_RANGES: dict[str, tuple[float, float]] = {
-    "imperviousness": (-0.01, 100.01),
-}
-
 
 def validate_secondary_cog(
     uri: str,
@@ -29,22 +22,14 @@ def validate_secondary_cog(
     """Validate a secondary-data COG.
 
     Delegates to :func:`data.ard.validate.validate_cog` for structural
-    checks (CRS, shape, origin, band count, NaN threshold), then adds
-    source-specific range validation when a known source is detected.
+    checks (CRS, shape, origin, band count, NaN threshold), then runs
+    the per-band range check for every band that defines ``valid_range``.
     """
     result = validate_cog(uri, contract, expected_grid)
     if not result.ok:
         return result
 
-    # Per-band range validation using contract valid_range
     _check_all_band_ranges(uri, contract, result)
-
-    # Source-level range check (backwards compat for sources without per-band range)
-    source = contract.source
-    if source in _RANGES:
-        mini, maxi = _RANGES[source]
-        _check_value_range(uri, result, mini, maxi, band=1)
-
     return result
 
 
@@ -65,10 +50,8 @@ def _check_all_band_ranges(
                 band = src.read(i)
                 nodata = spec.nodata
 
-                # Determine valid mask: NaN for float, nodata sentinel for int
                 if np.issubdtype(band.dtype, np.floating):
-                    band_f = band.astype(np.float64)
-                    valid_mask = ~np.isnan(band_f)
+                    valid_mask = ~np.isnan(band)
                 elif nodata is not None:
                     valid_mask = band != nodata
                 else:
@@ -93,40 +76,6 @@ def _check_all_band_ranges(
                     )
     except Exception as exc:
         result.fail(f"Per-band range check failed: {exc}")
-
-
-def _check_value_range(
-    uri: str,
-    result: ValidationResult,
-    vmin: float,
-    vmax: float,
-    band: int = 1,
-) -> None:
-    """Check that all valid (non-NaN) pixels in a band are within [vmin, vmax]."""
-    import rasterio  # noqa: F811
-
-    try:
-        with rasterio.open(uri) as src:
-            arr = src.read(band).astype(np.float64)
-            valid_mask = ~np.isnan(arr)
-            valid = arr[valid_mask]
-            if len(valid) == 0:
-                result.fail(f"Band {band}: no valid pixels found for range check")
-                return
-            actual_min = float(valid.min())
-            actual_max = float(valid.max())
-            if actual_min < vmin:
-                result.fail(
-                    f"Band {band}: value below expected range [{vmin:.1f}, {vmax:.1f}]: "
-                    f"min={actual_min:.4f}"
-                )
-            if actual_max > vmax:
-                result.fail(
-                    f"Band {band}: value above expected range [{vmin:.1f}, {vmax:.1f}]: "
-                    f"max={actual_max:.4f}"
-                )
-    except Exception as exc:
-        result.fail(f"Range check failed for band {band}: {exc}")
 
 
 __all__ = [
