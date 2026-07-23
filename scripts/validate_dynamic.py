@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
 """Validate dynamic pipeline products against expected inventory.
 
-Read-only validator: checks ledger status, artifact existence, and role
-consistency for a given dynamic run root.
+Read-only validator: checks ledger status, artifact existence, and
+role consistency for a given dynamic run root.
 
-Usage:
+Usage::
+
     uv run python scripts/validate_dynamic.py \\
         --output-root gs://berlin-lst-data/dynamic/full/<run-id> \\
-        --expected-role development \\
-        --expected-years 2017-2025 \\
+        --expected-role anchor \\
         --expected-scenes 324
 
     uv run python scripts/validate_dynamic.py \\
         --output-root gs://berlin-lst-data/dynamic/inference/2026/<run-id> \\
         --expected-role inference \\
-        --expected-years 2026 \\
         --expected-scenes 21
-
-    # Quick status check without full validation:
-    uv run python scripts/validate_dynamic.py \\
-        --output-root gs://berlin-lst-data/dynamic/full/<run-id> \\
-        --progress-only
 """
 
 from __future__ import annotations
@@ -33,21 +27,20 @@ from collections import Counter
 import pyarrow.parquet as pq
 
 
-def load_ledger(output_root: str) -> dict:
-    """Load ledger and return status summary."""
+def _read_ledger(output_root: str) -> dict:
     ledger_path = f"{output_root.rstrip('/')}/_state/dynamic/ledger.parquet"
-
-    # Handle both local and GCS paths
     if ledger_path.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import read_bytes
 
-        raw = read_bytes(ledger_path)
         import io
 
-        table = pq.read_table(io.BytesIO(raw))
+        table = pq.read_table(io.BytesIO(read_bytes(ledger_path)))
     else:
         table = pq.read_table(ledger_path)
+    return _summarise(table)
 
+
+def _summarise(table) -> dict:
     sources = table.column("source").to_pylist()
     statuses = table.column("status").to_pylist()
     roles = table.column("role").to_pylist()
@@ -70,13 +63,11 @@ def load_ledger(output_root: str) -> dict:
         if row["role"][0] is None:
             missing_role += 1
 
-    role_counts = Counter(roles)
-
     return {
         "total_rows": table.num_rows,
         "counts": dict(counts),
         "non_done": non_done,
-        "role_counts": dict(role_counts),
+        "role_counts": dict(Counter(roles)),
         "missing_role": missing_role,
     }
 
@@ -84,15 +75,19 @@ def load_ledger(output_root: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate dynamic pipeline products")
     parser.add_argument("--output-root", required=True, help="Dynamic run output root")
-    parser.add_argument("--expected-role", default=None, help="Expected dataset role")
-    parser.add_argument("--expected-years", default=None, help="Expected year range")
-    parser.add_argument("--expected-scenes", type=int, default=None, help="Expected scene count")
+    parser.add_argument("--expected-role", required=True, help="Expected dataset role")
+    parser.add_argument(
+        "--expected-scenes",
+        type=int,
+        required=True,
+        help="Expected total scene count per source (e.g. 324 or 21)",
+    )
     parser.add_argument("--progress-only", action="store_true", help="Quick status only")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
 
     try:
-        ledger = load_ledger(args.output_root)
+        ledger = _read_ledger(args.output_root)
     except Exception as e:
         print(f"ERROR: Failed to load ledger: {e}", file=sys.stderr)
         return 1
@@ -104,41 +99,36 @@ def main() -> int:
             print(f"Ledger: {ledger['total_rows']} rows")
             print(f"Counts: {ledger['counts']}")
             print(f"Non-done: {len(ledger['non_done'])} items")
-            if ledger["role_counts"]:
-                print(f"Roles: {ledger['role_counts']}")
+            print(f"Roles: {ledger['role_counts']}")
+            print(f"Missing role: {ledger['missing_role']}")
         return 0
 
-    # Full validation
     errors = []
     warnings = []
 
-    # Check scene counts per source
-    expected_per_source = args.expected_scenes or 324
+    expected_per_source = args.expected_scenes
     for src in ("era5_land", "shadow_building", "shadow_vegetation"):
         done = ledger["counts"].get((src, "done"), 0)
-        if done < expected_per_source:
+        if done != expected_per_source:
             errors.append(f"{src}: {done}/{expected_per_source} done")
         else:
             print(f"  {src}: {done}/{expected_per_source} done ✓")
 
-    # Check non-done items
     if ledger["non_done"]:
         for item in ledger["non_done"]:
-            warnings.append(
-                f"  {item['item_id']}: {item['status']} "
-                f"(attempts={item['attempts']}, error={item['last_error']})"
+            errors.append(
+                f"  non-done: {item['item_id']} status={item['status']} "
+                f"attempts={item['attempts']} error={item['last_error']}"
             )
 
-    # Check role consistency
     if ledger["missing_role"] > 0:
         errors.append(f"{ledger['missing_role']} rows have a null role (required)")
-    if args.expected_role:
-        for role, count in ledger["role_counts"].items():
-            if role is None or role == args.expected_role:
-                continue
+    for role, count in ledger["role_counts"].items():
+        if role is None:
+            continue
+        if role != args.expected_role:
             errors.append(f"Unexpected role '{role}': {count} items")
 
-    # Report
     if errors:
         print("FAILURES:")
         for e in errors:
@@ -149,7 +139,7 @@ def main() -> int:
             print(f"  ⚠ {w}")
 
     if not errors:
-        print("\nAll source counts verified.")
+        print("\nAll source counts and roles verified.")
         return 0
     return 1
 
