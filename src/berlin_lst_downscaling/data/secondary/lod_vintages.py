@@ -1027,9 +1027,17 @@ def derive_vintage_products(
 ) -> dict:
     """Build the morphology-dependent derived products for one vintage.
 
-    Reads the freshly-published ``lod2_morphology/<vintage>`` COG plus the
-    existing ``terrain_height/2021`` and ``vegetation_height/2020``
-    products, and publishes:
+    Always reads the freshly-published ``lod2_morphology/<vintage>`` COG
+    from ``source_root`` (the destination the morphology runner just
+    wrote to). Reads vintage-agnostic upstream products from separate
+    overrides when present:
+
+    - ``terrain_height/2021`` and ``vegetation_height/2020`` from
+      ``upstream_source_root`` (default ``source_root``)
+    - ``vegetation_dsm/2024`` from ``upstream_derived_root`` (default
+      ``derived_root``)
+
+    Publishes:
 
     - ``building_dsm``
     - ``combined_dsm``
@@ -1039,17 +1047,6 @@ def derive_vintage_products(
     The vegetation-derived products (``vegetation_dsm``,
     ``horizon_vegetation``) are reused unchanged from the existing
     2024-derived bundle since their inputs are vintage-agnostic.
-
-    Parameters
-    ----------
-    upstream_source_root :
-        Optional override for ``source_root`` used to resolve the
-        finalised LoD2 morphology, terrain and vegetation-height
-        products.  Defaults to *source_root*.
-    upstream_derived_root :
-        Optional override for ``derived_root`` used to locate the
-        vintage-agnostic ``vegetation_dsm`` predecessor.  Defaults to
-        *derived_root*.
     """
     from berlin_lst_downscaling.data.io.storage import exists
     from berlin_lst_downscaling.data.secondary import dsm as dsm_mod
@@ -1066,7 +1063,7 @@ def derive_vintage_products(
 
     grid = grid or canon_grid_10m()
     geometry_id = vintage_geometry_id(vintage)
-    src_root = upstream_source_root or source_root
+    upstream_src = upstream_source_root or source_root
     veg_dsm_root = upstream_derived_root or derived_root
 
     log_event(
@@ -1075,49 +1072,57 @@ def derive_vintage_products(
         "derive_vintage_start",
         vintage=vintage,
         geometry_id=geometry_id,
-        source_root=src_root,
-        veg_dsm_root=veg_dsm_root,
+        source_root=source_root,
+        upstream_source_root=upstream_src,
+        upstream_derived_root=veg_dsm_root,
     )
 
-    required_sources = {
-        "terrain_height": "2021",
-        "vegetation_height": "2020",
-        "lod2_morphology": str(vintage),
-    }
-    report = resolve_source_products(src_root, required_sources)
-    if not report.ok:
+    # 1. Resolve vintage-agnostic upstream products from upstream roots.
+    upstream_report = resolve_source_products(
+        upstream_src,
+        {
+            "terrain_height": "2021",
+            "vegetation_height": "2020",
+        },
+    )
+    if not upstream_report.ok:
         raise ValueError(
-            "Required source products missing: " + "; ".join(report.errors)
+            "Upstream source products missing: "
+            + "; ".join(upstream_report.errors)
         )
-    src_map = {f"{r.source}/{r.revision}": r for r in report.resolved}
-    terrain = src_map.get("terrain_height/2021")
-    vh = src_map.get("vegetation_height/2020")
-    lod2 = src_map.get(f"lod2_morphology/{vintage}")
-    if terrain is None or vh is None or lod2 is None:
+    upstream_map = {
+        f"{r.source}/{r.revision}": r for r in upstream_report.resolved
+    }
+    terrain = upstream_map.get("terrain_height/2021")
+    vh = upstream_map.get("vegetation_height/2020")
+    if terrain is None or vh is None:
         missing = [
             s
             for s, v in [
                 ("terrain_height/2021", terrain),
                 ("vegetation_height/2020", vh),
-                (f"lod2_morphology/{vintage}", lod2),
             ]
             if v is None
         ]
-        raise ValueError(f"Required source products missing: {missing}")
+        raise ValueError(f"Upstream source products missing: {missing}")
 
-    lod2_cog = source_product_cog(src_root, "lod2_morphology", str(vintage))
+    # 2. The freshly-published morphology lives in source_root.
+    lod2_cog = source_product_cog(source_root, "lod2_morphology", str(vintage))
     if not exists(lod2_cog):
         raise ValueError(f"Morphology product missing: {lod2_cog}")
+    lod2_prov = source_product_cog(source_root, "lod2_morphology", str(vintage))
+    lod2_prov = lod2_prov[: -len(f"lod2_morphology_{vintage}.tif")] + "provenance.json"
+    lod2_config_hash = _read_config_hash(lod2_prov)
 
     upstream_hashes = {
         "terrain": terrain.config_hash,
-        "lod2": lod2.config_hash,
+        "lod2": lod2_config_hash,
         "vh": vh.config_hash,
     }
 
     artefacts: dict[str, str] = {}
 
-    # 1. building_dsm
+    # 3. building_dsm
     bldg_dir = derived_product_dir(derived_root, "building_dsm", geometry_id)
     building_dsm = dsm_mod.prepare_building_dsm(
         terrain.cog_uri,
@@ -1131,7 +1136,7 @@ def derive_vintage_products(
     building_dsm_artifacts = finalize_secondary_product(building_dsm, grid, bldg_dir, run_id)
     artefacts["building_dsm"] = building_dsm_artifacts.cog_uri
 
-    # 2. combined_dsm — needs the vintage-agnostic 2024 vegetation_dsm
+    # 4. combined_dsm — uses vegetation_dsm/2024 from upstream derived root
     veg_dsm_cog = derived_product_cog(
         veg_dsm_root, "vegetation_dsm", "dgm1-2021__lod2-2024__vh-2020"
     )
@@ -1154,7 +1159,7 @@ def derive_vintage_products(
     combined_artifacts = finalize_secondary_product(combined_dsm, grid, combined_dir, run_id)
     artefacts["combined_dsm"] = combined_artifacts.cog_uri
 
-    # 3. horizon_building (from building_dsm)
+    # 5. horizon_building (from building_dsm)
     horizon_dir = derived_product_dir(derived_root, "horizon_building", geometry_id)
     horizon_bldg = horizon_mod.prepare_horizon(
         building_dsm_artifacts.cog_uri,
@@ -1171,7 +1176,7 @@ def derive_vintage_products(
     )
     artefacts["horizon_building"] = horizon_artifacts.cog_uri
 
-    # 4. svf (from combined_dsm)
+    # 6. svf (from combined_dsm)
     svf_dir = derived_product_dir(derived_root, "svf", geometry_id)
     svf_product = svf_mod.prepare_svf(
         combined_artifacts.cog_uri,
@@ -1200,6 +1205,17 @@ def derive_vintage_products(
         "artifacts": artefacts,
         "upstream_hashes": upstream_hashes,
     }
+
+
+def _read_config_hash(provenance_uri: str) -> str:
+    """Read ``config_hash`` out of a published provenance.json; return "" on miss."""
+    from berlin_lst_downscaling.data.io import read_bytes
+
+    try:
+        payload = json.loads(read_bytes(provenance_uri))
+        return str(payload.get("config_hash", ""))
+    except Exception:  # noqa: S110 — fall through, surface as missing hash
+        return ""
 
 
 # ── local input staging (CLI helper) ─────────────────────────────────
