@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         lod1_index: dict | None = None
         if 2017 in vintages:
             log_event(_logger, logging.INFO, "lod1_index_load_start")
-            lod1_index = load_lod1_footprints(2017)
+            lod1_index = load_lod1_footprints(2017, max_tiles=args.smoke_tile_count, grid=grid)
             log_event(
                 _logger,
                 logging.INFO,

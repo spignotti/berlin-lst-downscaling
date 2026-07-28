@@ -377,7 +377,37 @@ def year_to_vintage_range(year: int) -> tuple[int | None, int | None]:
 # ── vintage loading (after raw upload) ───────────────────────────────
 
 
-def load_lod1_footprints(vintage: int, raw_root: str | None = None) -> dict[str, list[Footprint]]:
+def _filter_paths_by_bbox(
+    paths: list[Path],
+    tile_key_fn,
+    grid: GeoBox,
+) -> list[Path]:
+    """Restrict *paths* to those whose tile key falls inside *grid*."""
+    bbox = grid.extent.boundingbox
+    minx, miny, maxx, maxy = bbox.left, bbox.bottom, bbox.right, bbox.top
+    out: list[Path] = []
+    for p in paths:
+        try:
+            e, n = (int(s) for s in tile_key_fn(p.name).split("_"))
+        except ValueError:
+            continue
+        tile_box = (e * 1000, n * 1000, (e + 1) * 1000, (n + 1) * 1000)
+        # Tile overlaps grid if any corner is inside.
+        if tile_box[0] > maxx or tile_box[2] < minx:
+            continue
+        if tile_box[1] > maxy or tile_box[3] < miny:
+            continue
+        out.append(p)
+    return out
+
+
+def load_lod1_footprints(
+    vintage: int,
+    raw_root: str | None = None,
+    *,
+    max_tiles: int | None = None,
+    grid: GeoBox | None = None,
+) -> dict[str, list[Footprint]]:
     """Load every LoD1 footprint, grouped by tile key.
 
     The ``tile_key`` is the ``<easting>_<northing>`` prefix shared with
@@ -389,6 +419,10 @@ def load_lod1_footprints(vintage: int, raw_root: str | None = None) -> dict[str,
         raise ValueError(f"LoD1 footprints only defined for vintage=2017 (got {vintage})")
     spec = _VINTAGE_SOURCES[2017]
     items = _iter_vintage_files(spec)
+    if grid is not None:
+        items = _filter_paths_by_bbox(items, _lod1_tile_key, grid)
+    if max_tiles is not None:
+        items = items[:max_tiles]
     groups: dict[str, list[Footprint]] = {}
     for path in items:
         tile_key = _lod1_tile_key(path.name)
@@ -399,6 +433,9 @@ def load_lod1_footprints(vintage: int, raw_root: str | None = None) -> dict[str,
 def load_lod2_buildings(
     vintage: int,
     raw_root: str | None = None,
+    *,
+    max_tiles: int | None = None,
+    grid: GeoBox | None = None,
 ) -> dict[str, list[Building]]:
     """Load every LoD2 building for *vintage*, grouped by tile key.
 
@@ -409,19 +446,49 @@ def load_lod2_buildings(
     groups: dict[str, list[Building]] = {}
 
     if spec["kind"] == "lod2_dir":
-        for path in _iter_vintage_files(spec):
+        items = _iter_vintage_files(spec)
+        if grid is not None:
+            items = _filter_paths_by_bbox(items, _lod2_tile_key, grid)
+        if max_tiles is not None:
+            items = items[:max_tiles]
+        for path in items:
             tile_key = _lod2_tile_key(path.name)
             groups[tile_key] = parse_lod2_buildings_from_file(path)
     elif spec["kind"] == "lod2_zip":
         zip_path = Path(spec["local_path"])
+        members = _iter_zip_members(spec)
+        if grid is not None:
+            tile_key_fn = _lod2_tile_key
+            members = [
+                (name, size)
+                for name, size in members
+                if _tile_key_in_bbox(tile_key_fn(name), grid)
+            ]
+        if max_tiles is not None:
+            members = members[:max_tiles]
         with zipfile.ZipFile(zip_path) as z:
-            for member, _ in _iter_zip_members(spec):
+            for member, _ in members:
                 data = z.read(member)
                 tile_key = _lod2_tile_key(member)
                 groups[tile_key] = parse_lod2_buildings(data)
     else:
         raise ValueError(f"Unknown source kind for vintage {vintage}: {spec['kind']!r}")
     return groups
+
+
+def _tile_key_in_bbox(tile_key: str, grid: GeoBox) -> bool:
+    try:
+        e, n = (int(s) for s in tile_key.split("_"))
+    except ValueError:
+        return False
+    bbox = grid.extent.boundingbox
+    minx, miny, maxx, maxy = bbox.left, bbox.bottom, bbox.right, bbox.top
+    tile_box = (e * 1000, n * 1000, (e + 1) * 1000, (n + 1) * 1000)
+    if tile_box[0] > maxx or tile_box[2] < minx:
+        return False
+    if tile_box[1] > maxy or tile_box[3] < miny:
+        return False
+    return True
 
 
 _LOD1_TILE_RE = re.compile(r"LoD1_(\d{3})_(\d{4})_")
@@ -585,6 +652,17 @@ def _accumulate_buildings(
         area_arr[cells] += bldg.footprint.area / n_cells
         np.maximum.at(max_arr, cells, h)
 
+    # When smoke or filtered runs cover only part of the AOI the
+    # untouched cells keep a zero count.  Mask them as NaN so the
+    # validator sees a sparse product rather than an artificially flat
+    # zero-valued surface.
+    empty_mask = count_arr == 0
+    sum_arr[empty_mask] = np.nan
+    sumsq_arr[empty_mask] = np.nan
+    count_arr[empty_mask] = 0
+    area_arr[empty_mask] = np.nan
+    max_arr[empty_mask] = np.nan
+
     return sum_arr, sumsq_arr, count_arr, area_arr, max_arr
 
 
@@ -665,12 +743,16 @@ def prepare_vintage_morphology(
     c_hash = config_hash_for_vintage(vintage)
 
     log_event(_logger, logging.INFO, "vintage_load_start", vintage=vintage)
-    lod2_groups = load_lod2_buildings(vintage)
+    source_vintage = 2021 if vintage == 2017 else vintage
+    lod2_groups = load_lod2_buildings(
+        source_vintage, max_tiles=smoke_tile_count, grid=grid
+    )
     log_event(
         _logger,
         logging.INFO,
         "vintage_load_done",
         vintage=vintage,
+        source_vintage=source_vintage,
         n_tiles=len(lod2_groups),
     )
 
