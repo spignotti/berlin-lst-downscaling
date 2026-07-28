@@ -40,6 +40,23 @@ the LoD2-2021 stock filter against the LoD1-2017 footprints
 survive, using the more detailed 2021 roof geometry. Vintages 2024 and
 later remain served by the ATOM-feed product.
 
+#### Archive contract
+
+Raw archives live as one ZIP per vintage in GCS Standard storage.
+The runner never expands these in GCS; it streams each ZIP into a
+local temp directory once per vintage and iterates it as a regular
+ZipFile. No expanded XML ever appears in the bucket.
+
+```
+gs://berlin-lst-data/lod_vintages/<vintage>/<archive_filename>
+    ├─ LoD1_2017.zip         (1006 XML members, ~0.5–0.8 GB)
+    ├─ LoD2_BE_1_33_2021.zip (928 XML members, ~12 GB)
+    └─ LoD2_2022.zip         (928 XML members, 1.6 GB)
+```
+
+Each archive carries an SHA-256 hash and the full member list, both
+recorded in `<source_root>/ard/static/sources/lod_vintages/raw_manifest_<vintage>.json`.
+
 Year → vintage carry-forward mapping is published at
 `<metadata_root>/geometry_mapping.json` (default
 `gs://berlin-lst-data/static/geometry_vintages/v1/`):

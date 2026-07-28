@@ -58,19 +58,34 @@ uv run python scripts/run_static_sources.py --config-name full
 # Static derived
 uv run python scripts/run_static_derived.py --config-name full
 
-# Historical LoD morphometry vintages (2017, 2021, 2022)
+# Historical LoD morphometry vintages (2017, 2021, 2022) — archive-first
 uv run python scripts/run_lod_vintages.py \
     --source-root gs://berlin-lst-data/static/sources/full \
     --derived-root gs://berlin-lst-data/static/derived/full \
     --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
-    --vintages 2017,2021,2022 \
-    --cleanup
+    --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022
 
-# Local smoke (1 km-aligned bbox, no GCS writes, no raw upload)
+# Build + upload a single archive from the local source dir, then free local copy
 uv run python scripts/run_lod_vintages.py \
-    --smoke-tile-count 8 \
+    --stage-local 2021 \
+    --local-source-dir data/LoD2/LoD2_BE_1_33_2021 \
+    --raw-root gs://berlin-lst-data
+
+# Local smoke (1 km-aligned bbox, no GCS writes)
+uv run python scripts/run_lod_vintages.py \
+    --smoke-archive data/LoD2/LoD2_2022.zip \
+    --smoke-tile-count 16 \
     --smoke-bbox 13.586225,52.467717,13.616234,52.486040 \
-    --skip-derived --skip-raw-upload \
+    --skip-derived \
+    --vintages 2022
+
+# Validate published artifacts against production GCS roots
+uv run python scripts/validate_lod_vintages.py \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --raw-root gs://berlin-lst-data \
     --vintages 2017,2021,2022
 
 # DWD validation
