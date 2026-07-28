@@ -58,6 +58,21 @@ uv run python scripts/run_static_sources.py --config-name full
 # Static derived
 uv run python scripts/run_static_derived.py --config-name full
 
+# Historical LoD morphometry vintages (2017, 2021, 2022)
+uv run python scripts/run_lod_vintages.py \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --vintages 2017,2021,2022 \
+    --cleanup
+
+# Local smoke (1 km-aligned bbox, no GCS writes, no raw upload)
+uv run python scripts/run_lod_vintages.py \
+    --smoke-tile-count 8 \
+    --smoke-bbox 13.586225,52.467717,13.616234,52.486040 \
+    --skip-derived --skip-raw-upload \
+    --vintages 2017,2021,2022
+
 # DWD validation
 uv run python scripts/run_dwd_validation.py --config-name default \
     manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \

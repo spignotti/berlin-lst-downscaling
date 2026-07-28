@@ -29,6 +29,32 @@ Each scene year maps to a fixed source vintage
 (`data/secondary/{lod2,dgm,vegetation_height,imperviousness}.py`).
 Per the v3 manifest: 345 Landsat anchors, 509 manifest rows.
 
+### Historical LoD morphometry vintages
+
+The historical runner (`scripts/run_lod_vintages.py`) consumes three
+CityGML archives supplied by the Senatsverwaltung Berlin — LoD1 (2017),
+LoD2 (2021), and LoD2 (2022) — and publishes canonical-grid
+`lod2_morphology/{2017,2021,2022}` products. The 2017 vintage applies
+the LoD2-2021 stock filter against the LoD1-2017 footprints
+(50% minimum footprint overlap) so only buildings present in 2017
+survive, using the more detailed 2021 roof geometry. Vintages 2024 and
+later remain served by the ATOM-feed product.
+
+Year → vintage carry-forward mapping is published at
+`<metadata_root>/geometry_mapping.json` (default
+`gs://berlin-lst-data/static/geometry_vintages/v1/`):
+
+| Year | Vintage | geometry_id |
+|------|--------:|-------------|
+| 2017–2020 | 2017 | `dgm1-2021__lod2-2017__vh-2020` |
+| 2021 | 2021 | `dgm1-2021__lod2-2021__vh-2020` |
+| 2022–2023 | 2022 | `dgm1-2021__lod2-2022__vh-2020` |
+| 2024–2026 | 2024 | `dgm1-2021__lod2-2024__vh-2020` (existing ATOM-feed product) |
+
+The Dynamic pipeline still uses the frozen 2024 geometry today; the
+carry-forward artefact is the integration point for a follow-up task
+that wires per-scene geometry selection into shadow computation.
+
 ## Manifest bundle (v3)
 
 The canonical bundle is the only accepted manifest contract.
