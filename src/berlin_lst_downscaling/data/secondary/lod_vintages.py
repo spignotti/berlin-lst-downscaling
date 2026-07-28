@@ -67,8 +67,7 @@ import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.features import rasterize
-from shapely.geometry import MultiPolygon, Polygon, mapping
-from shapely.ops import unary_union
+from shapely.geometry import mapping
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.io import atomic_upload, atomic_write, log_event
@@ -497,39 +496,80 @@ def filter_lod2_against_lod1(
 ) -> tuple[list[Building], FilterStats]:
     """Retain LoD2 buildings whose footprint is covered by LoD1 footprints.
 
-    The LoD1 *pool* is the current LoD1 footprint cache (the active tile
-    plus its eight neighbours).  Edge buildings are scored against the
-    cached neighbours rather than the full 1006-tile LoD1 archive.
+    Uses :func:`geopandas.sjoin` with the documented ``intersects``
+    predicate; the R-tree-backed join locates every LoD2 × LoD1 candidate
+    pair in O(log n) and we accumulate the actual intersection area per
+    LoD2 building only across that small candidate set.
     """
+    import geopandas as gpd
+    from shapely.geometry import MultiPolygon, Polygon
+
     stats = FilterStats(input_lod2=len(lod2_buildings))
 
-    pool: list[Polygon | MultiPolygon] = [
-        f.footprint for f in lod1_pool if f.footprint is not None and not f.footprint.is_empty
-    ]
-    stats.input_lod1 = len(pool)
-    if not pool or not lod2_buildings:
-        stats.rejected = len(lod2_buildings)
-        stats.rejected_low_overlap = len(lod2_buildings)
-        return [], stats
+    lod1_geoms: list[Polygon | MultiPolygon] = []
+    for f in lod1_pool:
+        if f.footprint is not None and not f.footprint.is_empty:
+            lod1_geoms.append(f.footprint)
+    stats.input_lod1 = len(lod1_geoms)
 
-    lod1_union = pool[0] if len(pool) == 1 else unary_union(pool)
-
-    retained: list[Building] = []
-    for b in lod2_buildings:
+    valid_lod2: list[Building] = []
+    valid_lod2_idx: list[int] = []
+    for i, b in enumerate(lod2_buildings):
         if b.footprint is None or b.footprint.is_empty:
             stats.rejected += 1
             stats.rejected_invalid_overlap += 1
             continue
+        valid_lod2.append(b)
+        valid_lod2_idx.append(i)
 
-        try:
-            intersection = b.footprint.intersection(lod1_union)
-            inter_area = intersection.area
-            frac = inter_area / b.footprint.area if b.footprint.area > 0 else 0.0
-        except Exception:
-            stats.rejected += 1
-            stats.rejected_invalid_overlap += 1
+    if not lod1_geoms or not valid_lod2:
+        stats.rejected = len(valid_lod2)
+        stats.rejected_low_overlap = len(valid_lod2)
+        return [], stats
+
+    # Build GeoDataFrames with the R-tree spatial index.
+    lod1_gdf = gpd.GeoDataFrame(
+        {"lod1_idx": list(range(len(lod1_geoms)))},
+        geometry=lod1_geoms,
+        crs="EPSG:25833",
+    )
+    lod2_geoms: list[Polygon | MultiPolygon] = []
+    for b in valid_lod2:
+        if b.footprint is not None:
+            lod2_geoms.append(b.footprint)
+    lod2_gdf = gpd.GeoDataFrame(
+        {"lod2_idx": valid_lod2_idx[: len(lod2_geoms)]},
+        geometry=lod2_geoms,
+        crs="EPSG:25833",
+    )
+
+    joined = gpd.sjoin(
+        lod2_gdf, lod1_gdf, how="left", predicate="intersects"
+    )
+
+    overlap_area: dict[int, float] = {}
+    for _, row in joined.iterrows():
+        l1_idx_raw = row.get("lod1_idx")
+        if l1_idx_raw is None or pd_isnan(l1_idx_raw):
             continue
+        l2_idx = int(row["lod2_idx"])  # type: ignore[arg-type]
+        l1_idx = int(l1_idx_raw)  # type: ignore[arg-type]
+        try:
+            l2_geom = valid_lod2[l2_idx].footprint
+            if l2_geom is None:
+                continue
+            inter = lod1_geoms[l1_idx].intersection(l2_geom)
+            area = float(inter.area)
+        except Exception:  # noqa: S112 — skip malformed pairs
+            continue
+        overlap_area[l2_idx] = overlap_area.get(l2_idx, 0.0) + area
 
+    retained: list[Building] = []
+    for orig_idx, b in zip(valid_lod2_idx, valid_lod2, strict=True):
+        if b.footprint is None or b.footprint.is_empty:
+            continue
+        b_area = float(b.footprint.area)
+        frac = overlap_area.get(orig_idx, 0.0) / b_area if b_area > 0 else 0.0
         if frac >= _STOCK_OVERLAP_MIN_FRAC:
             retained.append(b)
             stats.retained += 1
@@ -538,6 +578,16 @@ def filter_lod2_against_lod1(
             stats.rejected_low_overlap += 1
 
     return retained, stats
+
+
+def pd_isnan(value: float) -> bool:
+    """Helper: float NaN check that works on Python floats and numpy scalars."""
+    try:
+        import math
+
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 # ── rasterisation accumulator ───────────────────────────────────────
