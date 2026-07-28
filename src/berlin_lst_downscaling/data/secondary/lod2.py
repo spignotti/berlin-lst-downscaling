@@ -28,6 +28,9 @@ Qualification
 The current ATOM feed (2026-03-26) is a future source for 2017–2025
 scenes.  Historical vintages must be qualified before production use.
 See ``docs/data-sources-and-contracts.md``.
+
+The CityGML parsing path is shared with the historical-vintage runner
+via :mod:`berlin_lst_downscaling.data.secondary.citygml`.
 """
 
 from __future__ import annotations
@@ -35,9 +38,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
-import xml.etree.ElementTree as ET
 import zipfile
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -47,8 +48,7 @@ import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.features import rasterize
-from shapely.geometry import MultiPolygon, Polygon, mapping
-from shapely.ops import unary_union
+from shapely.geometry import mapping
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
@@ -56,6 +56,12 @@ from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.atom import (
     AtomAsset,
     parse_atom_feed,
+)
+from berlin_lst_downscaling.data.secondary.citygml import (
+    Building as ParsedBuilding,
+)
+from berlin_lst_downscaling.data.secondary.citygml import (
+    parse_lod2_buildings,
 )
 from berlin_lst_downscaling.data.secondary.download import DownloadReceipt, download_to_raw
 from berlin_lst_downscaling.data.secondary.product import (
@@ -70,30 +76,6 @@ _logger = logging.getLogger(__name__)
 _FEED_URL = "https://gdi.berlin.de/data/a_lod2/atom/0.atom"
 _LICENSE = "dl-de/zero-2.0"
 _LOD2_RE = re.compile(r"LoD2_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
-
-# CityGML namespaces — we detect version from the document itself
-_CITYGML_NS_MAP = {
-    1: {
-        "gml": "http://www.opengis.net/gml",
-        "bldg": "http://www.opengis.net/citygml/building/1.0",
-        "core": "http://www.opengis.net/citygml/core/1.0",
-    },
-    2: {
-        "gml": "http://www.opengis.net/gml",
-        "bldg": "http://www.opengis.net/citygml/building/2.0",
-        "core": "http://www.opengis.net/citygml/core/2.0",
-    },
-}
-
-# ── data classes ──────────────────────────────────────────────────────
-
-@dataclass
-class ParsedBuilding:
-    """A single building extracted from CityGML."""
-
-    building_id: str
-    footprint: Polygon | MultiPolygon | None
-    measured_height: float | None  # metres above ground
 
 # ── contract ───────────────────────────────────────────────────────────
 
@@ -149,165 +131,29 @@ def config_hash_for_vintage(vintage: int) -> str:
     return sha256(raw.encode()).hexdigest()[:12]
 
 # ── CityGML parsing ──────────────────────────────────────────────────
-
-def _detect_citygml_version(content: bytes) -> int:
-    """Detect CityGML version from document content."""
-    if b"citygml/building/2.0" in content:
-        return 2
-    if b"citygml/building/1.0" in content:
-        return 1
-    # Try root element tag
-    if b"core:CityModel" in content:
-        # Check for any 2.0 namespace
-        if b"/1.0" in content:
-            return 1
-        if b"/2.0" in content:
-            return 2
-    return 1  # default to 1.0
-
-def _parse_gml_ring(coords_text: str, srs_dim: int = 2) -> list[tuple[float, float]]:
-    """Parse a GML posList string into (x, y) tuples.
-
-    Handles both 2D (x y) and 3D (x y z) coordinate lists.
-    """
-    tokens = coords_text.strip().split()
-    coords = []
-    step = srs_dim
-    for i in range(0, len(tokens) - step + 1, step):
-        try:
-            x, y = float(tokens[i]), float(tokens[i + 1])
-            coords.append((x, y))
-        except (ValueError, IndexError):
-            continue
-    return coords
-
-def _parse_polygon(polygon_elem: ET.Element, ns: dict[str, str]) -> Polygon | None:
-    """Parse a gml:Polygon element into a Shapely Polygon."""
-    gml_ns = ns["gml"]
-
-    # Find exterior ring posList
-    ext_ring = None
-    for pos_list in polygon_elem.iter(f"{{{gml_ns}}}posList"):
-        # Check if this posList is inside an exterior ring
-        parent = polygon_elem.find(f".//{{{gml_ns}}}exterior//{{{gml_ns}}}posList")
-        if parent is pos_list or parent is not None:
-            ext_ring = pos_list
-            break
-    if ext_ring is None:
-        # Fallback: find any posList inside the polygon
-        ext_ring = polygon_elem.find(f".//{{{gml_ns}}}posList")
-    if ext_ring is None or not ext_ring.text:
-        return None
-
-    srs_dim = int(ext_ring.get("srsDimension", "2"))
-    ext_coords = _parse_gml_ring(ext_ring.text, srs_dim)
-    if len(ext_coords) < 4:
-        return None
-
-    # Interior rings (holes)
-    holes = []
-    for interior in polygon_elem.findall(f".//{{{gml_ns}}}interior"):
-        pos_list = interior.find(f".//{{{gml_ns}}}posList")
-        if pos_list is not None and pos_list.text:
-            srs_dim_i = int(pos_list.get("srsDimension", "2"))
-            hole_coords = _parse_gml_ring(pos_list.text, srs_dim_i)
-            if len(hole_coords) >= 4:
-                holes.append(hole_coords)
-
-    try:
-        poly = Polygon(ext_coords, holes)
-        if poly.is_valid and not poly.is_empty:
-            return poly
-        poly = poly.buffer(0)
-        if poly.is_valid and not poly.is_empty and isinstance(poly, Polygon):
-            return poly
-    except Exception:  # noqa: S110
-        pass
-    return None
+#
+# Heavy lifting lives in :mod:`berlin_lst_downscaling.data.secondary.citygml`
+# and is shared with the historical-vintage runner.  This adapter keeps
+# only the streaming ZIP iteration + rasterisation glue.
 
 def _parse_buildings_from_tile(
     zip_path: Path,
     asset: AtomAsset,
 ) -> list[ParsedBuilding]:
-    """Parse all buildings from a CityGML tile ZIP."""
+    """Parse every building from a CityGML tile ZIP."""
     buildings: list[ParsedBuilding] = []
 
     with zipfile.ZipFile(zip_path) as z:
-        gml_names = [n for n in z.namelist() if n.lower().endswith((".gml", ".xml"))]
-        if not gml_names:
+        xml_names = [n for n in z.namelist() if n.lower().endswith((".gml", ".xml"))]
+        if not xml_names:
             return buildings
 
-        for gml_name in gml_names:
-            with z.open(gml_name) as f:
+        for member in xml_names:
+            with z.open(member) as f:
                 raw = f.read()
-
-            # Detect version from actual content
-            version = _detect_citygml_version(raw)
-            ns = _CITYGML_NS_MAP[version]
-
-            root = ET.fromstring(raw)  # noqa: S314
-
-            # Find all Building elements (not BuildingPart — those are children)
-            for building_elem in root.iter(f"{{{ns['bldg']}}}Building"):
-                building = _extract_building(building_elem, ns)
-                if building is not None:
-                    buildings.append(building)
+            buildings.extend(parse_lod2_buildings(raw))
 
     return buildings
-
-def _extract_building(
-    building_elem: ET.Element,
-    ns: dict[str, str],
-) -> ParsedBuilding | None:
-    """Extract footprint and height from a Building element."""
-    bid = building_elem.get(
-        f"{{{ns.get('gml', '')}}}id",
-        building_elem.get("gml:id", ""),
-    )
-
-    # measuredHeight — try both with and without namespace prefix
-    height = None
-    for tag in [
-        f"{{{ns['bldg']}}}measuredHeight",
-        "bldg:measuredHeight",
-    ]:
-        height_elem = building_elem.find(tag)
-        if height_elem is not None and height_elem.text:
-            try:
-                height = float(height_elem.text)
-            except ValueError:
-                pass
-            break
-
-    if height is None or height <= 0:
-        return None
-
-    # Ground surfaces → footprint
-    ground_surfaces: list[Polygon] = []
-    # CityGML 1.0: bldg:boundedBy/bldg:GroundSurface/bldg:lod2MultiSurface/...
-    # CityGML 2.0: bldg:boundedBy/bldg:GroundSurface/bldg:lod2MultiSurface/...
-    for gs_elem in building_elem.iter(f"{{{ns['bldg']}}}GroundSurface"):
-        for poly_elem in gs_elem.iter(f"{{{ns['gml']}}}Polygon"):
-            poly = _parse_polygon(poly_elem, ns)
-            if poly is not None:
-                ground_surfaces.append(poly)
-
-    if not ground_surfaces:
-        return None
-
-    try:
-        merged = unary_union(ground_surfaces)
-        if isinstance(merged, (Polygon, MultiPolygon)):
-            footprint = merged
-        else:
-            return None
-    except Exception:
-        return None
-
-    if footprint.is_empty or not footprint.is_valid:
-        return None
-
-    return ParsedBuilding(building_id=bid, footprint=footprint, measured_height=height)
 
 # ── rasterization ─────────────────────────────────────────────────────
 
