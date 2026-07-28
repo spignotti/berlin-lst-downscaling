@@ -58,6 +58,7 @@ import tempfile
 import time
 import zipfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -136,6 +137,11 @@ _VINTAGE_SOURCES: dict[int, VintageSpec] = {
 # already existed in 2017 but received roof details in 2021.
 _STOCK_OVERLAP_MIN_FRAC = 0.50
 
+# Number of LoD2 tiles processed between ``lod2_tile_progress`` log events.
+# Emitting per-tile events (up to ~1000/vintage) would just spam the JSONL
+# stream and skew duration timing during production runs.
+_LOG_PROGRESS_EVERY = 50
+
 
 # ── archive materialisation ──────────────────────────────────────────
 
@@ -186,23 +192,29 @@ def archive_uri_for(raw_root: str, spec: VintageSpec) -> str:
     return f"{raw_root.rstrip('/')}/lod_vintages/{spec.vintage}/{spec.archive_filename}"
 
 
+@contextmanager
 def materialize_vintage_archive(
     spec: VintageSpec,
     raw_root: str,
-) -> tuple[ArchiveMaterialization, tempfile.TemporaryDirectory]:
-    """Stream one archive ZIP from GCS into a local temp directory.
+):
+    """Context manager: yield the materialised archive ZIP, then delete it.
 
-    The ZIP is downloaded once via :func:`google.cloud.storage.blob.download_to_filename`
-    so the rest of the pipeline can iterate it as a normal local file.
-    Returns the materialization record plus the owning TemporaryDirectory;
-    the caller is responsible for deleting the temp dir (or letting the
-    context manager exit at function return).
+    Streams the GCS archive ZIP once into a per-vintage
+    ``TemporaryDirectory`` so the rest of the pipeline can iterate it as
+    a regular local file.  On exit the downloaded ZIP and its directory
+    are removed unconditionally; the bucket remains the immutable source
+    of truth and the published raw manifest is the only persisted
+    provenance for the archive.
+
+    Yields
+    ------
+    ArchiveMaterialization
+        Live materialisation record; ``local_path`` is bound to the
+        temp-dir backing file and is deleted when the context exits.
     """
     uri = archive_uri_for(raw_root, spec)
     tmp_dir = tempfile.TemporaryDirectory(prefix=f"lod_archive_{spec.vintage}_")
     target = Path(tmp_dir.name) / spec.archive_filename
-
-    from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
 
     log_event(
         _logger,
@@ -212,45 +224,57 @@ def materialize_vintage_archive(
         archive_uri=uri,
         local=str(target),
     )
-    bucket_name, key = _parse_gs_uri(uri)
-    client = _gcs_client()
-    blob = client.bucket(bucket_name).blob(key)
-    if not blob.exists():
-        raise FileNotFoundError(f"Archive not found in GCS: {uri}")
-    blob.download_to_filename(str(target))
-    byte_count = target.stat().st_size
-    sha = _stream_sha256_file(target)
+    try:
+        from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
 
-    member_names = sorted(iter_xml_members(target))
+        bucket_name, key = _parse_gs_uri(uri)
+        client = _gcs_client()
+        blob = client.bucket(bucket_name).blob(key)
+        if not blob.exists():
+            raise FileNotFoundError(f"Archive not found in GCS: {uri}")
+        blob.download_to_filename(str(target))
+        byte_count = target.stat().st_size
+        sha = _stream_sha256_file(target)
+        member_names = sorted(iter_xml_members(target))
 
-    log_event(
-        _logger,
-        logging.INFO,
-        "archive_download_done",
-        vintage=spec.vintage,
-        archive_uri=uri,
-        byte_count=byte_count,
-        sha256=sha,
-        n_members=len(member_names),
-    )
-
-    if len(member_names) != spec.expected_count:
-        raise ValueError(
-            f"Archive member count mismatch for vintage {spec.vintage}: "
-            f"expected {spec.expected_count}, got {len(member_names)}"
+        log_event(
+            _logger,
+            logging.INFO,
+            "archive_download_done",
+            vintage=spec.vintage,
+            archive_uri=uri,
+            byte_count=byte_count,
+            sha256=sha,
+            n_members=len(member_names),
         )
 
-    return (
-        ArchiveMaterialization(
+        if len(member_names) != spec.expected_count:
+            raise ValueError(
+                f"Archive member count mismatch for vintage {spec.vintage}: "
+                f"expected {spec.expected_count}, got {len(member_names)}"
+            )
+
+        materialization = ArchiveMaterialization(
             spec=spec,
             local_path=target,
             byte_count=byte_count,
             sha256=sha,
             member_count=len(member_names),
             member_names=member_names,
-        ),
-        tmp_dir,
-    )
+        )
+        yield materialization
+    finally:
+        try:
+            tmp_dir.cleanup()
+        except FileNotFoundError:
+            pass
+        log_event(
+            _logger,
+            logging.INFO,
+            "archive_download_cleaned",
+            vintage=spec.vintage,
+            archive_uri=uri,
+        )
 
 
 # ── raw archive publication (manifest) ──────────────────────────────
@@ -496,12 +520,21 @@ def filter_lod2_against_lod1(
 ) -> tuple[list[Building], FilterStats]:
     """Retain LoD2 buildings whose footprint is covered by LoD1 footprints.
 
-    Uses :func:`geopandas.sjoin` with the documented ``intersects``
-    predicate; the R-tree-backed join locates every LoD2 × LoD1 candidate
-    pair in O(log n) and we accumulate the actual intersection area per
-    LoD2 building only across that small candidate set.
+    Builds an R-tree over the LoD1 neighbourhood pool, runs a single
+    :meth:`STRtree.query` with the ``intersects`` predicate, and computes
+    exact intersection areas through Shapely's vectorised
+    :func:`shapely.intersection` over the candidate pairs.  This is one
+    C-level call per pair (no per-row Python ``iterrows``) and a single
+    spatial index per tile.
+
+    Union semantics: when an LoD2 footprint touches multiple LoD1
+    footprints the areas accumulate, matching the ``unary_union`` previous
+    behaviour in spirit (the *raw* area sum is what the filter cares about,
+    not the union polygon).
     """
-    import geopandas as gpd
+    from shapely import STRtree
+    from shapely import area as shapely_area
+    from shapely import intersection as shapely_intersection
     from shapely.geometry import MultiPolygon, Polygon
 
     stats = FilterStats(input_lod2=len(lod2_buildings))
@@ -513,81 +546,76 @@ def filter_lod2_against_lod1(
     stats.input_lod1 = len(lod1_geoms)
 
     valid_lod2: list[Building] = []
-    valid_lod2_idx: list[int] = []
-    for i, b in enumerate(lod2_buildings):
+    for b in lod2_buildings:
         if b.footprint is None or b.footprint.is_empty:
             stats.rejected += 1
             stats.rejected_invalid_overlap += 1
             continue
         valid_lod2.append(b)
-        valid_lod2_idx.append(i)
 
     if not lod1_geoms or not valid_lod2:
-        stats.rejected = len(valid_lod2)
-        stats.rejected_low_overlap = len(valid_lod2)
+        stats.rejected += len(valid_lod2)
+        stats.rejected_low_overlap += len(valid_lod2)
         return [], stats
 
-    # Build GeoDataFrames with the R-tree spatial index.
-    lod1_gdf = gpd.GeoDataFrame(
-        {"lod1_idx": list(range(len(lod1_geoms)))},
-        geometry=lod1_geoms,
-        crs="EPSG:25833",
-    )
-    lod2_geoms: list[Polygon | MultiPolygon] = []
-    for b in valid_lod2:
-        if b.footprint is not None:
-            lod2_geoms.append(b.footprint)
-    lod2_gdf = gpd.GeoDataFrame(
-        {"lod2_idx": valid_lod2_idx[: len(lod2_geoms)]},
-        geometry=lod2_geoms,
-        crs="EPSG:25833",
+    lod1_array = np.array(lod1_geoms, dtype=object)
+    lod2_array = np.array(
+        [b.footprint for b in valid_lod2], dtype=object
     )
 
-    joined = gpd.sjoin(
-        lod2_gdf, lod1_gdf, how="left", predicate="intersects"
-    )
+    tree = STRtree(lod1_array)
+    pair_indices = tree.query(lod2_array, predicate="intersects")
+    if pair_indices.shape[1] == 0:
+        # No LoD1 footprint touches any LoD2 building on this tile.
+        for _ in valid_lod2:
+            stats.rejected += 1
+            stats.rejected_low_overlap += 1
+        return [], stats
 
-    overlap_area: dict[int, float] = {}
-    for _, row in joined.iterrows():
-        l1_idx_raw = row.get("lod1_idx")
-        if l1_idx_raw is None or pd_isnan(l1_idx_raw):
-            continue
-        l2_idx = int(row["lod2_idx"])  # type: ignore[arg-type]
-        l1_idx = int(l1_idx_raw)  # type: ignore[arg-type]
-        try:
-            l2_geom = valid_lod2[l2_idx].footprint
-            if l2_geom is None:
-                continue
-            inter = lod1_geoms[l1_idx].intersection(l2_geom)
-            area = float(inter.area)
-        except Exception:  # noqa: S112 — skip malformed pairs
-            continue
-        overlap_area[l2_idx] = overlap_area.get(l2_idx, 0.0) + area
+    lod2_pair_idx = pair_indices[0]
+    lod1_pair_idx = pair_indices[1]
+    lod2_geoms_for_pairs = lod2_array[lod2_pair_idx]
+    lod1_geoms_for_pairs = lod1_array[lod1_pair_idx]
+
+    inter_geoms = shapely_intersection(
+        lod2_geoms_for_pairs, lod1_geoms_for_pairs
+    )
+    inter_areas = shapely_area(inter_geoms)
+    areas = np.asarray(inter_areas, dtype=np.float64)
+    np.nan_to_num(areas, copy=False, nan=0.0)
+
+    accum = np.zeros(len(valid_lod2), dtype=np.float64)
+    np.add.at(accum, lod2_pair_idx, areas)
+
+    lod2_areas = np.asarray(
+        [
+            float(b.footprint.area) if b.footprint is not None else 0.0
+            for b in valid_lod2
+        ],
+        dtype=np.float64,
+    )
+    np.divide(accum, lod2_areas, out=accum, where=lod2_areas > 0)
+    keep_mask = accum >= _STOCK_OVERLAP_MIN_FRAC
 
     retained: list[Building] = []
-    for orig_idx, b in zip(valid_lod2_idx, valid_lod2, strict=True):
-        if b.footprint is None or b.footprint.is_empty:
-            continue
-        b_area = float(b.footprint.area)
-        frac = overlap_area.get(orig_idx, 0.0) / b_area if b_area > 0 else 0.0
-        if frac >= _STOCK_OVERLAP_MIN_FRAC:
+    for i, b in enumerate(valid_lod2):
+        if keep_mask[i]:
             retained.append(b)
             stats.retained += 1
         else:
             stats.rejected += 1
             stats.rejected_low_overlap += 1
 
+    log_event(
+        _logger,
+        logging.DEBUG,
+        "filter_tile_done",
+        tile_key=tile_key,
+        candidate_pairs=int(pair_indices.shape[1]),
+        retained=stats.retained,
+        rejected=stats.rejected,
+    )
     return retained, stats
-
-
-def pd_isnan(value: float) -> bool:
-    """Helper: float NaN check that works on Python floats and numpy scalars."""
-    try:
-        import math
-
-        return math.isnan(float(value))
-    except (TypeError, ValueError):
-        return False
 
 
 # ── rasterisation accumulator ───────────────────────────────────────
@@ -683,33 +711,28 @@ def prepare_vintage_morphology(
     vintage: int,
     raw_root: str,
     *,
-    lod1_archive: Path | None = None,
-    lod2_archive: Path | None = None,
+    lod1_mat: ArchiveMaterialization | None = None,
+    lod2_mat: ArchiveMaterialization,
     grid: GeoBox | None = None,
     smoke_tile_count: int | None = None,
-) -> tuple[PreparedSecondaryProduct, FilterStats, ArchiveMaterialization]:
-    """Build the canonical morphology product for *vintage* by streaming the archive.
+) -> tuple[PreparedSecondaryProduct, FilterStats]:
+    """Build the canonical morphology product for *vintage* by streaming archives.
+
+    The archive ZIPs are consumed as live :class:`ArchiveMaterialization`
+    objects coming out of :func:`materialize_vintage_archive`; no extra
+    hashing or member-listing is performed inside this function.
 
     For vintage 2017 the LoD2-2021 stock is filtered against the LoD1
     footprints via :func:`filter_lod2_against_lod1`; the other vintages
     consume the raw LoD2 stock directly.
-
-    Parameters
-    ----------
-    lod1_archive :
-        Local path to the LoD1 archive (only required for *vintage=2017*).
-    lod2_archive :
-        Local path to the LoD2 archive to process. For 2017, this is
-        always the 2021 archive; for 2021/2022, the matching archive.
     """
     spec = _VINTAGE_SOURCES[vintage]
     source_vintage = 2021 if vintage == 2017 else vintage
-    source_spec = _VINTAGE_SOURCES[source_vintage]
 
-    if lod2_archive is None:
-        raise ValueError("lod2_archive is required")
-    if vintage == 2017 and lod1_archive is None:
-        raise ValueError("Vintage 2017 requires lod1_archive")
+    if lod2_mat is None:
+        raise ValueError("lod2_mat is required")
+    if vintage == 2017 and lod1_mat is None:
+        raise ValueError("Vintage 2017 requires lod1_mat")
 
     grid = grid or canon_grid_10m()
     c_hash = config_hash_for_vintage(vintage)
@@ -717,23 +740,18 @@ def prepare_vintage_morphology(
     accumulator = _Accumulator(grid)
     filter_stats = FilterStats()
     tile_count = 0
+    log_progress_step = max(1, _LOG_PROGRESS_EVERY)
 
+    lod1_full_index: dict[str, list[Footprint]] = {}
     if vintage == 2017:
-        # Pre-walk LoD1 to know the tile ordering so we can stream both
-        # archives in lockstep without scanning either archive twice.
-        lod1_iter = iter_lod1_tiles(
-            lod1_archive,  # type: ignore[arg-type]
+        # Guarded by the explicit None check above
+        lod1_path = lod1_mat.local_path if lod1_mat is not None else None
+        log_event(_logger, logging.INFO, "lod1_index_load_start", vintage=2017)
+        for tile_key, footprints in iter_lod1_tiles(
+            lod1_path,  # type: ignore[arg-type]
             grid=grid,
             max_tiles=smoke_tile_count,
-        )
-        # Build the full LoD1 cache in a single pass — the brief
-        # requires every LoD2 tile to be scored against the
-        # neighbouring LoD1 stock, so we cannot simply pre-cache by
-        # tile.  For the memory bound we cap total cache size by
-        # streaming tiles; we re-fetch neighbours on demand.
-        log_event(_logger, logging.INFO, "lod1_index_load_start", vintage=2017)
-        lod1_full_index: dict[str, list[Footprint]] = {}
-        for tile_key, footprints in lod1_iter:
+        ):
             lod1_full_index[tile_key] = footprints
         log_event(
             _logger,
@@ -743,14 +761,25 @@ def prepare_vintage_morphology(
             n_footprints=sum(len(v) for v in lod1_full_index.values()),
         )
 
-        for lod2_tile_key, buildings in iter_lod2_tiles(
-            lod2_archive,
-            grid=grid,
-            max_tiles=smoke_tile_count,
-        ):
-            tile_count += 1
-            # Sliding 9-tile LoD1 window around the current LoD2 tile.
-            neighbour_keys = [lod2_tile_key, *_neighbour_tile_keys(lod2_tile_key)]
+    log_event(
+        _logger,
+        logging.INFO,
+        "lod2_tile_iter_start",
+        vintage=vintage,
+        archive_uri=archive_uri_for(raw_root, lod2_mat.spec),
+    )
+    t_iter = time.perf_counter()
+    for lod2_tile_key, buildings in iter_lod2_tiles(
+        lod2_mat.local_path,
+        grid=grid,
+        max_tiles=smoke_tile_count,
+    ):
+        tile_count += 1
+        if vintage == 2017:
+            neighbour_keys = [
+                lod2_tile_key,
+                *_neighbour_tile_keys(lod2_tile_key),
+            ]
             pool: list[Footprint] = []
             for n_key in neighbour_keys:
                 fps = lod1_full_index.get(n_key, [])
@@ -758,30 +787,49 @@ def prepare_vintage_morphology(
                     pool.extend(fps)
             kept, stats = filter_lod2_against_lod1(buildings, pool, lod2_tile_key)
             accumulator.add_tile(kept)
-
             filter_stats.input_lod2 += stats.input_lod2
             filter_stats.input_lod1 += stats.input_lod1
             filter_stats.retained += stats.retained
             filter_stats.rejected += stats.rejected
             filter_stats.rejected_low_overlap += stats.rejected_low_overlap
             filter_stats.rejected_invalid_overlap += stats.rejected_invalid_overlap
-    else:
-        for _tile_key, buildings in iter_lod2_tiles(
-            lod2_archive,
-            grid=grid,
-            max_tiles=smoke_tile_count,
-        ):
-            tile_count += 1
+        else:
             accumulator.add_tile(buildings)
+
+        if tile_count % log_progress_step == 0:
+            log_event(
+                _logger,
+                logging.INFO,
+                "lod2_tile_progress",
+                vintage=vintage,
+                tile_count=tile_count,
+                retained=filter_stats.retained,
+                rejected=filter_stats.rejected,
+                elapsed_s=round(time.perf_counter() - t_iter, 1),
+            )
+    log_event(
+        _logger,
+        logging.INFO,
+        "lod2_tile_iter_done",
+        vintage=vintage,
+        tile_count=tile_count,
+        elapsed_s=round(time.perf_counter() - t_iter, 1),
+    )
 
     ds = accumulator.to_dataset()
     valid_frac = float(
         np.count_nonzero(~np.isnan(ds["building_height_mean"].values))
     ) / ds["building_height_mean"].size
 
+    archive_meta = {
+        "uri": archive_uri_for(raw_root, lod2_mat.spec),
+        "sha256": lod2_mat.sha256,
+        "byte_count": lod2_mat.byte_count,
+        "member_count": lod2_mat.member_count,
+    }
     raw_manifest_uri = (
-        f"{raw_root.rstrip('/').replace('gs://berlin-lst-data', '')}"
-        f"/ard/static/sources/lod_vintages/raw_manifest_{vintage}.json"
+        f"{raw_root.rstrip('/')}/ard/static/sources/lod_vintages/"
+        f"raw_manifest_{vintage}.json"
     )
 
     source_metadata = {
@@ -789,20 +837,19 @@ def prepare_vintage_morphology(
         "source_vintage": source_vintage,
         "level": spec.level,
         "feed_label": spec.feed_label,
-        "archive_uri": archive_uri_for(raw_root, source_spec),
+        "archive": archive_meta,
         "raw_manifest_uri": raw_manifest_uri,
         "tile_count": tile_count,
         "stock_filter": filter_stats.as_dict() if vintage == 2017 else None,
     }
 
-    archive_materialization = ArchiveMaterialization(
-        spec=source_spec,
-        local_path=lod2_archive,
-        byte_count=lod2_archive.stat().st_size,
-        sha256=_stream_sha256_file(lod2_archive),
-        member_count=len(iter_xml_members(lod2_archive)),
-        member_names=sorted(iter_xml_members(lod2_archive)),
-    )
+    if vintage == 2017 and lod1_mat is not None:
+        source_metadata["lod1_archive"] = {
+            "uri": archive_uri_for(raw_root, lod1_mat.spec),
+            "sha256": lod1_mat.sha256,
+            "byte_count": lod1_mat.byte_count,
+            "member_count": lod1_mat.member_count,
+        }
 
     return (
         PreparedSecondaryProduct(
@@ -821,8 +868,27 @@ def prepare_vintage_morphology(
             config_hash=c_hash,
         ),
         filter_stats,
-        archive_materialization,
     )
+
+
+@dataclass
+class MorphologyArtifacts:
+    """Published artefacts of one historical vintage run.
+
+    Aggregates the four finalised artefacts produced by
+    :func:`finalize_secondary_product` together with the archive provenance
+    so downstream callers can record them in geometry mapping without
+    re-reading GCS.
+    """
+
+    cog_uri: str
+    stac_uri: str
+    provenance_uri: str
+    completion_uri: str
+    archive_uri: str
+    archive_sha256: str
+    archive_byte_count: int
+    raw_manifest_uri: str
 
 
 def publish_vintage_morphology(
@@ -830,18 +896,19 @@ def publish_vintage_morphology(
     source_root: str,
     run_id: str,
     *,
-    lod1_archive: Path | None = None,
-    lod2_archive: Path | None = None,
+    lod1_mat: ArchiveMaterialization | None = None,
+    lod2_mat: ArchiveMaterialization,
+    raw_root: str,
     grid: GeoBox | None = None,
     smoke_tile_count: int | None = None,
-):
+) -> tuple[MorphologyArtifacts, FilterStats]:
     """Prepare and finalise the *vintage* morphology product."""
     grid = grid or canon_grid_10m()
-    prepared, stats, archive = prepare_vintage_morphology(
+    prepared, stats = prepare_vintage_morphology(
         vintage,
-        source_root,
-        lod1_archive=lod1_archive,
-        lod2_archive=lod2_archive,
+        raw_root,
+        lod1_mat=lod1_mat,
+        lod2_mat=lod2_mat,
         grid=grid,
         smoke_tile_count=smoke_tile_count,
     )
@@ -849,6 +916,19 @@ def publish_vintage_morphology(
 
     prod_dir = source_product_dir(source_root, "lod2_morphology", str(vintage))
     artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)
+
+    raw_manifest_uri = prepared.source_metadata["raw_manifest_uri"]
+    archive_meta = prepared.source_metadata["archive"]
+    morph_artifacts = MorphologyArtifacts(
+        cog_uri=artifacts.cog_uri,
+        stac_uri=artifacts.stac_uri,
+        provenance_uri=artifacts.provenance_uri,
+        completion_uri=artifacts.completion_uri,
+        archive_uri=archive_meta["uri"],
+        archive_sha256=archive_meta["sha256"],
+        archive_byte_count=archive_meta["byte_count"],
+        raw_manifest_uri=raw_manifest_uri,
+    )
     log_event(
         _logger,
         logging.INFO,
@@ -858,7 +938,7 @@ def publish_vintage_morphology(
         retained=stats.retained,
         rejected=stats.rejected,
     )
-    return artifacts, stats, archive
+    return morph_artifacts, stats
 
 
 # ── geometry mapping ────────────────────────────────────────────────
@@ -938,6 +1018,8 @@ def derive_vintage_products(
     derived_root: str,
     run_id: str,
     *,
+    upstream_source_root: str | None = None,
+    upstream_derived_root: str | None = None,
     grid: GeoBox | None = None,
     max_radius_m: float = 200.0,
     svf_max_radius: int = 3,
@@ -957,6 +1039,17 @@ def derive_vintage_products(
     The vegetation-derived products (``vegetation_dsm``,
     ``horizon_vegetation``) are reused unchanged from the existing
     2024-derived bundle since their inputs are vintage-agnostic.
+
+    Parameters
+    ----------
+    upstream_source_root :
+        Optional override for ``source_root`` used to resolve the
+        finalised LoD2 morphology, terrain and vegetation-height
+        products.  Defaults to *source_root*.
+    upstream_derived_root :
+        Optional override for ``derived_root`` used to locate the
+        vintage-agnostic ``vegetation_dsm`` predecessor.  Defaults to
+        *derived_root*.
     """
     from berlin_lst_downscaling.data.io.storage import exists
     from berlin_lst_downscaling.data.secondary import dsm as dsm_mod
@@ -967,10 +1060,14 @@ def derive_vintage_products(
         derived_product_dir,
         source_product_cog,
     )
-    from berlin_lst_downscaling.data.secondary.source_products import resolve_source_products
+    from berlin_lst_downscaling.data.secondary.source_products import (
+        resolve_source_products,
+    )
 
     grid = grid or canon_grid_10m()
     geometry_id = vintage_geometry_id(vintage)
+    src_root = upstream_source_root or source_root
+    veg_dsm_root = upstream_derived_root or derived_root
 
     log_event(
         _logger,
@@ -978,9 +1075,16 @@ def derive_vintage_products(
         "derive_vintage_start",
         vintage=vintage,
         geometry_id=geometry_id,
+        source_root=src_root,
+        veg_dsm_root=veg_dsm_root,
     )
 
-    report = resolve_source_products(source_root)
+    required_sources = {
+        "terrain_height": "2021",
+        "vegetation_height": "2020",
+        "lod2_morphology": str(vintage),
+    }
+    report = resolve_source_products(src_root, required_sources)
     if not report.ok:
         raise ValueError(
             "Required source products missing: " + "; ".join(report.errors)
@@ -988,21 +1092,26 @@ def derive_vintage_products(
     src_map = {f"{r.source}/{r.revision}": r for r in report.resolved}
     terrain = src_map.get("terrain_height/2021")
     vh = src_map.get("vegetation_height/2020")
-    if terrain is None or vh is None:
-        raise ValueError(
-            "terrain_height/2021 and vegetation_height/2020 are required "
-            "to derive vintage-dependent products"
-        )
+    lod2 = src_map.get(f"lod2_morphology/{vintage}")
+    if terrain is None or vh is None or lod2 is None:
+        missing = [
+            s
+            for s, v in [
+                ("terrain_height/2021", terrain),
+                ("vegetation_height/2020", vh),
+                (f"lod2_morphology/{vintage}", lod2),
+            ]
+            if v is None
+        ]
+        raise ValueError(f"Required source products missing: {missing}")
 
-    lod2_cog = source_product_cog(source_root, "lod2_morphology", str(vintage))
+    lod2_cog = source_product_cog(src_root, "lod2_morphology", str(vintage))
     if not exists(lod2_cog):
         raise ValueError(f"Morphology product missing: {lod2_cog}")
 
     upstream_hashes = {
         "terrain": terrain.config_hash,
-        "lod2": next(
-            r.config_hash for r in report.resolved if r.source == "lod2_morphology"
-        ),
+        "lod2": lod2.config_hash,
         "vh": vh.config_hash,
     }
 
@@ -1022,63 +1131,60 @@ def derive_vintage_products(
     building_dsm_artifacts = finalize_secondary_product(building_dsm, grid, bldg_dir, run_id)
     artefacts["building_dsm"] = building_dsm_artifacts.cog_uri
 
-    # 2. combined_dsm — needs vegetation_dsm from existing pipeline output
+    # 2. combined_dsm — needs the vintage-agnostic 2024 vegetation_dsm
     veg_dsm_cog = derived_product_cog(
-        derived_root, "vegetation_dsm", "dgm1-2021__lod2-2024__vh-2020"
+        veg_dsm_root, "vegetation_dsm", "dgm1-2021__lod2-2024__vh-2020"
     )
-    if exists(veg_dsm_cog):
-        combined_dir = derived_product_dir(derived_root, "combined_dsm", geometry_id)
-        combined_dsm = dsm_mod.prepare_combined_dsm(
-            building_dsm_artifacts.cog_uri,
-            veg_dsm_cog,
-            derived_root,
-            run_id,
-            item_key=geometry_id,
-            upstream_hashes=upstream_hashes,
-            grid=grid,
+    if not exists(veg_dsm_cog):
+        raise ValueError(
+            "Required vegetation_dsm/2024 is missing at "
+            f"{veg_dsm_cog}; combined_dsm cannot be produced."
         )
-        combined_artifacts = finalize_secondary_product(combined_dsm, grid, combined_dir, run_id)
-        artefacts["combined_dsm"] = combined_artifacts.cog_uri
 
-        # 3. horizon_building (from building_dsm)
-        horizon_dir = derived_product_dir(derived_root, "horizon_building", geometry_id)
-        horizon_bldg = horizon_mod.prepare_horizon(
-            building_dsm_artifacts.cog_uri,
-            derived_root,
-            run_id,
-            item_key=geometry_id,
-            component="building",
-            upstream_hash=geometry_id,
-            max_radius_m=max_radius_m,
-            grid=grid,
-        )
-        horizon_artifacts = finalize_secondary_product(
-            horizon_bldg, grid, horizon_dir, run_id
-        )
-        artefacts["horizon_building"] = horizon_artifacts.cog_uri
+    combined_dir = derived_product_dir(derived_root, "combined_dsm", geometry_id)
+    combined_dsm = dsm_mod.prepare_combined_dsm(
+        building_dsm_artifacts.cog_uri,
+        veg_dsm_cog,
+        derived_root,
+        run_id,
+        item_key=geometry_id,
+        upstream_hashes=upstream_hashes,
+        grid=grid,
+    )
+    combined_artifacts = finalize_secondary_product(combined_dsm, grid, combined_dir, run_id)
+    artefacts["combined_dsm"] = combined_artifacts.cog_uri
 
-        # 4. svf (from combined_dsm)
-        svf_dir = derived_product_dir(derived_root, "svf", geometry_id)
-        svf_product = svf_mod.prepare_svf(
-            combined_artifacts.cog_uri,
-            derived_root,
-            run_id,
-            item_key=geometry_id,
-            upstream_hash=geometry_id,
-            max_radius=svf_max_radius,
-            n_directions=svf_n_directions,
-            grid=grid,
-        )
-        svf_artifacts = finalize_secondary_product(svf_product, grid, svf_dir, run_id)
-        artefacts["svf"] = svf_artifacts.cog_uri
-    else:
-        log_event(
-            _logger,
-            logging.WARNING,
-            "vegetation_dsm_missing",
-            expected=veg_dsm_cog,
-            note="combined_dsm, horizon_building, and svf skipped for this vintage",
-        )
+    # 3. horizon_building (from building_dsm)
+    horizon_dir = derived_product_dir(derived_root, "horizon_building", geometry_id)
+    horizon_bldg = horizon_mod.prepare_horizon(
+        building_dsm_artifacts.cog_uri,
+        derived_root,
+        run_id,
+        item_key=geometry_id,
+        component="building",
+        upstream_hash=geometry_id,
+        max_radius_m=max_radius_m,
+        grid=grid,
+    )
+    horizon_artifacts = finalize_secondary_product(
+        horizon_bldg, grid, horizon_dir, run_id
+    )
+    artefacts["horizon_building"] = horizon_artifacts.cog_uri
+
+    # 4. svf (from combined_dsm)
+    svf_dir = derived_product_dir(derived_root, "svf", geometry_id)
+    svf_product = svf_mod.prepare_svf(
+        combined_artifacts.cog_uri,
+        derived_root,
+        run_id,
+        item_key=geometry_id,
+        upstream_hash=geometry_id,
+        max_radius=svf_max_radius,
+        n_directions=svf_n_directions,
+        grid=grid,
+    )
+    svf_artifacts = finalize_secondary_product(svf_product, grid, svf_dir, run_id)
+    artefacts["svf"] = svf_artifacts.cog_uri
 
     log_event(
         _logger,
@@ -1143,6 +1249,7 @@ _ = shutil  # noqa: F841
 __all__ = [
     "ArchiveMaterialization",
     "FilterStats",
+    "MorphologyArtifacts",
     "RawManifest",
     "VintageSpec",
     "_VINTAGE_SOURCES",

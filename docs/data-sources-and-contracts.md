@@ -40,26 +40,37 @@ the LoD2-2021 stock filter against the LoD1-2017 footprints
 survive, using the more detailed 2021 roof geometry. Vintages 2024 and
 later remain served by the ATOM-feed product.
 
+This is a **one-off runner** — not part of the regular Static A/B
+pipelines.  It produces the historical morphometry once, derives the
+geometry bundle per vintage, and writes the year-to-vintage carry-forward
+mapping.
+
 #### Archive contract
 
 Raw archives live as one ZIP per vintage in GCS Standard storage.
 The runner never expands these in GCS; it streams each ZIP into a
-local temp directory once per vintage and iterates it as a regular
-ZipFile. No expanded XML ever appears in the bucket.
+local temp directory once per vintage (context-managed; deleted on
+exit) and iterates it as a regular ZipFile. No expanded XML ever
+appears in the bucket.
 
 ```
 gs://berlin-lst-data/lod_vintages/<vintage>/<archive_filename>
-    ├─ LoD1_2017.zip         (1006 XML members, ~0.5–0.8 GB)
-    ├─ LoD2_BE_1_33_2021.zip (928 XML members, ~12 GB)
-    └─ LoD2_2022.zip         (928 XML members, 1.6 GB)
+    ├─ LoD1_2017.zip         (1006 XML members, ~190 MB)
+    ├─ LoD2_BE_1_33_2021.zip (928 XML members, ~2.5 GB)
+    └─ LoD2_2022.zip         (928 XML members, ~1.7 GB)
 ```
 
 Each archive carries an SHA-256 hash and the full member list, both
 recorded in `<source_root>/ard/static/sources/lod_vintages/raw_manifest_<vintage>.json`.
+The 2017 morphology provenance includes **both** input archive
+manifests (LoD1-2017 + LoD2-2021).
 
 Year → vintage carry-forward mapping is published at
 `<metadata_root>/geometry_mapping.json` (default
-`gs://berlin-lst-data/static/geometry_vintages/v1/`):
+`gs://berlin-lst-data/static/geometry_vintages/v1/`); the runner only
+writes it after every requested vintage morphology AND every required
+derived product has finalised, so the artefact can never point at
+half-published state.
 
 | Year | Vintage | geometry_id |
 |------|--------:|-------------|
@@ -71,6 +82,27 @@ Year → vintage carry-forward mapping is published at
 The Dynamic pipeline still uses the frozen 2024 geometry today; the
 carry-forward artefact is the integration point for a follow-up task
 that wires per-scene geometry selection into shadow computation.
+
+#### One-off runner commands
+
+```bash
+# Full archive-backed backfill (VM, all three historical vintages).
+uv run python scripts/run_lod_vintages.py \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022
+
+# Validator for the production run (default skips); smoke variants
+# take separate --source-root / --derived-root arguments.
+uv run python scripts/validate_lod_vintages.py \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022
+```
 
 ## Manifest bundle (v3)
 

@@ -6,10 +6,13 @@
 
 Checks every published artefact in the chosen GCS roots:
 
-- Raw archive manifests: archive URI exists, SHA-256 matches, member count.
-- Source products: COG + STAC + provenance + complete marker.
+- Raw archive ZIPs: present and reported byte-count matches manifest.
+- Raw archive manifests: archive URI exists, SHA-256 matches, member
+  count matches expected, and member list matches the ZIP.
+- Source products: COG + STAC + provenance + complete marker per
+  requested vintage. STAC id matches the requested vintage.
 - Derived products: building_dsm, combined_dsm, horizon_building, svf.
-- Year → vintage mapping covers every year 2017–2026.
+- Year → vintage carry-forward mapping covers every year 2017–2026.
 
 Returns exit code 0 on full success, 1 on any failure.  Designed to be
 the smoke gate before declaring the historical processing closed.
@@ -51,26 +54,22 @@ class ValidationReport:
         return not self.failures
 
 
-def _gs_gs_to_bucket_object(uri: str) -> tuple[str, str]:
-    from berlin_lst_downscaling.data.io.storage import _parse_gs_uri
-
-    return _parse_gs_uri(uri)
-
-
 def _check_archive(
     report: ValidationReport,
     raw_root: str,
     vintage: int,
 ) -> dict | None:
+    """Verify the raw archive ZIP exists at the canonical location."""
     spec = _VINTAGE_SOURCES[vintage]
     uri = archive_uri_for(raw_root, spec)
-    bucket, key = _gs_gs_to_bucket_object(uri)
+
+    from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
+
+    bucket, key = _parse_gs_uri(uri)
 
     if not exists(uri):
         report.failures.append(f"archive missing: {uri}")
         return None
-
-    from berlin_lst_downscaling.data.io.storage import _gcs_client
 
     client = _gcs_client()
     blob = client.bucket(bucket).blob(key)
@@ -79,13 +78,49 @@ def _check_archive(
         report.failures.append(f"archive size unavailable: {uri}")
         return None
 
-    info = {
+    return {
         "vintage": vintage,
         "uri": uri,
         "byte_count": blob.size,
         "md5": blob.md5_hash,
     }
-    return info
+
+
+def _check_raw_manifest(
+    report: ValidationReport,
+    raw_root: str,
+    source_root: str,
+    vintage: int,
+) -> None:
+    """Verify the per-vintage raw manifest exists, hashes match, members match."""
+    spec = _VINTAGE_SOURCES[vintage]
+    expected_uri = archive_uri_for(raw_root, spec)
+    expected_count = spec.expected_count
+    manifest_uri = (
+        f"{source_root.rstrip('/')}/ard/static/sources/lod_vintages/"
+        f"raw_manifest_{vintage}.json"
+    )
+    if not exists(manifest_uri):
+        report.failures.append(f"raw_manifest missing: {manifest_uri}")
+        return
+
+    payload = json.loads(read_bytes(manifest_uri))
+    if payload.get("archive_uri") != expected_uri:
+        report.failures.append(
+            f"raw_manifest archive_uri mismatch at {manifest_uri}: "
+            f"expected {expected_uri} got {payload.get('archive_uri')}"
+        )
+    if payload.get("member_count") != expected_count:
+        report.failures.append(
+            f"raw_manifest member_count mismatch at {manifest_uri}: "
+            f"expected {expected_count} got {payload.get('member_count')}"
+        )
+    members = payload.get("members") or []
+    if len(members) != expected_count:
+        report.failures.append(
+            f"raw_manifest members length mismatch at {manifest_uri}: "
+            f"expected {expected_count} got {len(members)}"
+        )
 
 
 def _check_source_product(
@@ -104,7 +139,6 @@ def _check_source_product(
         if not exists(uri):
             report.failures.append(f"source artifact missing: {uri}")
 
-    # STAC sanity: read and assert vintage is the right one.
     stac_uri = f"{base}/lod2_morphology_{vintage}.stac.json"
     if exists(stac_uri):
         try:
@@ -113,6 +147,18 @@ def _check_source_product(
                 report.failures.append(f"STAC id mismatch at {stac_uri}")
         except Exception as exc:
             report.failures.append(f"STAC parse error at {stac_uri}: {exc}")
+
+    prov_uri = f"{base}/provenance.json"
+    if exists(prov_uri):
+        try:
+            prov = json.loads(read_bytes(prov_uri))
+            archive_meta = prov.get("source_metadata", {}).get("archive")
+            if not archive_meta or not archive_meta.get("sha256"):
+                report.failures.append(
+                    f"provenance missing archive sha256 at {prov_uri}"
+                )
+        except Exception as exc:
+            report.failures.append(f"provenance parse error at {prov_uri}: {exc}")
 
 
 def _check_derived_product(
@@ -148,8 +194,6 @@ def _check_geometry_mapping(
 
     payload = json.loads(read_bytes(uri))
 
-    # Years covered by the selected vintages (intersection of selected
-    # vintage year ranges with 2017-2026).
     selected_years: set[int] = set()
     for v in vintages:
         lo, hi = year_to_vintage_range(v)
@@ -158,7 +202,6 @@ def _check_geometry_mapping(
         for y in range(lo, hi + 1):
             selected_years.add(y)
 
-    # The mapping must cover every selected year.
     mapping_years = {int(y): int(v) for y, v in payload.get("year_to_vintage", {}).items()}
     missing = sorted(y for y in selected_years if y not in mapping_years)
     if missing:
@@ -166,9 +209,6 @@ def _check_geometry_mapping(
             "geometry_mapping missing years: " + ", ".join(str(y) for y in missing)
         )
 
-    # Carry-forward consistency: every mapping year must fall within
-    # the year-range of its chosen vintage, and the chosen vintage
-    # must be one of the selected vintages.
     for year, vint in mapping_years.items():
         if vint not in vintages:
             report.failures.append(
@@ -183,7 +223,8 @@ def _check_geometry_mapping(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    doc = __doc__ or ""
+    parser = argparse.ArgumentParser(description=doc.splitlines()[0])
     parser.add_argument(
         "--source-root",
         default="gs://berlin-lst-data/static/sources/full",
@@ -208,12 +249,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--skip-archives",
         action="store_true",
+        help="Skip raw archive ZIP verification.",
+    )
+    parser.add_argument(
+        "--skip-manifests",
+        action="store_true",
         help="Skip raw archive manifest verification.",
     )
     parser.add_argument(
         "--skip-derived",
         action="store_true",
         help="Skip derived product verification.",
+    )
+    parser.add_argument(
+        "--skip-mapping",
+        action="store_true",
+        help="Skip the year-to-vintage mapping check.",
     )
     return parser.parse_args(argv)
 
@@ -231,11 +282,14 @@ def main(argv: list[str] | None = None) -> int:
                     f"archive ok: vintage={vintage} "
                     f"size={info['byte_count']} md5={info['md5']}"
                 )
+        if not args.skip_manifests:
+            _check_raw_manifest(report, args.raw_root, args.source_root, vintage)
         _check_source_product(report, args.source_root, vintage)
         if not args.skip_derived:
             _check_derived_product(report, args.derived_root, vintage)
 
-    _check_geometry_mapping(report, args.metadata_root, vintages)
+    if not args.skip_mapping:
+        _check_geometry_mapping(report, args.metadata_root, vintages)
 
     for w in report.warnings:
         print(f"WARN: {w}")

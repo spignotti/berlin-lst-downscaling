@@ -38,14 +38,20 @@ import logging
 import shutil
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from berlin_lst_downscaling.common.grid import smoke_grid
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
+from berlin_lst_downscaling.data.secondary.citygml import iter_xml_members
 from berlin_lst_downscaling.data.secondary.lod_vintages import (
     _VINTAGE_SOURCES,
+    ArchiveMaterialization,
     RawManifest,
+    VintageSpec,
+    _stream_sha256_file,
+    archive_uri_for,
     derive_vintage_products,
     materialize_vintage_archive,
     publish_geometry_mapping,
@@ -60,7 +66,8 @@ _logger = logging.getLogger(__name__)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    doc = __doc__ or ""
+    parser = argparse.ArgumentParser(description=doc.splitlines()[0])
     parser.add_argument(
         "--source-root",
         default="gs://berlin-lst-data/static/sources/full",
@@ -80,6 +87,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--raw-root",
         default="gs://berlin-lst-data",
         help="Bucket-level root for raw vintage archives.",
+    )
+    parser.add_argument(
+        "--upstream-source-root",
+        default=None,
+        help="Override root used to resolve terrain/vh/2024 lod2 source "
+        "products when deriving historical vintage products. Default: "
+        "--source-root.",
+    )
+    parser.add_argument(
+        "--upstream-derived-root",
+        default=None,
+        help="Override root used to resolve the vintage-agnostic "
+        "vegetation_dsm/2024 product. Default: --derived-root.",
     )
     parser.add_argument(
         "--vintages",
@@ -157,6 +177,52 @@ def _resolve_vintages(raw: str) -> list[int]:
     return out
 
 
+def _smoke_archive_ctx(spec: VintageSpec, archive_path: Path):
+    """Context manager: yield an ArchiveMaterialization built from a local file.
+
+    Used for local smoke runs where the caller already has the archive on
+    disk.  No GCS download, no cleanup — the caller owns the file.
+    """
+
+    @contextmanager
+    def _ctx():
+        byte_count = archive_path.stat().st_size
+        sha = _stream_sha256_file(archive_path)
+        member_names = sorted(iter_xml_members(archive_path))
+        materialization = ArchiveMaterialization(
+            spec=spec,
+            local_path=archive_path,
+            byte_count=byte_count,
+            sha256=sha,
+            member_count=len(member_names),
+            member_names=member_names,
+        )
+        yield materialization
+
+    return _ctx()
+
+
+def _publish_archive_manifest(
+    raw_root: str,
+    source_root: str,
+    mat: ArchiveMaterialization,
+    raw: RawManifest | None = None,
+) -> str:
+    """Build a :class:`RawManifest` from *mat* and persist it under *source_root*."""
+    if raw is None:
+        raw = RawManifest(
+            vintage=mat.spec.vintage,
+            source_kind=mat.spec.level,
+            feed_label=mat.spec.feed_label,
+            archive_uri=archive_uri_for(raw_root, mat.spec),
+            archive_sha256=mat.sha256,
+            archive_byte_count=mat.byte_count,
+            member_count=mat.member_count,
+            member_names=list(mat.member_names),
+        )
+    return publish_raw_archive_manifest(raw, source_root)
+
+
 def _stage_and_upload(
     vintage: int,
     local_source_dir: Path,
@@ -168,15 +234,8 @@ def _stage_and_upload(
     archive_path = stage_local_archive(spec, local_source_dir)
     try:
         manifest = stream_archive_to_gcs(spec, archive_path, raw_root)
-        # Mirror the architecture of the published product layout:
-        # the manifest lives next to other source artefacts under
-        # ``ard/static/sources/lod_vintages/`` of the configured
-        # source root.
-        manifest_uri_base = source_root.rstrip("/")
-        publish_raw_archive_manifest(manifest, manifest_uri_base)
+        publish_raw_archive_manifest(manifest, source_root)
     finally:
-        # Always remove the local archive copy; the bucket is the
-        # immutable source of truth.
         try:
             archive_path.unlink()
         except FileNotFoundError:
@@ -194,6 +253,27 @@ def _delete_local_dir(path: Path) -> bool:
         path.unlink()
     log_event(_logger, logging.INFO, "local_input_deleted", path=str(path))
     return True
+
+
+def _publish_one_vintage(
+    vintage: int,
+    args: argparse.Namespace,
+    run_id: str,
+    grid,
+    lod1_mat: ArchiveMaterialization | None,
+    lod2_mat: ArchiveMaterialization,
+):
+    """Call publish_vintage_morphology once and return its artifacts tuple."""
+    return publish_vintage_morphology(
+        vintage,
+        args.source_root,
+        run_id,
+        lod1_mat=lod1_mat,
+        lod2_mat=lod2_mat,
+        raw_root=args.raw_root,
+        grid=grid,
+        smoke_tile_count=args.smoke_tile_count,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,9 +342,11 @@ def main(argv: list[str] | None = None) -> int:
                 source_vintage = 2021 if vintage == 2017 else vintage
 
                 if args.smoke_archive:
-                    lod2_archive_path = Path(args.smoke_archive)
+                    archive_ctx = _smoke_archive_ctx(
+                        _VINTAGE_SOURCES[source_vintage],
+                        Path(args.smoke_archive),
+                    )
                 elif args.dry_run:
-                    # Dry-run without smoke-archive: nothing to read.
                     log_event(
                         _logger,
                         logging.WARNING,
@@ -273,49 +355,65 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     continue
                 else:
-                    mat, mat_tmp = materialize_vintage_archive(
+                    archive_ctx = materialize_vintage_archive(
                         _VINTAGE_SOURCES[source_vintage], args.raw_root
                     )
-                    lod2_archive_path = mat.local_path
 
-                # 2. Materialise the LoD1 archive when filtering 2017
-                lod1_archive_path = None
-                if vintage == 2017:
-                    if args.smoke_archive:
-                        lod1_archive_path = Path(args.smoke_archive)
+                with archive_ctx as lod2_mat:
+                    # 2. Materialise the LoD1 archive when filtering 2017
+                    lod1_mat = None
+                    lod1_ctx = None
+                    if vintage == 2017:
+                        if args.smoke_archive:
+                            lod1_ctx = _smoke_archive_ctx(
+                                _VINTAGE_SOURCES[2017],
+                                Path(args.smoke_archive),
+                            )
+                        else:
+                            lod1_ctx = materialize_vintage_archive(
+                                _VINTAGE_SOURCES[2017], args.raw_root
+                            )
+
+                    if lod1_ctx is not None:
+                        with lod1_ctx as lod1_mat_in:
+                            lod1_mat = lod1_mat_in
+                            artifacts, _stats = _publish_one_vintage(
+                                vintage,
+                                args,
+                                run_id,
+                                grid,
+                                lod1_mat,
+                                lod2_mat,
+                            )
                     else:
-                        lod1_mat, lod1_tmp = materialize_vintage_archive(
-                            _VINTAGE_SOURCES[2017], args.raw_root
+                        artifacts, _stats = _publish_one_vintage(
+                            vintage,
+                            args,
+                            run_id,
+                            grid,
+                            None,
+                            lod2_mat,
                         )
-                        lod1_archive_path = lod1_mat.local_path
 
-                # 3. Publish morphology product
-                if args.dry_run:
-                    log_event(
-                        _logger,
-                        logging.INFO,
-                        "vintage_skipped_dry_run",
-                        vintage=vintage,
+                    raw_manifest_uri = _publish_archive_manifest(
+                        args.raw_root, args.source_root, lod2_mat
                     )
-                    continue
+                    if lod1_mat is not None:
+                        _publish_archive_manifest(
+                            args.raw_root, args.source_root, lod1_mat
+                        )
 
-                artifacts, _stats, _archive = publish_vintage_morphology(
-                    vintage,
-                    args.source_root,
-                    run_id,
-                    lod1_archive=lod1_archive_path,
-                    lod2_archive=lod2_archive_path,
-                    grid=grid,
-                    smoke_tile_count=args.smoke_tile_count,
-                )
-
-                vintage_artifacts[vintage] = {
-                    "geometry_id": vintage_geometry_id(vintage),
-                    "lod2_morphology": artifacts.cog_uri,
-                    "stac": artifacts.stac_uri,
-                    "provenance": artifacts.provenance_uri,
-                    "completion": artifacts.completion_uri,
-                }
+                    vintage_artifacts[vintage] = {
+                        "geometry_id": vintage_geometry_id(vintage),
+                        "lod2_morphology": artifacts.cog_uri,
+                        "stac": artifacts.stac_uri,
+                        "provenance": artifacts.provenance_uri,
+                        "completion": artifacts.completion_uri,
+                        "raw_manifest": raw_manifest_uri,
+                        "archive_uri": artifacts.archive_uri,
+                        "archive_sha256": artifacts.archive_sha256,
+                        "archive_byte_count": artifacts.archive_byte_count,
+                    }
             except Exception as exc:
                 log_event(
                     _logger,
@@ -327,16 +425,22 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(f"{vintage}: {exc}")
 
         # Derived products (only after every vintage succeeded)
+        derived_success: dict[int, dict] = {}
         if not args.skip_derived and not failures and not args.dry_run:
+            upstream_src = args.upstream_source_root or args.source_root
+            upstream_drv = args.upstream_derived_root or args.derived_root
             for vintage in vintages:
                 try:
-                    derive_vintage_products(
+                    artefact = derive_vintage_products(
                         vintage,
                         args.source_root,
                         args.derived_root,
                         run_id,
+                        upstream_source_root=upstream_src,
+                        upstream_derived_root=upstream_drv,
                         grid=grid,
                     )
+                    derived_success[vintage] = artefact
                 except Exception as exc:
                     log_event(
                         _logger,
@@ -347,9 +451,19 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     failures.append(f"{vintage}-derived: {exc}")
 
-        if not args.dry_run and vintage_artifacts:
+        # Geometry mapping only published after every vintage + every
+        # derived product has finalised successfully, so the artefact can
+        # never point at half-published state.
+        if (
+            not args.dry_run
+            and vintage_artifacts
+            and not failures
+            and (args.skip_derived or len(derived_success) == len(vintages))
+        ):
             try:
-                publish_geometry_mapping(args.metadata_root, vintage_artifacts=vintage_artifacts)
+                publish_geometry_mapping(
+                    args.metadata_root, vintage_artifacts=vintage_artifacts
+                )
             except Exception as exc:
                 log_event(
                     _logger,

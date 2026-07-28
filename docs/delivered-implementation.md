@@ -58,7 +58,9 @@ uv run python scripts/run_static_sources.py --config-name full
 # Static derived
 uv run python scripts/run_static_derived.py --config-name full
 
-# Historical LoD morphometry vintages (2017, 2021, 2022) — archive-first
+# Historical LoD morphometry vintages (2017, 2021, 2022) — archive-first, one-off runner
+# (Requires terrain_height/2021, vegetation_height/2020, vegetation_dsm/2024
+# already published in --upstream-source-root / --upstream-derived-root.)
 uv run python scripts/run_lod_vintages.py \
     --source-root gs://berlin-lst-data/static/sources/full \
     --derived-root gs://berlin-lst-data/static/derived/full \
@@ -72,12 +74,18 @@ uv run python scripts/run_lod_vintages.py \
     --local-source-dir data/LoD2/LoD2_BE_1_33_2021 \
     --raw-root gs://berlin-lst-data
 
-# Local smoke (1 km-aligned bbox, no GCS writes)
+# Smoke against a small archive segment with separate smoke roots; read
+# upstream terrain/vegetation products from the production roots.
 uv run python scripts/run_lod_vintages.py \
     --smoke-archive data/LoD2/LoD2_2022.zip \
-    --smoke-tile-count 16 \
+    --smoke-tile-count 100 \
     --smoke-bbox 13.586225,52.467717,13.616234,52.486040 \
-    --skip-derived \
+    --source-root data/static/sources/lod_smoke \
+    --derived-root data/static/derived/lod_smoke \
+    --metadata-root data/static/geometry_vintages/smoke \
+    --raw-root gs://berlin-lst-data \
+    --upstream-source-root gs://berlin-lst-data/static/sources/full \
+    --upstream-derived-root gs://berlin-lst-data/static/derived/full \
     --vintages 2022
 
 # Validate published artifacts against production GCS roots
