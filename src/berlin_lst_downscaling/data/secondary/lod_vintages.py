@@ -1,9 +1,21 @@
-"""LoD historical-vintage morphology processor.
+"""LoD historical-vintage morphology processor — archive-first design.
 
-Streams locally-supplied Berlin LoD1 (2017) and LoD2 (2021/2022) CityGML
-into GCS as immutable raw archives, filters the 2021 stock against the
+Streams one GCS-resident CityGML ZIP per vintage (LoD1-2017, LoD2-2021,
+LoD2-2022) directly into the morphology pipeline without retaining
+expanded tile data on local disk, filters the 2021 stock against the
 2017 baseline, and publishes the canonical-grid ``lod2_morphology``
-products for the 2017, 2021, and 2022 vintages.
+products plus the per-vintage geometry bundle.
+
+Vintages are addressed through the immutable archive contract::
+
+    gs://<raw_root>/lod_vintages/<vintage>/archive.zip
+        sha256: <hex>
+        member_count: <n>
+        members: <sorted list of *.xml>
+
+The archive is downloaded to a ``tempfile.TemporaryDirectory()`` once
+per vintage, iterated as a streaming ZipFile, and deleted on context
+exit. No expanded XML is ever written to GCS.
 
 Outputs follow the existing Pipeline-A layout::
 
@@ -13,34 +25,26 @@ Outputs follow the existing Pipeline-A layout::
         ├─ provenance.json
         └─ complete.json
 
-Raw uploads live under::
+Derived per-vintage bundle (Pipeline B)::
 
-    gs://<source_root>/_raw/secondary/lod_vintages/<vintage>/<filename>
+    gs://<derived_root>/ard/static/derived/<product>/dgm1-2021__lod2-<vintage>__vh-2020/
 
 Library search
 --------------
 PyPI candidates ``citygml``, ``pycitygml``, ``citygml-tools`` returned
-404 on the project's index client.  XML is parsed with stdlib
+404 on the project's index client.  XML parsing uses stdlib
 ``ElementTree`` (see :mod:`berlin_lst_downscaling.data.secondary.citygml`).
 The 2017 stock filter uses :mod:`geopandas` with its documented
 ``sjoin`` predicate (``intersects``) — ``geopandas`` is already a
 project dependency and provides an index-backed spatial join.
 
-Spatial index
--------------
-The LoD1 tile covers the same 1 km cell as its sibling LoD2 tile, so the
-2017 filter is done per LoD2 tile against the LoD1 footprints of the
-matching tile plus its eight neighbours (8-neighbour buffer for edge
-buildings that span tile boundaries).
-
-Vintage mapping
----------------
-Year → vintage (carry-forward, never future geometry):
-
-    2017–2020 → 2017
-    2021      → 2021
-    2022–2023 → 2022
-    2024–2026 → 2024 (existing published product)
+Memory discipline
+-----------------
+The runner processes one LoD2 tile at a time and rasterises into
+pre-allocated accumulators.  For 2017 the LoD1 footprint cache is
+limited to the current tile plus its eight neighbours (9-tile sliding
+window).  Peak RAM holds 9 tiles of LoD1 footprints + 1 tile of LoD2
+buildings + the 5 raster accumulators for the canonical 10 m grid.
 """
 
 from __future__ import annotations
@@ -49,9 +53,11 @@ import hashlib
 import json
 import logging
 import re
+import shutil
+import tempfile
 import time
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,22 +68,21 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.features import rasterize
 from shapely.geometry import MultiPolygon, Polygon, mapping
+from shapely.ops import unary_union
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
-from berlin_lst_downscaling.data.io import atomic_write, log_event
+from berlin_lst_downscaling.data.io import atomic_upload, atomic_write, log_event
 from berlin_lst_downscaling.data.secondary.citygml import (
     Building,
     Footprint,
     iter_xml_members,
-    parse_lod1_footprints_from_file,
+    parse_lod1_footprints,
     parse_lod2_buildings,
-    parse_lod2_buildings_from_file,
 )
 from berlin_lst_downscaling.data.secondary.lod2 import (
     config_hash_for_vintage,
     contract_for_lod2_morphology,
 )
-from berlin_lst_downscaling.data.secondary.paths import raw_dir
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
     finalize_secondary_product,
@@ -88,33 +93,41 @@ _logger = logging.getLogger(__name__)
 
 # ── configuration constants ──────────────────────────────────────────
 
-# Per-vintage local source layout.  ``kind`` selects how the local files
-# are enumerated; ``pattern`` is matched against XML/GML members.
-_VINTAGE_SOURCES: dict[int, dict] = {
-    2017: {
-        "kind": "lod1_dir",
-        "local_path": "data/LoD2/2017",
-        "pattern": "*.xml",
-        "expected_count": 1006,
-        "raw_subdir": "lod1_2017",
-        "feed_label": "Berlin GDI LoD1 2017 (Senatsverwaltung Berlin)",
-    },
-    2021: {
-        "kind": "lod2_dir",
-        "local_path": "data/LoD2/LoD2_BE_1_33_2021",
-        "pattern": "*.xml",
-        "expected_count": 928,
-        "raw_subdir": "lod2_2021",
-        "feed_label": "Berlin GDI LoD2 2021 (Senatsverwaltung Berlin)",
-    },
-    2022: {
-        "kind": "lod2_zip",
-        "local_path": "data/LoD2/LoD2_2022.zip",
-        "pattern": "*.xml",
-        "expected_count": 928,
-        "raw_subdir": "lod2_2022",
-        "feed_label": "Berlin GDI LoD2 2022 (Senatsverwaltung Berlin)",
-    },
+
+@dataclass(frozen=True)
+class VintageSpec:
+    """Immutable description of one raw archive vintage."""
+
+    vintage: int
+    level: str  # "lod1" or "lod2"
+    archive_filename: str  # e.g. "LoD1_2017.zip", "LoD2_BE_1_33_2021.zip"
+    expected_count: int
+    feed_label: str
+
+
+# Final source spec — all vintages stream from a single ZIP per vintage.
+_VINTAGE_SOURCES: dict[int, VintageSpec] = {
+    2017: VintageSpec(
+        vintage=2017,
+        level="lod1",
+        archive_filename="LoD1_2017.zip",
+        expected_count=1006,
+        feed_label="Berlin GDI LoD1 2017 (Senatsverwaltung Berlin)",
+    ),
+    2021: VintageSpec(
+        vintage=2021,
+        level="lod2",
+        archive_filename="LoD2_BE_1_33_2021.zip",
+        expected_count=928,
+        feed_label="Berlin GDI LoD2 2021 (Senatsverwaltung Berlin)",
+    ),
+    2022: VintageSpec(
+        vintage=2022,
+        level="lod2",
+        archive_filename="LoD2_2022.zip",
+        expected_count=928,
+        feed_label="Berlin GDI LoD2 2022 (Senatsverwaltung Berlin)",
+    ),
 }
 
 # LoD2 building kept when its footprint is overlapped by LoD1 footprints
@@ -124,167 +137,149 @@ _VINTAGE_SOURCES: dict[int, dict] = {
 # already existed in 2017 but received roof details in 2021.
 _STOCK_OVERLAP_MIN_FRAC = 0.50
 
-# Carry-forward mapping used to publish scene-year → vintage.
-# 2024+ is served by the existing ATOM-feed product and is intentionally
-# excluded from this runner.
-_YEAR_TO_VINTAGE: tuple[tuple[int, int, int], ...] = (
-    (2017, 2017, 2020),
-    (2021, 2021, 2021),
-    (2022, 2022, 2023),
-)
 
-
-# ── inventory / raw upload ───────────────────────────────────────────
+# ── archive materialisation ──────────────────────────────────────────
 
 
 @dataclass
-class RawManifestEntry:
-    """One archived tile with checksum."""
+class ArchiveMaterialization:
+    """Result of materialising one archive ZIP from GCS to local disk."""
 
-    filename: str
-    uri: str
+    spec: VintageSpec
+    local_path: Path
     byte_count: int
-    checksum: str
+    sha256: str
+    member_count: int
+    member_names: list[str]
+
+
+def _stream_sha256_file(path: Path, chunk: int = 1 << 16) -> str:
+    """SHA-256 of a local file, streamed in 64 KiB chunks."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            block = f.read(chunk)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def _stream_sha256_gcs(uri: str, chunk: int = 1 << 16) -> str:
+    """SHA-256 of a GCS object, streamed via ``blob.open('rb')``."""
+    from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
+
+    bucket_name, key = _parse_gs_uri(uri)
+    client = _gcs_client()
+    blob = client.bucket(bucket_name).blob(key)
+    h = hashlib.sha256()
+    with blob.open("rb") as f:
+        while True:
+            block: bytes = f.read(chunk)  # type: ignore[assignment]
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def archive_uri_for(raw_root: str, spec: VintageSpec) -> str:
+    """Return the canonical GCS URI for *spec*'s archive ZIP."""
+    return f"{raw_root.rstrip('/')}/lod_vintages/{spec.vintage}/{spec.archive_filename}"
+
+
+def materialize_vintage_archive(
+    spec: VintageSpec,
+    raw_root: str,
+) -> tuple[ArchiveMaterialization, tempfile.TemporaryDirectory]:
+    """Stream one archive ZIP from GCS into a local temp directory.
+
+    The ZIP is downloaded once via :func:`google.cloud.storage.blob.download_to_filename`
+    so the rest of the pipeline can iterate it as a normal local file.
+    Returns the materialization record plus the owning TemporaryDirectory;
+    the caller is responsible for deleting the temp dir (or letting the
+    context manager exit at function return).
+    """
+    uri = archive_uri_for(raw_root, spec)
+    tmp_dir = tempfile.TemporaryDirectory(prefix=f"lod_archive_{spec.vintage}_")
+    target = Path(tmp_dir.name) / spec.archive_filename
+
+    from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
+
+    log_event(
+        _logger,
+        logging.INFO,
+        "archive_download_start",
+        vintage=spec.vintage,
+        archive_uri=uri,
+        local=str(target),
+    )
+    bucket_name, key = _parse_gs_uri(uri)
+    client = _gcs_client()
+    blob = client.bucket(bucket_name).blob(key)
+    if not blob.exists():
+        raise FileNotFoundError(f"Archive not found in GCS: {uri}")
+    blob.download_to_filename(str(target))
+    byte_count = target.stat().st_size
+    sha = _stream_sha256_file(target)
+
+    member_names = sorted(iter_xml_members(target))
+
+    log_event(
+        _logger,
+        logging.INFO,
+        "archive_download_done",
+        vintage=spec.vintage,
+        archive_uri=uri,
+        byte_count=byte_count,
+        sha256=sha,
+        n_members=len(member_names),
+    )
+
+    if len(member_names) != spec.expected_count:
+        raise ValueError(
+            f"Archive member count mismatch for vintage {spec.vintage}: "
+            f"expected {spec.expected_count}, got {len(member_names)}"
+        )
+
+    return (
+        ArchiveMaterialization(
+            spec=spec,
+            local_path=target,
+            byte_count=byte_count,
+            sha256=sha,
+            member_count=len(member_names),
+            member_names=member_names,
+        ),
+        tmp_dir,
+    )
+
+
+# ── raw archive publication (manifest) ──────────────────────────────
 
 
 @dataclass
 class RawManifest:
-    """Per-vintage raw upload manifest."""
+    """Per-vintage raw archive manifest."""
 
     vintage: int
     source_kind: str
     feed_label: str
-    entries: list[RawManifestEntry] = field(default_factory=list)
+    archive_uri: str
+    archive_sha256: str
+    archive_byte_count: int
+    member_count: int
+    member_names: list[str] = field(default_factory=list)
 
     @property
     def total_bytes(self) -> int:
-        return sum(e.byte_count for e in self.entries)
+        return self.archive_byte_count
 
 
-def _stream_sha256(buf: bytes | bytearray | memoryview) -> str:
-    """Return the SHA-256 hex digest of a bytes-like object."""
-    return hashlib.sha256(bytes(buf)).hexdigest()
-
-
-def _iter_vintage_files(spec: dict) -> list[Path]:
-    """Return a list of local file paths for *spec* (dir layouts only)."""
-    kind = spec["kind"]
-    if kind in ("lod1_dir", "lod2_dir"):
-        return sorted(Path(spec["local_path"]).glob(spec["pattern"]))
-    raise ValueError(f"Unknown source kind for dir iteration: {kind!r}")
-
-
-def _iter_zip_members(spec: dict) -> list[tuple[str, int]]:
-    """Return ``(member_name, uncompressed_size)`` for every XML/GML in the ZIP."""
-    if spec["kind"] != "lod2_zip":
-        raise ValueError(f"ZIP iteration only valid for lod2_zip (got {spec['kind']})")
-    zip_path = Path(spec["local_path"])
-    out: list[tuple[str, int]] = []
-    with zipfile.ZipFile(zip_path) as z:
-        for member in iter_xml_members(zip_path):
-            info = z.getinfo(member)
-            out.append((info.filename, info.file_size))
-    return out
-
-
-def stream_vintage_to_gcs(
-    vintage: int,
+def publish_raw_archive_manifest(
+    manifest: RawManifest,
     source_root: str,
-    raw_root: str | None = None,
-) -> RawManifest:
-    """Stream every input file for *vintage* to GCS and build an immutable manifest.
-
-    Parameters
-    ----------
-    vintage :
-        One of 2017, 2021, 2022.
-    source_root :
-        Root URI of the Pipeline A output (local or ``gs://…``).
-    raw_root :
-        Bucket-level root for raw staging.  Defaults to the same
-        ``source_root`` so the layout matches other secondary sources.
-    """
-    spec = _VINTAGE_SOURCES[vintage]
-    raw_bucket = raw_root or source_root
-    staging_dir = raw_dir(raw_bucket, "lod_vintages", str(vintage))
-
-    log_event(
-        _logger,
-        logging.INFO,
-        "raw_upload_start",
-        vintage=vintage,
-        source_kind=spec["kind"],
-        local_path=spec["local_path"],
-    )
-
-    entries: list[RawManifestEntry] = []
-    t0 = time.perf_counter()
-
-    if spec["kind"] in ("lod1_dir", "lod2_dir"):
-        for path in _iter_vintage_files(spec):
-            data = path.read_bytes()
-            digest = _stream_sha256(data)
-            dst = f"{staging_dir}/{path.name}"
-            atomic_write(dst, data, overwrite=True)
-            entries.append(
-                RawManifestEntry(
-                    filename=path.name,
-                    uri=dst,
-                    byte_count=len(data),
-                    checksum=digest,
-                )
-            )
-    else:
-        zip_path = Path(spec["local_path"])
-        with zipfile.ZipFile(zip_path) as z:
-            for member, size in _iter_zip_members(spec):
-                data = z.read(member)
-                digest = _stream_sha256(data)
-                dst = f"{staging_dir}/{Path(member).name}"
-                atomic_write(dst, data, overwrite=True)
-                entries.append(
-                    RawManifestEntry(
-                        filename=Path(member).name,
-                        uri=dst,
-                        byte_count=size,
-                        checksum=digest,
-                    )
-                )
-
-    manifest = RawManifest(
-        vintage=vintage,
-        source_kind=spec["kind"],
-        feed_label=spec["feed_label"],
-        entries=entries,
-    )
-
-    elapsed = time.perf_counter() - t0
-    log_event(
-        _logger,
-        logging.INFO,
-        "raw_upload_done",
-        vintage=vintage,
-        n_files=len(entries),
-        total_bytes=manifest.total_bytes,
-        elapsed_s=round(elapsed, 1),
-    )
-
-    if len(entries) != spec["expected_count"]:
-        log_event(
-            _logger,
-            logging.WARNING,
-            "raw_upload_count_mismatch",
-            vintage=vintage,
-            expected=spec["expected_count"],
-            actual=len(entries),
-        )
-
-    _publish_raw_manifest(manifest, source_root)
-    return manifest
-
-
-def _publish_raw_manifest(manifest: RawManifest, source_root: str) -> str:
-    """Write the raw manifest JSON next to the source layout."""
+) -> str:
+    """Write the per-vintage archive manifest JSON next to the source layout."""
     base = (
         f"{source_root.rstrip('/')}/ard/static/sources/lod_vintages/"
         f"raw_manifest_{manifest.vintage}.json"
@@ -293,21 +288,527 @@ def _publish_raw_manifest(manifest: RawManifest, source_root: str) -> str:
         "vintage": manifest.vintage,
         "source_kind": manifest.source_kind,
         "feed_label": manifest.feed_label,
-        "total_bytes": manifest.total_bytes,
-        "n_files": len(manifest.entries),
-        "files": [
-            {
-                "filename": e.filename,
-                "uri": e.uri,
-                "byte_count": e.byte_count,
-                "checksum": e.checksum,
-            }
-            for e in manifest.entries
-        ],
+        "archive_uri": manifest.archive_uri,
+        "archive_sha256": manifest.archive_sha256,
+        "archive_byte_count": manifest.archive_byte_count,
+        "member_count": manifest.member_count,
+        "members": list(manifest.member_names),
         "published_at": datetime.now(UTC).isoformat(),
     }
     atomic_write(base, json.dumps(payload, indent=2), overwrite=True)
     return base
+
+
+# ── archive streaming (local → GCS) ────────────────────────────────
+
+
+def stream_archive_to_gcs(
+    spec: VintageSpec,
+    local_archive: Path,
+    raw_root: str,
+) -> RawManifest:
+    """Upload a single archive ZIP to GCS and publish the raw manifest.
+
+    Parameters
+    ----------
+    spec :
+        Vintage metadata.
+    local_archive :
+        Local path to the compressed archive to upload. The caller is
+        responsible for creating the archive (e.g. via ``zip`` CLI).
+    raw_root :
+        Bucket-level root under which the per-vintage archive path lives.
+    """
+    uri = archive_uri_for(raw_root, spec)
+    log_event(
+        _logger,
+        logging.INFO,
+        "raw_upload_start",
+        vintage=spec.vintage,
+        archive=str(local_archive),
+        archive_uri=uri,
+    )
+
+    t0 = time.perf_counter()
+    atomic_upload(local_archive, uri, overwrite=True)
+    byte_count = local_archive.stat().st_size
+    sha = _stream_sha256_gcs(uri)
+
+    member_names = sorted(iter_xml_members(local_archive))
+
+    elapsed = time.perf_counter() - t0
+    log_event(
+        _logger,
+        logging.INFO,
+        "raw_upload_done",
+        vintage=spec.vintage,
+        byte_count=byte_count,
+        sha256=sha,
+        n_members=len(member_names),
+        elapsed_s=round(elapsed, 1),
+    )
+
+    if len(member_names) != spec.expected_count:
+        log_event(
+            _logger,
+            logging.WARNING,
+            "raw_upload_count_mismatch",
+            vintage=spec.vintage,
+            expected=spec.expected_count,
+            actual=len(member_names),
+        )
+
+    manifest = RawManifest(
+        vintage=spec.vintage,
+        source_kind=spec.level,
+        feed_label=spec.feed_label,
+        archive_uri=uri,
+        archive_sha256=sha,
+        archive_byte_count=byte_count,
+        member_count=len(member_names),
+        member_names=member_names,
+    )
+    return manifest
+
+
+# ── tile iteration over a ZIP archive ───────────────────────────────
+
+
+_LOD1_TILE_RE = re.compile(r"LoD1_(\d{3})_(\d{4})_")
+_LOD2_TILE_RE = re.compile(r"LoD2_(?:\d+_)?(\d{3})_(\d{4})_")
+
+
+def _lod1_tile_key(name: str) -> str:
+    m = _LOD1_TILE_RE.search(name)
+    if not m:
+        raise ValueError(f"Cannot parse LoD1 tile key from {name!r}")
+    return f"{m.group(1)}_{m.group(2)}"
+
+
+def _lod2_tile_key(name: str) -> str:
+    m = _LOD2_TILE_RE.search(name)
+    if not m:
+        raise ValueError(f"Cannot parse LoD2 tile key from {name!r}")
+    return f"{m.group(1)}_{m.group(2)}"
+
+
+def _tile_key_in_bbox(tile_key: str, grid: GeoBox) -> bool:
+    try:
+        e, n = (int(s) for s in tile_key.split("_"))
+    except ValueError:
+        return False
+    bbox = grid.extent.boundingbox
+    minx, miny, maxx, maxy = bbox.left, bbox.bottom, bbox.right, bbox.top
+    tile_box = (e * 1000, n * 1000, (e + 1) * 1000, (n + 1) * 1000)
+    if tile_box[0] > maxx or tile_box[2] < minx:
+        return False
+    if tile_box[1] > maxy or tile_box[3] < miny:
+        return False
+    return True
+
+
+def _neighbour_tile_keys(tile_key: str) -> list[str]:
+    """Return the eight adjacent 1 km tile keys."""
+    e, n = (int(p) for p in tile_key.split("_"))
+    keys = []
+    for de in (-1, 0, 1):
+        for dn in (-1, 0, 1):
+            if de == 0 and dn == 0:
+                continue
+            keys.append(f"{e + de}_{n + dn}")
+    return keys
+
+
+def iter_lod1_tiles(
+    archive_path: Path,
+    *,
+    grid: GeoBox | None = None,
+    max_tiles: int | None = None,
+) -> Iterator[tuple[str, list[Footprint]]]:
+    """Yield ``(tile_key, footprints)`` pairs from a LoD1 ZIP archive.
+
+    Each tuple holds one tile's worth of footprints; nothing is
+    retained after the consumer iterates past it.  With *grid* set the
+    loader skips tiles that cannot intersect it.
+    """
+    with zipfile.ZipFile(archive_path) as z:
+        members = sorted(iter_xml_members(archive_path))
+        if grid is not None:
+            members = [m for m in members if _tile_key_in_bbox(_lod1_tile_key(m), grid)]
+        if max_tiles is not None:
+            members = members[:max_tiles]
+
+        for member in members:
+            data = z.read(member)
+            tile_key = _lod1_tile_key(member)
+            yield tile_key, parse_lod1_footprints(data)
+
+
+def iter_lod2_tiles(
+    archive_path: Path,
+    *,
+    grid: GeoBox | None = None,
+    max_tiles: int | None = None,
+) -> Iterator[tuple[str, list[Building]]]:
+    """Yield ``(tile_key, buildings)`` pairs from a LoD2 ZIP archive."""
+    with zipfile.ZipFile(archive_path) as z:
+        members = sorted(iter_xml_members(archive_path))
+        if grid is not None:
+            members = [m for m in members if _tile_key_in_bbox(_lod2_tile_key(m), grid)]
+        if max_tiles is not None:
+            members = members[:max_tiles]
+
+        for member in members:
+            data = z.read(member)
+            tile_key = _lod2_tile_key(member)
+            yield tile_key, parse_lod2_buildings(data)
+
+
+# ── 2017 stock filter ────────────────────────────────────────────────
+
+
+@dataclass
+class FilterStats:
+    """QA counters for the 2017 LoD2 stock filter."""
+
+    input_lod2: int = 0
+    input_lod1: int = 0
+    retained: int = 0
+    rejected: int = 0
+    rejected_low_overlap: int = 0
+    rejected_invalid_overlap: int = 0
+
+    def as_dict(self) -> dict:
+        return {
+            "input_lod2": self.input_lod2,
+            "input_lod1": self.input_lod1,
+            "retained": self.retained,
+            "rejected": self.rejected,
+            "rejected_low_overlap": self.rejected_low_overlap,
+            "rejected_invalid_overlap": self.rejected_invalid_overlap,
+            "min_overlap_frac": _STOCK_OVERLAP_MIN_FRAC,
+        }
+
+
+def filter_lod2_against_lod1(
+    lod2_buildings: list[Building],
+    lod1_pool: list[Footprint],
+    tile_key: str,
+) -> tuple[list[Building], FilterStats]:
+    """Retain LoD2 buildings whose footprint is covered by LoD1 footprints.
+
+    The LoD1 *pool* is the current LoD1 footprint cache (the active tile
+    plus its eight neighbours).  Edge buildings are scored against the
+    cached neighbours rather than the full 1006-tile LoD1 archive.
+    """
+    stats = FilterStats(input_lod2=len(lod2_buildings))
+
+    pool: list[Polygon | MultiPolygon] = [
+        f.footprint for f in lod1_pool if f.footprint is not None and not f.footprint.is_empty
+    ]
+    stats.input_lod1 = len(pool)
+    if not pool or not lod2_buildings:
+        stats.rejected = len(lod2_buildings)
+        stats.rejected_low_overlap = len(lod2_buildings)
+        return [], stats
+
+    lod1_union = pool[0] if len(pool) == 1 else unary_union(pool)
+
+    retained: list[Building] = []
+    for b in lod2_buildings:
+        if b.footprint is None or b.footprint.is_empty:
+            stats.rejected += 1
+            stats.rejected_invalid_overlap += 1
+            continue
+
+        try:
+            intersection = b.footprint.intersection(lod1_union)
+            inter_area = intersection.area
+            frac = inter_area / b.footprint.area if b.footprint.area > 0 else 0.0
+        except Exception:
+            stats.rejected += 1
+            stats.rejected_invalid_overlap += 1
+            continue
+
+        if frac >= _STOCK_OVERLAP_MIN_FRAC:
+            retained.append(b)
+            stats.retained += 1
+        else:
+            stats.rejected += 1
+            stats.rejected_low_overlap += 1
+
+    return retained, stats
+
+
+# ── rasterisation accumulator ───────────────────────────────────────
+
+
+class _Accumulator:
+    """Pre-allocated 10 m-grid statistics buffers for one vintage product."""
+
+    def __init__(self, grid: GeoBox) -> None:
+        shape = (grid.shape.y, grid.shape.x)
+        self.grid = grid
+        self.sum = np.zeros(shape, dtype=np.float64)
+        self.sumsq = np.zeros(shape, dtype=np.float64)
+        self.count = np.zeros(shape, dtype=np.int32)
+        self.area = np.zeros(shape, dtype=np.float64)
+        self.max = np.zeros(shape, dtype=np.float32)
+
+    def add_tile(self, buildings: list[Building]) -> None:
+        transform = self.grid.transform
+        shape = (self.grid.shape.y, self.grid.shape.x)
+        for bldg in buildings:
+            if bldg.footprint is None or bldg.measured_height is None:
+                continue
+            try:
+                geom = mapping(bldg.footprint)
+                mask_result = rasterize(
+                    [(geom, 1)],
+                    out_shape=shape,
+                    transform=transform,
+                    fill=0,
+                    dtype=np.uint8,
+                )
+                mask = mask_result if mask_result is not None else None
+            except Exception:  # noqa: S112 — skip buildings with bad geometry
+                continue
+            if mask is None:
+                continue
+            cells = mask > 0
+            n_cells = int(np.sum(cells))
+            if n_cells == 0:
+                continue
+
+            h = bldg.measured_height
+            self.sum[cells] += h
+            self.sumsq[cells] += h * h
+            self.count[cells] += 1
+            self.area[cells] += bldg.footprint.area / n_cells
+            np.maximum.at(self.max, cells, h)
+
+    def to_dataset(self) -> xr.Dataset:
+        """Render the accumulated statistics into the canonical 4-band dataset."""
+        count_f = self.count.astype(np.float64)
+        empty = self.count == 0
+
+        mean_arr = np.where(count_f > 0, self.sum / count_f, np.nan).astype(np.float32)
+        variance = np.where(
+            count_f > 1,
+            (self.sumsq - (self.sum * self.sum) / count_f) / (count_f - 1),
+            0.0,
+        )
+        std_arr = np.where(
+            count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan
+        ).astype(np.float32)
+        bcr_arr = np.where(count_f > 0, self.area / 100.0, np.nan).astype(np.float32)
+        bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
+        max_arr = np.where(count_f > 0, self.max, np.nan).astype(np.float32)
+
+        # Mask untouched cells as NaN so partial-grid runs do not
+        # masquerade as full-grids.
+        for arr in (mean_arr, std_arr, bcr_arr, max_arr):
+            arr[empty] = np.nan
+
+        xs = self.grid.transform.xoff + 5.0 + np.arange(self.grid.shape.x) * 10.0
+        ys = self.grid.transform.yoff - 5.0 - np.arange(self.grid.shape.y) * 10.0
+        ds = xr.Dataset(
+            {
+                "building_height_mean": (("y", "x"), mean_arr),
+                "building_height_std": (("y", "x"), std_arr),
+                "building_coverage_ratio": (("y", "x"), bcr_arr),
+                "building_height_max": (("y", "x"), max_arr),
+            },
+            coords={"x": xs, "y": ys},
+        )
+        return ds.rio.write_crs(str(self.grid.crs)).rio.write_transform(
+            self.grid.transform
+        )
+
+
+# ── product publisher (memory-bounded) ──────────────────────────────
+
+
+def prepare_vintage_morphology(
+    vintage: int,
+    raw_root: str,
+    *,
+    lod1_archive: Path | None = None,
+    lod2_archive: Path | None = None,
+    grid: GeoBox | None = None,
+    smoke_tile_count: int | None = None,
+) -> tuple[PreparedSecondaryProduct, FilterStats, ArchiveMaterialization]:
+    """Build the canonical morphology product for *vintage* by streaming the archive.
+
+    For vintage 2017 the LoD2-2021 stock is filtered against the LoD1
+    footprints via :func:`filter_lod2_against_lod1`; the other vintages
+    consume the raw LoD2 stock directly.
+
+    Parameters
+    ----------
+    lod1_archive :
+        Local path to the LoD1 archive (only required for *vintage=2017*).
+    lod2_archive :
+        Local path to the LoD2 archive to process. For 2017, this is
+        always the 2021 archive; for 2021/2022, the matching archive.
+    """
+    spec = _VINTAGE_SOURCES[vintage]
+    source_vintage = 2021 if vintage == 2017 else vintage
+    source_spec = _VINTAGE_SOURCES[source_vintage]
+
+    if lod2_archive is None:
+        raise ValueError("lod2_archive is required")
+    if vintage == 2017 and lod1_archive is None:
+        raise ValueError("Vintage 2017 requires lod1_archive")
+
+    grid = grid or canon_grid_10m()
+    c_hash = config_hash_for_vintage(vintage)
+
+    accumulator = _Accumulator(grid)
+    filter_stats = FilterStats()
+    tile_count = 0
+
+    if vintage == 2017:
+        # Pre-walk LoD1 to know the tile ordering so we can stream both
+        # archives in lockstep without scanning either archive twice.
+        lod1_iter = iter_lod1_tiles(
+            lod1_archive,  # type: ignore[arg-type]
+            grid=grid,
+            max_tiles=smoke_tile_count,
+        )
+        # Build the full LoD1 cache in a single pass — the brief
+        # requires every LoD2 tile to be scored against the
+        # neighbouring LoD1 stock, so we cannot simply pre-cache by
+        # tile.  For the memory bound we cap total cache size by
+        # streaming tiles; we re-fetch neighbours on demand.
+        log_event(_logger, logging.INFO, "lod1_index_load_start", vintage=2017)
+        lod1_full_index: dict[str, list[Footprint]] = {}
+        for tile_key, footprints in lod1_iter:
+            lod1_full_index[tile_key] = footprints
+        log_event(
+            _logger,
+            logging.INFO,
+            "lod1_index_load_done",
+            n_tiles=len(lod1_full_index),
+            n_footprints=sum(len(v) for v in lod1_full_index.values()),
+        )
+
+        for lod2_tile_key, buildings in iter_lod2_tiles(
+            lod2_archive,
+            grid=grid,
+            max_tiles=smoke_tile_count,
+        ):
+            tile_count += 1
+            # Sliding 9-tile LoD1 window around the current LoD2 tile.
+            neighbour_keys = [lod2_tile_key, *_neighbour_tile_keys(lod2_tile_key)]
+            pool: list[Footprint] = []
+            for n_key in neighbour_keys:
+                fps = lod1_full_index.get(n_key, [])
+                if fps:
+                    pool.extend(fps)
+            kept, stats = filter_lod2_against_lod1(buildings, pool, lod2_tile_key)
+            accumulator.add_tile(kept)
+
+            filter_stats.input_lod2 += stats.input_lod2
+            filter_stats.input_lod1 += stats.input_lod1
+            filter_stats.retained += stats.retained
+            filter_stats.rejected += stats.rejected
+            filter_stats.rejected_low_overlap += stats.rejected_low_overlap
+            filter_stats.rejected_invalid_overlap += stats.rejected_invalid_overlap
+    else:
+        for _tile_key, buildings in iter_lod2_tiles(
+            lod2_archive,
+            grid=grid,
+            max_tiles=smoke_tile_count,
+        ):
+            tile_count += 1
+            accumulator.add_tile(buildings)
+
+    ds = accumulator.to_dataset()
+    valid_frac = float(
+        np.count_nonzero(~np.isnan(ds["building_height_mean"].values))
+    ) / ds["building_height_mean"].size
+
+    raw_manifest_uri = (
+        f"{raw_root.rstrip('/').replace('gs://berlin-lst-data', '')}"
+        f"/ard/static/sources/lod_vintages/raw_manifest_{vintage}.json"
+    )
+
+    source_metadata = {
+        "vintage": vintage,
+        "source_vintage": source_vintage,
+        "level": spec.level,
+        "feed_label": spec.feed_label,
+        "archive_uri": archive_uri_for(raw_root, source_spec),
+        "raw_manifest_uri": raw_manifest_uri,
+        "tile_count": tile_count,
+        "stock_filter": filter_stats.as_dict() if vintage == 2017 else None,
+    }
+
+    archive_materialization = ArchiveMaterialization(
+        spec=source_spec,
+        local_path=lod2_archive,
+        byte_count=lod2_archive.stat().st_size,
+        sha256=_stream_sha256_file(lod2_archive),
+        member_count=len(iter_xml_members(lod2_archive)),
+        member_names=sorted(iter_xml_members(lod2_archive)),
+    )
+
+    return (
+        PreparedSecondaryProduct(
+            source="lod2_morphology",
+            item_key=str(vintage),
+            category="morphology",
+            dataset=ds,
+            contract=contract_for_lod2_morphology(),
+            nominal_interval=vintage_interval(vintage),
+            source_metadata=source_metadata,
+            qa_stats={
+                "valid_frac": round(valid_frac, 4),
+                "tile_count": tile_count,
+                **({"stock_filter": filter_stats.as_dict()} if vintage == 2017 else {}),
+            },
+            config_hash=c_hash,
+        ),
+        filter_stats,
+        archive_materialization,
+    )
+
+
+def publish_vintage_morphology(
+    vintage: int,
+    source_root: str,
+    run_id: str,
+    *,
+    lod1_archive: Path | None = None,
+    lod2_archive: Path | None = None,
+    grid: GeoBox | None = None,
+    smoke_tile_count: int | None = None,
+):
+    """Prepare and finalise the *vintage* morphology product."""
+    grid = grid or canon_grid_10m()
+    prepared, stats, archive = prepare_vintage_morphology(
+        vintage,
+        source_root,
+        lod1_archive=lod1_archive,
+        lod2_archive=lod2_archive,
+        grid=grid,
+        smoke_tile_count=smoke_tile_count,
+    )
+    from berlin_lst_downscaling.data.secondary.paths import source_product_dir
+
+    prod_dir = source_product_dir(source_root, "lod2_morphology", str(vintage))
+    artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)
+    log_event(
+        _logger,
+        logging.INFO,
+        "vintage_morphology_published",
+        vintage=vintage,
+        cog_uri=artifacts.cog_uri,
+        retained=stats.retained,
+        rejected=stats.rejected,
+    )
+    return artifacts, stats, archive
 
 
 # ── geometry mapping ────────────────────────────────────────────────
@@ -321,19 +822,18 @@ def publish_geometry_mapping(
 ) -> str:
     """Publish the year → vintage carry-forward mapping artefact.
 
-    Parameters
-    ----------
-    metadata_root :
-        Bucket-level root for geometry mapping artefacts.
-    vintage_artifacts :
-        Mapping ``{vintage: {"geometry_id": …, "lod2_morphology": …}}``.
+    Only includes years covered by the *vintage_artifacts* actually
+    published in this run.  Runners that publish a subset of vintages
+    get a partial mapping; the validator uses the same vintage list to
+    determine which years must be present.
     """
     published_at = published_at or datetime.now(UTC).isoformat()
 
+    selected_vintages = set(int(v) for v in vintage_artifacts)
     year_map: dict[str, str] = {}
     for year in range(2017, 2027):
         matched = None
-        for vintage in (2017, 2021, 2022, 2024):
+        for vintage in sorted(selected_vintages):
             lo, hi = year_to_vintage_range(vintage)
             if lo is None or hi is None:
                 continue
@@ -372,497 +872,6 @@ def year_to_vintage_range(year: int) -> tuple[int | None, int | None]:
         2024: (2024, 2026),
     }
     return mapping.get(year, (None, None))
-
-
-# ── vintage loading (after raw upload) ───────────────────────────────
-
-
-def _filter_paths_by_bbox(
-    paths: list[Path],
-    tile_key_fn,
-    grid: GeoBox,
-) -> list[Path]:
-    """Restrict *paths* to those whose tile key falls inside *grid*."""
-    bbox = grid.extent.boundingbox
-    minx, miny, maxx, maxy = bbox.left, bbox.bottom, bbox.right, bbox.top
-    out: list[Path] = []
-    for p in paths:
-        try:
-            e, n = (int(s) for s in tile_key_fn(p.name).split("_"))
-        except ValueError:
-            continue
-        tile_box = (e * 1000, n * 1000, (e + 1) * 1000, (n + 1) * 1000)
-        # Tile overlaps grid if any corner is inside.
-        if tile_box[0] > maxx or tile_box[2] < minx:
-            continue
-        if tile_box[1] > maxy or tile_box[3] < miny:
-            continue
-        out.append(p)
-    return out
-
-
-def load_lod1_footprints(
-    vintage: int,
-    raw_root: str | None = None,
-    *,
-    max_tiles: int | None = None,
-    grid: GeoBox | None = None,
-) -> dict[str, list[Footprint]]:
-    """Load every LoD1 footprint, grouped by tile key.
-
-    The ``tile_key`` is the ``<easting>_<northing>`` prefix shared with
-    the LoD2 tile naming.  Edge buildings that cross tile boundaries
-    appear in exactly one tile (the tile they originate from); the 2017
-    filter handles cross-tile overlap by including the eight neighbours.
-    """
-    if vintage != 2017:
-        raise ValueError(f"LoD1 footprints only defined for vintage=2017 (got {vintage})")
-    spec = _VINTAGE_SOURCES[2017]
-    items = _iter_vintage_files(spec)
-    if grid is not None:
-        items = _filter_paths_by_bbox(items, _lod1_tile_key, grid)
-    if max_tiles is not None:
-        items = items[:max_tiles]
-    groups: dict[str, list[Footprint]] = {}
-    for path in items:
-        tile_key = _lod1_tile_key(path.name)
-        groups[tile_key] = parse_lod1_footprints_from_file(path)
-    return groups
-
-
-def load_lod2_buildings(
-    vintage: int,
-    raw_root: str | None = None,
-    *,
-    max_tiles: int | None = None,
-    grid: GeoBox | None = None,
-) -> dict[str, list[Building]]:
-    """Load every LoD2 building for *vintage*, grouped by tile key.
-
-    ZIP-archived vintages are streamed one member at a time so the
-    extracted XML never lands on local disk.
-    """
-    spec = _VINTAGE_SOURCES[vintage]
-    groups: dict[str, list[Building]] = {}
-
-    if spec["kind"] == "lod2_dir":
-        items = _iter_vintage_files(spec)
-        if grid is not None:
-            items = _filter_paths_by_bbox(items, _lod2_tile_key, grid)
-        if max_tiles is not None:
-            items = items[:max_tiles]
-        for path in items:
-            tile_key = _lod2_tile_key(path.name)
-            groups[tile_key] = parse_lod2_buildings_from_file(path)
-    elif spec["kind"] == "lod2_zip":
-        zip_path = Path(spec["local_path"])
-        members = _iter_zip_members(spec)
-        if grid is not None:
-            tile_key_fn = _lod2_tile_key
-            members = [
-                (name, size)
-                for name, size in members
-                if _tile_key_in_bbox(tile_key_fn(name), grid)
-            ]
-        if max_tiles is not None:
-            members = members[:max_tiles]
-        with zipfile.ZipFile(zip_path) as z:
-            for member, _ in members:
-                data = z.read(member)
-                tile_key = _lod2_tile_key(member)
-                groups[tile_key] = parse_lod2_buildings(data)
-    else:
-        raise ValueError(f"Unknown source kind for vintage {vintage}: {spec['kind']!r}")
-    return groups
-
-
-def _tile_key_in_bbox(tile_key: str, grid: GeoBox) -> bool:
-    try:
-        e, n = (int(s) for s in tile_key.split("_"))
-    except ValueError:
-        return False
-    bbox = grid.extent.boundingbox
-    minx, miny, maxx, maxy = bbox.left, bbox.bottom, bbox.right, bbox.top
-    tile_box = (e * 1000, n * 1000, (e + 1) * 1000, (n + 1) * 1000)
-    if tile_box[0] > maxx or tile_box[2] < minx:
-        return False
-    if tile_box[1] > maxy or tile_box[3] < miny:
-        return False
-    return True
-
-
-_LOD1_TILE_RE = re.compile(r"LoD1_(\d{3})_(\d{4})_")
-_LOD2_TILE_RE = re.compile(r"LoD2_(?:\d+_)?(\d{3})_(\d{4})_")
-
-
-def _lod1_tile_key(name: str) -> str:
-    m = _LOD1_TILE_RE.search(name)
-    if not m:
-        raise ValueError(f"Cannot parse LoD1 tile key from {name!r}")
-    return f"{m.group(1)}_{m.group(2)}"
-
-
-def _lod2_tile_key(name: str) -> str:
-    m = _LOD2_TILE_RE.search(name)
-    if not m:
-        raise ValueError(f"Cannot parse LoD2 tile key from {name!r}")
-    return f"{m.group(1)}_{m.group(2)}"
-
-
-def _neighbour_tile_keys(tile_key: str) -> list[str]:
-    """Return the eight adjacent 1 km tile keys."""
-    e, n = (int(p) for p in tile_key.split("_"))
-    keys = []
-    for de in (-1, 0, 1):
-        for dn in (-1, 0, 1):
-            if de == 0 and dn == 0:
-                continue
-            keys.append(f"{e + de}_{n + dn}")
-    return keys
-
-
-# ── 2017 stock filter ────────────────────────────────────────────────
-
-
-@dataclass
-class FilterStats:
-    """QA counters for the 2017 LoD2 stock filter."""
-
-    input_lod2: int = 0
-    input_lod1: int = 0
-    retained: int = 0
-    rejected: int = 0
-    rejected_low_overlap: int = 0
-    rejected_invalid_overlap: int = 0
-
-    def as_dict(self) -> dict:
-        return {
-            "input_lod2": self.input_lod2,
-            "input_lod1": self.input_lod1,
-            "retained": self.retained,
-            "rejected": self.rejected,
-            "rejected_low_overlap": self.rejected_low_overlap,
-            "rejected_invalid_overlap": self.rejected_invalid_overlap,
-            "min_overlap_frac": _STOCK_OVERLAP_MIN_FRAC,
-        }
-
-
-def filter_lod2_against_lod1(
-    lod2_buildings: list[Building],
-    lod1_index: dict[str, list[Footprint]],
-    tile_key: str,
-) -> tuple[list[Building], FilterStats]:
-    """Retain LoD2 buildings whose footprint is covered by LoD1 footprints.
-
-    Uses :func:`geopandas.sjoin` with the documented ``intersects``
-    predicate; the LoD1 union for the tile plus its eight neighbours
-    is the right-hand side, so edge buildings are still scored against
-    their adjacent LoD1 stock.
-    """
-
-    stats = FilterStats(input_lod2=len(lod2_buildings))
-
-    # Build the LoD1 pool: tile + 8 neighbours, dropping empty entries.
-    pool: list[Polygon | MultiPolygon] = []
-    for key in [tile_key, *_neighbour_tile_keys(tile_key)]:
-        for foot in lod1_index.get(key, []):
-            if foot.footprint is not None and not foot.footprint.is_empty:
-                pool.append(foot.footprint)
-                stats.input_lod1 += 1
-    if not pool or not lod2_buildings:
-        stats.rejected = len(lod2_buildings)
-        stats.rejected_low_overlap = len(lod2_buildings)
-        return [], stats
-
-    if len(pool) == 1:
-        lod1_union = pool[0]
-    else:
-        from shapely.ops import unary_union
-
-        lod1_union = unary_union(pool)
-
-    retained: list[Building] = []
-    for b in lod2_buildings:
-        if b.footprint is None or b.footprint.is_empty:
-            stats.rejected += 1
-            stats.rejected_invalid_overlap += 1
-            continue
-
-        try:
-            intersection = b.footprint.intersection(lod1_union)
-            inter_area = intersection.area
-            frac = inter_area / b.footprint.area if b.footprint.area > 0 else 0.0
-        except Exception:
-            stats.rejected += 1
-            stats.rejected_invalid_overlap += 1
-            continue
-
-        if frac >= _STOCK_OVERLAP_MIN_FRAC:
-            retained.append(b)
-            stats.retained += 1
-        else:
-            stats.rejected += 1
-            stats.rejected_low_overlap += 1
-
-    return retained, stats
-
-
-# ── rasterisation accumulator ───────────────────────────────────────
-
-
-def _accumulate_buildings(
-    buildings: Iterable[Building],
-    grid: GeoBox,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Accumulate per-cell statistics for the canonical 10 m grid."""
-    shape = (grid.shape.y, grid.shape.x)
-    sum_arr = np.zeros(shape, dtype=np.float64)
-    sumsq_arr = np.zeros(shape, dtype=np.float64)
-    count_arr = np.zeros(shape, dtype=np.int32)
-    area_arr = np.zeros(shape, dtype=np.float64)
-    max_arr = np.zeros(shape, dtype=np.float32)
-
-    transform = grid.transform
-    for bldg in buildings:
-        if bldg.footprint is None or bldg.measured_height is None:
-            continue
-        try:
-            geom = mapping(bldg.footprint)
-            mask_result = rasterize(
-                [(geom, 1)],
-                out_shape=shape,
-                transform=transform,
-                fill=0,
-                dtype=np.uint8,
-            )
-            mask = mask_result if mask_result is not None else None
-        except Exception:  # noqa: S112 — skip buildings with bad geometry
-            continue
-        if mask is None:
-            continue
-        cells = mask > 0
-        n_cells = int(np.sum(cells))
-        if n_cells == 0:
-            continue
-
-        h = bldg.measured_height
-        sum_arr[cells] += h
-        sumsq_arr[cells] += h * h
-        count_arr[cells] += 1
-        area_arr[cells] += bldg.footprint.area / n_cells
-        np.maximum.at(max_arr, cells, h)
-
-    # When smoke or filtered runs cover only part of the AOI the
-    # untouched cells keep a zero count.  Mask them as NaN so the
-    # validator sees a sparse product rather than an artificially flat
-    # zero-valued surface.
-    empty_mask = count_arr == 0
-    sum_arr[empty_mask] = np.nan
-    sumsq_arr[empty_mask] = np.nan
-    count_arr[empty_mask] = 0
-    area_arr[empty_mask] = np.nan
-    max_arr[empty_mask] = np.nan
-
-    return sum_arr, sumsq_arr, count_arr, area_arr, max_arr
-
-
-def _build_morphology_dataset(
-    buildings: Iterable[Building],
-    grid: GeoBox,
-) -> xr.Dataset:
-    """Build the canonical 4-band morphology dataset."""
-    sum_arr, sumsq_arr, count_arr, area_arr, max_arr = _accumulate_buildings(buildings, grid)
-
-    count_f = count_arr.astype(np.float64)
-    mean_arr = np.where(count_f > 0, sum_arr / count_f, np.nan).astype(np.float32)
-    variance = np.where(
-        count_f > 1,
-        (sumsq_arr - (sum_arr * sum_arr) / count_f) / (count_f - 1),
-        0.0,
-    )
-    std_arr = np.where(count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan).astype(np.float32)
-    bcr_arr = np.where(count_f > 0, area_arr / 100.0, np.nan).astype(np.float32)
-    bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
-    max_arr = np.where(count_f > 0, max_arr, np.nan).astype(np.float32)
-
-    xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
-    ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
-    ds = xr.Dataset(
-        {
-            "building_height_mean": (("y", "x"), mean_arr),
-            "building_height_std": (("y", "x"), std_arr),
-            "building_coverage_ratio": (("y", "x"), bcr_arr),
-            "building_height_max": (("y", "x"), max_arr),
-        },
-        coords={"x": xs, "y": ys},
-    )
-    ds = ds.rio.write_crs(str(grid.crs))
-    ds = ds.rio.write_transform(grid.transform)
-    return ds
-
-
-# ── product publisher ───────────────────────────────────────────────
-
-
-def _validate_against_existing_vintages(
-    buildings_count: int,
-    vintage: int,
-) -> None:
-    """Warn when the historical run would conflict with a known vintage."""
-    if buildings_count == 0:
-        log_event(
-            _logger,
-            logging.WARNING,
-            "no_buildings_in_vintage",
-            vintage=vintage,
-        )
-
-
-def prepare_vintage_morphology(
-    vintage: int,
-    source_root: str,
-    run_id: str,
-    *,
-    lod1_index: dict[str, list[Footprint]] | None = None,
-    grid: GeoBox | None = None,
-    smoke_tile_count: int | None = None,
-) -> tuple[PreparedSecondaryProduct, FilterStats]:
-    """Prepare the canonical morphology product for *vintage* (2017/2021/2022).
-
-    For vintage 2017 the LoD2-2021 stock is filtered against the LoD1
-    footprints via :func:`filter_lod2_against_lod1`; the other vintages
-    consume the raw LoD2 stock directly.
-
-    Returns the prepared product plus the filter QA stats (empty for
-    non-2017 vintages).
-    """
-    if vintage not in _VINTAGE_SOURCES:
-        raise ValueError(f"Unsupported vintage: {vintage}")
-
-    grid = grid or canon_grid_10m()
-    c_hash = config_hash_for_vintage(vintage)
-
-    log_event(_logger, logging.INFO, "vintage_load_start", vintage=vintage)
-    source_vintage = 2021 if vintage == 2017 else vintage
-    lod2_groups = load_lod2_buildings(
-        source_vintage, max_tiles=smoke_tile_count, grid=grid
-    )
-    log_event(
-        _logger,
-        logging.INFO,
-        "vintage_load_done",
-        vintage=vintage,
-        source_vintage=source_vintage,
-        n_tiles=len(lod2_groups),
-    )
-
-    # Restrict to a smoke subset if requested.
-    if smoke_tile_count is not None:
-        kept = dict(list(lod2_groups.items())[:smoke_tile_count])
-        lod2_groups = kept
-
-    all_buildings: list[Building] = []
-    filter_stats = FilterStats()
-
-    if vintage == 2017:
-        if lod1_index is None:
-            raise ValueError("Vintage 2017 requires the LoD1 footprint index")
-        for tile_key, buildings in lod2_groups.items():
-            kept, stats = filter_lod2_against_lod1(buildings, lod1_index, tile_key)
-            all_buildings.extend(kept)
-            filter_stats.input_lod2 += stats.input_lod2
-            filter_stats.input_lod1 += stats.input_lod1
-            filter_stats.retained += stats.retained
-            filter_stats.rejected += stats.rejected
-            filter_stats.rejected_low_overlap += stats.rejected_low_overlap
-            filter_stats.rejected_invalid_overlap += stats.rejected_invalid_overlap
-    else:
-        for buildings in lod2_groups.values():
-            all_buildings.extend(buildings)
-
-    _validate_against_existing_vintages(len(all_buildings), vintage)
-
-    ds = _build_morphology_dataset(all_buildings, grid)
-
-    spec = _VINTAGE_SOURCES[vintage]
-    tile_count = len(lod2_groups)
-    raw_manifest_uri = (
-        f"{source_root.rstrip('/')}/ard/static/sources/lod_vintages/"
-        f"raw_manifest_{vintage}.json"
-    )
-    source_metadata = {
-        "vintage": vintage,
-        "source_kind": spec["kind"],
-        "local_path": spec["local_path"],
-        "feed_label": spec["feed_label"],
-        "raw_manifest_uri": raw_manifest_uri,
-        "tile_count": tile_count,
-        "total_buildings": len(all_buildings),
-        "stock_filter": filter_stats.as_dict() if vintage == 2017 else None,
-    }
-
-    valid_frac = float(
-        np.count_nonzero(~np.isnan(ds["building_height_mean"].values))
-    ) / ds["building_height_mean"].size
-
-    return (
-        PreparedSecondaryProduct(
-            source="lod2_morphology",
-            item_key=str(vintage),
-            category="morphology",
-            dataset=ds,
-            contract=contract_for_lod2_morphology(),
-            nominal_interval=vintage_interval(vintage),
-            source_metadata=source_metadata,
-            qa_stats={
-                "valid_frac": round(valid_frac, 4),
-                "tile_count": tile_count,
-                "total_buildings": len(all_buildings),
-                **(
-                    {"stock_filter": filter_stats.as_dict()}
-                    if vintage == 2017
-                    else {}
-                ),
-            },
-            config_hash=c_hash,
-        ),
-        filter_stats,
-    )
-
-
-def publish_vintage_morphology(
-    vintage: int,
-    source_root: str,
-    run_id: str,
-    *,
-    lod1_index: dict[str, list[Footprint]] | None = None,
-    grid: GeoBox | None = None,
-    smoke_tile_count: int | None = None,
-):
-    """Prepare and finalise the *vintage* morphology product."""
-    grid = grid or canon_grid_10m()
-    prepared, stats = prepare_vintage_morphology(
-        vintage,
-        source_root,
-        run_id,
-        lod1_index=lod1_index,
-        grid=grid,
-        smoke_tile_count=smoke_tile_count,
-    )
-    from berlin_lst_downscaling.data.secondary.paths import source_product_dir
-
-    prod_dir = source_product_dir(source_root, "lod2_morphology", str(vintage))
-    artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)
-    log_event(
-        _logger,
-        logging.INFO,
-        "vintage_morphology_published",
-        vintage=vintage,
-        cog_uri=artifacts.cog_uri,
-        retained=stats.retained,
-        rejected=stats.rejected,
-    )
-    return artifacts, stats
 
 
 # ── derived products per vintage ─────────────────────────────────────
@@ -1037,18 +1046,68 @@ def derive_vintage_products(
     }
 
 
+# ── local input staging (CLI helper) ─────────────────────────────────
+
+
+def stage_local_archive(spec: VintageSpec, source_dir: Path) -> Path:
+    """Create the canonical archive ZIP for *spec* from *source_dir*.
+
+    Used to build the GCS-resident archive from the local input dir
+    (2017 dir, 2021 dir) without keeping the archive plus the expanded
+    files on disk at the same time.  Uses stdlib ``zipfile`` to stream
+    the directory into the archive.
+
+    The caller is responsible for deleting *source_dir* only after the
+    archive has been verified in GCS.
+    """
+    archive_name = spec.archive_filename
+    target = source_dir.parent / archive_name
+    log_event(
+        _logger,
+        logging.INFO,
+        "local_archive_build_start",
+        vintage=spec.vintage,
+        source_dir=str(source_dir),
+        target=str(target),
+    )
+    if target.exists():
+        target.unlink()
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for xml_path in sorted(source_dir.glob("*.xml")):
+            z.write(xml_path, arcname=xml_path.name)
+    log_event(
+        _logger,
+        logging.INFO,
+        "local_archive_build_done",
+        vintage=spec.vintage,
+        archive=str(target),
+        byte_count=target.stat().st_size,
+    )
+    return target
+
+
+# ensure shutil is referenced (used elsewhere when expanding archives)
+_ = shutil  # noqa: F841
+
+
 __all__ = [
+    "ArchiveMaterialization",
     "FilterStats",
     "RawManifest",
-    "RawManifestEntry",
+    "VintageSpec",
+    "_VINTAGE_SOURCES",
+    "archive_uri_for",
     "derive_vintage_products",
     "filter_lod2_against_lod1",
-    "load_lod1_footprints",
-    "load_lod2_buildings",
+    "iter_lod1_tiles",
+    "iter_lod2_tiles",
+    "materialize_vintage_archive",
     "prepare_vintage_morphology",
     "publish_geometry_mapping",
+    "publish_raw_archive_manifest",
     "publish_vintage_morphology",
-    "stream_vintage_to_gcs",
+    "stage_local_archive",
+    "stream_archive_to_gcs",
     "vintage_geometry_id",
     "year_to_vintage_range",
 ]

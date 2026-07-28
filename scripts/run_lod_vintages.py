@@ -2,28 +2,33 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""LoD historical-vintage runner — 2017 / 2021 / 2022 morphology.
+"""LoD historical-vintage runner — archive-first GCS workflow.
 
-Streams the locally-supplied Berlin LoD1 (2017) and LoD2 (2021/2022)
-CityGML tiles into GCS, publishes the canonical-grid
-``lod2_morphology`` products for each historical vintage, derives the
-morphology-dependent products (building DSM, combined DSM, building
-horizon, SVF) per vintage, and writes a year → vintage carry-forward
-mapping.
+Streams one ZIP per vintage from GCS into a per-vintage processing
+session, publishes the canonical-grid ``lod2_morphology`` products,
+derives the morphology-dependent bundle (building DSM, combined DSM,
+building horizon, SVF) per vintage, and writes the year → vintage
+carry-forward mapping.
 
 Usage
 -----
+    # Full archive-backed production run on the VM
     uv run python scripts/run_lod_vintages.py \\
         --source-root gs://berlin-lst-data/static/sources/full \\
         --derived-root gs://berlin-lst-data/static/derived/full \\
         --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \\
+        --raw-root gs://berlin-lst-data \\
         --vintages 2017,2021,2022
 
-    # Smoke run on a tiny bbox (200×200 m), no GCS writes:
-    uv run python scripts/run_lod_vintages.py --dry-run --smoke-tile-count 4
+    # Local smoke against an arbitrary local archive
+    uv run python scripts/run_lod_vintages.py --smoke-archive \\
+        data/LoD2/LoD2_2022.zip --vintages 2022 \\
+        --smoke-tile-count 8 --smoke-bbox 13.586225,52.467717,13.616234,52.486040 \\
+        --skip-derived
 
-    # Delete local raw inputs after a successful run:
-    uv run python scripts/run_lod_vintages.py ... --cleanup
+    # Delete the source-dir copy after a successful build of one archive
+    uv run python scripts/run_lod_vintages.py --stage-local 2017 \\
+        --local-source-dir data/LoD2/2017 --raw-root gs://berlin-lst-data
 """
 
 from __future__ import annotations
@@ -40,11 +45,14 @@ from berlin_lst_downscaling.common.grid import smoke_grid
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.data.secondary.lod_vintages import (
     _VINTAGE_SOURCES,
+    RawManifest,
     derive_vintage_products,
-    load_lod1_footprints,
+    materialize_vintage_archive,
     publish_geometry_mapping,
+    publish_raw_archive_manifest,
     publish_vintage_morphology,
-    stream_vintage_to_gcs,
+    stage_local_archive,
+    stream_archive_to_gcs,
     vintage_geometry_id,
 )
 
@@ -69,6 +77,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Bucket-level root for the geometry_mapping.json artifact.",
     )
     parser.add_argument(
+        "--raw-root",
+        default="gs://berlin-lst-data",
+        help="Bucket-level root for raw vintage archives.",
+    )
+    parser.add_argument(
         "--vintages",
         default="2017,2021,2022",
         help="Comma-separated list of vintages to process.",
@@ -83,6 +96,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--smoke-bbox",
         default=None,
         help="WGS84 bbox (west,south,east,north) for local smoke runs.",
+    )
+    parser.add_argument(
+        "--smoke-archive",
+        default=None,
+        help="Local path to a single archive for smoke runs (default: download from GCS).",
     )
     parser.add_argument(
         "--run-id",
@@ -100,14 +118,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip the raw archive upload (assume already uploaded).",
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Run without writing to GCS; useful for local smoke testing.",
+        "--stage-local",
+        choices=("2017", "2021"),
+        default=None,
+        help="Build the canonical archive ZIP from a local source directory, "
+        "upload to GCS, then delete the source dir on success.",
     )
     parser.add_argument(
-        "--cleanup",
+        "--local-source-dir",
+        default=None,
+        help="Local directory containing the .xml files to archive (used with --stage-local).",
+    )
+    parser.add_argument(
+        "--dry-run",
         action="store_true",
-        help="Delete local raw inputs after a successful run.",
+        help="Skip raw upload + GCS writes; useful for local smoke testing.",
     )
     parser.add_argument(
         "--log-level",
@@ -132,24 +157,43 @@ def _resolve_vintages(raw: str) -> list[int]:
     return out
 
 
-def _delete_local_inputs() -> int:
-    """Delete every local raw input; return the number of files removed."""
-    removed = 0
-    targets: list[Path] = [
-        Path("data/LoD2/2017"),
-        Path("data/LoD2/LoD2_BE_1_33_2021"),
-        Path("data/LoD2/LoD2_2022.zip"),
-    ]
-    for target in targets:
-        if target.is_dir():
-            shutil.rmtree(target)
-            removed += 1
-            log_event(_logger, logging.INFO, "local_input_deleted", path=str(target), kind="dir")
-        elif target.is_file():
-            target.unlink()
-            removed += 1
-            log_event(_logger, logging.INFO, "local_input_deleted", path=str(target), kind="file")
-    return removed
+def _stage_and_upload(
+    vintage: int,
+    local_source_dir: Path,
+    raw_root: str,
+    source_root: str,
+) -> RawManifest:
+    """Build the archive ZIP from *local_source_dir*, upload to GCS, return manifest."""
+    spec = _VINTAGE_SOURCES[vintage]
+    archive_path = stage_local_archive(spec, local_source_dir)
+    try:
+        manifest = stream_archive_to_gcs(spec, archive_path, raw_root)
+        # Mirror the architecture of the published product layout:
+        # the manifest lives next to other source artefacts under
+        # ``ard/static/sources/lod_vintages/`` of the configured
+        # source root.
+        manifest_uri_base = source_root.rstrip("/")
+        publish_raw_archive_manifest(manifest, manifest_uri_base)
+    finally:
+        # Always remove the local archive copy; the bucket is the
+        # immutable source of truth.
+        try:
+            archive_path.unlink()
+        except FileNotFoundError:
+            pass
+    return manifest
+
+
+def _delete_local_dir(path: Path) -> bool:
+    """Delete *path* if it exists. Return True if anything was deleted."""
+    if not path.exists():
+        return False
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    log_event(_logger, logging.INFO, "local_input_deleted", path=str(path))
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -158,11 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     run_id = args.run_id or uuid4().hex[:8]
     level = getattr(logging, args.log_level)
 
-    if args.dry_run:
-        log_root = args.source_root
-    else:
-        log_root = args.source_root
-
+    log_root = args.source_root
     grid = None
     if args.smoke_bbox:
         west, south, east, north = (float(p) for p in args.smoke_bbox.split(","))
@@ -178,37 +218,93 @@ def main(argv: list[str] | None = None) -> int:
             source_root=args.source_root,
             derived_root=args.derived_root,
             metadata_root=args.metadata_root,
+            raw_root=args.raw_root,
             dry_run=args.dry_run,
         )
 
         t0 = time.perf_counter()
         failures: list[str] = []
 
-        # Pre-load LoD1 2017 once for the 2017 stock filter.
-        lod1_index: dict | None = None
-        if 2017 in vintages:
-            log_event(_logger, logging.INFO, "lod1_index_load_start")
-            lod1_index = load_lod1_footprints(2017, max_tiles=args.smoke_tile_count, grid=grid)
-            log_event(
-                _logger,
-                logging.INFO,
-                "lod1_index_load_done",
-                n_tiles=len(lod1_index),
-                n_footprints=sum(len(v) for v in lod1_index.values()),
-            )
+        # Optional: stage one local directory into an archive, upload, delete local copy.
+        if args.stage_local and args.local_source_dir:
+            try:
+                if not args.dry_run:
+                    _stage_and_upload(
+                        int(args.stage_local),
+                        Path(args.local_source_dir),
+                        args.raw_root,
+                        args.source_root,
+                    )
+                    # After successful upload, free the local directory.
+                    if _delete_local_dir(Path(args.local_source_dir)):
+                        log_event(
+                            _logger,
+                            logging.INFO,
+                            "local_source_released",
+                            vintage=int(args.stage_local),
+                            path=args.local_source_dir,
+                        )
+            except Exception as exc:
+                log_event(
+                    _logger,
+                    logging.ERROR,
+                    "stage_local_failed",
+                    error=str(exc),
+                )
+                failures.append(f"stage-{args.stage_local}: {exc}")
 
         vintage_artifacts: dict[int, dict] = {}
 
         for vintage in vintages:
             try:
-                if not args.skip_raw_upload and not args.dry_run:
-                    stream_vintage_to_gcs(vintage, args.source_root)
+                # 1. Materialise the LoD2 archive for this vintage
+                #    (always the 2021 archive for vintage=2017).
+                source_vintage = 2021 if vintage == 2017 else vintage
 
-                artifacts, _stats = publish_vintage_morphology(
+                if args.smoke_archive:
+                    lod2_archive_path = Path(args.smoke_archive)
+                elif args.dry_run:
+                    # Dry-run without smoke-archive: nothing to read.
+                    log_event(
+                        _logger,
+                        logging.WARNING,
+                        "dry_run_no_archive",
+                        vintage=vintage,
+                    )
+                    continue
+                else:
+                    mat, mat_tmp = materialize_vintage_archive(
+                        _VINTAGE_SOURCES[source_vintage], args.raw_root
+                    )
+                    lod2_archive_path = mat.local_path
+
+                # 2. Materialise the LoD1 archive when filtering 2017
+                lod1_archive_path = None
+                if vintage == 2017:
+                    if args.smoke_archive:
+                        lod1_archive_path = Path(args.smoke_archive)
+                    else:
+                        lod1_mat, lod1_tmp = materialize_vintage_archive(
+                            _VINTAGE_SOURCES[2017], args.raw_root
+                        )
+                        lod1_archive_path = lod1_mat.local_path
+
+                # 3. Publish morphology product
+                if args.dry_run:
+                    log_event(
+                        _logger,
+                        logging.INFO,
+                        "vintage_skipped_dry_run",
+                        vintage=vintage,
+                    )
+                    continue
+
+                artifacts, _stats, _archive = publish_vintage_morphology(
                     vintage,
                     args.source_root,
                     run_id,
-                    lod1_index=lod1_index if vintage == 2017 else None,
+                    lod1_archive=lod1_archive_path,
+                    lod2_archive=lod2_archive_path,
                     grid=grid,
                     smoke_tile_count=args.smoke_tile_count,
                 )
@@ -262,18 +358,6 @@ def main(argv: list[str] | None = None) -> int:
                     error=str(exc),
                 )
                 failures.append(f"mapping: {exc}")
-
-        # Cleanup only on full success and only on explicit request.
-        if args.cleanup and not failures and not args.dry_run:
-            removed = _delete_local_inputs()
-            log_event(_logger, logging.INFO, "cleanup_done", removed_paths=removed)
-        elif args.cleanup and failures:
-            log_event(
-                _logger,
-                logging.WARNING,
-                "cleanup_skipped_due_to_failures",
-                n_failures=len(failures),
-            )
 
         elapsed = time.perf_counter() - t0
         log_event(
