@@ -89,6 +89,7 @@ def _compute_horizon_cube(
     cell_size: float,
     max_radius_m: float,
     n_azimuths: int = 36,
+    tile_size: int = 1024,
 ) -> np.ndarray:
     """Compute horizon angles for all cells and azimuth directions.
 
@@ -102,6 +103,10 @@ def _compute_horizon_cube(
         Maximum ray-cast distance in metres.
     n_azimuths :
         Number of azimuth directions (default 36 = 10° steps).
+    tile_size :
+        Side length of the per-tile window used to bound the in-flight
+        DSM slice and result slab.  Smaller values reduce peak memory;
+        the full output cube is still written.
 
     Returns
     -------
@@ -175,7 +180,42 @@ def _compute_horizon_cube(
                     result[az_idx, y, x] = max_angle_cd
 
     result = np.full((n_azimuths, h, w), _NODATA_UINT16, dtype=np.uint16)
-    _kernel(dsm, result, offsets_y, offsets_x, cell_size, max_radius_cells, n_azimuths, h, w)
+    # Tile the computation so the per-tile DSM slice and result slab stay
+    # small enough for the 7.8 GB VM.  Each tile is padded by
+    # ``max_radius_cells`` so the ray-cast can still see neighbours.
+    # Only the unpadded centre slice of the result is written.
+    tile_h = min(tile_size, h)
+    tile_w = min(tile_size, w)
+    pad = max_radius_cells
+    for y0 in range(0, h, tile_h):
+        y1 = min(h, y0 + tile_h)
+        for x0 in range(0, w, tile_w):
+            x1 = min(w, x0 + tile_w)
+            yp0 = max(0, y0 - pad)
+            yp1 = min(h, y1 + pad)
+            xp0 = max(0, x0 - pad)
+            xp1 = min(w, x1 + pad)
+            dsm_tile = dsm[yp0:yp1, xp0:xp1]
+            result_tile = np.full(
+                (n_azimuths, yp1 - yp0, xp1 - xp0), _NODATA_UINT16, dtype=np.uint16
+            )
+            _kernel(
+                dsm_tile,
+                result_tile,
+                offsets_y,
+                offsets_x,
+                cell_size,
+                max_radius_cells,
+                n_azimuths,
+                yp1 - yp0,
+                xp1 - xp0,
+            )
+            # Write only the unpadded centre slice back to the full result.
+            src_y0 = y0 - yp0
+            src_y1 = src_y0 + (y1 - y0)
+            src_x0 = x0 - xp0
+            src_x1 = src_x0 + (x1 - x0)
+            result[:, y0:y1, x0:x1] = result_tile[:, src_y0:src_y1, src_x0:src_x1]
     return result
 
 # ── prepare ───────────────────────────────────────────────────────────
