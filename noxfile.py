@@ -675,6 +675,8 @@ def smoke_dynamic(session: nox.Session) -> None:
         "python",
         "scripts/validate_dynamic.py",
         f"--output-root={output_root}",
+        "--expected-role",
+        "anchor",
         "--expected-scenes",
         "1",
         external=True,

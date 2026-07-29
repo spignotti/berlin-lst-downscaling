@@ -7,6 +7,8 @@ source_root: "gs://berlin-lst-data/static/sources/full"
 derived_root: "gs://berlin-lst-data/static/derived/full"
 output_root: "gs://berlin-lst-data/dynamic/smoke"
 
-# Fixed scene for reproducible testing
+# Fixed scene for reproducible testing (2017 vintage)
 scene_ids:
   - "LC08_L2SP_192023_20170526_02_T1"
+
+geometry_mapping_uri: "gs://berlin-lst-data/static/geometry_vintages/v1/geometry_mapping.json"
