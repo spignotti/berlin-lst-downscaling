@@ -12,5 +12,6 @@ output_root: "data/dynamic/smoke"
 scene_ids:
   - "LC08_L2SP_192023_20170526_02_T1"
 
-# manifest_uri must be provided on the command line:
-#   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
+# geometry_mapping_uri must be provided on the command line for cloud smoke
+# or use smoke-local mapping root.  For local smoke with 2017 scene, the
+# 2017 vintage geometry must be available in source_root/derived_root.

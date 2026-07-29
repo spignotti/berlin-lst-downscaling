@@ -235,7 +235,7 @@ def prepare_shadow(
             "solar_azimuth_deg": round(azimuth_deg, 3),
             "solar_elevation_deg": round(elevation_deg, 3),
             "geometry_id": geometry_id,
-            "geometry_temporal_mode": "retrospective_static",
+            "geometry_mapping_mode": "carry_forward",
             "component": component,
             "scene_year": scene_year,
             "day_of_year": day_of_year,
@@ -258,7 +258,7 @@ def prepare_shadow(
             "shadow:component": component,
             "shadow:solar_azimuth": round(azimuth_deg, 3),
             "shadow:solar_elevation": round(elevation_deg, 3),
-            "shadow:geometry_temporal_mode": "retrospective_static",
+            "shadow:geometry_mapping_mode": "carry_forward",
             "shadow:encoding": "uint8 (0=lit, 1=shadow, 255=nodata)",
             "acquisition:datetime": (
                 acquisition_datetime.isoformat() if acquisition_datetime else None

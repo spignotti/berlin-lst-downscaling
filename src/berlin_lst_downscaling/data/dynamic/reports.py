@@ -23,7 +23,7 @@ def dynamic_qa_report(
     ledger: SecondaryLedger,
     run_id: str,
     manifest_hash: str,
-    geometry_id: str,
+    geometry_mapping: Any,
 ) -> dict[str, Any]:
     """Generate a QA report for the dynamic pipeline run.
 
@@ -68,6 +68,20 @@ def dynamic_qa_report(
                         year_dist[year] = year_dist.get(year, 0) + 1
                         break
 
+    # Vintage distribution from mapping
+    vintage_dist: dict[int, int] = {}
+    if geometry_mapping is not None:
+        for r in all_rows:
+            if r.status == "done" and r.source == "shadow_building":
+                parts = r.period_or_vintage.split("_")
+                for part in parts:
+                    if len(part) == 8 and part.isdigit():
+                        year = int(part[:4])
+                        vintage = geometry_mapping.year_to_vintage.get(year)
+                        if vintage is not None:
+                            vintage_dist[vintage] = vintage_dist.get(vintage, 0) + 1
+                        break
+
     total_failed = sum(per_source[s].get("failed", 0) for s in per_source)
     total_completed = sum(per_source[s].get("completed", 0) for s in per_source)
 
@@ -75,15 +89,12 @@ def dynamic_qa_report(
         "run_id": run_id,
         "timestamp": datetime.now(UTC).isoformat(),
         "manifest_hash": manifest_hash,
-        "geometry_id": geometry_id,
-        "geometry_temporal_mode": "retrospective_static",
-        "geometry_vintages": {
-            "lod2_morphology": "2024",
-            "terrain_height": "2021",
-            "vegetation_height": "2020",
-        },
+        "geometry_mapping_uri": geometry_mapping.uri if geometry_mapping else None,
+        "geometry_mapping_hash": geometry_mapping.content_hash if geometry_mapping else None,
+        "geometry_mapping_version": geometry_mapping.version if geometry_mapping else None,
         "per_source": per_source,
         "year_distribution": dict(sorted(year_dist.items())),
+        "vintage_distribution": dict(sorted(vintage_dist.items())),
         "total_completed": total_completed,
         "total_failed": total_failed,
         "success": total_failed == 0,
@@ -106,8 +117,8 @@ def format_dynamic_report(report: dict[str, Any]) -> str:
         f"Dynamic QA Report — run {report['run_id']}",
         f"  Timestamp : {report['timestamp']}",
         f"  Manifest  : {report['manifest_hash']}",
-        f"  Geometry  : {report['geometry_id']}",
-        f"  Mode      : {report['geometry_temporal_mode']}",
+        f"  Mapping   : {report.get('geometry_mapping_uri', '?')}",
+        f"  Mapping v : {report.get('geometry_mapping_version', '?')}",
         f"  Success   : {'yes' if report['success'] else 'NO'}",
         f"  Completed : {report['total_completed']}",
         f"  Failed    : {report['total_failed']}",
@@ -130,6 +141,14 @@ def format_dynamic_report(report: dict[str, Any]) -> str:
         lines.append("  Year distribution:")
         for year, count in sorted(year_dist.items()):
             lines.append(f"    {year}: {count} scenes")
+        lines.append("")
+
+    # Vintage distribution
+    vintage_dist = report.get("vintage_distribution", {})
+    if vintage_dist:
+        lines.append("  Building vintage distribution:")
+        for vintage, count in sorted(vintage_dist.items()):
+            lines.append(f"    {vintage}: {count} scenes")
         lines.append("")
 
     return "\n".join(lines)

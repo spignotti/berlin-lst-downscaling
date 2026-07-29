@@ -1,146 +1,202 @@
-"""Geometry resolver — validate and resolve static geometry products for shadows.
+"""Geometry resolver — load carry-forward mapping and resolve per-scene geometry.
 
-For dynamic shadow computation, the existing horizon cubes (36-band building
-and vegetation horizons) plus the component DSMs must be validated as
-published artifacts.  This module resolves them by geometry_id and validates
-their completeness.
+Reads the published ``geometry_mapping.json`` once per run, validates it,
+then resolves the correct horizon cubes for each scene based on its year.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
+from hashlib import sha256
 
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.io.storage import exists, read_bytes
 
+_logger = logging.getLogger(__name__)
+
+# ── geometry mapping ────────────────────────────────────────────────────
 
 @dataclass
-class ResolvedGeometry:
-    """Validated static geometry products for shadow computation."""
+class GeometryMapping:
+    """Parsed and validated geometry_mapping.json."""
 
-    geometry_id: str
-    # Source product COGs
-    terrain_cog: str
-    vegetation_height_cog: str
-    lod2_cog: str
-    # Derived product COGs
-    building_dsm_cog: str
-    vegetation_dsm_cog: str
-    combined_dsm_cog: str
-    # Horizon cubes
-    horizon_building_cog: str
-    horizon_vegetation_cog: str
-    # Upstream hashes (from provenance)
-    terrain_hash: str
-    vh_hash: str
-    lod2_hash: str
+    uri: str
+    content_hash: str
+    version: str
+    rule: str
+    year_to_vintage: dict[int, int]
+    vintages: dict[int, dict]
+    building_horizons: dict[int, str]  # vintage -> horizon COG URI
+    vegetation_horizon_uri: str  # fixed VH-2020 horizon
 
 @dataclass
-class GeometryResolutionReport:
-    """Result of resolving geometry artifacts."""
+class SceneGeometry:
+    """Resolved geometry for one scene."""
 
-    resolved: ResolvedGeometry | None = None
+    scene_year: int
+    building_vintage: int
+    building_geometry_id: str
+    building_horizon_uri: str
+    vegetation_horizon_uri: str
+
+@dataclass
+class GeometryMappingReport:
+    """Result of loading and validating the geometry mapping."""
+
+    mapping: GeometryMapping | None = None
     errors: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return self.resolved is not None and len(self.errors) == 0
+        return self.mapping is not None and len(self.errors) == 0
 
-def resolve_geometry(
-    source_root: str,
-    derived_root: str,
-    geometry_id: str,
-) -> GeometryResolutionReport:
-    """Resolve and validate all static geometry products.
 
-    Parameters
-    ----------
-    source_root :
-        Root URI of finalized Pipeline A output (local or ``gs://``).
-    derived_root :
-        Root URI of finalized Pipeline B output (local or ``gs://``).
-    geometry_id :
-        Frozen geometry key, e.g. ``"dgm1-2021__lod2-2024__vh-2020"``.
+def load_geometry_mapping(uri: str) -> GeometryMappingReport:
+    """Load, parse, and validate the published geometry_mapping.json.
+
+    Validates:
+    - JSON is readable and well-formed.
+    - Version field present.
+    - Carry-forward rule present.
+    - All years 2017–2026 are covered.
+    - No future vintage is assigned to any year.
+    - All referenced building horizon COGs and completion markers exist.
+    - Vegetation horizon (VH-2020) exists.
     """
     errors: list[str] = []
 
-    # ── source products ──────────────────────────────────────────────
-    src_base = f"{source_root.rstrip('/')}/ard/static/sources"
-    src_products = {
-        "terrain_height": ("terrain_height", "2021"),
-        "vegetation_height": ("vegetation_height", "2020"),
-        "lod2_morphology": ("lod2_morphology", "2024"),
-    }
+    try:
+        raw = read_bytes(uri)
+    except Exception as exc:
+        return GeometryMappingReport(errors=[f"Cannot read mapping: {uri}: {exc}"])
 
-    src_uris: dict[str, str] = {}
-    src_hashes: dict[str, str] = {}
+    content_hash = sha256(raw).hexdigest()[:16]
 
-    for name, (source, revision) in src_products.items():
-        cog = f"{src_base}/{source}/{revision}/{source}_{revision}.tif"
-        prov = f"{src_base}/{source}/{revision}/provenance.json"
-        comp = f"{src_base}/{source}/{revision}/complete.json"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return GeometryMappingReport(errors=[f"Invalid JSON in mapping: {exc}"])
 
-        if not all(exists(u) for u in [cog, prov, comp]):
-            errors.append(f"Source product incomplete: {source}/{revision}")
-            continue
+    version = data.get("version", "")
+    rule = data.get("rule", "")
 
-        src_uris[name] = cog
+    if not version:
+        errors.append("mapping missing 'version'")
+    if not rule:
+        errors.append("mapping missing 'rule'")
 
-        # Source products are required to carry a non-empty config_hash.
-        prov_data = json.loads(read_bytes(prov))
-        config_hash = prov_data.get("config_hash", "")
-        if not config_hash:
-            errors.append(f"Source product missing config_hash: {source}/{revision}")
-            continue
-        src_hashes[name] = config_hash
+    ytv = data.get("year_to_vintage", {})
+    vintages = data.get("vintages", {})
 
-    if src_uris.get("terrain_height") is None:
-        errors.append("terrain_height required for grid inference")
+    # Check year coverage
+    required_years = set(range(2017, 2027))
+    covered_years = {int(y) for y in ytv.keys()}
+    missing = required_years - covered_years
+    if missing:
+        errors.append(f"mapping missing years: {sorted(missing)}")
 
-    # ── derived products ─────────────────────────────────────────────
-    derived_base = f"{derived_root.rstrip('/')}/ard/static/derived"
-    derived_products = [
-        "building_dsm",
-        "vegetation_dsm",
-        "combined_dsm",
-        "horizon_building",
-        "horizon_vegetation",
-    ]
+    # Check no future vintage assignment
+    for year_str, vintage_str in ytv.items():
+        year = int(year_str)
+        vintage = int(vintage_str)
+        if vintage > year:
+            errors.append(f"year {year} maps to future vintage {vintage}")
 
-    derived_uris: dict[str, str] = {}
-    for name in derived_products:
-        cog = f"{derived_base}/{name}/{geometry_id}/{name}_{geometry_id}.tif"
-        comp = f"{derived_base}/{name}/{geometry_id}/complete.json"
+    # Resolve building horizons per vintage
+    building_horizons: dict[int, str] = {}
+    for vintage_str, vdata in vintages.items():
+        vintage = int(vintage_str)
+        geom_id = vdata.get("geometry_id", "")
 
-        if not all(exists(u) for u in [cog, comp]):
-            errors.append(f"Derived product incomplete: {name}/{geometry_id}")
-            continue
+        # Building horizon
+        horizon_uri = (
+            f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+            f"horizon_building/{geom_id}/horizon_building_{geom_id}.tif"
+        )
+        horizon_comp = (
+            f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+            f"horizon_building/{geom_id}/complete.json"
+        )
+        if not exists(horizon_uri) or not exists(horizon_comp):
+            errors.append(f"Building horizon incomplete: vintage={vintage} geom_id={geom_id}")
+        else:
+            building_horizons[vintage] = horizon_uri
 
-        derived_uris[name] = cog
+    # Vegetation horizon (fixed VH-2020)
+    vh_geom_id = "dgm1-2021__lod2-2024__vh-2020"
+    vh_uri = (
+        f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+        f"horizon_vegetation/{vh_geom_id}/horizon_vegetation_{vh_geom_id}.tif"
+    )
+    vh_comp = (
+        f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+        f"horizon_vegetation/{vh_geom_id}/complete.json"
+    )
+    if not exists(vh_uri) or not exists(vh_comp):
+        errors.append(f"Vegetation horizon incomplete: geom_id={vh_geom_id}")
 
-    # ── build resolved report ────────────────────────────────────────
     if errors:
-        return GeometryResolutionReport(errors=errors)
+        return GeometryMappingReport(errors=errors)
 
-    resolved = ResolvedGeometry(
-        geometry_id=geometry_id,
-        terrain_cog=src_uris["terrain_height"],
-        vegetation_height_cog=src_uris["vegetation_height"],
-        lod2_cog=src_uris["lod2_morphology"],
-        building_dsm_cog=derived_uris["building_dsm"],
-        vegetation_dsm_cog=derived_uris["vegetation_dsm"],
-        combined_dsm_cog=derived_uris["combined_dsm"],
-        horizon_building_cog=derived_uris["horizon_building"],
-        horizon_vegetation_cog=derived_uris["horizon_vegetation"],
-        terrain_hash=src_hashes.get("terrain_height", ""),
-        vh_hash=src_hashes.get("vegetation_height", ""),
-        lod2_hash=src_hashes.get("lod2_morphology", ""),
+    mapping = GeometryMapping(
+        uri=uri,
+        content_hash=content_hash,
+        version=version,
+        rule=rule,
+        year_to_vintage={int(y): int(v) for y, v in ytv.items()},
+        vintages={int(k): v for k, v in vintages.items()},
+        building_horizons=building_horizons,
+        vegetation_horizon_uri=vh_uri,
     )
 
-    return GeometryResolutionReport(resolved=resolved, errors=errors)
+    log_event(
+        _logger,
+        logging.INFO,
+        "geometry_mapping_loaded",
+        uri=uri,
+        version=version,
+        content_hash=content_hash,
+        n_vintages=len(building_horizons),
+    )
+
+    return GeometryMappingReport(mapping=mapping)
+
+
+def resolve_scene_geometry(
+    scene_year: int,
+    mapping: GeometryMapping,
+) -> SceneGeometry:
+    """Resolve geometry for a specific scene year using the carry-forward mapping.
+
+    Raises ValueError if the scene year is not covered by the mapping.
+    """
+    vintage = mapping.year_to_vintage.get(scene_year)
+    if vintage is None:
+        raise ValueError(f"Scene year {scene_year} not covered by geometry mapping")
+
+    vdata = mapping.vintages.get(vintage, {})
+    geometry_id = vdata.get("geometry_id", "")
+    building_horizon = mapping.building_horizons.get(vintage, "")
+
+    if not building_horizon:
+        raise ValueError(
+            f"No building horizon for vintage {vintage} (scene year {scene_year})"
+        )
+
+    return SceneGeometry(
+        scene_year=scene_year,
+        building_vintage=vintage,
+        building_geometry_id=geometry_id,
+        building_horizon_uri=building_horizon,
+        vegetation_horizon_uri=mapping.vegetation_horizon_uri,
+    )
 
 __all__ = [
-    "ResolvedGeometry",
-    "GeometryResolutionReport",
-    "resolve_geometry",
+    "GeometryMapping",
+    "GeometryMappingReport",
+    "SceneGeometry",
+    "load_geometry_mapping",
+    "resolve_scene_geometry",
 ]
