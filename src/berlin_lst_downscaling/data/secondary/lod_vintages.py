@@ -52,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import shutil
 import tempfile
@@ -64,10 +65,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+import rasterio.windows
 import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.features import rasterize
+from rasterio.windows import Window
 from shapely.geometry import mapping
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
@@ -622,7 +625,15 @@ def filter_lod2_against_lod1(
 
 
 class _Accumulator:
-    """Pre-allocated 10 m-grid statistics buffers for one vintage product."""
+    """Pre-allocated 10 m-grid statistics buffers for one vintage product.
+
+    Rasterisation is performed into a *local* window per CityGML tile
+    rather than against the full canonical Berlin grid.  Each building is
+    still rasterised individually so per-building ``n_cells`` and the
+    existing height/area accumulation semantics are preserved exactly.
+    The global grid stays in memory; only the per-tile allocations are
+    tiny.
+    """
 
     def __init__(self, grid: GeoBox) -> None:
         shape = (grid.shape.y, grid.shape.x)
@@ -634,24 +645,48 @@ class _Accumulator:
         self.max = np.zeros(shape, dtype=np.float32)
 
     def add_tile(self, buildings: list[Building]) -> None:
-        transform = self.grid.transform
-        shape = (self.grid.shape.y, self.grid.shape.x)
+        # Decide the local window once per CityGML tile from the union of
+        # building bounds; only build a window if the tile intersects the
+        # grid at all.
+        window = _local_window_for_buildings(buildings, self.grid)
+        if window is None:
+            return
+
+        local_transform = rasterio.windows.transform(window, self.grid.transform)
+        local_h = int(window.height)
+        local_w = int(window.width)
+        if local_h <= 0 or local_w <= 0:
+            return
+
+        row_off = int(window.row_off)
+        col_off = int(window.col_off)
+        sum_slice = self.sum[row_off : row_off + local_h, col_off : col_off + local_w]
+        sumsq_slice = self.sumsq[
+            row_off : row_off + local_h, col_off : col_off + local_w
+        ]
+        count_slice = self.count[
+            row_off : row_off + local_h, col_off : col_off + local_w
+        ]
+        area_slice = self.area[
+            row_off : row_off + local_h, col_off : col_off + local_w
+        ]
+        max_slice = self.max[row_off : row_off + local_h, col_off : col_off + local_w]
+
         for bldg in buildings:
             if bldg.footprint is None or bldg.measured_height is None:
                 continue
             try:
                 geom = mapping(bldg.footprint)
-                mask_result = rasterize(
+                mask = rasterize(
                     [(geom, 1)],
-                    out_shape=shape,
-                    transform=transform,
+                    out_shape=(local_h, local_w),
+                    transform=local_transform,
                     fill=0,
                     dtype=np.uint8,
                 )
-                mask = mask_result if mask_result is not None else None
+                if mask is None:
+                    continue
             except Exception:  # noqa: S112 — skip buildings with bad geometry
-                continue
-            if mask is None:
                 continue
             cells = mask > 0
             n_cells = int(np.sum(cells))
@@ -659,11 +694,11 @@ class _Accumulator:
                 continue
 
             h = bldg.measured_height
-            self.sum[cells] += h
-            self.sumsq[cells] += h * h
-            self.count[cells] += 1
-            self.area[cells] += bldg.footprint.area / n_cells
-            np.maximum.at(self.max, cells, h)
+            sum_slice[cells] += h
+            sumsq_slice[cells] += h * h
+            count_slice[cells] += 1
+            area_slice[cells] += bldg.footprint.area / n_cells
+            np.maximum.at(max_slice, cells, h)
 
     def to_dataset(self) -> xr.Dataset:
         """Render the accumulated statistics into the canonical 4-band dataset."""
@@ -713,6 +748,7 @@ def prepare_vintage_morphology(
     *,
     lod1_mat: ArchiveMaterialization | None = None,
     lod2_mat: ArchiveMaterialization,
+    source_root: str | None = None,
     grid: GeoBox | None = None,
     smoke_tile_count: int | None = None,
 ) -> tuple[PreparedSecondaryProduct, FilterStats]:
@@ -725,6 +761,13 @@ def prepare_vintage_morphology(
     For vintage 2017 the LoD2-2021 stock is filtered against the LoD1
     footprints via :func:`filter_lod2_against_lod1`; the other vintages
     consume the raw LoD2 stock directly.
+
+    Parameters
+    ----------
+    source_root :
+        Optional explicit root under which the raw archive manifest
+        JSON lives (``<source_root>/ard/static/sources/lod_vintages/raw_manifest_<vintage>.json``).
+        Defaults to ``raw_root``.
     """
     spec = _VINTAGE_SOURCES[vintage]
     source_vintage = 2021 if vintage == 2017 else vintage
@@ -733,6 +776,8 @@ def prepare_vintage_morphology(
         raise ValueError("lod2_mat is required")
     if vintage == 2017 and lod1_mat is None:
         raise ValueError("Vintage 2017 requires lod1_mat")
+
+    manifest_root = source_root or raw_root
 
     grid = grid or canon_grid_10m()
     c_hash = config_hash_for_vintage(vintage)
@@ -828,7 +873,7 @@ def prepare_vintage_morphology(
         "member_count": lod2_mat.member_count,
     }
     raw_manifest_uri = (
-        f"{raw_root.rstrip('/')}/ard/static/sources/lod_vintages/"
+        f"{manifest_root.rstrip('/')}/ard/static/sources/lod_vintages/"
         f"raw_manifest_{vintage}.json"
     )
 
@@ -909,6 +954,7 @@ def publish_vintage_morphology(
         raw_root,
         lod1_mat=lod1_mat,
         lod2_mat=lod2_mat,
+        source_root=source_root,
         grid=grid,
         smoke_tile_count=smoke_tile_count,
     )
@@ -1216,6 +1262,67 @@ def _read_config_hash(provenance_uri: str) -> str:
         return str(payload.get("config_hash", ""))
     except Exception:  # noqa: S110 — fall through, surface as missing hash
         return ""
+
+
+def _local_window_for_buildings(
+    buildings: list[Building], grid: GeoBox
+) -> Window | None:
+    """Compute a minimal canonical-grid window covering *buildings*.
+
+    Returns ``None`` when the buildings do not intersect the grid.
+    The window covers the union of building footprints extended by one
+    pixel of safety, clipped to the grid extent, so neighbouring tiles
+    see overlapping footprints but each building still rasterises exactly
+    once (the caller only invokes this function once per source tile).
+    """
+    minx = math.inf
+    miny = math.inf
+    maxx = -math.inf
+    maxy = -math.inf
+    found = False
+    for b in buildings:
+        if b.footprint is None or b.footprint.is_empty or not b.footprint.is_valid:
+            continue
+        bx0, by0, bx1, by1 = b.footprint.bounds
+        if bx0 < minx:
+            minx = bx0
+        if by0 < miny:
+            miny = by0
+        if bx1 > maxx:
+            maxx = bx1
+        if by1 > maxy:
+            maxy = by1
+        found = True
+    if not found:
+        return None
+
+    grid_minx = grid.transform.xoff
+    grid_miny = grid.transform.yoff + grid.shape.y * grid.transform.e
+    grid_maxx = grid.transform.xoff + grid.shape.x * grid.transform.a
+    grid_maxy = grid.transform.yoff
+    if maxx <= grid_minx or minx >= grid_maxx or maxy <= grid_miny or miny >= grid_maxy:
+        return None
+
+    win = rasterio.windows.from_bounds(
+        max(minx, grid_minx),
+        max(miny, grid_miny),
+        min(maxx, grid_maxx),
+        min(maxy, grid_maxy),
+        transform=grid.transform,
+    )
+    win = win.round_offsets().round_lengths()
+    if win.height <= 0 or win.width <= 0:
+        return None
+    grid_h = grid.shape.y
+    grid_w = grid.shape.x
+    row0 = max(0, int(win.row_off))
+    col0 = max(0, int(win.col_off))
+    row1 = min(grid_h, int(win.row_off + win.height))
+    col1 = min(grid_w, int(win.col_off + win.width))
+    if row1 <= row0 or col1 <= col0:
+        return None
+    # Window(col_off, row_off, width, height) — see rasterio source.
+    return Window(col0, row0, col1 - col0, row1 - row0)  # type: ignore[call-arg]
 
 
 # ── local input staging (CLI helper) ─────────────────────────────────
