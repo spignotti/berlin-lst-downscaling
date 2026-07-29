@@ -40,10 +40,10 @@ the LoD2-2021 stock filter against the LoD1-2017 footprints
 survive, using the more detailed 2021 roof geometry. Vintages 2024 and
 later remain served by the ATOM-feed product.
 
-This is a **one-off runner** — not part of the regular Static A/B
-pipelines.  It produces the historical morphometry once, derives the
-geometry bundle per vintage, and writes the year-to-vintage carry-forward
-mapping.
+These are additional Static A/B vintages — once reconciled into the
+Static ledgers, they are treated identically to the other source/derived
+products. The carry-forward mapping wires per-scene geometry selection
+for the Dynamic pipeline.
 
 #### Archive contract
 
@@ -83,7 +83,7 @@ The Dynamic pipeline still uses the frozen 2024 geometry today; the
 carry-forward artefact is the integration point for a follow-up task
 that wires per-scene geometry selection into shadow computation.
 
-#### One-off runner commands
+#### Runner commands
 
 ```bash
 # Full archive-backed backfill (VM, all three historical vintages).
@@ -94,14 +94,30 @@ uv run python scripts/run_lod_vintages.py \
     --raw-root gs://berlin-lst-data \
     --vintages 2017,2021,2022
 
-# Validator for the production run (default skips); smoke variants
-# take separate --source-root / --derived-root arguments.
+# Reconcile finalized artifacts into both Static ledgers.
+# Downloads no archives, computes no raster, derives no products.
+uv run python scripts/run_lod_vintages.py --reconcile-only \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --vintages 2017,2021,2022
+
+# Structural validation (fast, no archive download).
 uv run python scripts/validate_lod_vintages.py \
     --source-root gs://berlin-lst-data/static/sources/full \
     --derived-root gs://berlin-lst-data/static/derived/full \
     --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
     --raw-root gs://berlin-lst-data \
     --vintages 2017,2021,2022
+
+# Strict archive integrity (downloads ~4 GB sequentially).
+uv run python scripts/validate_lod_vintages.py \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022 \
+    --verify-archives
 ```
 
 ## Manifest bundle (v3)

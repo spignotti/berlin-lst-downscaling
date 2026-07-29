@@ -58,7 +58,8 @@ uv run python scripts/run_static_sources.py --config-name full
 # Static derived
 uv run python scripts/run_static_derived.py --config-name full
 
-# Historical LoD morphometry vintages (2017, 2021, 2022) — archive-first, one-off runner
+# Historical LoD morphometry vintages (2017, 2021, 2022)
+# Additional Static A/B vintages — archive-first runner.
 # (Requires terrain_height/2021, vegetation_height/2020, vegetation_dsm/2024
 # already published in --upstream-source-root / --upstream-derived-root.)
 uv run python scripts/run_lod_vintages.py \
@@ -66,6 +67,14 @@ uv run python scripts/run_lod_vintages.py \
     --derived-root gs://berlin-lst-data/static/derived/full \
     --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
     --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022
+
+# Reconcile finalized artifacts into both Static ledgers
+# (no archive download, no raster computation)
+uv run python scripts/run_lod_vintages.py --reconcile-only \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
     --vintages 2017,2021,2022
 
 # Build + upload a single archive from the local source dir, then free local copy
@@ -88,13 +97,22 @@ uv run python scripts/run_lod_vintages.py \
     --upstream-derived-root gs://berlin-lst-data/static/derived/full \
     --vintages 2022
 
-# Validate published artifacts against production GCS roots
+# Validate published artifacts against production GCS roots (structural)
 uv run python scripts/validate_lod_vintages.py \
     --source-root gs://berlin-lst-data/static/sources/full \
     --derived-root gs://berlin-lst-data/static/derived/full \
     --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
     --raw-root gs://berlin-lst-data \
     --vintages 2017,2021,2022
+
+# Strict archive integrity verification (downloads ~4 GB sequentially)
+uv run python scripts/validate_lod_vintages.py \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022 \
+    --verify-archives
 
 # DWD validation
 uv run python scripts/run_dwd_validation.py --config-name default \

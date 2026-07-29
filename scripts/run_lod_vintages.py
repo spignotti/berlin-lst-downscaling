@@ -34,6 +34,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import sys
@@ -153,6 +154,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Skip raw upload + GCS writes; useful for local smoke testing.",
+    )
+    parser.add_argument(
+        "--reconcile-only",
+        action="store_true",
+        help=(
+            "Validate finalized artifacts and reconcile them into both "
+            "Static ledgers.  Downloads no archives, computes no raster, "
+            "derives no products."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -276,11 +286,295 @@ def _publish_one_vintage(
     )
 
 
+def _reconcile_only(
+    args: argparse.Namespace,
+    run_id: str,
+    vintages: list[int],
+) -> int:
+    """Validate finalized artifacts and reconcile them into both ledgers.
+
+    Downloads no archives, computes no raster, derives no products.
+    Fails if any required artifact is incomplete or missing.
+    """
+    from berlin_lst_downscaling.data.io.storage import exists, read_bytes
+    from berlin_lst_downscaling.data.secondary.idempotency import reconcile
+    from berlin_lst_downscaling.data.secondary.ledger import (
+        SecondaryLedger,
+        SecondaryLedgerRow,
+    )
+    from berlin_lst_downscaling.data.secondary.paths import (
+        derived_ledger_path,
+        derived_product_cog,
+        source_product_cog,
+        source_product_provenance,
+    )
+
+    failures: list[str] = []
+    source_ledger_path = (
+        f"{args.source_root.rstrip('/')}/ledger.parquet"
+    )
+
+    for vintage in vintages:
+        # ── source artifacts ────────────────────────────────────────
+        cog_uri = source_product_cog(
+            args.source_root, "lod2_morphology", str(vintage)
+        )
+        prov_uri = source_product_provenance(
+            args.source_root, "lod2_morphology", str(vintage)
+        )
+        stac_uri = (
+            f"{args.source_root.rstrip('/')}/ard/static/sources/"
+            f"lod2_morphology/{vintage}/lod2_morphology_{vintage}.stac.json"
+        )
+        completion_uri = (
+            f"{args.source_root.rstrip('/')}/ard/static/sources/"
+            f"lod2_morphology/{vintage}/complete.json"
+        )
+
+        for name, uri in [
+            ("COG", cog_uri),
+            ("provenance", prov_uri),
+            ("STAC", stac_uri),
+            ("complete", completion_uri),
+        ]:
+            if not exists(uri):
+                failures.append(f"{vintage}: source {name} missing: {uri}")
+
+        if failures:
+            continue
+
+        # Read config_hash from provenance
+        config_hash = ""
+        try:
+            prov = json.loads(read_bytes(prov_uri))
+            config_hash = str(prov.get("config_hash", ""))
+        except Exception:  # noqa: S110 — fall through, empty hash acceptable
+            pass
+
+        # ── derived artifacts ───────────────────────────────────────
+        geometry_id = vintage_geometry_id(vintage)
+        expected_products = [
+            "building_dsm",
+            "combined_dsm",
+            "horizon_building",
+            "svf",
+        ]
+        derived_ok = True
+        for product in expected_products:
+            prod_cog = derived_product_cog(
+                args.derived_root, product, geometry_id
+            )
+            prod_prov = (
+                f"{args.derived_root.rstrip('/')}/ard/static/derived/"
+                f"{product}/{geometry_id}/provenance.json"
+            )
+            prod_stac = (
+                f"{args.derived_root.rstrip('/')}/ard/static/derived/"
+                f"{product}/{geometry_id}/"
+                f"{product}_{geometry_id}.stac.json"
+            )
+            prod_complete = (
+                f"{args.derived_root.rstrip('/')}/ard/static/derived/"
+                f"{product}/{geometry_id}/complete.json"
+            )
+            for name, uri in [
+                ("COG", prod_cog),
+                ("provenance", prod_prov),
+                ("STAC", prod_stac),
+                ("complete", prod_complete),
+            ]:
+                if not exists(uri):
+                    failures.append(
+                        f"{vintage}: derived {product} {name} missing: {uri}"
+                    )
+                    derived_ok = False
+
+        if not derived_ok:
+            continue
+
+        # ── upsert source ledger ────────────────────────────────────
+        led = SecondaryLedger.open(source_ledger_path)
+        item_id = f"lod2_morphology_{vintage}"
+        todo = reconcile(
+            [(item_id, "lod2_morphology", str(vintage))],
+            led,
+            config_hash,
+        )
+        if todo:
+            led.upsert(
+                SecondaryLedgerRow(
+                    item_id=item_id,
+                    source="lod2_morphology",
+                    period_or_vintage=str(vintage),
+                    status="done",
+                    run_id=run_id,
+                    config_hash=config_hash,
+                    output_uri=cog_uri,
+                    stac_uri=stac_uri,
+                    provenance_uri=prov_uri,
+                    completion_uri=completion_uri,
+                )
+            )
+            log_event(
+                _logger,
+                logging.INFO,
+                "source_ledger_upserted",
+                vintage=vintage,
+                item_id=item_id,
+            )
+
+        # ── upsert derived ledger ───────────────────────────────────
+        deriv_led = SecondaryLedger.open(
+            derived_ledger_path(args.derived_root)
+        )
+        for product in expected_products:
+            prod_prov = (
+                f"{args.derived_root.rstrip('/')}/ard/static/derived/"
+                f"{product}/{geometry_id}/provenance.json"
+            )
+            prod_hash = ""
+            try:
+                pp = json.loads(read_bytes(prod_prov))
+                prod_hash = str(pp.get("config_hash", ""))
+            except Exception:  # noqa: S110 — fall through, empty hash acceptable
+                pass
+
+            prod_cog = derived_product_cog(
+                args.derived_root, product, geometry_id
+            )
+            prod_stac = (
+                f"{args.derived_root.rstrip('/')}/ard/static/derived/"
+                f"{product}/{geometry_id}/"
+                f"{product}_{geometry_id}.stac.json"
+            )
+            prod_complete = (
+                f"{args.derived_root.rstrip('/')}/ard/static/derived/"
+                f"{product}/{geometry_id}/complete.json"
+            )
+
+            deriv_todo = reconcile(
+                [(product, product, geometry_id)],
+                deriv_led,
+                prod_hash,
+            )
+            if deriv_todo:
+                deriv_led.upsert(
+                    SecondaryLedgerRow(
+                        item_id=product,
+                        source=product,
+                        period_or_vintage=geometry_id,
+                        status="done",
+                        run_id=run_id,
+                        config_hash=prod_hash,
+                        output_uri=prod_cog,
+                        stac_uri=prod_stac,
+                        provenance_uri=prod_prov,
+                        completion_uri=prod_complete,
+                    )
+                )
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "derived_ledger_upserted",
+                    vintage=vintage,
+                    product=product,
+                    geometry_id=geometry_id,
+                )
+
+        log_event(
+            _logger,
+            logging.INFO,
+            "reconcile_done",
+            vintage=vintage,
+            geometry_id=geometry_id,
+        )
+
+    if failures:
+        for f in failures:
+            print(f"FAIL: {f}", file=sys.stderr)
+        return 1
+
+    # ── publish geometry mapping after all ledgers are reconciled ────
+    vintage_artifacts: dict[int, dict] = {}
+    for vintage in vintages:
+        cog_uri = source_product_cog(
+            args.source_root, "lod2_morphology", str(vintage)
+        )
+        prov_uri = source_product_provenance(
+            args.source_root, "lod2_morphology", str(vintage)
+        )
+        geometry_id = vintage_geometry_id(vintage)
+        vintage_artifacts[vintage] = {
+            "geometry_id": geometry_id,
+            "lod2_morphology": cog_uri,
+            "stac": (
+                f"{args.source_root.rstrip('/')}/ard/static/sources/"
+                f"lod2_morphology/{vintage}/"
+                f"lod2_morphology_{vintage}.stac.json"
+            ),
+            "provenance": prov_uri,
+            "completion": (
+                f"{args.source_root.rstrip('/')}/ard/static/sources/"
+                f"lod2_morphology/{vintage}/complete.json"
+            ),
+        }
+
+    publish_geometry_mapping(
+        args.metadata_root,
+        vintage_artifacts=vintage_artifacts,
+        legacy_source_root=args.source_root,
+        legacy_derived_root=args.derived_root,
+    )
+
+    # ── ledger summary ──────────────────────────────────────────────
+    led_src = SecondaryLedger.open(source_ledger_path)
+    led_drv = SecondaryLedger.open(
+        derived_ledger_path(args.derived_root)
+    )
+    log_event(
+        _logger,
+        logging.INFO,
+        "reconcile_summary",
+        source_counts=led_src.status_counts(),
+        derived_counts=led_drv.status_counts(),
+    )
+    print(f"OK: reconciled {len(vintages)} vintage(s) into both ledgers")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     vintages = _resolve_vintages(args.vintages)
     run_id = args.run_id or uuid4().hex[:8]
     level = getattr(logging, args.log_level)
+
+    if args.reconcile_only:
+        with RunLogSession(
+            args.source_root,
+            pipeline="lod-vintages",
+            run_id=run_id,
+            level=level,
+        ):
+            log_event(
+                _logger,
+                logging.INFO,
+                "run_start",
+                run_id=run_id,
+                vintages=vintages,
+                mode="reconcile_only",
+                source_root=args.source_root,
+                derived_root=args.derived_root,
+                metadata_root=args.metadata_root,
+            )
+            t0 = time.perf_counter()
+            rc = _reconcile_only(args, run_id, vintages)
+            log_event(
+                _logger,
+                logging.INFO,
+                "duration",
+                elapsed_s=round(time.perf_counter() - t0, 1),
+            )
+            return rc
 
     log_root = args.source_root
     grid = None

@@ -11,8 +11,8 @@ Storage, plus an independent DWD sanity check on the ERA5-Land channel.
 |-------|--------|-------|
 | Selection (v3 manifest) | `gs://berlin-lst-data/manifests/v3/...` | 345 Landsat anchors, 509 scenes total |
 | ARD | `gs://berlin-lst-data/ard/...` | Per-scene COG + flag COG + STAC + provenance |
-| Static sources (A) | `gs://berlin-lst-data/static/sources/...` | 4 sources × vintages (imperviousness 2016/2021, vegetation_height 2020, terrain_height 2021, lod2_morphology 2024) |
-| Static derived (B) | `gs://berlin-lst-data/static/derived/...` | building_dsm, vegetation_dsm, combined_dsm, horizon_building, horizon_vegetation, svf |
+| Static sources (A) | `gs://berlin-lst-data/static/sources/...` | 7 vintages: imperviousness 2016/2021, vegetation_height 2020, terrain_height 2021, lod2_morphology 2017/2021/2022/2024 |
+| Static derived (B) | `gs://berlin-lst-data/static/derived/...` | building_dsm, vegetation_dsm, combined_dsm, horizon_building, horizon_vegetation, svf (per geometry vintage) |
 | Dynamic scenes (C) | `gs://berlin-lst-data/dynamic/...` | 972 training + 63 inference = 1 035 products (era5_land + shadow_building + shadow_vegetation per scene) |
 | DWD validation | `gs://berlin-lst-data/dwd_validation/...` | 345 anchors, 378 953 DWD observations, 1 508 matched pairs |
 
