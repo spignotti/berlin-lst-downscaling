@@ -14,17 +14,32 @@ Checks every published artefact in the chosen GCS roots:
 - Derived products: building_dsm, combined_dsm, horizon_building, svf.
 - Year → vintage carry-forward mapping covers every year 2017–2026.
 
+With ``--verify-archives`` each archive is downloaded sequentially and
+verified byte-for-byte: local size vs. manifest, SHA-256 recomputation,
+and sorted XML member names compared to the manifest.  The 2017 vintage
+validates against both raw manifests (LoD1 stock-filter + LoD2 geometry).
+
 Returns exit code 0 on full success, 1 on any failure.  Designed to be
 the smoke gate before declaring the historical processing closed.
 
 Usage
 -----
+    # Default structural checks (fast, no archive download)
     uv run python scripts/validate_lod_vintages.py \\
         --source-root gs://berlin-lst-data/static/sources/full \\
         --derived-root gs://berlin-lst-data/static/derived/full \\
         --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \\
         --raw-root gs://berlin-lst-data \\
         --vintages 2017,2021,2022
+
+    # Strict archive integrity (downloads ~4 GB sequentially)
+    uv run python scripts/validate_lod_vintages.py \\
+        --source-root gs://berlin-lst-data/static/sources/full \\
+        --derived-root gs://berlin-lst-data/static/derived/full \\
+        --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \\
+        --raw-root gs://berlin-lst-data \\
+        --vintages 2017,2021,2022 \\
+        --verify-archives
 """
 
 from __future__ import annotations
@@ -52,6 +67,9 @@ class ValidationReport:
     @property
     def ok(self) -> bool:
         return not self.failures
+
+
+# ── archive checks ────────────────────────────────────────────────────
 
 
 def _check_archive(
@@ -84,6 +102,58 @@ def _check_archive(
         "byte_count": blob.size,
         "md5": blob.md5_hash,
     }
+
+
+def _verify_archive_integrity(
+    report: ValidationReport,
+    raw_root: str,
+    source_root: str,
+    vintage: int,
+) -> None:
+    """Download archive, recompute SHA-256, verify members against manifest."""
+    from berlin_lst_downscaling.data.secondary.lod_vintages import (
+        materialize_vintage_archive,
+    )
+
+    spec = _VINTAGE_SOURCES[vintage]
+    print(f"verifying archive integrity: vintage={vintage} (may take a while) ...")
+
+    with materialize_vintage_archive(spec, raw_root) as mat:
+        # 1. Byte count
+        manifest = json.loads(
+            read_bytes(
+                f"{source_root.rstrip('/')}/ard/static/sources/"
+                f"lod_vintages/raw_manifest_{vintage}.json"
+            )
+        )
+        if mat.byte_count != manifest.get("archive_byte_count"):
+            report.failures.append(
+                f"archive byte_count mismatch: "
+                f"local={mat.byte_count} manifest={manifest.get('archive_byte_count')}"
+            )
+
+        # 2. SHA-256
+        if mat.sha256 != manifest.get("archive_sha256"):
+            report.failures.append(
+                f"archive sha256 mismatch: "
+                f"local={mat.sha256} manifest={manifest.get('archive_sha256')}"
+            )
+
+        # 3. Sorted member names
+        expected_members = sorted(manifest.get("members", []))
+        actual_members = sorted(mat.member_names)
+        if actual_members != expected_members:
+            added = set(actual_members) - set(expected_members)
+            removed = set(expected_members) - set(actual_members)
+            report.failures.append(
+                f"archive member mismatch: "
+                f"+{len(added)} -{len(removed)} of {len(expected_members)}"
+            )
+
+    print(f"archive integrity ok: vintage={vintage}")
+
+
+# ── manifest checks ───────────────────────────────────────────────────
 
 
 def _check_raw_manifest(
@@ -123,12 +193,45 @@ def _check_raw_manifest(
         )
 
 
+def _check_source_provenance_dual_manifest(
+    report: ValidationReport,
+    source_root: str,
+) -> None:
+    """Validate 2017 provenance lists both LoD1 and LoD2 raw manifests."""
+    base = (
+        f"{source_root.rstrip('/')}/ard/static/sources/lod2_morphology/2017"
+    )
+    prov_uri = f"{base}/provenance.json"
+    if not exists(prov_uri):
+        return  # already reported by _check_source_product
+    try:
+        prov = json.loads(read_bytes(prov_uri))
+        sm = prov.get("source_metadata", {})
+        raw_manifest_uri = sm.get("raw_manifest_uri", "")
+        lod1_archive = sm.get("lod1_archive", {})
+        if not raw_manifest_uri or "raw_manifest_2017" not in raw_manifest_uri:
+            report.failures.append(
+                f"2017 provenance missing LoD2 raw_manifest_uri at {prov_uri}"
+            )
+        if not lod1_archive or "sha256" not in lod1_archive:
+            report.failures.append(
+                f"2017 provenance missing lod1_archive metadata at {prov_uri}"
+            )
+    except Exception as exc:
+        report.failures.append(f"2017 provenance parse error at {prov_uri}: {exc}")
+
+
+# ── source / derived checks ───────────────────────────────────────────
+
+
 def _check_source_product(
     report: ValidationReport,
     source_root: str,
     vintage: int,
 ) -> None:
-    base = f"{source_root.rstrip('/')}/ard/static/sources/lod2_morphology/{vintage}"
+    base = (
+        f"{source_root.rstrip('/')}/ard/static/sources/lod2_morphology/{vintage}"
+    )
     expected = [
         f"{base}/lod2_morphology_{vintage}.tif",
         f"{base}/lod2_morphology_{vintage}.stac.json",
@@ -182,11 +285,14 @@ def _check_derived_product(
                 report.failures.append(f"derived artifact missing: {uri}")
 
 
+# ── mapping check ─────────────────────────────────────────────────────
+
+
 def _check_geometry_mapping(
     report: ValidationReport,
     metadata_root: str,
-    vintages: list[int],
 ) -> None:
+    """Validate the full 2017–2026 carry-forward mapping."""
     uri = f"{metadata_root.rstrip('/')}/geometry_mapping.json"
     if not exists(uri):
         report.failures.append(f"geometry_mapping missing: {uri}")
@@ -194,32 +300,33 @@ def _check_geometry_mapping(
 
     payload = json.loads(read_bytes(uri))
 
-    selected_years: set[int] = set()
-    for v in vintages:
-        lo, hi = year_to_vintage_range(v)
-        if lo is None or hi is None:
-            continue
-        for y in range(lo, hi + 1):
-            selected_years.add(y)
+    # The mapping must cover all years 2017–2026
+    expected_years = set(range(2017, 2027))
+    mapping_years = {
+        int(y): int(v) for y, v in payload.get("year_to_vintage", {}).items()
+    }
 
-    mapping_years = {int(y): int(v) for y, v in payload.get("year_to_vintage", {}).items()}
-    missing = sorted(y for y in selected_years if y not in mapping_years)
+    missing = sorted(expected_years - set(mapping_years.keys()))
     if missing:
         report.failures.append(
             "geometry_mapping missing years: " + ", ".join(str(y) for y in missing)
         )
 
+    # Validate carry-forward: each year maps to a valid vintage in range
     for year, vint in mapping_years.items():
-        if vint not in vintages:
+        lo, hi = year_to_vintage_range(vint)
+        if lo is None or hi is None:
             report.failures.append(
-                f"geometry_mapping year {year} -> vintage {vint} not in selected set"
+                f"geometry_mapping year {year} -> unknown vintage {vint}"
             )
             continue
-        lo, hi = year_to_vintage_range(vint)
-        if lo is None or hi is None or not (lo <= year <= hi):
+        if not (lo <= year <= hi):
             report.failures.append(
                 f"geometry_mapping year {year} -> vintage {vint} violates carry-forward"
             )
+
+
+# ── CLI ───────────────────────────────────────────────────────────────
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -266,16 +373,38 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip the year-to-vintage mapping check.",
     )
+    parser.add_argument(
+        "--verify-archives",
+        action="store_true",
+        help=(
+            "Download and verify archive integrity (SHA-256, byte count, "
+            "XML members) against the raw manifest.  Downloads ~4 GB "
+            "sequentially per archive."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+
+    if args.verify_archives and args.skip_archives:
+        print(
+            "ERROR: --verify-archives and --skip-archives are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 1
+
     vintages = [int(v) for v in args.vintages.split(",") if v.strip()]
     report = ValidationReport()
 
     for vintage in vintages:
-        if not args.skip_archives:
+        if args.verify_archives:
+            # Strict mode: download + verify integrity
+            _verify_archive_integrity(
+                report, args.raw_root, args.source_root, vintage
+            )
+        elif not args.skip_archives:
             info = _check_archive(report, args.raw_root, vintage)
             if info is not None:
                 print(
@@ -288,8 +417,12 @@ def main(argv: list[str] | None = None) -> int:
         if not args.skip_derived:
             _check_derived_product(report, args.derived_root, vintage)
 
+    # 2017-specific dual-manifest provenance check
+    if 2017 in vintages:
+        _check_source_provenance_dual_manifest(report, args.source_root)
+
     if not args.skip_mapping:
-        _check_geometry_mapping(report, args.metadata_root, vintages)
+        _check_geometry_mapping(report, args.metadata_root)
 
     for w in report.warnings:
         print(f"WARN: {w}")

@@ -15,7 +15,7 @@ Vintages are addressed through the immutable archive contract::
 
 The archive is downloaded to a ``tempfile.TemporaryDirectory()`` once
 per vintage, iterated as a streaming ZipFile, and deleted on context
-exit. No expanded XML is ever written to GCS.
+exit. No expanded XML ever appears in the bucket.
 
 Outputs follow the existing Pipeline-A layout::
 
@@ -34,17 +34,20 @@ Library search
 PyPI candidates ``citygml``, ``pycitygml``, ``citygml-tools`` returned
 404 on the project's index client.  XML parsing uses stdlib
 ``ElementTree`` (see :mod:`berlin_lst_downscaling.data.secondary.citygml`).
-The 2017 stock filter uses :mod:`geopandas` with its documented
-``sjoin`` predicate (``intersects``) — ``geopandas`` is already a
-project dependency and provides an index-backed spatial join.
+The 2017 stock filter uses :mod:`shapely.strtree.STRtree` with a
+vectorized intersection/area check — ``geopandas`` and ``shapely`` are
+already project dependencies and the R-tree plus batch geometry math
+avoids per-row Python loops.
 
 Memory discipline
 -----------------
 The runner processes one LoD2 tile at a time and rasterises into
-pre-allocated accumulators.  For 2017 the LoD1 footprint cache is
-limited to the current tile plus its eight neighbours (9-tile sliding
-window).  Peak RAM holds 9 tiles of LoD1 footprints + 1 tile of LoD2
-buildings + the 5 raster accumulators for the canonical 10 m grid.
+pre-allocated local tile windows inside the canonical 10 m grid.
+For 2017 the LoD1 footprint cache is the full in-memory index rather
+than a 9-tile sliding window; the cache is built once and reused across
+all LoD2 tiles so that edge buildings are always scored against their
+true neighbours.  Peak RAM therefore holds the full LoD1 index plus one
+LoD2 tile plus one local raster window.
 """
 
 from __future__ import annotations
@@ -54,7 +57,6 @@ import json
 import logging
 import math
 import re
-import shutil
 import tempfile
 import time
 import zipfile
@@ -141,8 +143,6 @@ _VINTAGE_SOURCES: dict[int, VintageSpec] = {
 _STOCK_OVERLAP_MIN_FRAC = 0.50
 
 # Number of LoD2 tiles processed between ``lod2_tile_progress`` log events.
-# Emitting per-tile events (up to ~1000/vintage) would just spam the JSONL
-# stream and skew duration timing during production runs.
 _LOG_PROGRESS_EVERY = 50
 
 
@@ -190,6 +190,27 @@ def _stream_sha256_gcs(uri: str, chunk: int = 1 << 16) -> str:
     return h.hexdigest()
 
 
+def _gcs_download_with_retry(blob, target: str) -> None:
+    """Download a GCS blob to a local file with retries for transient failures."""
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=1, max=60),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+    def _do_download():
+        blob.download_to_filename(target)
+
+    _do_download()
+
+
 def archive_uri_for(raw_root: str, spec: VintageSpec) -> str:
     """Return the canonical GCS URI for *spec*'s archive ZIP."""
     return f"{raw_root.rstrip('/')}/lod_vintages/{spec.vintage}/{spec.archive_filename}"
@@ -235,7 +256,8 @@ def materialize_vintage_archive(
         blob = client.bucket(bucket_name).blob(key)
         if not blob.exists():
             raise FileNotFoundError(f"Archive not found in GCS: {uri}")
-        blob.download_to_filename(str(target))
+
+        _gcs_download_with_retry(blob, str(target))
         byte_count = target.stat().st_size
         sha = _stream_sha256_file(target)
         member_names = sorted(iter_xml_members(target))
@@ -295,10 +317,6 @@ class RawManifest:
     archive_byte_count: int
     member_count: int
     member_names: list[str] = field(default_factory=list)
-
-    @property
-    def total_bytes(self) -> int:
-        return self.archive_byte_count
 
 
 def publish_raw_archive_manifest(
@@ -739,7 +757,80 @@ class _Accumulator:
         )
 
 
+def _local_window_for_buildings(
+    buildings: list[Building], grid: GeoBox
+) -> Window | None:
+    """Compute a minimal canonical-grid window covering *buildings*.
+
+    Returns ``None`` when the buildings do not intersect the grid.
+    The window covers the union of building footprints extended by one
+    pixel of safety, clipped to the grid extent, so neighbouring tiles
+    see overlapping footprints but each building still rasterises exactly
+    once (the caller only invokes this function once per source tile).
+    """
+    minx = math.inf
+    miny = math.inf
+    maxx = -math.inf
+    maxy = -math.inf
+    found = False
+    for b in buildings:
+        if b.footprint is None or b.footprint.is_empty or not b.footprint.is_valid:
+            continue
+        bx0, by0, bx1, by1 = b.footprint.bounds
+        if bx0 < minx:
+            minx = bx0
+        if by0 < miny:
+            miny = by0
+        if bx1 > maxx:
+            maxx = bx1
+        if by1 > maxy:
+            maxy = by1
+        found = True
+    if not found:
+        return None
+
+    bbox = grid.extent.boundingbox
+    grid_minx = bbox.left
+    grid_miny = bbox.bottom
+    grid_maxx = bbox.right
+    grid_maxy = bbox.top
+    if maxx <= grid_minx or minx >= grid_maxx or maxy <= grid_miny or miny >= grid_maxy:
+        return None
+
+    win = rasterio.windows.from_bounds(
+        max(minx, grid_minx),
+        max(miny, grid_miny),
+        min(maxx, grid_maxx),
+        min(maxy, grid_maxy),
+        transform=grid.transform,
+    )
+    win = win.round_offsets().round_lengths()
+    if win.height <= 0 or win.width <= 0:
+        return None
+    row0 = max(0, int(win.row_off))
+    col0 = max(0, int(win.col_off))
+    row1 = min(grid.shape.y, int(win.row_off + win.height))
+    col1 = min(grid.shape.x, int(win.col_off + win.width))
+    if row1 <= row0 or col1 <= col0:
+        return None
+    return Window(col0, row0, col1 - col0, row1 - row0)  # type: ignore[call-arg]
+
+
 # ── product publisher (memory-bounded) ──────────────────────────────
+
+
+@dataclass
+class MorphologyArtifacts:
+    """Published artefacts of one historical vintage run."""
+
+    cog_uri: str
+    stac_uri: str
+    provenance_uri: str
+    completion_uri: str
+    archive_uri: str
+    archive_sha256: str
+    archive_byte_count: int
+    raw_manifest_uri: str
 
 
 def prepare_vintage_morphology(
@@ -778,7 +869,6 @@ def prepare_vintage_morphology(
         raise ValueError("Vintage 2017 requires lod1_mat")
 
     manifest_root = source_root or raw_root
-
     grid = grid or canon_grid_10m()
     c_hash = config_hash_for_vintage(vintage)
 
@@ -789,11 +879,10 @@ def prepare_vintage_morphology(
 
     lod1_full_index: dict[str, list[Footprint]] = {}
     if vintage == 2017:
-        # Guarded by the explicit None check above
-        lod1_path = lod1_mat.local_path if lod1_mat is not None else None
+        assert lod1_mat is not None  # noqa: S101 — invariant: caller provides for 2017
         log_event(_logger, logging.INFO, "lod1_index_load_start", vintage=2017)
         for tile_key, footprints in iter_lod1_tiles(
-            lod1_path,  # type: ignore[arg-type]
+            lod1_mat.local_path,
             grid=grid,
             max_tiles=smoke_tile_count,
         ):
@@ -866,12 +955,7 @@ def prepare_vintage_morphology(
         np.count_nonzero(~np.isnan(ds["building_height_mean"].values))
     ) / ds["building_height_mean"].size
 
-    archive_meta = {
-        "uri": archive_uri_for(raw_root, lod2_mat.spec),
-        "sha256": lod2_mat.sha256,
-        "byte_count": lod2_mat.byte_count,
-        "member_count": lod2_mat.member_count,
-    }
+    archive_uri = archive_uri_for(raw_root, lod2_mat.spec)
     raw_manifest_uri = (
         f"{manifest_root.rstrip('/')}/ard/static/sources/lod_vintages/"
         f"raw_manifest_{vintage}.json"
@@ -882,7 +966,12 @@ def prepare_vintage_morphology(
         "source_vintage": source_vintage,
         "level": spec.level,
         "feed_label": spec.feed_label,
-        "archive": archive_meta,
+        "archive": {
+            "uri": archive_uri,
+            "sha256": lod2_mat.sha256,
+            "byte_count": lod2_mat.byte_count,
+            "member_count": lod2_mat.member_count,
+        },
         "raw_manifest_uri": raw_manifest_uri,
         "tile_count": tile_count,
         "stock_filter": filter_stats.as_dict() if vintage == 2017 else None,
@@ -914,26 +1003,6 @@ def prepare_vintage_morphology(
         ),
         filter_stats,
     )
-
-
-@dataclass
-class MorphologyArtifacts:
-    """Published artefacts of one historical vintage run.
-
-    Aggregates the four finalised artefacts produced by
-    :func:`finalize_secondary_product` together with the archive provenance
-    so downstream callers can record them in geometry mapping without
-    re-reading GCS.
-    """
-
-    cog_uri: str
-    stac_uri: str
-    provenance_uri: str
-    completion_uri: str
-    archive_uri: str
-    archive_sha256: str
-    archive_byte_count: int
-    raw_manifest_uri: str
 
 
 def publish_vintage_morphology(
@@ -994,18 +1063,68 @@ def publish_geometry_mapping(
     metadata_root: str,
     *,
     vintage_artifacts: dict[int, dict],
+    legacy_source_root: str = "gs://berlin-lst-data/static/sources/full",
+    legacy_derived_root: str = "gs://berlin-lst-data/static/derived/full",
     published_at: str | None = None,
 ) -> str:
     """Publish the year → vintage carry-forward mapping artefact.
 
-    Only includes years covered by the *vintage_artifacts* actually
-    published in this run.  Runners that publish a subset of vintages
-    get a partial mapping; the validator uses the same vintage list to
-    determine which years must be present.
+    Merges explicitly published historical vintage artifacts **and** the
+    existing legacy 2024 source/derived bundle so the final mapping
+    always covers the full 2017–2026 contract.
+
+    Requires finalized 2024 source + derived artifacts to exist before
+    publishing.  Smoke runs and ``--skip-derived`` processing should
+    skip this call rather than produce a partial map.
     """
+    from berlin_lst_downscaling.data.io.storage import exists
+    from berlin_lst_downscaling.data.secondary.paths import (
+        derived_product_cog,
+        source_product_cog,
+    )
+
     published_at = published_at or datetime.now(UTC).isoformat()
 
-    selected_vintages = set(int(v) for v in vintage_artifacts)
+    legacy_geometry_id = "dgm1-2021__lod2-2024__vh-2020"
+
+    legacy_missing = [
+        uri
+        for uri in [
+            source_product_cog(legacy_source_root, "lod2_morphology", "2024"),
+            f"{legacy_source_root.rstrip('/')}/ard/static/sources/lod2_morphology/2024/complete.json",
+            derived_product_cog(legacy_derived_root, "building_dsm", legacy_geometry_id),
+            f"{legacy_derived_root.rstrip('/')}/ard/static/derived/building_dsm/{legacy_geometry_id}/complete.json",
+            derived_product_cog(legacy_derived_root, "combined_dsm", legacy_geometry_id),
+            f"{legacy_derived_root.rstrip('/')}/ard/static/derived/combined_dsm/{legacy_geometry_id}/complete.json",
+            derived_product_cog(legacy_derived_root, "horizon_building", legacy_geometry_id),
+            f"{legacy_derived_root.rstrip('/')}/ard/static/derived/horizon_building/{legacy_geometry_id}/complete.json",
+            derived_product_cog(legacy_derived_root, "svf", legacy_geometry_id),
+            f"{legacy_derived_root.rstrip('/')}/ard/static/derived/svf/{legacy_geometry_id}/complete.json",
+        ]
+        if not exists(uri)
+    ]
+    if legacy_missing:
+        raise FileNotFoundError(
+            "Geometry mapping requires published legacy 2024 bundle but "
+            f"these artifacts are missing: {legacy_missing}"
+        )
+
+    legacy_uri = source_product_cog(legacy_source_root, "lod2_morphology", "2024")
+    legacy_src_dir = (
+        f"{legacy_source_root.rstrip('/')}/ard/static/sources/lod2_morphology/2024"
+    )
+
+    merged_vintage_artifacts = dict(vintage_artifacts)
+    merged_vintage_artifacts[2024] = {
+        "geometry_id": legacy_geometry_id,
+        "lod2_morphology": legacy_uri,
+        "stac": f"{legacy_src_dir}/lod2_morphology_2024.stac.json",
+        "provenance": f"{legacy_src_dir}/provenance.json",
+        "completion": f"{legacy_src_dir}/complete.json",
+        "legacy": True,
+    }
+
+    selected_vintages = set(int(v) for v in merged_vintage_artifacts)
     year_map: dict[str, str] = {}
     for year in range(2017, 2027):
         matched = None
@@ -1029,8 +1148,9 @@ def publish_geometry_mapping(
                 "geometry_id": art["geometry_id"],
                 "lod2_morphology_cog": art["lod2_morphology"],
                 "publish_target": f"dgm1-2021__lod2-{vintage}__vh-2020",
+                **({"legacy_bundle": True} if art.get("legacy") else {}),
             }
-            for vintage, art in sorted(vintage_artifacts.items())
+            for vintage, art in sorted(merged_vintage_artifacts.items())
         },
     }
     uri = f"{metadata_root.rstrip('/')}/geometry_mapping.json"
@@ -1073,17 +1193,9 @@ def derive_vintage_products(
 ) -> dict:
     """Build the morphology-dependent derived products for one vintage.
 
-    Always reads the freshly-published ``lod2_morphology/<vintage>`` COG
-    from ``source_root`` (the destination the morphology runner just
-    wrote to). Reads vintage-agnostic upstream products from separate
-    overrides when present:
-
-    - ``terrain_height/2021`` and ``vegetation_height/2020`` from
-      ``upstream_source_root`` (default ``source_root``)
-    - ``vegetation_dsm/2024`` from ``upstream_derived_root`` (default
-      ``derived_root``)
-
-    Publishes:
+    Reads the freshly-published ``lod2_morphology/<vintage>`` COG plus the
+    existing ``terrain_height/2021`` and ``vegetation_height/2020``
+    products, and publishes:
 
     - ``building_dsm``
     - ``combined_dsm``
@@ -1093,6 +1205,17 @@ def derive_vintage_products(
     The vegetation-derived products (``vegetation_dsm``,
     ``horizon_vegetation``) are reused unchanged from the existing
     2024-derived bundle since their inputs are vintage-agnostic.
+
+    Parameters
+    ----------
+    upstream_source_root :
+        Optional override for ``source_root`` used to resolve the
+        finalised terrain and vegetation-height products.  Defaults to
+        *source_root*.
+    upstream_derived_root :
+        Optional override for ``derived_root`` used to locate the
+        vintage-agnostic ``vegetation_dsm`` predecessor.  Defaults to
+        *derived_root*.
     """
     from berlin_lst_downscaling.data.io.storage import exists
     from berlin_lst_downscaling.data.secondary import dsm as dsm_mod
@@ -1102,6 +1225,7 @@ def derive_vintage_products(
         derived_product_cog,
         derived_product_dir,
         source_product_cog,
+        source_product_provenance,
     )
     from berlin_lst_downscaling.data.secondary.source_products import (
         resolve_source_products,
@@ -1156,9 +1280,8 @@ def derive_vintage_products(
     lod2_cog = source_product_cog(source_root, "lod2_morphology", str(vintage))
     if not exists(lod2_cog):
         raise ValueError(f"Morphology product missing: {lod2_cog}")
-    lod2_prov = source_product_cog(source_root, "lod2_morphology", str(vintage))
-    lod2_prov = lod2_prov[: -len(f"lod2_morphology_{vintage}.tif")] + "provenance.json"
-    lod2_config_hash = _read_config_hash(lod2_prov)
+    lod2_prov_uri = source_product_provenance(source_root, "lod2_morphology", str(vintage))
+    lod2_config_hash = _read_config_hash(lod2_prov_uri)
 
     upstream_hashes = {
         "terrain": terrain.config_hash,
@@ -1264,67 +1387,6 @@ def _read_config_hash(provenance_uri: str) -> str:
         return ""
 
 
-def _local_window_for_buildings(
-    buildings: list[Building], grid: GeoBox
-) -> Window | None:
-    """Compute a minimal canonical-grid window covering *buildings*.
-
-    Returns ``None`` when the buildings do not intersect the grid.
-    The window covers the union of building footprints extended by one
-    pixel of safety, clipped to the grid extent, so neighbouring tiles
-    see overlapping footprints but each building still rasterises exactly
-    once (the caller only invokes this function once per source tile).
-    """
-    minx = math.inf
-    miny = math.inf
-    maxx = -math.inf
-    maxy = -math.inf
-    found = False
-    for b in buildings:
-        if b.footprint is None or b.footprint.is_empty or not b.footprint.is_valid:
-            continue
-        bx0, by0, bx1, by1 = b.footprint.bounds
-        if bx0 < minx:
-            minx = bx0
-        if by0 < miny:
-            miny = by0
-        if bx1 > maxx:
-            maxx = bx1
-        if by1 > maxy:
-            maxy = by1
-        found = True
-    if not found:
-        return None
-
-    grid_minx = grid.transform.xoff
-    grid_miny = grid.transform.yoff + grid.shape.y * grid.transform.e
-    grid_maxx = grid.transform.xoff + grid.shape.x * grid.transform.a
-    grid_maxy = grid.transform.yoff
-    if maxx <= grid_minx or minx >= grid_maxx or maxy <= grid_miny or miny >= grid_maxy:
-        return None
-
-    win = rasterio.windows.from_bounds(
-        max(minx, grid_minx),
-        max(miny, grid_miny),
-        min(maxx, grid_maxx),
-        min(maxy, grid_maxy),
-        transform=grid.transform,
-    )
-    win = win.round_offsets().round_lengths()
-    if win.height <= 0 or win.width <= 0:
-        return None
-    grid_h = grid.shape.y
-    grid_w = grid.shape.x
-    row0 = max(0, int(win.row_off))
-    col0 = max(0, int(win.col_off))
-    row1 = min(grid_h, int(win.row_off + win.height))
-    col1 = min(grid_w, int(win.col_off + win.width))
-    if row1 <= row0 or col1 <= col0:
-        return None
-    # Window(col_off, row_off, width, height) — see rasterio source.
-    return Window(col0, row0, col1 - col0, row1 - row0)  # type: ignore[call-arg]
-
-
 # ── local input staging (CLI helper) ─────────────────────────────────
 
 
@@ -1363,10 +1425,6 @@ def stage_local_archive(spec: VintageSpec, source_dir: Path) -> Path:
         byte_count=target.stat().st_size,
     )
     return target
-
-
-# ensure shutil is referenced (used elsewhere when expanding archives)
-_ = shutil  # noqa: F841
 
 
 __all__ = [

@@ -454,15 +454,23 @@ def main(argv: list[str] | None = None) -> int:
         # Geometry mapping only published after every vintage + every
         # derived product has finalised successfully, so the artefact can
         # never point at half-published state.
+        # Skip mapping during smoke runs (legacy 2024 roots may not
+        # resolve from local/smoke roots) and --skip-derived.
+        is_smoke = args.smoke_archive or args.smoke_tile_count is not None
         if (
             not args.dry_run
+            and not is_smoke
+            and not args.skip_derived
             and vintage_artifacts
             and not failures
-            and (args.skip_derived or len(derived_success) == len(vintages))
+            and len(derived_success) == len(vintages)
         ):
             try:
                 publish_geometry_mapping(
-                    args.metadata_root, vintage_artifacts=vintage_artifacts
+                    args.metadata_root,
+                    vintage_artifacts=vintage_artifacts,
+                    legacy_source_root=args.source_root,
+                    legacy_derived_root=args.derived_root,
                 )
             except Exception as exc:
                 log_event(
