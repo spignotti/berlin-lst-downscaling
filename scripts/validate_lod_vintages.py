@@ -119,13 +119,20 @@ def _verify_archive_integrity(
     print(f"verifying archive integrity: vintage={vintage} (may take a while) ...")
 
     with materialize_vintage_archive(spec, raw_root) as mat:
-        # 1. Byte count
-        manifest = json.loads(
-            read_bytes(
-                f"{source_root.rstrip('/')}/ard/static/sources/"
-                f"lod_vintages/raw_manifest_{vintage}.json"
-            )
+        # 1. Read manifest
+        manifest_uri = (
+            f"{source_root.rstrip('/')}/ard/static/sources/"
+            f"lod_vintages/raw_manifest_{vintage}.json"
         )
+        try:
+            manifest = json.loads(read_bytes(manifest_uri))
+        except Exception as exc:
+            report.failures.append(
+                f"archive manifest unreadable: {manifest_uri}: {exc}"
+            )
+            return
+
+        # 2. Byte count
         if mat.byte_count != manifest.get("archive_byte_count"):
             report.failures.append(
                 f"archive byte_count mismatch: "

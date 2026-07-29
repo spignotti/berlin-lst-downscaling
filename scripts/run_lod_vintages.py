@@ -315,6 +315,7 @@ def _reconcile_only(
     )
 
     for vintage in vintages:
+        vintage_errors: list[str] = []
         # ── source artifacts ────────────────────────────────────────
         cog_uri = source_product_cog(
             args.source_root, "lod2_morphology", str(vintage)
@@ -338,9 +339,10 @@ def _reconcile_only(
             ("complete", completion_uri),
         ]:
             if not exists(uri):
-                failures.append(f"{vintage}: source {name} missing: {uri}")
+                vintage_errors.append(f"{vintage}: source {name} missing: {uri}")
 
-        if failures:
+        if vintage_errors:
+            failures.extend(vintage_errors)
             continue
 
         # Read config_hash from provenance
@@ -384,12 +386,13 @@ def _reconcile_only(
                 ("complete", prod_complete),
             ]:
                 if not exists(uri):
-                    failures.append(
+                    vintage_errors.append(
                         f"{vintage}: derived {product} {name} missing: {uri}"
                     )
                     derived_ok = False
 
         if not derived_ok:
+            failures.extend(vintage_errors)
             continue
 
         # ── upsert source ledger ────────────────────────────────────

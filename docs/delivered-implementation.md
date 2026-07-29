@@ -23,12 +23,12 @@ reproduces or mutates historical artifacts.
 
 ## Published artefacts
 
-| Pipeline | GCS root | Counts (r3 2026-07-23) |
-|----------|---------|--------------------:|
+| Pipeline | GCS root | Counts |
+|----------|---------|--------:|
 | Manifest bundle (canonical) | `gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/` | 509 manifest rows, 345 pairings |
 | ARD ledger | `gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet` | 509 rows |
-| Static sources | `gs://berlin-lst-data/static/sources/full/` | 5 entries |
-| Static derived | `gs://berlin-lst-data/static/derived/full/_state/static/derived/ledger.parquet` | 6 entries |
+| Static sources | `gs://berlin-lst-data/static/sources/full/` | 8 ledger rows (4 original + 3 historical LoD + 1 existing 2024) |
+| Static derived | `gs://berlin-lst-data/static/derived/full/_state/static/derived/ledger.parquet` | 18 ledger rows (6 original + 12 historical) |
 | Dynamic full | `gs://berlin-lst-data/dynamic/full/dyn-20260721T092945-4a4de9/` | 972 rows (`role=anchor`) |
 | Dynamic inference | `gs://berlin-lst-data/dynamic/inference/2026/dyn-inf-r4-20260722T203148/` | 63 rows (`role=inference`) |
 | DWD validation r3 | `gs://berlin-lst-data/dwd_validation/r3/runs/dwd/9d5269f5/` | 345 anchors, bias −0.03 °C, MAE 0.77 °C, RMSE 0.98 °C |
