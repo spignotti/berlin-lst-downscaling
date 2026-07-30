@@ -44,8 +44,25 @@ def main(cfg: DictConfig) -> int:
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
 
-    with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
-        return run_dynamic(cfg, run_id=run_id)
+    # Acquire GCS run guard
+    from berlin_lst_downscaling.data.dynamic.run_guard import (
+        acquire_run_guard,
+        release_run_guard,
+    )
+
+    lock_uri = acquire_run_guard(output_root, run_id)
+    if lock_uri is None:
+        raise SystemExit(
+            f"Cannot acquire run guard for {output_root} — "
+            "another Dynamic run is active. Wait for it to finish or "
+            "manually remove the lock if the owner is dead."
+        )
+
+    try:
+        with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
+            return run_dynamic(cfg, run_id=run_id)
+    finally:
+        release_run_guard(output_root, lock_uri)
 
 
 if __name__ == "__main__":
