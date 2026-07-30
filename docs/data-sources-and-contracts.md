@@ -184,3 +184,36 @@ Land/Imperviousness products accept exact COG contracts via
 consolidated into the ARD contract layer); each `BandSpec` carries
 `valid_range` enforced by `validate_secondary_cog`. Dynamic products
 embed scene `role` on the ledger row that publishes them.
+
+### ERA5-Land weather group (8 bands)
+
+Each `era5_land` COG contains exactly these float32/NaN bands:
+
+| Band | Unit | Derivation |
+|------|------|------------|
+| `t2m_scene` | K | Instantaneous 2m temperature at acquisition hour |
+| `ssrd_scene` | W/m² | Hourly SSRD at acquisition hour (ECMWF differencing) |
+| `ssrd_antecedent_72h_mean` | W/m² | 72-hour rolling mean of hourly SSRD |
+| `vpd_scene` | kPa | Vapour pressure deficit (Tetens formula, t2m−d2m) |
+| `wind_speed_10m_scene` | m/s | Magnitude of u10/v10 |
+| `tp_0_24h` | mm | Total precipitation, 24h ending at acquisition |
+| `tp_24_48h` | mm | Total precipitation, 24–48h before acquisition |
+| `tp_48_72h` | mm | Total precipitation, 48–72h before acquisition |
+
+All temporal quantities are derived on the native ERA5 0.1° grid **before**
+bilinear reprojection to the canonical 10m grid.  The three precipitation
+bins are non-overlapping 24-hour intervals.
+
+### Shadow products
+
+Each `shadow_building` / `shadow_vegetation` COG is uint8: 0=lit,
+1=shadowed, 255=nodata.  Building shadows use the carry-forward LoD
+vintage per scene year (via `geometry_mapping.json`).  Vegetation shadows
+use the fixed VH-2020 horizon.
+
+### Scene-before-patch split invariant
+
+Scene IDs must be assigned to train/validation/test **before** creating
+or sampling patches.  Every patch inherits its scene's split.  One scene
+cannot occur in multiple splits.  Split policy and sampler enforcement
+belong to a future task (WB2c-4).

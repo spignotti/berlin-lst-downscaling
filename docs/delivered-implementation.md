@@ -29,13 +29,13 @@ reproduces or mutates historical artifacts.
 | ARD ledger | `gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet` | 509 rows |
 | Static sources | `gs://berlin-lst-data/static/sources/full/` | 8 ledger rows (4 original + 3 historical LoD + 1 existing 2024) |
 | Static derived | `gs://berlin-lst-data/static/derived/full/_state/static/derived/ledger.parquet` | 18 ledger rows (6 original + 12 historical) |
-| Dynamic full | `gs://berlin-lst-data/dynamic/full/dyn-20260721T092945-4a4de9/` | 972 rows (`role=anchor`) |
-| Dynamic inference | `gs://berlin-lst-data/dynamic/inference/2026/dyn-inf-r4-20260722T203148/` | 63 rows (`role=inference`) |
-| DWD validation r3 | `gs://berlin-lst-data/dwd_validation/r3/runs/dwd/9d5269f5/` | 345 anchors, bias −0.03 °C, MAE 0.77 °C, RMSE 0.98 °C |
+| Dynamic full | `gs://berlin-lst-data/dynamic/full/` | 972 rows (`role=anchor`), 8-band ERA5 + carry-forward shadows |
+| Dynamic inference | `gs://berlin-lst-data/dynamic/inference/2026/` | 63 rows (`role=inference`) |
+| DWD validation r3 | `gs://berlin-lst-data/dwd_validation/r3/runs/dwd/9d5269f5/` | 345 anchors (historical, based on pre-rebuild ERA5) |
 
-DWD r3 verifies every published Landsat anchor has a matching ERA5
-anchor value: `n_anchors=345`, `n_anchors_with_era5=345`,
-`n_pairs_era5_missing=0`. DWD never feeds model training.
+DWD r3 is historical — it validates the pre-rebuild scalar ERA5 products.
+After the dynamic rebuild, a separate DWD rerun would be needed to
+validate the new 8-band spatial ERA5 fields. DWD never feeds model training.
 
 ## Commands
 
