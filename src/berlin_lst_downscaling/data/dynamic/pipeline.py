@@ -257,14 +257,27 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                     log_event(_logger, logging.INFO, "era5_skipped", scene_id=scene.scene_id)
 
                 # ── 3b. Shadow masks (building + vegetation) ─────────
-                azimuth = scene.solar_azimuth
-                elevation = scene.solar_elevation
+                # Circuit breaker: skip shadows if ERA5 failed for this scene
+                era5_failed = led.get(
+                    era5_item_id, era5_source, scene.scene_id
+                )
+                era5_is_failed = era5_failed is not None and era5_failed.status == "failed"
 
-                if azimuth is None or elevation is None:
+                if era5_todo and era5_is_failed:
+                    log_event(
+                        _logger,
+                        logging.WARNING,
+                        "shadow_skipped_era5_failed",
+                        scene_id=scene.scene_id,
+                    )
+                elif scene.solar_azimuth is None or scene.solar_elevation is None:
                     log_event(
                         _logger, logging.WARNING, "shadow_skipped_no_solar", scene_id=scene.scene_id
                     )
                 else:
+                    azimuth = scene.solar_azimuth
+                    elevation = scene.solar_elevation
+
                     for component in ("building", "vegetation"):
                         shadow_source = f"shadow_{component}"
                         shadow_item_id = f"shadow_{component}_{scene.scene_id}"

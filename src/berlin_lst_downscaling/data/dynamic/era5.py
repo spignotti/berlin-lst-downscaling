@@ -23,15 +23,9 @@ Processing
 1. Cache monthly NetCDF files under ``_raw/dynamic/era5_land/YYYY-MM/``.
    Fetch the preceding month when the 72h window spills into the previous month.
 2. Validate each cache: requires all 6 variables, monotonic hourly timestamps,
-   regular lat/lon coordinates, and sufficient spatial coverage (1-cell halo
-   around canonical Berlin extent).
+   regular lat/lon coordinates, and sufficient spatial coverage.
 3. Load native 0.1° ERA5 grid, derive all temporal quantities at native resolution.
 4. Reproject each field to the canonical 10m grid via bilinear interpolation.
-
-Native-first derivation: all temporal/physical quantities are computed on the
-ERA5 0.1° grid BEFORE spatial reprojection.  The 10m grid receives bilinearly
-interpolated values from the native grid — this is a smooth spatial gradient,
-not genuine 10m meteorological observation.
 """
 
 from __future__ import annotations
@@ -98,8 +92,8 @@ _BERLIN_LON = 13.42
 def normalize_acquisition_hour(acquisition_dt: datetime) -> datetime:
     """Round a tz-aware acquisition datetime to the nearest UTC hour.
 
-    Half-up rounding (minute >= 30 → next hour). Naive datetimes are
-    interpreted as UTC. The returned datetime keeps the input timezone.
+    Half-up rounding (minute >= 30 → next hour).  Naive datetimes are
+    interpreted as UTC.  The returned datetime is always timezone-naive UTC.
     """
     if acquisition_dt.tzinfo is None:
         naive = acquisition_dt
@@ -109,9 +103,7 @@ def normalize_acquisition_hour(acquisition_dt: datetime) -> datetime:
         rounded = (naive + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     else:
         rounded = naive.replace(minute=0, second=0, microsecond=0)
-    if acquisition_dt.tzinfo is None:
-        return rounded
-    return rounded.replace(tzinfo=UTC)
+    return rounded
 
 
 def _saturation_vapour_pressure(t_celsius: float) -> float:
@@ -318,7 +310,6 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
     client = cdsapi.Client()
     n_days = calendar.monthrange(year, month)[1]
 
-    # retrieve() downloads the ZIP to a temp path; we get the path back
     zip_path = Path(target).with_suffix(".zip")
     client.retrieve(
         "reanalysis-era5-land",
@@ -344,7 +335,6 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
         nc_names = [n for n in zf.namelist() if n.endswith(".nc")]
         if not nc_names:
             raise ValueError(f"No .nc file in CDS ZIP for {year}-{month:02d}")
-        # Write the first (usually only) NetCDF entry to target
         target.write_bytes(zf.read(nc_names[0]))
     zip_path.unlink(missing_ok=True)
 
@@ -354,7 +344,6 @@ _REQUIRED_ERA5_VARS = {"t2m", "d2m", "u10", "v10", "ssrd", "tp"}
 
 def _decode_and_validate_monthly_era5(
     nc_path: str | Path,
-    time_slice: tuple[str, str] | None = None,
 ) -> xr.Dataset:
     """Decode a monthly ERA5-Land NetCDF file with validation.
 
@@ -412,9 +401,6 @@ def _decode_and_validate_monthly_era5(
                 f"ERA5 longitude range {lon_range} does not cover Berlin ({_BERLIN_LON})"
             )
 
-    if time_slice is not None:
-        ds = ds.sel({time_dim: slice(time_slice[0], time_slice[1])})
-
     return ds
 
 # ── native-grid derivation ─────────────────────────────────────────────
@@ -431,8 +417,6 @@ def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
     Conversion:
       - 01 UTC:  hourly = ssrd / 3600
       - Otherwise: hourly = (ssrd[t] - ssrd[t-1]) / 3600
-
-    At 00 UTC this yields the 24th hour's value (previous day's last hour).
     """
     time_dim = "valid_time" if "valid_time" in ssrd.dims else "time"
     time_vals = ssrd[time_dim].values
@@ -457,9 +441,7 @@ def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
 def _tp_to_hourly(tp: xr.DataArray) -> xr.DataArray:
     """Convert cumulative total precipitation (m) to hourly amounts (m).
 
-    Same accumulation convention as SSRD.  The raw ERA5-Land tp values are
-    in metres of water equivalent.  This function returns hourly values in
-    metres; the caller converts to mm.
+    Same accumulation convention as SSRD.
     """
     time_dim = "valid_time" if "valid_time" in tp.dims else "time"
     time_vals = tp[time_dim].values
@@ -468,10 +450,8 @@ def _tp_to_hourly(tp: xr.DataArray) -> xr.DataArray:
     for t in range(len(time_vals)):
         h = int(time_vals[t].astype("datetime64[h]").astype(int) % 24)
         if h == 1:
-            # 01 UTC: tp = accumulation for 00:00–01:00
             hourly[t] = tp.data[t].astype(np.float32)
         else:
-            # All other hours: (tp[t] - tp[t-1])
             hourly[t] = (
                 tp.data[t].astype(np.float64) - tp.data[t - 1].astype(np.float64)
             ).astype(np.float32)
@@ -485,100 +465,97 @@ def _tp_to_hourly(tp: xr.DataArray) -> xr.DataArray:
 
 def _derive_native_fields(
     ds: xr.Dataset,
-    acquisition_dt: datetime,
-) -> dict[str, float]:
-    """Derive all 8 weather fields as scalar values from the native ERA5 grid.
-
-    Each field is extracted from the nearest ERA5 cell to Berlin center.
-    The caller broadcasts these scalars across the target grid.
+    acq_np: np.datetime64,
+) -> dict[str, np.ndarray]:
+    """Derive all 8 weather fields on the full native ERA5 grid.
 
     Parameters
     ----------
     ds : validated ERA5 dataset with all 6 variables
-    acquisition_dt : scene acquisition time (tz-aware)
+    acq_np : timezone-naive numpy.datetime64 of acquisition hour (UTC)
 
     Returns
     -------
-    dict mapping band name to scalar float value
+    dict mapping band name to 2D float32 array on native lat/lon grid
     """
     time_dim = "valid_time" if "valid_time" in ds.dims else "time"
 
-    # Find nearest cell to Berlin
-    has_lat = "latitude" in ds.coords
-    has_lon = "longitude" in ds.coords
-    lat_vals = ds.latitude.values if has_lat else np.array([_BERLIN_LAT])
-    lon_vals = ds.longitude.values if has_lon else np.array([_BERLIN_LON])
-    lat_idx = int(np.abs(lat_vals - _BERLIN_LAT).argmin())
-    lon_idx = int(np.abs(lon_vals - _BERLIN_LON).argmin())
-
-    # Normalize acquisition to nearest UTC hour
-    acq_hour = normalize_acquisition_hour(acquisition_dt)
-    acq_np = np.datetime64(acq_hour.replace(tzinfo=None))
-
-    # ── t2m, d2m, u10, v10: instantaneous, extract at acq_hour ──────
-    t2m_cell = ds["t2m"].isel({time_dim: slice(None), "latitude": lat_idx, "longitude": lon_idx})
-    d2m_cell = ds["d2m"].isel({time_dim: slice(None), "latitude": lat_idx, "longitude": lon_idx})
-    u10_cell = ds["u10"].isel({time_dim: slice(None), "latitude": lat_idx, "longitude": lon_idx})
-    v10_cell = ds["v10"].isel({time_dim: slice(None), "latitude": lat_idx, "longitude": lon_idx})
-
-    # Find nearest timestep to acquisition
-    time_vals = t2m_cell[time_dim].values
+    # ── t2m, d2m, u10, v10: instantaneous, find nearest timestep ─────
+    time_vals = ds[time_dim].values
     diffs = np.abs(time_vals - acq_np)
     nearest_idx = int(diffs.argmin())
 
-    t2m_val = float(t2m_cell.isel({time_dim: nearest_idx}).values)
-    d2m_val = float(d2m_cell.isel({time_dim: nearest_idx}).values)
-    u10_val = float(u10_cell.isel({time_dim: nearest_idx}).values)
-    v10_val = float(v10_cell.isel({time_dim: nearest_idx}).values)
+    t2m_2d = ds["t2m"].isel({time_dim: nearest_idx}).values.astype(np.float32)
+    d2m_2d = ds["d2m"].isel({time_dim: nearest_idx}).values.astype(np.float32)
+    u10_2d = ds["u10"].isel({time_dim: nearest_idx}).values.astype(np.float32)
+    v10_2d = ds["v10"].isel({time_dim: nearest_idx}).values.astype(np.float32)
 
-    # VPD
-    vpd_val = _vpd_from_t_d2m(t2m_val, d2m_val)
+    # VPD: Tetens formula elementwise
+    t_c = t2m_2d - 273.15
+    d2m_c = d2m_2d - 273.15
+    es = 0.6108 * np.exp(17.27 * t_c / (t_c + 237.3))
+    ea = 0.6108 * np.exp(17.27 * d2m_c / (d2m_c + 237.3))
+    vpd_2d = np.maximum(es - ea, 0.0)
 
-    # Wind speed
-    wind_val = float(np.sqrt(u10_val**2 + v10_val**2))
+    # Wind speed: magnitude elementwise
+    wind_2d = np.sqrt(u10_2d ** 2 + v10_2d ** 2)
 
-    # ── ssrd: convert to hourly, extract 72h mean ────────────────────
-    ssrd_raw = ds["ssrd"].isel({"latitude": lat_idx, "longitude": lon_idx})
-    ssrd_hourly = _ssrd_to_hourly(ssrd_raw)
+    # ── ssrd: convert to hourly, extract 72h mean and scene value ─────
+    # Work on full native grid
+    ssrd_hourly_3d = np.empty(
+        (len(time_vals), t2m_2d.shape[0], t2m_2d.shape[1]), dtype=np.float32
+    )
+    ssrd_raw = ds["ssrd"].values
+    for t in range(len(time_vals)):
+        h = int(time_vals[t].astype("datetime64[h]").astype(int) % 24)
+        if h == 1:
+            ssrd_hourly_3d[t] = ssrd_raw[t].astype(np.float32) / 3600.0
+        else:
+            ssrd_hourly_3d[t] = (
+                (ssrd_raw[t].astype(np.float64) - ssrd_raw[t - 1].astype(np.float64)) / 3600.0
+            ).astype(np.float32)
+
+    # Scene SSRD
+    ssrd_scene_2d = ssrd_hourly_3d[nearest_idx]
 
     # 72h antecedent mean (exactly 72 hours ending at acq_hour)
     window_start_72 = acq_np - np.timedelta64(_ANTECEDENT_HOURS, "h")
-    time_vals_ssrd = ssrd_hourly[time_dim].values
-    mask_72 = (time_vals_ssrd > window_start_72) & (time_vals_ssrd <= acq_np)
-    window_72 = ssrd_hourly.values[mask_72]
-    ssrd_72h_mean = float(np.nanmean(window_72)) if len(window_72) > 0 else np.nan
-
-    # Scene SSRD
-    ssrd_scene = float(ssrd_hourly.isel({time_dim: nearest_idx}).values)
+    mask_72 = (time_vals > window_start_72) & (time_vals <= acq_np)
+    ssrd_72h_2d = np.nanmean(ssrd_hourly_3d[mask_72], axis=0).astype(np.float32)
 
     # ── tp: convert to hourly, sum in 3 daily bins ───────────────────
-    tp_raw = ds["tp"].isel({"latitude": lat_idx, "longitude": lon_idx})
-    tp_hourly = _tp_to_hourly(tp_raw)
+    tp_hourly_3d = np.empty_like(ssrd_hourly_3d)
+    tp_raw = ds["tp"].values
+    for t in range(len(time_vals)):
+        h = int(time_vals[t].astype("datetime64[h]").astype(int) % 24)
+        if h == 1:
+            tp_hourly_3d[t] = tp_raw[t].astype(np.float32)
+        else:
+            tp_hourly_3d[t] = (
+                tp_raw[t].astype(np.float64) - tp_raw[t - 1].astype(np.float64)
+            ).astype(np.float32)
 
-    time_vals_tp = tp_hourly[time_dim].values
-
-    # Exactly 24 hourly values per bin
-    mask_0_24 = (time_vals_tp > (acq_np - np.timedelta64(24, "h"))) & (time_vals_tp <= acq_np)
-    mask_24_48 = (time_vals_tp > (acq_np - np.timedelta64(48, "h"))) & (
-        time_vals_tp <= (acq_np - np.timedelta64(24, "h"))
+    mask_0_24 = (time_vals > (acq_np - np.timedelta64(24, "h"))) & (time_vals <= acq_np)
+    mask_24_48 = (time_vals > (acq_np - np.timedelta64(48, "h"))) & (
+        time_vals <= (acq_np - np.timedelta64(24, "h"))
     )
-    mask_48_72 = (time_vals_tp > (acq_np - np.timedelta64(72, "h"))) & (
-        time_vals_tp <= (acq_np - np.timedelta64(48, "h"))
+    mask_48_72 = (time_vals > (acq_np - np.timedelta64(72, "h"))) & (
+        time_vals <= (acq_np - np.timedelta64(48, "h"))
     )
 
-    tp_0_24 = float(np.nansum(tp_hourly.values[mask_0_24])) * 1000.0  # m → mm
-    tp_24_48 = float(np.nansum(tp_hourly.values[mask_24_48])) * 1000.0
-    tp_48_72 = float(np.nansum(tp_hourly.values[mask_48_72])) * 1000.0
+    tp_0_24_2d = np.nansum(tp_hourly_3d[mask_0_24], axis=0).astype(np.float32) * 1000.0
+    tp_24_48_2d = np.nansum(tp_hourly_3d[mask_24_48], axis=0).astype(np.float32) * 1000.0
+    tp_48_72_2d = np.nansum(tp_hourly_3d[mask_48_72], axis=0).astype(np.float32) * 1000.0
 
     return {
-        "t2m": t2m_val,
-        "ssrd_scene": ssrd_scene,
-        "ssrd_72h_mean": ssrd_72h_mean,
-        "vpd": vpd_val,
-        "wind": wind_val,
-        "tp_0_24h": tp_0_24,
-        "tp_24_48h": tp_24_48,
-        "tp_48_72h": tp_48_72,
+        "t2m_scene": t2m_2d,
+        "ssrd_scene": ssrd_scene_2d,
+        "ssrd_antecedent_72h_mean": ssrd_72h_2d,
+        "vpd_scene": vpd_2d.astype(np.float32),
+        "wind_speed_10m_scene": wind_2d.astype(np.float32),
+        "tp_0_24h": tp_0_24_2d,
+        "tp_24_48h": tp_24_48_2d,
+        "tp_48_72h": tp_48_72_2d,
     }
 
 # ── spatial reprojection ───────────────────────────────────────────────
@@ -601,12 +578,14 @@ def _reproject_to_canonical(
     from rasterio.enums import Resampling
 
     # Convert lat/lon to WGS84 CRS for reprojection
-    ds_wgs84 = ds.rio.write_crs("EPSG:4326")
+    ds_wgs84 = ds.rio.set_spatial_dims(
+        x_dim="longitude" if "longitude" in ds.coords else "lon",
+        y_dim="latitude" if "latitude" in ds.coords else "lat",
+    ).rio.write_crs("EPSG:4326")
 
     results = {}
     for var_name in ds.data_vars:
         da = ds_wgs84[var_name]
-        # Bilinear reprojection to exact canonical grid
         reprojected = da.rio.reproject(
             str(grid.crs),
             shape=grid.shape,
@@ -632,11 +611,6 @@ def prepare_era5_scene(
 
     Produces 8 bands on the canonical 10m grid after native-grid derivation
     and bilinear reprojection.
-
-    Parameters
-    ----------
-    local_dir :
-        Directory for ERA5 monthly cache files. Caller manages cleanup.
     """
     grid = grid or canon_grid_10m()
     c_hash = sha256(f"era5_land:{scene_id}".encode()).hexdigest()[:12]
@@ -665,12 +639,12 @@ def prepare_era5_scene(
     # ── 2. decode and concatenate months ──────────────────────────────
     log_event(_logger, logging.INFO, "era5_processing", scene_id=scene_id)
 
-    # Normalize acquisition time to nearest UTC hour (round, not truncate)
+    # Normalize acquisition time to naive UTC
     acq_hour = normalize_acquisition_hour(acquisition_dt)
+    acq_np = np.datetime64(acq_hour)
 
     # Time window: 72h + 1h padding before acquisition (for differencing)
-    window_start = acq_hour - timedelta(hours=_ANTECEDENT_HOURS + 1)
-    time_slice = (str(window_start), str(acq_hour))
+    window_start = acq_np - np.timedelta64(_ANTECEDENT_HOURS + 1, "h")
 
     primary_ds = None
     prev_ds = None
@@ -678,19 +652,23 @@ def prepare_era5_scene(
     try:
         primary_ds = _decode_and_validate_monthly_era5(
             nc_paths[(acq_year, acq_month)],
-            time_slice=time_slice,
         )
+
+        # Determine time dimension name
+        time_dim = "valid_time" if "valid_time" in primary_ds.dims else "time"
+
+        # Slice primary to time window
+        primary_ds = primary_ds.sel({time_dim: slice(str(window_start), str(acq_np))})
 
         # If we need previous month for antecedent, load it too
         prev_month_key = months_needed[1] if len(months_needed) > 1 else None
         if prev_month_key and prev_month_key in nc_paths:
             prev_ds = _decode_and_validate_monthly_era5(
                 nc_paths[prev_month_key],
-                time_slice=time_slice,
             )
+            prev_ds = prev_ds.sel({time_dim: slice(str(window_start), str(acq_np))})
 
             # Concatenate along time dimension
-            time_dim = "valid_time" if "valid_time" in primary_ds.dims else "time"
             for var_name in _REQUIRED_ERA5_VARS:
                 primary_ds[var_name] = xr.concat(
                     [prev_ds[var_name], primary_ds[var_name]], dim=time_dim
@@ -700,57 +678,32 @@ def prepare_era5_scene(
             prev_ds.close()
             prev_ds = None
 
+        # Validate we have enough timesteps
+        time_vals = primary_ds[time_dim].values
+        window_72h = acq_np - np.timedelta64(_ANTECEDENT_HOURS, "h")
+        available_hours = int(np.sum((time_vals > window_72h) & (time_vals <= acq_np)))
+        if available_hours < 72:
+            log_event(
+                _logger,
+                logging.WARNING,
+                "era5_short_window",
+                scene_id=scene_id,
+                available_hours=available_hours,
+                expected=72,
+            )
+
         # ── 3. derive all 8 fields at native resolution ──────────────
-        native_fields = _derive_native_fields(primary_ds, acq_hour)
+        native_fields = _derive_native_fields(primary_ds, acq_np)
 
         # Build 2D native Dataset for reprojection
-        native_shape = (
-            primary_ds.dims.get("latitude", primary_ds.dims.get("lat", 0)),
-            primary_ds.dims.get("longitude", primary_ds.dims.get("lon", 0)),
-        )
-        lat_vals = primary_ds.latitude.values
-        lon_vals = (
-            primary_ds.longitude.values
-            if "longitude" in primary_ds.coords
-            else primary_ds.longitude.values
-        )
+        lat_dim = "latitude" if "latitude" in primary_ds.dims else "lat"
+        lon_dim = "longitude" if "longitude" in primary_ds.dims else "lon"
+        lat_vals = primary_ds[lat_dim].values
+        lon_vals = primary_ds[lon_dim].values
 
         native_2d = xr.Dataset(
-            {
-                "t2m_scene": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["t2m"], dtype=np.float32),
-                ),
-                "ssrd_scene": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["ssrd_scene"], dtype=np.float32),
-                ),
-                "ssrd_antecedent_72h_mean": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["ssrd_72h_mean"], dtype=np.float32),
-                ),
-                "vpd_scene": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["vpd"], dtype=np.float32),
-                ),
-                "wind_speed_10m_scene": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["wind"], dtype=np.float32),
-                ),
-                "tp_0_24h": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["tp_0_24h"], dtype=np.float32),
-                ),
-                "tp_24_48h": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["tp_24_48h"], dtype=np.float32),
-                ),
-                "tp_48_72h": (
-                    ("lat", "lon"),
-                    np.full(native_shape, native_fields["tp_48_72h"], dtype=np.float32),
-                ),
-            },
-            coords={"lat": lat_vals, "lon": lon_vals},
+            {k: ((lat_dim, lon_dim), v) for k, v in native_fields.items()},
+            coords={lat_dim: lat_vals, lon_dim: lon_vals},
         )
 
         primary_ds.close()
@@ -772,34 +725,23 @@ def prepare_era5_scene(
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
 
     t2m_ds = xr.Dataset(
-        {
-            "t2m_scene": (("y", "x"), reprojected["t2m_scene"]),
-            "ssrd_scene": (("y", "x"), reprojected["ssrd_scene"]),
-            "ssrd_antecedent_72h_mean": (("y", "x"), reprojected["ssrd_antecedent_72h_mean"]),
-            "vpd_scene": (("y", "x"), reprojected["vpd_scene"]),
-            "wind_speed_10m_scene": (("y", "x"), reprojected["wind_speed_10m_scene"]),
-            "tp_0_24h": (("y", "x"), reprojected["tp_0_24h"]),
-            "tp_24_48h": (("y", "x"), reprojected["tp_24_48h"]),
-            "tp_48_72h": (("y", "x"), reprojected["tp_48_72h"]),
-        },
+        {k: (("y", "x"), v) for k, v in reprojected.items()},
         coords={"x": xs, "y": ys},
     )
     t2m_ds = t2m_ds.rio.write_crs(str(grid.crs))
     t2m_ds = t2m_ds.rio.write_transform(grid.transform)
 
+    # Scalar QA stats from Berlin-centre value for backward compat
+    cy, cx = shape[0] // 2, shape[1] // 2
+    centre_t2m = round(float(reprojected["t2m_scene"][cy, cx]), 2)
+    centre_ssrd = round(float(reprojected["ssrd_scene"][cy, cx]), 2)
     log_event(
         _logger,
         logging.DEBUG,
         "era5_scene_values",
         scene_id=scene_id,
-        t2m=round(float(native_fields["t2m"]), 2),
-        ssrd=round(float(native_fields["ssrd_scene"]), 2),
-        ssrd_antecedent=round(float(native_fields["ssrd_72h_mean"]), 2),
-        vpd=round(float(native_fields["vpd"]), 4),
-        wind=round(float(native_fields["wind"]), 2),
-        tp_0_24h=round(float(native_fields["tp_0_24h"]), 2),
-        tp_24_48h=round(float(native_fields["tp_24_48h"]), 2),
-        tp_48_72h=round(float(native_fields["tp_48_72h"]), 2),
+        t2m=centre_t2m,
+        ssrd=centre_ssrd,
     )
 
     retrieved_at = datetime.now(UTC).isoformat()
@@ -824,14 +766,18 @@ def prepare_era5_scene(
             "retrieved_at": retrieved_at,
         },
         qa_stats={
-            "t2m_scene": round(float(native_fields["t2m"]), 2),
-            "ssrd_scene": round(float(native_fields["ssrd_scene"]), 2),
-            "ssrd_antecedent_72h_mean": round(float(native_fields["ssrd_72h_mean"]), 2),
-            "vpd_scene": round(float(native_fields["vpd"]), 4),
-            "wind_speed_10m_scene": round(float(native_fields["wind"]), 2),
-            "tp_0_24h": round(float(native_fields["tp_0_24h"]), 2),
-            "tp_24_48h": round(float(native_fields["tp_24_48h"]), 2),
-            "tp_48_72h": round(float(native_fields["tp_48_72h"]), 2),
+            "t2m_scene": round(float(reprojected["t2m_scene"][cy, cx]), 2),
+            "ssrd_scene": round(float(reprojected["ssrd_scene"][cy, cx]), 2),
+            "ssrd_antecedent_72h_mean": round(
+                float(reprojected["ssrd_antecedent_72h_mean"][cy, cx]), 2
+            ),
+            "vpd_scene": round(float(reprojected["vpd_scene"][cy, cx]), 4),
+            "wind_speed_10m_scene": round(
+                float(reprojected["wind_speed_10m_scene"][cy, cx]), 2
+            ),
+            "tp_0_24h": round(float(reprojected["tp_0_24h"][cy, cx]), 2),
+            "tp_24_48h": round(float(reprojected["tp_24_48h"][cy, cx]), 2),
+            "tp_48_72h": round(float(reprojected["tp_48_72h"][cy, cx]), 2),
             "shape": list(shape),
         },
         config_hash=c_hash,
@@ -851,11 +797,6 @@ def prepare_era5_scene(
         },
     )
 
-def _find_var(ds: xr.Dataset, candidates: list[str]) -> str | None:
-    for name in candidates:
-        if name in ds.data_vars:
-            return name
-    return None
 
 __all__ = [
     "contract_for_era5_scene",
