@@ -535,6 +535,11 @@ def _derive_native_fields(
                 tp_raw[t].astype(np.float64) - tp_raw[t - 1].astype(np.float64)
             ).astype(np.float32)
 
+    # Clamp to physical range: precipitation cannot be negative.
+    # Small negatives arise from floating-point differences in the
+    # cumulative ERA5 grid.
+    np.maximum(tp_hourly_3d, 0.0, out=tp_hourly_3d)
+
     mask_0_24 = (time_vals > (acq_np - np.timedelta64(24, "h"))) & (time_vals <= acq_np)
     mask_24_48 = (time_vals > (acq_np - np.timedelta64(48, "h"))) & (
         time_vals <= (acq_np - np.timedelta64(24, "h"))

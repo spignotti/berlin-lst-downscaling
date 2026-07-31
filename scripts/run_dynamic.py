@@ -50,8 +50,8 @@ def main(cfg: DictConfig) -> int:
         release_run_guard,
     )
 
-    lock_uri = acquire_run_guard(output_root, run_id)
-    if lock_uri is None:
+    lease = acquire_run_guard(output_root, run_id)
+    if lease is None:
         raise SystemExit(
             f"Cannot acquire run guard for {output_root} — "
             "another Dynamic run is active. Wait for it to finish or "
@@ -62,7 +62,7 @@ def main(cfg: DictConfig) -> int:
         with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
             return run_dynamic(cfg, run_id=run_id)
     finally:
-        release_run_guard(output_root, lock_uri)
+        release_run_guard(output_root, lease)
 
 
 if __name__ == "__main__":
