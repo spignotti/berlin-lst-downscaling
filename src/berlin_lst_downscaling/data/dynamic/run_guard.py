@@ -66,40 +66,63 @@ def acquire_run_guard(
         owner_pid = existing.get("pid")
         owner_host = existing.get("host")
         owner_run = existing.get("run_id")
+        owner_start = existing.get("start_utc", "")
 
-        # Same-host PID check: only meaningful when we share the process namespace
-        same_host = owner_host == os.uname().nodename
-        owner_alive = False
-        if same_host:
+        # Staleness check: lock older than 2 hours is always stale.
+        # Handles subprocess crashes that bypass the finally-release path.
+        lock_stale = False
+        if owner_start:
             try:
-                os.kill(owner_pid, 0)
-                owner_alive = True
-            except (ProcessLookupError, PermissionError):
-                owner_alive = False
+                from datetime import datetime as _dt
+                age_s = (_dt.now(UTC) - _dt.fromisoformat(owner_start)).total_seconds()
+                lock_stale = age_s > 7200  # 2 hours
+            except (ValueError, TypeError):
+                pass
 
-        if owner_alive:
+        if lock_stale:
             log_event(
                 _logger,
                 logging.WARNING,
-                "run_guard_conflict",
+                "run_guard_stale_ttl",
                 owner_run=owner_run,
                 owner_host=owner_host,
                 owner_pid=owner_pid,
+                message="lock older than 2h; treating as stale",
+            )
+        else:
+            # Same-host PID check: only meaningful when we share the process namespace
+            same_host = owner_host == os.uname().nodename
+            owner_alive = False
+            if same_host:
+                try:
+                    os.kill(owner_pid, 0)
+                    owner_alive = True
+                except (ProcessLookupError, PermissionError):
+                    owner_alive = False
+
+            if owner_alive:
+                log_event(
+                    _logger,
+                    logging.WARNING,
+                    "run_guard_conflict",
+                    owner_run=owner_run,
+                    owner_host=owner_host,
+                    owner_pid=owner_pid,
+                )
+                return None
+
+            # Stale lock (dead on same host, or cross-host)
+            log_event(
+                _logger,
+                logging.WARNING,
+                "run_guard_stale",
+                owner_run=owner_run,
+                owner_host=owner_host,
+                owner_pid=owner_pid,
+                same_host=same_host,
+                message="stale lock; manual removal required",
             )
             return None
-
-        # Stale lock (dead on same host, or cross-host)
-        log_event(
-            _logger,
-            logging.WARNING,
-            "run_guard_stale",
-            owner_run=owner_run,
-            owner_host=owner_host,
-            owner_pid=owner_pid,
-            same_host=same_host,
-            message="stale lock; manual removal required",
-        )
-        return None
 
     # Acquire with generation precondition
     guard_data = json.dumps(
