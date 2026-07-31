@@ -111,7 +111,8 @@ def acquire_run_guard(
                 )
                 return None
 
-            # Stale lock (dead on same host, or cross-host)
+            # Stale lock: same-host dead PID can be auto-removed.
+            # Cross-host locks require manual removal (can't check remote PID).
             log_event(
                 _logger,
                 logging.WARNING,
@@ -120,9 +121,12 @@ def acquire_run_guard(
                 owner_host=owner_host,
                 owner_pid=owner_pid,
                 same_host=same_host,
-                message="stale lock; manual removal required",
+                auto_remove=same_host,
             )
-            return None
+            if same_host:
+                blob.delete()
+            else:
+                return None
 
     # Acquire with generation precondition
     guard_data = json.dumps(

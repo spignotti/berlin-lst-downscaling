@@ -43,6 +43,11 @@ def main(cfg: DictConfig) -> int:
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
+    no_guard = cfg.get("no_run_guard", False)
+
+    if no_guard:
+        with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
+            return run_dynamic(cfg, run_id=run_id)
 
     # Acquire GCS run guard
     from berlin_lst_downscaling.data.dynamic.run_guard import (
