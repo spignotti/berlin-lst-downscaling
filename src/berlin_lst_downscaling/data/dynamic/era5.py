@@ -598,7 +598,9 @@ def _reproject_to_canonical(
             resampling=Resampling.bilinear,
         )
         results[var_name] = reprojected.values.astype(np.float32)
+        del reprojected, da
 
+    del ds_wgs84
     return results
 
 # ── public API ─────────────────────────────────────────────────────────
@@ -716,6 +718,7 @@ def prepare_era5_scene(
 
         # ── 4. reproject to canonical grid ────────────────────────────
         reprojected = _reproject_to_canonical(native_2d, grid)
+        del native_2d
 
     finally:
         if primary_ds is not None:
@@ -801,6 +804,11 @@ def prepare_era5_scene(
             "acquisition:year": acquisition_dt.year,
         },
     )
+
+    # Free intermediate arrays before returning to keep per-scene RSS bounded.
+    del reprojected
+    import gc
+    gc.collect()
 
 
 __all__ = [
