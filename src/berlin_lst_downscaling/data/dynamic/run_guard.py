@@ -4,8 +4,9 @@ Creates a bucket-global lock object to prevent concurrent Dynamic runs.
 Uses GCS object generation preconditions for atomic acquire/release.
 
 The lock record carries the owner's hostname, PID, and run_id.
-Only same-host PID liveness is checked; cross-host stale locks are
-reported but never auto-removed — the operator must decide.
+On the local host, stale locks can be reclaimed automatically only
+when the lock owner PID is absent; cross-host locks remain
+operator-reviewed and are never auto-deleted.
 """
 
 from __future__ import annotations
@@ -60,75 +61,48 @@ def acquire_run_guard(
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(key)
 
-    # Check if lock already exists
     if blob.exists():
         existing = json.loads(blob.download_as_text())
         owner_pid = existing.get("pid")
         owner_host = existing.get("host")
         owner_run = existing.get("run_id")
-        owner_start = existing.get("start_utc", "")
 
-        # Staleness check: lock older than 2 hours is always stale.
-        # Handles subprocess crashes that bypass the finally-release path.
-        lock_stale = False
-        if owner_start:
+        same_host = owner_host == os.uname().nodename
+        owner_alive = False
+        if same_host:
             try:
-                from datetime import datetime as _dt
-                age_s = (_dt.now(UTC) - _dt.fromisoformat(owner_start)).total_seconds()
-                lock_stale = age_s > 7200  # 2 hours
-            except (ValueError, TypeError):
-                pass
+                os.kill(owner_pid, 0)
+                owner_alive = True
+            except (ProcessLookupError, PermissionError):
+                owner_alive = False
 
-        if lock_stale:
+        if owner_alive:
             log_event(
                 _logger,
                 logging.WARNING,
-                "run_guard_stale_ttl",
+                "run_guard_conflict",
                 owner_run=owner_run,
                 owner_host=owner_host,
                 owner_pid=owner_pid,
-                message="lock older than 2h; treating as stale",
             )
+            return None
+
+        log_event(
+            _logger,
+            logging.WARNING,
+            "run_guard_stale",
+            owner_run=owner_run,
+            owner_host=owner_host,
+            owner_pid=owner_pid,
+            same_host=same_host,
+            auto_remove=same_host,
+            message="stale same-host lock detected; reclaiming without manual operator action",
+        )
+        if same_host:
+            blob.delete()
         else:
-            # Same-host PID check: only meaningful when we share the process namespace
-            same_host = owner_host == os.uname().nodename
-            owner_alive = False
-            if same_host:
-                try:
-                    os.kill(owner_pid, 0)
-                    owner_alive = True
-                except (ProcessLookupError, PermissionError):
-                    owner_alive = False
+            return None
 
-            if owner_alive:
-                log_event(
-                    _logger,
-                    logging.WARNING,
-                    "run_guard_conflict",
-                    owner_run=owner_run,
-                    owner_host=owner_host,
-                    owner_pid=owner_pid,
-                )
-                return None
-
-            # Stale lock: same-host dead PID can be auto-removed.
-            # Cross-host locks require manual removal (can't check remote PID).
-            log_event(
-                _logger,
-                logging.WARNING,
-                "run_guard_stale",
-                owner_run=owner_run,
-                owner_host=owner_host,
-                owner_pid=owner_pid,
-                same_host=same_host,
-                auto_remove=same_host,
-            )
-            if same_host:
-                blob.delete()
-            else:
-                return None
-
-    # Acquire with generation precondition
     guard_data = json.dumps(
         {
             "run_id": run_id,
