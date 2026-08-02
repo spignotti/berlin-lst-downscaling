@@ -36,7 +36,7 @@ from berlin_lst_downscaling.data.profiling.statistics import profile_row_statist
 _logger = logging.getLogger(__name__)
 
 
-def run_profiling(cfg: DictConfig, run_id: str) -> int:
+def run_profiling(cfg: DictConfig) -> int:
     """Execute the profiling pipeline."""
     output_root = str(cfg.output_root)
 
@@ -109,7 +109,7 @@ def main(cfg: DictConfig) -> int:
             manifest_uri=manifest_uri,
             output_root=output_root,
         )
-        return run_profiling(cfg, run_id=run_id)
+        return run_profiling(cfg)
 
 
 if __name__ == "__main__":
