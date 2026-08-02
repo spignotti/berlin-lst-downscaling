@@ -122,7 +122,7 @@ def main() -> int:
     print(f"Done by source: {dict(source_counts)}")
 
     for src, count in source_counts.items():
-        expected = sum(1 for s, _ in manifest_keys if s == src)
+        expected = sum(1 for _, s in manifest_keys if s == src)
         if count != expected:
             errors.append(f"{src}: {count}/{expected} done")
         else:
