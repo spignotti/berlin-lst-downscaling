@@ -24,8 +24,8 @@ def reconcile(
     ``"schema_changed"``.
 
     Scenes that already have a matching schema hash, status ``done``,
-    **and** confirmed file existence (data COG + flag COG + STAC) are
-    excluded (skip).
+    **and** confirmed file existence (data COG + flag COG + STAC +
+    provenance + completion marker) are excluded (skip).
 
     Scenes with ``attempts >= max_attempts`` and status ``failed`` or
     ``exporting`` are marked ``exhausted`` and excluded from further

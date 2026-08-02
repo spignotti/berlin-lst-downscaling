@@ -276,8 +276,7 @@ def _apply_sidecars(
         build_ard_provenance,
         build_ard_stac_item,
     )
-    from berlin_lst_downscaling.data.ard.writer import write_stac_atomic
-    from berlin_lst_downscaling.data.io import atomic_write
+    from berlin_lst_downscaling.data.io import atomic_write, exists
 
     scene_dir = os.path.dirname(path_cog)
     stac_uri = f"{scene_dir}/{scene_id}.stac.json"
@@ -316,7 +315,9 @@ def _apply_sidecars(
         scene_id, source, year, contract, run_id,
         repair=True, repair_commit=repair_commit,
     )
-    atomic_write(prov_uri, json.dumps(provenance, indent=2), overwrite=True)
+    prov_gen = 0 if not exists(prov_uri) else None
+    atomic_write(prov_uri, json.dumps(provenance, indent=2), overwrite=True,
+                 if_generation_match=prov_gen)
 
     # 2. STAC item
     stac_item = build_ard_stac_item(
@@ -326,15 +327,20 @@ def _apply_sidecars(
         flag_href=f"{scene_id}.flag.tif" if path_flag else None,
         provenance_href="provenance.json",
     )
-    write_stac_atomic(stac_item, stac_uri, overwrite=True)
+    stac_gen = 0 if not exists(stac_uri) else None
+    stac_bytes = json.dumps(stac_item, indent=2).encode("utf-8")
+    atomic_write(stac_uri, stac_bytes, overwrite=True,
+                 if_generation_match=stac_gen)
 
     # 3. Completion marker
     from datetime import UTC, datetime
     completed_at = datetime.now(UTC).isoformat()
+    comp_gen = 0 if not exists(comp_uri) else None
     atomic_write(
         comp_uri,
         json.dumps({"published_at": completed_at, "run_id": run_id}, indent=2),
         overwrite=True,
+        if_generation_match=comp_gen,
     )
 
 

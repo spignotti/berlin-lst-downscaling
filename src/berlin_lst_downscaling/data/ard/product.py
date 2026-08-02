@@ -26,7 +26,6 @@ from rasterio.transform import array_bounds
 from rasterio.warp import transform_bounds
 
 from berlin_lst_downscaling.data.ard.contract import Contract
-from berlin_lst_downscaling.data.ard.writer import write_stac_atomic
 from berlin_lst_downscaling.data.io import atomic_write
 
 # STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0).
@@ -215,6 +214,7 @@ def finalize_ard_product(
     repair_commit: str | None = None,
     source_metadata: dict[str, Any] | None = None,
     write_completion: bool = True,
+    if_generation_match: int | None = None,
 ) -> ARDArtifacts:
     """Write ARD sidecars and return deterministic artifact URIs.
 
@@ -254,7 +254,8 @@ def finalize_ard_product(
         repair=repair, repair_commit=repair_commit,
         source_metadata=source_metadata,
     )
-    atomic_write(prov_dst, json.dumps(provenance, indent=2), overwrite=True)
+    atomic_write(prov_dst, json.dumps(provenance, indent=2), overwrite=True,
+                 if_generation_match=if_generation_match)
 
     # Build STAC item (using relative provenance href within the scene dir)
     prov_href = "provenance.json"
@@ -266,7 +267,9 @@ def finalize_ard_product(
         flag_href=flag_href,
         provenance_href=prov_href,
     )
-    write_stac_atomic(stac_item, stac_dst, overwrite=True)
+    json_bytes = json.dumps(stac_item, indent=2).encode("utf-8")
+    atomic_write(stac_dst, json_bytes, overwrite=True,
+                 if_generation_match=if_generation_match)
 
     # Write completion marker last
     if write_completion:
@@ -275,6 +278,7 @@ def finalize_ard_product(
             comp_dst,
             json.dumps({"published_at": completed_at, "run_id": run_id}, indent=2),
             overwrite=True,
+            if_generation_match=if_generation_match,
         )
 
     return ARDArtifacts(

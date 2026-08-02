@@ -292,7 +292,6 @@ def main() -> int:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_path, "w") as f:
             json.dump(summary_data, f, indent=2, default=str)
-        summary_path = summary_path
     print(f"\nSummary saved: {summary_uri}", flush=True)
 
     return 0 if summary.failed == 0 else 1
