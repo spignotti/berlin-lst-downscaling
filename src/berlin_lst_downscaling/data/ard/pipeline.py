@@ -16,7 +16,6 @@ Supported sources: ``landsat-c2-l2``, ``sentinel-2-l2a``, ``ecostress``.
 from __future__ import annotations
 
 import logging
-import math
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -36,13 +35,13 @@ from berlin_lst_downscaling.data.ard.idempotency import reconcile
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
 from berlin_lst_downscaling.data.ard.masking import mask_ecostress, mask_landsat, mask_s2
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
+from berlin_lst_downscaling.data.ard.product import finalize_ard_product
 from berlin_lst_downscaling.data.ard.reports import qa_report
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
 from berlin_lst_downscaling.data.ard.validate import validate_cog, validate_flag_cog
 from berlin_lst_downscaling.data.ard.writer import (
     write_cog_atomic,
     write_flag_cog_atomic,
-    write_stac_atomic,
 )
 from berlin_lst_downscaling.data.io import log_event
 
@@ -533,18 +532,24 @@ def _run_scene(
                 min_overlap_px=min_overlap,
             )
 
-        stac_dst = stac_path(root, source, year, scene_id)
-        stac_item = _build_stac_item(
-            scene_id,
-            source,
-            year,
-            masked,
-            contract,
-            cog_dst,
-            cfg,
-            flag_dst=flag_dst if contract.flag_mode == "separate" else None,
+        resolution = (
+            int(cfg.target_resolution_low)
+            if source == "landsat-c2-l2"
+            else int(cfg.target_resolution_high)
         )
-        write_stac_atomic(stac_item, stac_dst, overwrite=True)
+        finalize_ard_product(
+            scene_id=scene_id,
+            source=source,
+            year=year,
+            root=root,
+            contract=contract,
+            masked=masked,
+            run_id=run_id,
+            cog_uri=cog_dst,
+            flag_uri=flag_dst if contract.flag_mode == "separate" else None,
+            target_resolution=resolution,
+        )
+        stac_dst = stac_path(root, source, year, scene_id)
 
         elapsed = time.perf_counter() - t0
         ledger.upsert(
@@ -634,132 +639,6 @@ def _solar_for_scene(
         )
     return solar_position(dt)
 
-# ── STAC item builder ────────────────────────────────────────────────
-
-def _build_stac_item(
-    scene_id: str,
-    source: str,
-    year: int,
-    masked: xr.Dataset,
-    contract: Contract,
-    cog_path_rel: str,
-    cfg: DictConfig,
-    flag_dst: str | None = None,
-) -> dict[str, Any]:
-    """Build a minimal STAC item describing one ARD COG.
-
-    Parameters
-    ----------
-    flag_dst :
-        URI to the separate flag COG (``.flag.tif``). When provided and
-        ``contract.flag_mode == "separate"``, a ``flag`` asset is added
-        pointing to this file.
-    """
-    from rasterio.transform import array_bounds
-    from rasterio.warp import transform_bounds
-
-    crs = masked.rio.crs
-    geo_transform = masked.rio.transform()
-
-    first_band = list(masked.data_vars)[0]
-    height, width = masked[first_band].shape[-2:]
-
-    bounds = array_bounds(height, width, geo_transform)
-    bbox_4326 = transform_bounds(crs, "EPSG:4326", *bounds)
-
-    resolution = (
-        cfg.target_resolution_low if source == "landsat-c2-l2" else cfg.target_resolution_high
-    )
-
-    assets: dict[str, Any] = {}
-    # Data bands from contract.output_bands (flag is separate)
-    for spec in contract.output_bands:
-        # STAC spec stores NaN nodata as JSON null.
-        nodata = None if spec.nodata is not None and math.isnan(spec.nodata) else spec.nodata
-        assets[spec.name] = {
-            "href": cog_path_rel,
-            "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-            "title": spec.description,
-            "raster:bands": [
-                {
-                    "data_type": spec.dtype,
-                    "nodata": nodata,
-                    "spatial_resolution": resolution,
-                }
-            ],
-        }
-
-    # Flag band as separate asset
-    if flag_dst is not None and contract.flag_mode == "separate":
-        assets["flag"] = {
-            "href": flag_dst,
-            "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-            "title": "Quality flag (bitmask: fill, cloudy, shadow, cirrus, saturated)",
-            "raster:bands": [
-                {
-                    "data_type": "uint8",
-                    "nodata": None,
-                    "spatial_resolution": resolution,
-                }
-            ],
-        }
-
-    # Real acquisition datetime from dataset (T11)
-    acq_dt = _acquisition_datetime(masked, cfg, year)
-
-    item: dict[str, Any] = {
-        "stac_version": "1.0.0",
-        "stac_extensions": ["projection", "raster"],
-        "type": "Feature",
-        "id": scene_id,
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [bbox_4326[0], bbox_4326[1]],
-                    [bbox_4326[2], bbox_4326[1]],
-                    [bbox_4326[2], bbox_4326[3]],
-                    [bbox_4326[0], bbox_4326[3]],
-                    [bbox_4326[0], bbox_4326[1]],
-                ]
-            ],
-        },
-        "properties": {
-            "datetime": (
-                acq_dt.isoformat() if acq_dt else f"{cfg.get('scene_date', str(year))}T00:00:00Z"
-            ),
-            "crs": str(crs),
-            "proj:epsg": crs.to_epsg(),
-            "proj:shape": [height, width],
-            "proj:transform": list(geo_transform),
-            "ard:schema_version": contract.schema_version_str(),
-            "ard:source": source,
-            "ard:scene_id": scene_id,
-        },
-        "assets": assets,
-        "links": [],
-    }
-
-    return item
-
-# ── STAC helpers ─────────────────────────────────────────────────────
-
-def _acquisition_datetime(
-    masked: xr.Dataset,
-    cfg: DictConfig,
-    year: int,
-) -> datetime | None:
-    """Extract the real acquisition datetime from the dataset.
-
-    Returns ``None`` if the dataset has no ``time`` coordinate or it
-    cannot be parsed (caller should fall back to config date).
-    """
-    try:
-        dt64 = masked.time.values[0]
-        ts = dt64.astype("datetime64[us]").tolist()
-        return datetime.fromtimestamp(ts.timestamp(), tz=UTC)
-    except (IndexError, AttributeError, ValueError):
-        return None
 
 def _int_or_none(val) -> int | None:
     """Convert value to int, returning None for None or NaN."""
