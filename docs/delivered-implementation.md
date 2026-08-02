@@ -184,7 +184,7 @@ uv run python scripts/run_profiling.py --config-name full \
     output_root=gs://berlin-lst-data/profiling/wb2c-1
 ```
 
-Output: `profiles.parquet`, `profiles.csv`, `summary.json`, `notion-summary.md`
+Output: `profiles.parquet`, `profiles.csv`, `summary.json`
 
 ## Smoke gates
 

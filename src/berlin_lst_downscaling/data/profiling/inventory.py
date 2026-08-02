@@ -42,6 +42,26 @@ _DYNAMIC_BAND_COUNTS = {
 _TRAINING_YEARS = set(range(2017, 2026))
 _INFERENCE_YEAR = 2026
 
+# Source → resolution mapping
+_SOURCE_RESOLUTION = {
+    "landsat-c2-l2": 100,
+    "sentinel-2-l2a": 10,
+    "ecostress": 70,
+    "era5_land": 10,
+    "shadow_building": 10,
+    "shadow_vegetation": 10,
+    "terrain_height": 10,
+    "vegetation_height": 10,
+    "building_dsm": 10,
+    "vegetation_dsm": 10,
+    "combined_dsm": 10,
+    "lod2_morphology": 10,
+    "imperviousness": 10,
+    "svf": 10,
+    "horizon_building": 10,
+    "horizon_vegetation": 10,
+}
+
 
 def _read_parquet_table(uri: str) -> pa.Table:
     """Read a Parquet table from local path or GCS."""
@@ -94,7 +114,7 @@ def build_ard_assets(
 
         # Build expected COG path
         contract = contract_for_source(source)
-        grid = canon_grid_for_resolution(10 if source != "ecostress" else 70)
+        grid = canon_grid_for_resolution(_SOURCE_RESOLUTION[source])
 
         # Expected bands from contract
         band_specs = tuple(b.name for b in contract.output_bands)
@@ -121,20 +141,23 @@ def build_ard_assets(
                 expected_bands=len(contract.output_bands),
                 expected_band_specs=band_specs,
                 expected_histogram_specs=histogram_specs,
-                resolution_m=10 if source != "ecostress" else 70,
+                resolution_m=_SOURCE_RESOLUTION[source],
             )
         )
 
     return assets
 
 
-def build_static_assets() -> list[ProfileAsset]:
+def build_static_assets(
+    sources_root: str = _STATIC_SOURCES_ROOT,
+    derived_root: str = _STATIC_DERIVED_ROOT,
+) -> list[ProfileAsset]:
     """Build expected static source and derived assets."""
     assets: list[ProfileAsset] = []
 
     # Static sources
     try:
-        source_ledger = _read_parquet_table(f"{_STATIC_SOURCES_ROOT}/ledger.parquet")
+        source_ledger = _read_parquet_table(f"{sources_root}/ledger.parquet")
         for i in range(source_ledger.num_rows):
             row = source_ledger.slice(i, 1).to_pydict()
             item_id = row["item_id"][0]
@@ -151,7 +174,16 @@ def build_static_assets() -> list[ProfileAsset]:
             except (ValueError, TypeError):
                 year = None
 
-            # Static products are always shared_static
+            # Get contract for this source
+            contract = _contract_for_static_source(source)
+            if contract is None:
+                _logger.warning("No contract for static source %s, skipping", source)
+                continue
+
+            grid = canon_grid_for_resolution(10)
+            band_specs = tuple(b.name for b in contract.output_bands)
+            histogram_specs = tuple(_histogram_spec_for_band(b.name) for b in contract.output_bands)
+
             assets.append(
                 ProfileAsset(
                     item_id=item_id,
@@ -163,12 +195,11 @@ def build_static_assets() -> list[ProfileAsset]:
                     partition="shared_static",
                     year=year,
                     expected_crs="EPSG:25833",
-                    expected_resolution=10.0,
-                    expected_shape=(
-                        canon_grid_for_resolution(10).shape.x,
-                        canon_grid_for_resolution(10).shape.y,
-                    ),
-                    expected_bands=1,  # Will be overridden by contract lookup
+                    expected_resolution=grid.transform.a,
+                    expected_shape=(grid.shape.x, grid.shape.y),
+                    expected_bands=len(contract.output_bands),
+                    expected_band_specs=band_specs,
+                    expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
             )
@@ -178,7 +209,7 @@ def build_static_assets() -> list[ProfileAsset]:
     # Static derived
     try:
         derived_ledger = _read_parquet_table(
-            f"{_STATIC_DERIVED_ROOT}/_state/static/derived/ledger.parquet"
+            f"{derived_root}/_state/static/derived/ledger.parquet"
         )
         for i in range(derived_ledger.num_rows):
             row = derived_ledger.slice(i, 1).to_pydict()
@@ -188,6 +219,16 @@ def build_static_assets() -> list[ProfileAsset]:
 
             if not output_uri:
                 continue
+
+            # Get contract for this source
+            contract = _contract_for_static_source(source)
+            if contract is None:
+                _logger.warning("No contract for static derived source %s, skipping", source)
+                continue
+
+            grid = canon_grid_for_resolution(10)
+            band_specs = tuple(b.name for b in contract.output_bands)
+            histogram_specs = tuple(_histogram_spec_for_band(b.name) for b in contract.output_bands)
 
             assets.append(
                 ProfileAsset(
@@ -199,12 +240,11 @@ def build_static_assets() -> list[ProfileAsset]:
                     completion_uri=row.get("completion_uri", [None])[0],
                     partition="shared_static",
                     expected_crs="EPSG:25833",
-                    expected_resolution=10.0,
-                    expected_shape=(
-                        canon_grid_for_resolution(10).shape.x,
-                        canon_grid_for_resolution(10).shape.y,
-                    ),
-                    expected_bands=1,  # Will be overridden by contract lookup
+                    expected_resolution=grid.transform.a,
+                    expected_shape=(grid.shape.x, grid.shape.y),
+                    expected_bands=len(contract.output_bands),
+                    expected_band_specs=band_specs,
+                    expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
             )
@@ -212,6 +252,47 @@ def build_static_assets() -> list[ProfileAsset]:
         _logger.warning("Failed to load static derived ledger: %s", e)
 
     return assets
+
+
+def _contract_for_static_source(source: str) -> Any:
+    """Return the Contract for a static source, or None if unmapped."""
+    from berlin_lst_downscaling.data.ard.contract import Contract  # noqa: F401
+    from berlin_lst_downscaling.data.secondary.dgm import contract_for_terrain_height
+    from berlin_lst_downscaling.data.secondary.dsm import (
+        contract_for_building_dsm,
+        contract_for_combined_dsm,
+        contract_for_vegetation_dsm,
+    )
+    from berlin_lst_downscaling.data.secondary.horizon import contract_for_horizon
+    from berlin_lst_downscaling.data.secondary.imperviousness import (
+        contract_for_imperviousness,
+    )
+    from berlin_lst_downscaling.data.secondary.lod2 import contract_for_lod2_morphology
+    from berlin_lst_downscaling.data.secondary.svf import contract_for_svf
+    from berlin_lst_downscaling.data.secondary.vegetation_height import (
+        contract_for_vegetation_height,
+    )
+
+    factories: dict[str, Any] = {
+        "terrain_height": contract_for_terrain_height,
+        "vegetation_height": contract_for_vegetation_height,
+        "building_dsm": contract_for_building_dsm,
+        "vegetation_dsm": contract_for_vegetation_dsm,
+        "combined_dsm": contract_for_combined_dsm,
+        "lod2_morphology": contract_for_lod2_morphology,
+        "imperviousness": contract_for_imperviousness,
+        "svf": contract_for_svf,
+    }
+
+    if source in factories:
+        return factories[source]()
+
+    # Horizon sources: horizon_building, horizon_vegetation
+    if source.startswith("horizon_"):
+        component = source.split("_", 1)[1]
+        return contract_for_horizon(component)
+
+    return None
 
 
 def build_dynamic_assets(
@@ -257,26 +338,15 @@ def build_dynamic_assets(
             provenance_path = f"{product_dir}/provenance.json"
             completion_path = f"{product_dir}/complete.json"
 
-            # Determine grid based on source
-            if source == "era5_land":
-                grid = canon_grid_for_resolution(10)
-                band_count = 8
-                band_specs = (
-                    "t2m_scene",
-                    "ssrd_scene",
-                    "ssrd_antecedent_72h_mean",
-                    "vpd_scene",
-                    "wind_speed_10m_scene",
-                    "tp_0_24h",
-                    "tp_24_48h",
-                    "tp_48_72h",
-                )
-            elif source in ("shadow_building", "shadow_vegetation"):
-                grid = canon_grid_for_resolution(10)
-                band_count = 1
-                band_specs = (source,)
-            else:
+            # Get contract for dynamic source
+            contract = _contract_for_dynamic_source(source)
+            if contract is None:
+                _logger.warning("No contract for dynamic source %s, skipping", source)
                 continue
+
+            grid = canon_grid_for_resolution(10)
+            band_specs = tuple(b.name for b in contract.output_bands)
+            histogram_specs = tuple(_histogram_spec_for_band(b.name) for b in contract.output_bands)
 
             # Partition - explicit assignment for type safety
             if role == "inference":
@@ -297,8 +367,9 @@ def build_dynamic_assets(
                     expected_crs="EPSG:25833",
                     expected_resolution=grid.transform.a,
                     expected_shape=(grid.shape.x, grid.shape.y),
-                    expected_bands=band_count,
+                    expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
+                    expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
             )
@@ -306,16 +377,32 @@ def build_dynamic_assets(
     return assets
 
 
+def _contract_for_dynamic_source(source: str) -> Any:
+    """Return the Contract for a dynamic source, or None if unmapped."""
+    from berlin_lst_downscaling.data.ard.contract import Contract  # noqa: F401
+    from berlin_lst_downscaling.data.dynamic.era5 import contract_for_era5_scene
+    from berlin_lst_downscaling.data.dynamic.shadows import contract_for_shadow
+
+    if source == "era5_land":
+        return contract_for_era5_scene()
+    elif source.startswith("shadow_"):
+        component = source.split("_", 1)[1]
+        return contract_for_shadow(component)
+    return None
+
+
 def build_all_assets(
     manifest_uri: str = _MANIFEST_URI,
     ard_ledger_uri: str = _ARD_LEDGER,
     dynamic_root: str = _DYNAMIC_FULL_ROOT,
     inference_root: str = _DYNAMIC_INFERENCE_ROOT,
+    static_sources_root: str = _STATIC_SOURCES_ROOT,
+    static_derived_root: str = _STATIC_DERIVED_ROOT,
 ) -> list[ProfileAsset]:
     """Build the complete expected asset inventory."""
     assets: list[ProfileAsset] = []
     assets.extend(build_ard_assets(manifest_uri, ard_ledger_uri))
-    assets.extend(build_static_assets())
+    assets.extend(build_static_assets(static_sources_root, static_derived_root))
     assets.extend(build_dynamic_assets(dynamic_root, inference_root))
     return assets
 

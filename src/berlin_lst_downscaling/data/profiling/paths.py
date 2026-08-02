@@ -9,7 +9,6 @@ Artifacts:
   profiles.parquet    — per-asset profiling results
   profiles.csv        — same content, human-readable
   summary.json        — aggregated summary (written last)
-  notion-summary.md   — condensed Notion-ready summary
 """
 
 from __future__ import annotations
@@ -36,14 +35,8 @@ def summary_json_path(root: str = _PROFILING_ROOT) -> str:
     return f"{root.rstrip('/')}/summary.json"
 
 
-def notion_summary_path(root: str = _PROFILING_ROOT) -> str:
-    """Return the URI of the Notion-ready summary Markdown file."""
-    return f"{root.rstrip('/')}/notion-summary.md"
-
-
 __all__ = [
     "profiles_parquet_path",
     "profiles_csv_path",
     "summary_json_path",
-    "notion_summary_path",
 ]

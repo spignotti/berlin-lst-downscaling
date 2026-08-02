@@ -128,10 +128,15 @@ _STATIC_HISTOGRAMS: dict[str, HistogramSpec] = {
         bin_edges=tuple(range(-10, 200, 10)),
         description="Terrain height (m)",
     ),
-    "vegetation_height": HistogramSpec(
-        band_name="vegetation_height",
+    "vegetation_height_mean": HistogramSpec(
+        band_name="vegetation_height_mean",
         bin_edges=tuple(range(0, 50, 5)),
-        description="Vegetation height (m)",
+        description="Mean vegetation height (m)",
+    ),
+    "vegetation_height_max": HistogramSpec(
+        band_name="vegetation_height_max",
+        bin_edges=tuple(range(0, 50, 5)),
+        description="Max vegetation height (m)",
     ),
     # Morphology products
     "building_height_mean": HistogramSpec(
@@ -154,16 +159,11 @@ _STATIC_HISTOGRAMS: dict[str, HistogramSpec] = {
         bin_edges=tuple(range(0, 100, 10)),
         description="Max building height (m)",
     ),
-    # SVF/horizon products
+    # SVF
     "svf": HistogramSpec(
         band_name="svf",
         bin_edges=tuple(x / 10 for x in range(0, 11)),
         description="Sky view factor [0, 1]",
-    ),
-    "horizon": HistogramSpec(
-        band_name="horizon",
-        bin_edges=tuple(range(0, 9100, 1000)),
-        description="Horizon angle (deg × 100)",
     ),
     # Imperviousness
     "imperviousness": HistogramSpec(
@@ -173,6 +173,17 @@ _STATIC_HISTOGRAMS: dict[str, HistogramSpec] = {
     ),
 }
 
+# Horizon bands (36 azimuths) - reuse for both building and vegetation
+_HORIZON_BANDS = [f"az_{int(az):03d}" for az in range(0, 360, 10)]
+HORIZON_HISTOGRAMS: dict[str, HistogramSpec] = {
+    band: HistogramSpec(
+        band_name=band,
+        bin_edges=tuple(range(0, 9100, 1000)),
+        description=f"Horizon angle at {int(az)}° azimuth (centidegrees)",
+    )
+    for band, az in zip(_HORIZON_BANDS, range(0, 360, 10), strict=True)
+}
+
 # ── Master registry ───────────────────────────────────────────────────
 
 ALL_HISTOGRAMS: dict[str, HistogramSpec] = {
@@ -180,6 +191,7 @@ ALL_HISTOGRAMS: dict[str, HistogramSpec] = {
     **_SHADOW_HISTOGRAMS,
     **_ARD_HISTOGRAMS,
     **_STATIC_HISTOGRAMS,
+    **HORIZON_HISTOGRAMS,
 }
 
 
@@ -204,6 +216,7 @@ __all__ = [
     "_SHADOW_HISTOGRAMS",
     "_ARD_HISTOGRAMS",
     "_STATIC_HISTOGRAMS",
+    "HORIZON_HISTOGRAMS",
     "ALL_HISTOGRAMS",
     "get_histogram_spec",
     "require_histogram_spec",

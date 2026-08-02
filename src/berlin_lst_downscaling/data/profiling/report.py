@@ -1,8 +1,7 @@
 """Report generation for WB2c-1 profiling.
 
 Aggregates per-asset profile rows into summary statistics and generates
-the fixed artifact bundle: profiles.parquet, profiles.csv, summary.json,
-and notion-summary.md.
+the fixed artifact bundle: profiles.parquet, profiles.csv, and summary.json.
 """
 
 from __future__ import annotations
@@ -19,14 +18,157 @@ import pyarrow.parquet as pq
 from berlin_lst_downscaling.data.io.storage import atomic_write
 from berlin_lst_downscaling.data.profiling.models import ProfileRow
 from berlin_lst_downscaling.data.profiling.paths import (
-    notion_summary_path,
     profiles_csv_path,
     profiles_parquet_path,
     summary_json_path,
 )
 
 
-def aggregate_profiles(rows: list[ProfileRow]) -> dict[str, Any]:
+def profiles_to_long_dataframe(rows: list[ProfileRow]) -> pd.DataFrame:
+    """Convert profile rows to a long-format DataFrame.
+
+    Each row in the output represents one band of one asset, with all
+    metrics flattened into columns. This preserves full detail without
+    exploding the schema.
+    """
+    records = []
+    for row in rows:
+        base = {
+            "scope": "asset",
+            "item_id": row.item_id,
+            "source": row.source,
+            "partition": row.partition,
+            "year": row.year,
+            "season": row.season,
+            "resolution_m": row.resolution_m,
+            "cog_uri": row.cog_uri,
+            "cog_exists": row.cog_exists,
+            "cog_valid": row.cog_valid,
+            "stac_exists": row.stac_exists,
+            "provenance_exists": row.provenance_exists,
+            "completion_exists": row.completion_exists,
+            "has_hard_failure": row.has_hard_failure,
+            "failure_reasons": "|".join(row.failure_reasons) if row.failure_reasons else "",
+            "cog_errors": "|".join(row.cog_errors) if row.cog_errors else "",
+        }
+
+        for stats in row.band_stats:
+            record = {
+                **base,
+                "band_index": stats.band_index,
+                "band_name": stats.band_name,
+                "valid_count": stats.valid_count,
+                "missing_count": stats.missing_count,
+                "missing_rate": stats.missing_rate,
+                "min_value": stats.min_value,
+                "max_value": stats.max_value,
+                "mean_value": stats.mean_value,
+                "std_value": stats.std_value,
+                "p1": stats.p1,
+                "p5": stats.p5,
+                "p25": stats.p25,
+                "p50": stats.p50,
+                "p75": stats.p75,
+                "p95": stats.p95,
+                "p99": stats.p99,
+            }
+            # Serialize histogram as JSON strings for Parquet compatibility
+            if stats.histogram_bins:
+                record["histogram_bins"] = json.dumps(list(stats.histogram_bins))
+                record["histogram_counts"] = json.dumps(list(stats.histogram_counts))
+            else:
+                record["histogram_bins"] = "[]"
+                record["histogram_counts"] = "[]"
+
+            records.append(record)
+
+    # Add aggregate records per source/partition/year/season
+    agg_df = _build_aggregate_records(rows)
+    df = pd.DataFrame(records)
+
+    if not agg_df.empty:
+        df = pd.concat([df, agg_df], ignore_index=True)
+
+    return df
+
+
+def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
+    """Build aggregate records by source/partition/year/season."""
+    # Group by (source, partition, year, season)
+    groups: dict[tuple[str, str, int | None, str | None], list[ProfileRow]] = {}
+    for row in rows:
+        key = (row.source, row.partition, row.year, row.season)
+        groups.setdefault(key, []).append(row)
+
+    agg_records = []
+    for (source, partition, year, season), group_rows in groups.items():
+        # Aggregate band stats across all assets in this group
+        band_groups: dict[str, list] = {}
+        for row in group_rows:
+            for stats in row.band_stats:
+                band_groups.setdefault(stats.band_name, []).append(stats)
+
+        total_assets = len(group_rows)
+        hard_failures = sum(1 for r in group_rows if r.has_hard_failure)
+        cog_valid = sum(1 for r in group_rows if r.cog_valid)
+
+        for band_name, band_stats_list in band_groups.items():
+            agg_record = {
+                "scope": "aggregate",
+                "item_id": "",
+                "source": source,
+                "partition": partition,
+                "year": year,
+                "season": season,
+                "resolution_m": group_rows[0].resolution_m,
+                "cog_uri": "",
+                "cog_exists": True,
+                "cog_valid": cog_valid == total_assets,
+                "stac_exists": True,
+                "provenance_exists": True,
+                "completion_exists": True,
+                "has_hard_failure": hard_failures > 0,
+                "failure_reasons": "",
+                "cog_errors": "",
+                "band_index": band_stats_list[0].band_index,
+                "band_name": band_name,
+                "total_assets": total_assets,
+                "hard_failures": hard_failures,
+                # Aggregate metrics
+                "valid_count": sum(s.valid_count for s in band_stats_list),
+                "missing_count": sum(s.missing_count for s in band_stats_list),
+                "missing_rate": (
+                    sum(s.missing_count for s in band_stats_list)
+                    / max(1, sum(s.valid_count + s.missing_count for s in band_stats_list))
+                ),
+                "min_value": min(
+                    (s.min_value for s in band_stats_list if s.valid_count > 0),
+                    default=float("nan"),
+                ),
+                "max_value": max(
+                    (s.max_value for s in band_stats_list if s.valid_count > 0),
+                    default=float("nan"),
+                ),
+                "mean_value": float("nan"),  # Cannot aggregate without weights
+                "std_value": float("nan"),
+                "p1": float("nan"),
+                "p5": float("nan"),
+                "p25": float("nan"),
+                "p50": float("nan"),
+                "p75": float("nan"),
+                "p95": float("nan"),
+                "p99": float("nan"),
+                "histogram_bins": band_stats_list[0].histogram_bins
+                and json.dumps(list(band_stats_list[0].histogram_bins)),
+                "histogram_counts": band_stats_list[0].histogram_counts
+                and json.dumps(list(band_stats_list[0].histogram_counts)),
+            }
+            agg_records.append(agg_record)
+
+    return pd.DataFrame(agg_records) if agg_records else pd.DataFrame()
+
+
+def aggregate_summary(rows: list[ProfileRow]) -> dict[str, Any]:
     """Aggregate profile rows into summary statistics."""
     summary: dict[str, Any] = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -100,50 +242,13 @@ def aggregate_profiles(rows: list[ProfileRow]) -> dict[str, Any]:
     return summary
 
 
-def profiles_to_dataframe(rows: list[ProfileRow]) -> pd.DataFrame:
-    """Convert profile rows to a pandas DataFrame."""
-    records = []
-    for row in rows:
-        record = {
-            "item_id": row.item_id,
-            "source": row.source,
-            "cog_uri": row.cog_uri,
-            "partition": row.partition,
-            "year": row.year,
-            "season": row.season,
-            "resolution_m": row.resolution_m,
-            "cog_exists": row.cog_exists,
-            "cog_valid": row.cog_valid,
-            "stac_exists": row.stac_exists,
-            "provenance_exists": row.provenance_exists,
-            "completion_exists": row.completion_exists,
-            "has_hard_failure": row.has_hard_failure,
-            "failure_reasons": "|".join(row.failure_reasons) if row.failure_reasons else "",
-        }
-
-        # Add band statistics as flattened columns
-        for stats in row.band_stats:
-            prefix = f"band_{stats.band_name}"
-            record[f"{prefix}_valid_count"] = stats.valid_count
-            record[f"{prefix}_missing_rate"] = stats.missing_rate
-            record[f"{prefix}_min"] = stats.min_value
-            record[f"{prefix}_max"] = stats.max_value
-            record[f"{prefix}_mean"] = stats.mean_value
-            record[f"{prefix}_std"] = stats.std_value
-            record[f"{prefix}_p50"] = stats.p50
-
-        records.append(record)
-
-    return pd.DataFrame(records)
-
-
 def emit_artifacts(
     rows: list[ProfileRow],
     output_root: str,
 ) -> None:
     """Emit the fixed artifact bundle."""
-    df = profiles_to_dataframe(rows)
-    summary = aggregate_profiles(rows)
+    df = profiles_to_long_dataframe(rows)
+    summary = aggregate_summary(rows)
 
     # Write profiles.parquet
     table = pa.Table.from_pandas(df)
@@ -160,62 +265,9 @@ def emit_artifacts(
     summary_bytes = json.dumps(summary, indent=2, default=str).encode("utf-8")
     atomic_write(summary_json_path(output_root), summary_bytes, overwrite=True)
 
-    # Write notion-summary.md
-    md_content = _format_notion_summary(summary)
-    atomic_write(notion_summary_path(output_root), md_content.encode("utf-8"), overwrite=True)
-
-
-def _format_notion_summary(summary: dict[str, Any]) -> str:
-    """Format summary as Notion-ready Markdown."""
-    lines = [
-        "# WB2c-1 Data Profiling Summary",
-        "",
-        f"**Timestamp:** {summary['timestamp']}",
-        f"**Status:** {summary['artifact_status']}",
-        f"**Total Assets:** {summary['total_assets']}",
-        f"**Hard Failures:** {summary['hard_failures']}",
-        "",
-        "## By Source",
-        "",
-    ]
-
-    for source, stats in summary["by_source"].items():
-        lines.append(
-            f"- **{source}**: {stats['total']} total, {stats['valid']} valid, "
-            f"{stats['failures']} failures, {stats['missing_cog']} missing COGs"
-        )
-
-    lines.extend(
-        [
-            "",
-            "## By Partition",
-            "",
-        ]
-    )
-
-    for partition, count in summary["by_partition"].items():
-        lines.append(f"- **{partition}**: {count}")
-
-    lines.extend(
-        [
-            "",
-            "## Structural Checks",
-            "",
-        ]
-    )
-
-    checks = summary["structural_checks"]
-    lines.append(f"- COG exists: {checks['cog_exists']}/{summary['total_assets']}")
-    lines.append(f"- COG valid: {checks['cog_valid']}/{summary['total_assets']}")
-    lines.append(f"- STAC exists: {checks['stac_exists']}/{summary['total_assets']}")
-    lines.append(f"- Provenance exists: {checks['provenance_exists']}/{summary['total_assets']}")
-    lines.append(f"- Completion exists: {checks['completion_exists']}/{summary['total_assets']}")
-
-    return "\n".join(lines)
-
 
 __all__ = [
-    "aggregate_profiles",
-    "profiles_to_dataframe",
+    "aggregate_summary",
+    "profiles_to_long_dataframe",
     "emit_artifacts",
 ]
