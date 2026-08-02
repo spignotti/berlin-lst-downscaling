@@ -322,12 +322,22 @@ def build_dynamic_assets(
             if status != "done":
                 continue
 
-            # Extract scene_id from item_id (format: "{scene_id}__{source}")
-            scene_id = item_id.split("__")[0] if "__" in item_id else item_id
+            # Extract scene_id from item_id (format: "{source}_{scene_id}")
+            # e.g., "era5_land_LC08_L2SP_192023_20170526_02_T1"
+            if item_id.startswith(f"{source}_"):
+                scene_id = item_id[len(source) + 1 :]
+            else:
+                scene_id = item_id
 
             # Determine year from scene_id (format: "LC09_..._YYYYMMDD_...")
             try:
-                year = int(scene_id.split("_")[3][:4])
+                # Try to find the date part (YYYYMMDD) in the scene_id
+                parts = scene_id.split("_")
+                year = None
+                for part in parts:
+                    if len(part) == 8 and part.isdigit():
+                        year = int(part[:4])
+                        break
             except (IndexError, ValueError):
                 year = None
 
@@ -342,6 +352,11 @@ def build_dynamic_assets(
             contract = _contract_for_dynamic_source(source)
             if contract is None:
                 _logger.warning("No contract for dynamic source %s, skipping", source)
+                continue
+
+            # Skip if year cannot be determined (required for non-static partitions)
+            if year is None:
+                _logger.warning("Cannot determine year for %s, skipping", item_id)
                 continue
 
             grid = canon_grid_for_resolution(10)
