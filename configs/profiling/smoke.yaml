@@ -1,0 +1,11 @@
+defaults:
+  - _base
+  - _self_
+
+# Smoke profiling — bounded run for local validation.
+# Uses a small subset of assets for quick iteration.
+manifest_uri: "data/manifest_build/v3/smoke/manifest.parquet"
+ard_ledger_uri: "data/ard/smoke/ledger.parquet"
+dynamic_root: "data/dynamic/smoke"
+inference_root: "data/dynamic/smoke_inference"
+output_root: "data/profiling/smoke"
