@@ -383,6 +383,9 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
 
         log_event(_logger, logging.INFO, "month_group_done", year=ym_year, month=ym_month)
 
+    import gc
+    gc.collect()
+
     # ── 4. final report ──────────────────────────────────────────────
     from berlin_lst_downscaling.data.dynamic.reports import (
         dynamic_qa_report,

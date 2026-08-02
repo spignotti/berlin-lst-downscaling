@@ -31,3 +31,6 @@ hydra:
     dir: .
   job:
     chdir: false
+
+# Skip GCS run guard (for isolated subprocess use)
+no_run_guard: false

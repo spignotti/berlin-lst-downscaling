@@ -535,6 +535,11 @@ def _derive_native_fields(
                 tp_raw[t].astype(np.float64) - tp_raw[t - 1].astype(np.float64)
             ).astype(np.float32)
 
+    # Clamp to physical range: precipitation cannot be negative.
+    # Small negatives arise from floating-point differences in the
+    # cumulative ERA5 grid.
+    np.maximum(tp_hourly_3d, 0.0, out=tp_hourly_3d)
+
     mask_0_24 = (time_vals > (acq_np - np.timedelta64(24, "h"))) & (time_vals <= acq_np)
     mask_24_48 = (time_vals > (acq_np - np.timedelta64(48, "h"))) & (
         time_vals <= (acq_np - np.timedelta64(24, "h"))
@@ -593,7 +598,9 @@ def _reproject_to_canonical(
             resampling=Resampling.bilinear,
         )
         results[var_name] = reprojected.values.astype(np.float32)
+        del reprojected, da
 
+    del ds_wgs84
     return results
 
 # ── public API ─────────────────────────────────────────────────────────
@@ -711,6 +718,7 @@ def prepare_era5_scene(
 
         # ── 4. reproject to canonical grid ────────────────────────────
         reprojected = _reproject_to_canonical(native_2d, grid)
+        del native_2d
 
     finally:
         if primary_ds is not None:
@@ -796,6 +804,11 @@ def prepare_era5_scene(
             "acquisition:year": acquisition_dt.year,
         },
     )
+
+    # Free intermediate arrays before returning to keep per-scene RSS bounded.
+    del reprojected
+    import gc
+    gc.collect()
 
 
 __all__ = [

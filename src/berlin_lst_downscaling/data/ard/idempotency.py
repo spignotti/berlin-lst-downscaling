@@ -24,8 +24,8 @@ def reconcile(
     ``"schema_changed"``.
 
     Scenes that already have a matching schema hash, status ``done``,
-    **and** confirmed file existence (data COG + flag COG + STAC) are
-    excluded (skip).
+    **and** confirmed file existence (data COG + flag COG + STAC +
+    provenance + completion marker) are excluded (skip).
 
     Scenes with ``attempts >= max_attempts`` and status ``failed`` or
     ``exporting`` are marked ``exhausted`` and excluded from further
@@ -88,7 +88,8 @@ def _files_exist(row: LedgerRow) -> bool:
 
     Returns ``True`` if all files are present, ``False`` if any are
     missing (which triggers reprocessing).
-    Checks: data COG, flag COG (when flag_mode=separate), and STAC.
+    Checks: data COG, flag COG (when flag_mode=separate), STAC,
+    provenance, and completion marker.
     """
     from berlin_lst_downscaling.data.io import exists
 
@@ -98,6 +99,19 @@ def _files_exist(row: LedgerRow) -> bool:
         return False
     if row.path_stac and not exists(row.path_stac):
         return False
+
+    # Derive provenance and completion paths from the scene directory
+    if row.path_cog:
+        import os
+
+        scene_dir = os.path.dirname(row.path_cog)
+        prov = f"{scene_dir}/provenance.json"
+        comp = f"{scene_dir}/complete.json"
+        if not exists(prov):
+            return False
+        if not exists(comp):
+            return False
+
     return True
 
 __all__ = [

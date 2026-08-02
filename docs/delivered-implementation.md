@@ -40,17 +40,31 @@ validate the new 8-band spatial ERA5 fields. DWD never feeds model training.
 ## Commands
 
 ```bash
-# ARD
+# ARD (produces COG + flag + STAC + provenance + complete.json per scene)
 uv run python scripts/run_ard.py --config-name full_all \
     manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
 
+# ARD metadata repair (dry-run default, --apply to write sidecars)
+uv run python scripts/finalize_ard.py \
+    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
+
+# ARD strict validation (exact manifest/ledger key-set, all four artifacts, STAC schemas)
+uv run python scripts/validate_ard.py \
+    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
+    --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+
 # Dynamic full (manifest_uri required)
-uv run python scripts/run_dynamic.py --config-name full \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+# Preferred: isolated runner (subprocess-per-scene, bounded memory)
+uv run python scripts/run_dynamic_isolated.py \
+    --manifest-uri gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
+    --output-root gs://berlin-lst-data/dynamic/full \
+    --config-name full --years 2017 2025 --dataset-role anchor --resume
 
 # Dynamic inference
-uv run python scripts/run_dynamic.py --config-name inference_2026 \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+uv run python scripts/run_dynamic_isolated.py \
+    --manifest-uri gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
+    --output-root gs://berlin-lst-data/dynamic/inference/2026 \
+    --config-name inference_2026 --years 2026 --dataset-role inference --resume
 
 # Static sources
 uv run python scripts/run_static_sources.py --config-name full
@@ -117,8 +131,8 @@ uv run python scripts/validate_lod_vintages.py \
 # DWD validation
 uv run python scripts/run_dwd_validation.py --config-name default \
     manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
-    dynamic_full_root=gs://berlin-lst-data/dynamic/full/dyn-20260721T092945-4a4de9 \
-    dynamic_inference_root=gs://berlin-lst-data/dynamic/inference/2026/dyn-inf-r4-20260722T203148 \
+    dynamic_full_root=gs://berlin-lst-data/dynamic/full \
+    dynamic_inference_root=gs://berlin-lst-data/dynamic/inference/2026 \
     output_root=gs://berlin-lst-data/dwd_validation/<run-id>
 ```
 
@@ -130,11 +144,11 @@ uv run python scripts/validate_manifest.py \
     --manifest gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet
 
 uv run python scripts/validate_dynamic.py \
-    --output-root gs://berlin-lst-data/dynamic/full/dyn-20260721T092945-4a4de9 \
+    --output-root gs://berlin-lst-data/dynamic/full \
     --expected-role anchor --expected-scenes 324
 
 uv run python scripts/validate_dynamic.py \
-    --output-root gs://berlin-lst-data/dynamic/inference/2026/dyn-inf-r4-20260722T203148 \
+    --output-root gs://berlin-lst-data/dynamic/inference/2026 \
     --expected-role inference --expected-scenes 21
 ```
 
@@ -148,8 +162,8 @@ shared output root and ledger keep it idempotent.
 ```bash
 uv run python scripts/run_dynamic_isolated.py \
     --manifest-uri gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet \
-    --output-root gs://berlin-lst-data/dynamic/full/<run-id> \
-    --config-name full --years 2017-2025
+    --output-root gs://berlin-lst-data/dynamic/full \
+    --config-name full --years 2017 2025 --resume
 ```
 
 ## Smoke gates
@@ -166,10 +180,13 @@ Each smoke also runs the matching validator with assertion args.
 
 ## Logging contract
 
-Every run emits one JSONL file at `<output_root>/logs/<pipeline>/<run_id>.jsonl`
-(session handler in `data/io/run_logging.py`). For GCS runs the JSONL is
-written to a local spool, uploaded atomically on session exit, and the
-spool is deleted.
+Every run emits two artifacts at `<output_root>/logs/<pipeline>/`:
+- `<run_id>.jsonl` — structured event log
+- `<run_id>.context.json` — redacted run context (Git commit, dirty state, pipeline, run_id, timestamp)
+
+For GCS runs the JSONL is written to a local spool, uploaded atomically
+on session exit, and the spool is deleted.  The context artifact is
+written eagerly at session start.
 
 ```python
 from berlin_lst_downscaling.data.io import RunLogSession, log_event

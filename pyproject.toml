@@ -4,7 +4,6 @@ version = "0.2.0"
 description = "Cloud-native LST downscaling pipeline — Berlin case study"
 requires-python = ">=3.12"
 dependencies = [
-    "dvc[gs]>=3.67.1",
     "earthaccess>=0.10.0",
     "geopandas>=1.0.0",
     "google-cloud-storage>=3.12.0",
@@ -12,6 +11,8 @@ dependencies = [
     "odc-stac>=0.4.0",
     "pillow>=11.0.0",
     "planetary-computer>=1.0.0",
+    "pystac-client>=0.9.0",
+    "pystac>=1.11.0",
     "rasterio>=1.4.3",
     "rioxarray>=0.18.0",
     "wandb>=0.27.2",

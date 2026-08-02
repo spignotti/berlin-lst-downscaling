@@ -18,7 +18,6 @@ Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Compu
 - ruff — linting and formatting
 - pyright — type checking
 - nox — validation entrypoint
-- dvc[gs] — data versioning (GCS remote)
 - wandb — experiment tracking
 - pydantic-settings — env-based config
 - google-cloud-storage — bucket access
@@ -88,7 +87,6 @@ Layout: `<output_root>/_raw/dwd/<run_id>/station_inventory.parquet`
 - `ruff` — linting and formatting
 - `pyright` — type checking
 - `nox` — validation entrypoint; run `uv run nox` before every commit
-- `dvc[gs]` — data versioning
 - `wandb` — experiment tracking
 - `pydantic-settings` — env-based config
 

@@ -116,6 +116,74 @@ def run_log_path(
     base = output_root.rstrip("/")
     return f"{base}/logs/{pipeline}/{run_id}.jsonl"
 
+
+def run_context_path(
+    output_root: str,
+    pipeline: str,
+    run_id: str,
+) -> str:
+    """Deterministic GCS/local context URI for a run."""
+    base = output_root.rstrip("/")
+    return f"{base}/logs/{pipeline}/{run_id}.context.json"
+
+
+def write_run_context(
+    output_root: str,
+    pipeline: str,
+    run_id: str,
+    *,
+    overrides: dict[str, Any] | None = None,
+) -> str:
+    """Write a redacted run-context artifact alongside the JSONL log.
+
+    Records pipeline identity, run_id, timestamp, Git commit + dirty
+    state, and any caller-supplied overrides.  Never records secrets,
+    tokens, or environment values.
+
+    Returns the context URI.
+    """
+    import subprocess
+
+    ctx: dict[str, Any] = {
+        "pipeline": pipeline,
+        "run_id": run_id,
+        "started_at": datetime.now(UTC).isoformat(),
+    }
+
+    # Git revision (best-effort)
+    try:
+        result = subprocess.run(  # noqa: S607
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            ctx["git_commit"] = result.stdout.strip()
+        result_dirty = subprocess.run(  # noqa: S607
+            ["git", "status", "--porcelain"],  # noqa: S607
+            capture_output=True, text=True, timeout=5,
+        )
+        if result_dirty.returncode == 0:
+            ctx["git_dirty"] = bool(result_dirty.stdout.strip())
+    except Exception:  # noqa: S110 — best-effort git context
+        pass
+
+    if overrides:
+        ctx["overrides"] = overrides
+
+    uri = run_context_path(output_root, pipeline, run_id)
+    json_bytes = json.dumps(ctx, indent=2, default=str).encode("utf-8")
+
+    # Write to local or spool+upload for GCS
+    if uri.startswith("gs://"):
+        from berlin_lst_downscaling.data.io.storage import atomic_write
+        atomic_write(uri, json_bytes, overwrite=True)
+    else:
+        path = Path(uri)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(json_bytes)
+
+    return uri
+
 def log_event(
     logger: logging.Logger,
     level: int,
@@ -201,6 +269,12 @@ class RunLogSession:
         for name in ("rasterio._err", "urllib3.connectionpool", "odc.loader._rio"):
             logging.getLogger(name).setLevel(logging.ERROR)
 
+        # Write run context (best-effort, non-blocking)
+        try:
+            write_run_context(self.output_root, self.pipeline, self.run_id)
+        except Exception:  # noqa: S110 — best-effort
+            pass
+
         return self
 
     def __exit__(self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any) -> None:
@@ -244,5 +318,7 @@ class RunLogSession:
 __all__ = [
     "RunLogSession",
     "log_event",
+    "run_context_path",
     "run_log_path",
+    "write_run_context",
 ]

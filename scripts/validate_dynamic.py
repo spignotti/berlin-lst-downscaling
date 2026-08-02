@@ -156,7 +156,12 @@ def main() -> int:
 
     if args.progress_only:
         if args.json:
-            print(json.dumps(ledger, indent=2, default=str))
+            # Convert tuple keys to strings for JSON serialization
+            serializable = {
+                **ledger,
+                "counts": {f"{k[0]}/{k[1]}": v for k, v in ledger["counts"].items()},
+            }
+            print(json.dumps(serializable, indent=2, default=str))
         else:
             print(f"Ledger: {ledger['total_rows']} rows")
             print(f"Counts: {ledger['counts']}")

@@ -43,6 +43,11 @@ def main(cfg: DictConfig) -> int:
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
+    no_guard = cfg.get("no_run_guard", False)
+
+    if no_guard:
+        with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
+            return run_dynamic(cfg, run_id=run_id)
 
     # Acquire GCS run guard
     from berlin_lst_downscaling.data.dynamic.run_guard import (
@@ -50,8 +55,8 @@ def main(cfg: DictConfig) -> int:
         release_run_guard,
     )
 
-    lock_uri = acquire_run_guard(output_root, run_id)
-    if lock_uri is None:
+    lease = acquire_run_guard(output_root, run_id)
+    if lease is None:
         raise SystemExit(
             f"Cannot acquire run guard for {output_root} — "
             "another Dynamic run is active. Wait for it to finish or "
@@ -62,7 +67,7 @@ def main(cfg: DictConfig) -> int:
         with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
             return run_dynamic(cfg, run_id=run_id)
     finally:
-        release_run_guard(output_root, lock_uri)
+        release_run_guard(lease)
 
 
 if __name__ == "__main__":

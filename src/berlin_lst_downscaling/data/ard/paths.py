@@ -35,9 +35,19 @@ def flag_path(root: str, source: str, year: int, scene_id: str) -> str:
     """
     return f"{scene_dir(root, source, year, scene_id)}/{scene_id}.flag.tif"
 
+def provenance_path(root: str, source: str, year: int, scene_id: str) -> str:
+    """Return the output path for the scene's provenance JSON."""
+    return f"{scene_dir(root, source, year, scene_id)}/provenance.json"
+
+def completion_path(root: str, source: str, year: int, scene_id: str) -> str:
+    """Return the output path for the scene's completion marker."""
+    return f"{scene_dir(root, source, year, scene_id)}/complete.json"
+
 __all__ = [
     "scene_dir",
     "cog_path",
+    "completion_path",
     "flag_path",
+    "provenance_path",
     "stac_path",
 ]

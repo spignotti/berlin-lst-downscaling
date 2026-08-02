@@ -108,6 +108,7 @@ def atomic_write(
     uri: UriLike,
     data: bytes | BinaryIO | str,
     overwrite: bool = True,
+    if_generation_match: int | None = None,
 ) -> None:
     """Write *data* to *uri* atomically.
 
@@ -116,24 +117,24 @@ def atomic_write(
         to the final path.
       - With ``overwrite=False``, raises ``FileExistsError`` if the
         target already exists.
+      - ``if_generation_match`` is ignored for local paths.
 
     For **GCS paths** (``gs://``):
       - Upload to a ``.tmp/_{name}.{uuid}`` object, then
-        ``copy_blob(tmp, bucket, final_key)`` + ``tmp.delete()``.
+        ``copy_blob(tmp, bucket, final_key, if_generation_match=…)``
+        + ``tmp.delete()``.
+      - ``if_generation_match=0`` requires the object to be absent.
+      - A non-zero value requires the current generation to match.
 
-    *Note on GCS atomicity:* This is **not strictly atomic** — a reader
-    between copy and delete sees the old blob.  Eventually consistent.
-    For ledger + COG use this is tolerable: the caller's ``reconcile()``
-    already checks file existence before acting on a scene.
-
-    *Note on FUSE mounts:* ``os.replace`` over FUSE on macOS is
-    **best-effort** atomic.
+    GCS object writes are individually atomic and strongly consistent;
+    the multi-object product (data + sidecars) is not atomic — callers
+    gate publication on ``complete.json``.
     """
     loc = _as_loc(uri)
     data_bytes = _to_bytes(data)
 
     if loc.scheme == "gcs":
-        _atomic_write_gcs(loc.uri, data_bytes, overwrite)
+        _atomic_write_gcs(loc.uri, data_bytes, overwrite, if_generation_match)
     else:
         _atomic_write_local(loc.uri, data_bytes, overwrite)
 
@@ -177,7 +178,12 @@ def _atomic_write_local(uri: str, data: bytes, overwrite: bool) -> None:
 
     _prune_tmp(tmp_dir, max_age_s=3600)
 
-def _atomic_write_gcs(uri: str, data: bytes, overwrite: bool) -> None:
+def _atomic_write_gcs(
+    uri: str,
+    data: bytes,
+    overwrite: bool,
+    if_generation_match: int | None = None,
+) -> None:
     bucket_name, key = _parse_gs_uri(uri)
     client = _gcs_client()
     bucket = client.bucket(bucket_name)
@@ -189,9 +195,9 @@ def _atomic_write_gcs(uri: str, data: bytes, overwrite: bool) -> None:
     tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_with_retry(tmp_blob, data, bucket, key)
+    _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match)
 
-def _gcs_upload_with_retry(tmp_blob, data, bucket, key):
+def _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match=None):
     """Upload to GCS with retries for transient failures (429, 503, etc.)."""
     from tenacity import (
         retry,
@@ -213,7 +219,7 @@ def _gcs_upload_with_retry(tmp_blob, data, bucket, key):
     def _do_upload():
         try:
             tmp_blob.upload_from_string(data)
-            bucket.copy_blob(tmp_blob, bucket, key)
+            bucket.copy_blob(tmp_blob, bucket, key, if_generation_match=if_generation_match)
         except Exception:
             # Clean up temp blob on failure before retry
             try:
