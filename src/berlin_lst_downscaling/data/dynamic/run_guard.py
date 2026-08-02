@@ -144,7 +144,7 @@ def acquire_run_guard(
         raise
 
 
-def release_run_guard(output_root: str, lease: RunGuardLease) -> None:
+def release_run_guard(lease: RunGuardLease) -> None:
     """Release the run guard by deleting the lock object.
 
     Uses the lease generation to prevent deleting a lock that was

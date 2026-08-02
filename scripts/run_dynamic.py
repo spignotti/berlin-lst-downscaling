@@ -67,7 +67,7 @@ def main(cfg: DictConfig) -> int:
         with RunLogSession(output_root, pipeline="dynamic", run_id=run_id, level=level):
             return run_dynamic(cfg, run_id=run_id)
     finally:
-        release_run_guard(output_root, lease)
+        release_run_guard(lease)
 
 
 if __name__ == "__main__":

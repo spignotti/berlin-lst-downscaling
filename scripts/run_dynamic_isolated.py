@@ -242,7 +242,7 @@ def main() -> int:
                     flush=True,
                 )
     finally:
-        release_run_guard(args.output_root, lease)
+        release_run_guard(lease)
 
     summary.total_duration_s = time.perf_counter() - t_start
 

@@ -88,10 +88,6 @@ while true; do
   " 2>/dev/null || echo "unknown")
 
   if [[ "$IS_RUNNING" == "stopped" ]]; then
-    # Process finished — get exit code
-    EXIT_CODE=$(rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
-      cd $APP_DIR && uv run python -c 'import subprocess,sys; r=subprocess.run(sys.argv[1:],capture_output=True); print(r.returncode)' kill -0 $REMOTE_PID || echo 1
-    " 2>/dev/null || echo "1")
     break
   fi
 
@@ -119,7 +115,6 @@ else
   EXPECTED_SCENES="21"
 fi
 
-OUTPUT_ROOT="gs://berlin-lst-data/dynamic/${CONFIG/inf*//inf*}"
 # Map config name to GCS root
 case "$CONFIG" in
   full) OUTPUT_ROOT="gs://berlin-lst-data/dynamic/full" ;;
