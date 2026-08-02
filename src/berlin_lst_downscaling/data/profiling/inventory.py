@@ -7,6 +7,7 @@ and dynamic ledger to produce the complete set of expected COGs.
 from __future__ import annotations
 
 import io
+import logging
 from typing import Any, Literal
 
 import pyarrow as pa
@@ -17,6 +18,8 @@ from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.profiling.contracts import get_histogram_spec
 from berlin_lst_downscaling.data.profiling.models import HistogramSpec, ProfileAsset
 from berlin_lst_downscaling.data.selection.validate import load_bundle
+
+_logger = logging.getLogger(__name__)
 
 # Canonical GCS roots (from docs/delivered-implementation.md)
 _MANIFEST_URI = (
@@ -76,7 +79,11 @@ def build_ard_assets(
         acquisition_dt = row["acquisition_datetime"][0]
 
         # Determine season (May–September policy)
-        month = acquisition_dt.month if hasattr(acquisition_dt, "month") else 5
+        if hasattr(acquisition_dt, "month"):
+            month = acquisition_dt.month
+        else:
+            _logger.warning("Missing month in acquisition datetime for %s", scene_id)
+            month = 5  # Default to summer for May–September policy
         season = "summer" if 5 <= month <= 9 else "shoulder"
 
         # Partition
@@ -91,9 +98,7 @@ def build_ard_assets(
 
         # Expected bands from contract
         band_specs = tuple(b.name for b in contract.output_bands)
-        histogram_specs = tuple(
-            _histogram_spec_for_band(b.name, source) for b in contract.output_bands
-        )
+        histogram_specs = tuple(_histogram_spec_for_band(b.name) for b in contract.output_bands)
 
         assets.append(
             ProfileAsset(
@@ -168,7 +173,7 @@ def build_static_assets() -> list[ProfileAsset]:
                 )
             )
     except Exception as e:
-        print(f"Warning: Failed to load static sources ledger: {e}")
+        _logger.warning("Failed to load static sources ledger: %s", e)
 
     # Static derived
     try:
@@ -204,7 +209,7 @@ def build_static_assets() -> list[ProfileAsset]:
                 )
             )
     except Exception as e:
-        print(f"Warning: Failed to load static derived ledger: {e}")
+        _logger.warning("Failed to load static derived ledger: %s", e)
 
     return assets
 
@@ -223,7 +228,7 @@ def build_dynamic_assets(
         try:
             ledger = _read_parquet_table(f"{root}/_state/dynamic/ledger.parquet")
         except Exception as e:
-            print(f"Warning: Failed to load dynamic ledger from {root}: {e}")
+            _logger.warning("Failed to load dynamic ledger from %s: %s", root, e)
             continue
 
         for i in range(ledger.num_rows):
@@ -317,7 +322,6 @@ def build_all_assets(
 
 def _histogram_spec_for_band(
     band_name: str,
-    source: str,
 ) -> HistogramSpec | None:
     """Return the HistogramSpec for a given band, or None if unmapped."""
     return get_histogram_spec(band_name)

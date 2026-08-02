@@ -33,6 +33,7 @@ dependencies = [
     # DWD station validation
     "wetterdienst>=0.128.0,<0.129",
     "rio-cogeo>=7.0.2",
+    "pandas>=2.3.3",
 ]
 
 [build-system]
