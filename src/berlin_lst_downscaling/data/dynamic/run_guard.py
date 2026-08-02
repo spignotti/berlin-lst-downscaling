@@ -184,39 +184,8 @@ def release_run_guard(lease: RunGuardLease) -> None:
             )
 
 
-def remove_stale_lock(output_root: str) -> bool:
-    """Delete a stale lock unconditionally. Operator-only use.
-
-    Returns True if the object existed and was deleted, False otherwise.
-    """
-    from google.cloud import storage
-
-    lock_path = _lock_uri(output_root)
-    bucket_name, key = lock_path.removeprefix("gs://").split("/", 1)
-    client = storage.Client()
-    blob = client.bucket(bucket_name).blob(key)
-
-    if not blob.exists():
-        log_event(_logger, logging.INFO, "run_guard_absent", lock_uri=lock_path)
-        return False
-
-    content = json.loads(blob.download_as_text())
-    blob.delete()
-    log_event(
-        _logger,
-        logging.INFO,
-        "run_guard_removed",
-        lock_uri=lock_path,
-        owner_run=content.get("run_id"),
-        owner_host=content.get("host"),
-        owner_pid=content.get("pid"),
-    )
-    return True
-
-
 __all__ = [
     "RunGuardLease",
     "acquire_run_guard",
     "release_run_guard",
-    "remove_stale_lock",
 ]

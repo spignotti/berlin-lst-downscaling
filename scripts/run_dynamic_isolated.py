@@ -27,11 +27,11 @@ import argparse
 import json
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 # Allow importing the manifest reader
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -65,12 +65,10 @@ def load_scene_ids(manifest_uri: str, years: list[int] | None = None) -> list[st
     return [s.scene_id for s in report.scenes]
 
 
-def _all_sources_done(output_root: str, scene_id: str) -> bool:
-    from berlin_lst_downscaling.data.dynamic.paths import ledger_path
+def _all_sources_done(led: Any, output_root: str, scene_id: str) -> bool:
+    """Check if all 3 sources are done for a scene (with artifact existence)."""
     from berlin_lst_downscaling.data.io import exists
-    from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
 
-    led = SecondaryLedger.open(ledger_path(output_root))
     for source in ("era5_land", "shadow_building", "shadow_vegetation"):
         row = led.get(f"{source}_{scene_id}", source, scene_id)
         if row is None or row.status != "done":
@@ -188,8 +186,15 @@ def main() -> int:
 
     if args.resume:
         try:
+            from berlin_lst_downscaling.data.dynamic.paths import ledger_path
+            from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
+
+            led = SecondaryLedger.open(ledger_path(args.output_root))
             before = len(scene_ids)
-            scene_ids = [s for s in scene_ids if not _all_sources_done(args.output_root, s)]
+            scene_ids = [
+                s for s in scene_ids
+                if not _all_sources_done(led, args.output_root, s)
+            ]
             done_count = before - len(scene_ids)
             print(
                 f"[isolated] Resume: {before} → {len(scene_ids)} scenes "
@@ -264,25 +269,31 @@ def main() -> int:
                 print(f"  {r.scene_id}: {r.error}", flush=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    summary_path = Path(tempfile.gettempdir()) / f"isolated_summary_{ts}.json"
-    with open(summary_path, "w") as f:
-        json.dump(
-            {
-                "output_root": args.output_root,
-                "config_name": args.config_name,
-                "total": summary.total,
-                "succeeded": summary.succeeded,
-                "failed": summary.failed,
-                "duration_s": summary.total_duration_s,
-                "failed_scenes": [
-                    {"scene_id": r.scene_id, "error": r.error} for r in summary.results if not r.ok
-                ],
-            },
-            f,
-            indent=2,
-            default=str,
-        )
-    print(f"\nSummary saved: {summary_path}", flush=True)
+    # Persist summary under output root (not system temp)
+    summary_dir = f"{args.output_root.rstrip('/')}/logs/dynamic"
+    summary_uri = f"{summary_dir}/isolated_summary_{ts}.json"
+    summary_data = {
+        "output_root": args.output_root,
+        "config_name": args.config_name,
+        "total": summary.total,
+        "succeeded": summary.succeeded,
+        "failed": summary.failed,
+        "duration_s": summary.total_duration_s,
+        "failed_scenes": [
+            {"scene_id": r.scene_id, "error": r.error}
+            for r in summary.results if not r.ok
+        ],
+    }
+    if summary_uri.startswith("gs://"):
+        from berlin_lst_downscaling.data.io.storage import atomic_write
+        atomic_write(summary_uri, json.dumps(summary_data, indent=2, default=str).encode())
+    else:
+        summary_path = Path(summary_uri)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(summary_path, "w") as f:
+            json.dump(summary_data, f, indent=2, default=str)
+        summary_path = summary_path
+    print(f"\nSummary saved: {summary_uri}", flush=True)
 
     return 0 if summary.failed == 0 else 1
 
