@@ -6,14 +6,26 @@ rio-cogeo validation, and records structural findings.
 
 from __future__ import annotations
 
-import subprocess
-
 import rasterio
 from odc.geo.geobox import GeoBox
+from rio_cogeo.cogeo import cog_validate
 
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.io.storage import exists
 from berlin_lst_downscaling.data.profiling.models import ProfileAsset, ProfileRow
+
+
+def gdal_uri(uri: str) -> str:
+    """Convert gs:// URI to /vsigs/ for GDAL/rasterio/rio-cogeo reads.
+
+    Retains original URIs in all records; this adapter is used only
+    for read operations that require GDAL VSI GCS support.
+    """
+    if uri.startswith("gs://"):
+        path = uri[5:]  # remove gs://
+        bucket, _, key = path.partition("/")
+        return f"/vsigs/{bucket}/{key}"
+    return uri
 
 
 def inspect_asset(asset: ProfileAsset) -> ProfileRow:
@@ -60,14 +72,12 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
     else:
         row.cog_valid = True
 
-    # Validate COG internal structure with rio-cogeo
+    # Validate COG internal structure with rio-cogeo (in-process)
     cogeo_errors = validate_cogeo_internal(asset.cog_uri)
     if cogeo_errors:
         row.cog_errors.extend(cogeo_errors)
-        # COG internal errors are hard failures only if they affect integrity
-        if any("Invalid" in e or "Error" in e for e in cogeo_errors):
-            row.has_hard_failure = True
-            row.failure_reasons.extend(cogeo_errors)
+        row.has_hard_failure = True
+        row.failure_reasons.extend(cogeo_errors)
 
     return row
 
@@ -81,7 +91,7 @@ def validate_cog_structure(
     errors: list[str] = []
 
     try:
-        with rasterio.open(uri) as src:
+        with rasterio.open(gdal_uri(uri)) as src:
             # CRS check
             crs_str = str(src.crs).upper() if src.crs else "None"
             if crs_str != asset.expected_crs.upper():
@@ -130,23 +140,15 @@ def validate_cog_structure(
 
 
 def validate_cogeo_internal(uri: str) -> list[str]:
-    """Validate COG internal structure with rio-cogeo."""
+    """Validate COG internal structure with rio-cogeo (in-process)."""
     try:
-        result = subprocess.run(  # noqa: S603
-            ["rio", "cogeo", "validate", "--strict", uri],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        errors: list[str] = []
-        if result.returncode != 0:
-            # Parse error output
-            for line in result.stderr.strip().split("\n"):
-                if line.strip():
-                    errors.append(f"COG validation: {line.strip()}")
-        return errors
-    except subprocess.TimeoutExpired:
-        return ["COG validation timed out"]
+        valid, errors, warnings = cog_validate(gdal_uri(uri), strict=True)
+        result_errors: list[str] = []
+        for err in errors:
+            result_errors.append(f"COG validation: {err}")
+        for warn in warnings:
+            result_errors.append(f"COG validation warning: {warn}")
+        return result_errors
     except FileNotFoundError:
         return ["rio-cogeo not found in PATH"]
     except Exception as exc:
@@ -154,6 +156,7 @@ def validate_cogeo_internal(uri: str) -> list[str]:
 
 
 __all__ = [
+    "gdal_uri",
     "inspect_asset",
     "validate_cog_structure",
     "validate_cogeo_internal",

@@ -136,8 +136,10 @@ def profile_row_statistics(row: ProfileRow, asset: ProfileAsset | None = None) -
     if not row.cog_valid or not row.cog_exists:
         return row
 
+    from berlin_lst_downscaling.data.profiling.inspection import gdal_uri
+
     try:
-        with rasterio.open(row.cog_uri) as src:
+        with rasterio.open(gdal_uri(row.cog_uri)) as src:
             for band_index in range(1, src.count + 1):
                 band_name = f"band_{band_index}"
                 if asset and band_index <= len(asset.expected_band_specs):

@@ -10,8 +10,8 @@ Usage::
     # Full profiling on VM
     uv run python scripts/run_profiling.py --config-name full
 
-    # Smoke profiling locally
-    uv run python scripts/run_profiling.py --config-name smoke
+    # GCS smoke (bounded subset)
+    uv run python scripts/run_profiling.py --config-name smoke_gcs
 
     # Override specific values
     uv run python scripts/run_profiling.py --config-name full \\
@@ -28,7 +28,7 @@ from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io.run_logging import RunLogSession, log_event
 from berlin_lst_downscaling.data.profiling.inspection import inspect_asset
-from berlin_lst_downscaling.data.profiling.inventory import build_all_assets
+from berlin_lst_downscaling.data.profiling.inventory import build_all_assets, select_assets
 from berlin_lst_downscaling.data.profiling.models import ProfileRow
 from berlin_lst_downscaling.data.profiling.report import emit_artifacts
 from berlin_lst_downscaling.data.profiling.statistics import profile_row_statistics
@@ -47,8 +47,16 @@ def run_profiling(cfg: DictConfig) -> int:
         ard_ledger_uri=cfg.ard_ledger_uri,
         dynamic_root=cfg.dynamic_root,
         inference_root=cfg.inference_root,
+        static_sources_root=str(cfg.get("static_sources_root", "gs://berlin-lst-data/static/sources/full")),
+        static_derived_root=str(cfg.get("static_derived_root", "gs://berlin-lst-data/static/derived/full")),
     )
     log_event(_logger, logging.INFO, "inventory_built", total_assets=len(assets))
+
+    # Apply asset selection for smoke runs
+    limit = cfg.get("max_assets_per_source_and_partition")
+    if limit is not None:
+        assets = select_assets(assets, limit_per_source_partition=int(limit))
+        log_event(_logger, logging.INFO, "assets_selected", total_assets=len(assets))
 
     # Profile each asset
     rows: list[ProfileRow] = []

@@ -407,6 +407,33 @@ def build_all_assets(
     return assets
 
 
+def select_assets(
+    assets: list[ProfileAsset],
+    limit_per_source_partition: int | None = None,
+) -> list[ProfileAsset]:
+    """Select a subset of assets for smoke runs.
+
+    If limit_per_source_partition is set, keeps at most that many assets
+    per (source, partition) group, sorted by stable asset key.
+    """
+    if limit_per_source_partition is None:
+        return assets
+
+    # Group by (source, partition)
+    groups: dict[tuple[str, str], list[ProfileAsset]] = {}
+    for asset in assets:
+        key = (asset.source, asset.partition)
+        groups.setdefault(key, []).append(asset)
+
+    selected: list[ProfileAsset] = []
+    for group_assets in groups.values():
+        # Sort by item_id for determinism
+        sorted_assets = sorted(group_assets, key=lambda a: a.item_id)
+        selected.extend(sorted_assets[:limit_per_source_partition])
+
+    return selected
+
+
 def _histogram_spec_for_band(
     band_name: str,
 ) -> HistogramSpec | None:
@@ -419,4 +446,5 @@ __all__ = [
     "build_static_assets",
     "build_dynamic_assets",
     "build_all_assets",
+    "select_assets",
 ]
