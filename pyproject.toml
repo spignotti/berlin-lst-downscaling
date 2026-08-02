@@ -32,6 +32,7 @@ dependencies = [
     "netcdf4>=1.7.3",
     # DWD station validation
     "wetterdienst>=0.128.0,<0.129",
+    "rio-cogeo>=7.0.2",
 ]
 
 [build-system]
