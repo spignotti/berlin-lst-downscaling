@@ -166,6 +166,26 @@ uv run python scripts/run_dynamic_isolated.py \
     --config-name full --years 2017 2025 --resume
 ```
 
+## WB2c-1 Data Profiling
+
+`scripts/run_profiling.py` profiles all published COGs for feature
+engineering readiness. Validates structural alignment, computes
+descriptive statistics, and emits a fixed artifact bundle.
+
+```bash
+# Full profiling on VM
+uv run python scripts/run_profiling.py --config-name full
+
+# Smoke profiling locally (bounded subset)
+uv run python scripts/run_profiling.py --config-name smoke
+
+# Override output root
+uv run python scripts/run_profiling.py --config-name full \
+    output_root=gs://berlin-lst-data/profiling/wb2c-1
+```
+
+Output: `profiles.parquet`, `profiles.csv`, `summary.json`, `notion-summary.md`
+
 ## Smoke gates
 
 The `noxfile.py` sessions are the documented smoke matrix:
