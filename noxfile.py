@@ -698,7 +698,7 @@ def cloud_smoke_dynamic(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s cloud-smoke-dynamic -- \
-            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z/manifest.parquet
+            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
     """
     import uuid
     from datetime import UTC, datetime

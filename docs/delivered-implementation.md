@@ -40,9 +40,18 @@ validate the new 8-band spatial ERA5 fields. DWD never feeds model training.
 ## Commands
 
 ```bash
-# ARD
+# ARD (produces COG + flag + STAC + provenance + complete.json per scene)
 uv run python scripts/run_ard.py --config-name full_all \
     manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+
+# ARD metadata repair (dry-run default, --apply to write sidecars)
+uv run python scripts/finalize_ard.py \
+    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
+
+# ARD strict validation (exact manifest/ledger key-set, all four artifacts, STAC schemas)
+uv run python scripts/validate_ard.py \
+    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
+    --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
 
 # Dynamic full (manifest_uri required)
 # Preferred: isolated runner (subprocess-per-scene, bounded memory)
@@ -171,10 +180,13 @@ Each smoke also runs the matching validator with assertion args.
 
 ## Logging contract
 
-Every run emits one JSONL file at `<output_root>/logs/<pipeline>/<run_id>.jsonl`
-(session handler in `data/io/run_logging.py`). For GCS runs the JSONL is
-written to a local spool, uploaded atomically on session exit, and the
-spool is deleted.
+Every run emits two artifacts at `<output_root>/logs/<pipeline>/`:
+- `<run_id>.jsonl` — structured event log
+- `<run_id>.context.json` — redacted run context (Git commit, dirty state, pipeline, run_id, timestamp)
+
+For GCS runs the JSONL is written to a local spool, uploaded atomically
+on session exit, and the spool is deleted.  The context artifact is
+written eagerly at session start.
 
 ```python
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
