@@ -119,7 +119,18 @@ def build_inventory_from_ledgers(
             }
         )
 
-    return pa.table(rows).cast(ASSET_SCHEMA)
+    # Create table row by row to avoid schema issues
+    if not rows:
+        return pa.table([], schema=ASSET_SCHEMA)
+
+    # Convert None values to appropriate defaults
+    for row in rows:
+        row["year"] = row["year"] if row["year"] is not None else 0
+        row["generation"] = row["generation"] if row["generation"] is not None else 0
+        row["metageneration"] = row["metageneration"] if row["metageneration"] is not None else 0
+        row["size"] = row["size"] if row["size"] is not None else 0
+
+    return pa.table(rows, schema=ASSET_SCHEMA)
 
 
 def build_inventory(
