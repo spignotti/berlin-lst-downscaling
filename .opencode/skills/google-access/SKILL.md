@@ -259,9 +259,11 @@ retry, no fallback, no creation.
   exist or has been replaced, it refuses to start. Use `--dry-run` to preview.
 - `stop-vm.sh` asserts the exact instance and disk before stopping. Use
   `--dry-run` to preview.
-- `ssh-vm.sh` uses direct OpenSSH with `StrictHostKeyChecking=yes` and a
-  fixed `HostKeyAlias=compute.<instance-id>`. It **never** writes known-hosts,
-  generates keys, or provisions metadata keys.
+- `ssh-vm.sh` uses direct OpenSSH with `-i ~/.ssh/google_compute_engine`,
+  `IdentitiesOnly=yes`, `StrictHostKeyChecking=yes`, and a fixed
+  `HostKeyAlias=compute.<instance-id>`. Host-key lookup uses `ssh-keygen -F`
+  so it works with both plain and hashed known-hosts entries. It **never**
+  writes known-hosts, generates keys, or provisions metadata keys.
 - `status-vm.sh` is a read-only probe that reports identity, state, disk
   attachment, protection, external IP, and SSH host-key readiness.
 
