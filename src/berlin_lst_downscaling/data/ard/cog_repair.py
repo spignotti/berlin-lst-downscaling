@@ -62,6 +62,67 @@ AUDIT_SCHEMA = pa.schema(
 
 # ── inventory ──────────────────────────────────────────────────────────
 
+def build_inventory_from_ledgers(
+    manifest_uri: str,
+    ard_ledger_uri: str,
+    static_sources_root: str,
+    static_derived_root: str,
+    dynamic_full_root: str,
+    dynamic_inference_root: str,
+) -> pa.Table:
+    """Build the frozen inventory from all published ledgers and manifest.
+
+    This builds the complete inventory without requiring prior profiling output.
+    """
+    from berlin_lst_downscaling.data.ard.contract import contract_for_source
+    from berlin_lst_downscaling.data.profiling.inventory import (
+        build_ard_assets,
+        build_ard_flag_assets,
+        build_static_assets,
+        build_dynamic_assets,
+    )
+
+    # Build all assets
+    assets = []
+    assets.extend(build_ard_assets(manifest_uri, ard_ledger_uri))
+    assets.extend(build_ard_flag_assets(ard_ledger_uri))
+    assets.extend(build_static_assets(static_sources_root, static_derived_root))
+    assets.extend(build_dynamic_assets(dynamic_full_root, dynamic_inference_root))
+
+    rows: list[dict[str, Any]] = []
+    for asset in assets:
+        uri = asset.cog_uri
+        if not uri:
+            continue
+
+        # Determine asset kind
+        if asset.item_id.endswith("__flag"):
+            asset_kind = "flag"
+        else:
+            asset_kind = "data"
+
+        metadata = _get_gcs_metadata(uri)
+        rows.append(
+            {
+                "uri": uri,
+                "asset_kind": asset_kind,
+                "source": asset.source.split("__")[0] if "__" in asset.source else asset.source,
+                "partition": asset.partition,
+                "year": asset.year,
+                "generation": metadata.get("generation", 0),
+                "metageneration": metadata.get("metageneration", 0),
+                "size": metadata.get("size", 0),
+                "crc32c": metadata.get("crc32c", ""),
+                "content_type": metadata.get("content_type", ""),
+                "metadata_json": json.dumps(metadata.get("metadata", {})),
+                "pre_repair_errors": [],
+                "status": "pending",
+            }
+        )
+
+    return pa.table(rows, schema=ASSET_SCHEMA)
+
+
 def build_inventory(
     profile_parquet_uri: str,
     ard_ledger_uri: str,

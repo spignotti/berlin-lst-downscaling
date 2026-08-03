@@ -45,6 +45,7 @@ import pyarrow as pa
 from berlin_lst_downscaling.data.ard.cog_repair import (
     apply_repair,
     build_inventory,
+    build_inventory_from_ledgers,
     load_table,
     prove_cogger,
     rollback_repair,
@@ -61,9 +62,13 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     with RunLogSession(str(Path(args.state).parent), pipeline="cog-repair", run_id=uuid4().hex[:8]):
         log_event(_logger, logging.INFO, "snapshot_started")
 
-        table = build_inventory(
-            profile_parquet_uri="gs://berlin-lst-data/profiling/wb2c-1/profiles.parquet",
+        table = build_inventory_from_ledgers(
+            manifest_uri="gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet",
             ard_ledger_uri="gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet",
+            static_sources_root="gs://berlin-lst-data/static/sources/full",
+            static_derived_root="gs://berlin-lst-data/static/derived/full",
+            dynamic_full_root="gs://berlin-lst-data/dynamic/full",
+            dynamic_inference_root="gs://berlin-lst-data/dynamic/inference/2026",
         )
 
         if args.expect_count is not None:
