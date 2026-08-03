@@ -13,28 +13,45 @@ import numpy as np
 import rasterio
 from rio_cogeo.cogeo import cog_validate
 
+from berlin_lst_downscaling.data.ard.cog_recovery_state import StrictCogResult
 
-def validate_strict_cog(uri: str, *, ignore_warnings: bool = True) -> list[str]:
+
+def validate_strict_cog(uri: str) -> StrictCogResult:
     """Validate COG strict layout using rio-cogeo.
 
-    Returns a list of errors; empty means strict-clean.
-    Warnings are ignored by default since they don't affect functionality.
+    Returns a StrictCogResult with valid=True ONLY when there are zero
+    errors AND zero warnings. Warnings are treated as failures — this
+    is the fail-closed contract for COG validation.
+
+    This function never returns a suppressed warning. If you need to
+    distinguish warning-only from hard-error assets, use the
+    StrictCogResult fields directly.
     """
+    from berlin_lst_downscaling.data.ard.cog_recovery_state import StrictCogResult
     from berlin_lst_downscaling.data.profiling.inspection import gdal_uri
 
     try:
         valid, errors, warnings = cog_validate(gdal_uri(uri), strict=True, quiet=True)
-        result: list[str] = []
-        for err in errors:
-            result.append(f"COG strict: {err}")
-        if not ignore_warnings:
-            for warn in warnings:
-                result.append(f"COG strict warning: {warn}")
-        return result
+        return StrictCogResult(
+            valid=valid,
+            errors=tuple(f"COG strict: {e}" for e in errors),
+            warnings=tuple(f"COG strict warning: {w}" for w in warnings),
+            source=uri,
+        )
     except FileNotFoundError:
-        return ["rio-cogeo not found in PATH"]
+        return StrictCogResult(
+            valid=False,
+            errors=("rio-cogeo not found in PATH",),
+            warnings=(),
+            source=uri,
+        )
     except Exception as exc:
-        return [f"COG strict validation failed: {exc}"]
+        return StrictCogResult(
+            valid=False,
+            errors=(f"COG strict validation failed: {exc}",),
+            warnings=(),
+            source=uri,
+        )
 
 
 def assert_raster_equivalent(
@@ -214,4 +231,5 @@ __all__ = [
     "validate_strict_cog",
     "assert_raster_equivalent",
     "validate_gdal_cog_options",
+    "StrictCogResult",
 ]

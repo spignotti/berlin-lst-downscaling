@@ -72,11 +72,12 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
         row.cog_valid = True
 
     # Validate COG internal structure with rio-cogeo (in-process)
-    cogeo_errors = validate_cogeo_internal(asset.cog_uri)
-    if cogeo_errors:
-        row.cog_errors.extend(cogeo_errors)
+    cogeo_result = validate_cogeo_internal(asset.cog_uri)
+    if not cogeo_result.valid:
+        all_issues = list(cogeo_result.errors) + list(cogeo_result.warnings)
+        row.cog_errors.extend(all_issues)
         row.has_hard_failure = True
-        row.failure_reasons.extend(cogeo_errors)
+        row.failure_reasons.extend(all_issues)
 
     return row
 
@@ -138,8 +139,11 @@ def validate_cog_structure(
     return errors
 
 
-def validate_cogeo_internal(uri: str) -> list[str]:
-    """Validate COG internal structure with shared strict validation."""
+def validate_cogeo_internal(uri: str):
+    """Validate COG internal structure with shared strict validation.
+
+    Returns a StrictCogResult. Warnings are failures.
+    """
     from berlin_lst_downscaling.data.ard.cog_layout import validate_strict_cog
     return validate_strict_cog(uri)
 

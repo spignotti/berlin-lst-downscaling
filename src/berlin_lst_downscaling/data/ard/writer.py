@@ -136,12 +136,12 @@ def write_cog_atomic(
             **cog_options,
         )
 
-        # 3. Strict COG validation
-        strict_errors = validate_strict_cog(str(cog_path))
-        if strict_errors:
+        # 3. Strict COG validation — warnings are failures
+        strict_result = validate_strict_cog(str(cog_path))
+        if not strict_result.valid:
             raise ValueError(
                 f"COG strict validation failed for {dst}: "
-                + "; ".join(strict_errors)
+                + "; ".join(strict_result.errors + strict_result.warnings)
             )
 
         # 4. Upload via streaming (no full-COG-in-RAM for large multi-band files)
@@ -212,12 +212,12 @@ def write_flag_cog_atomic(
             **cog_options,
         )
 
-        # 3. Strict COG validation
-        strict_errors = validate_strict_cog(str(cog_path))
-        if strict_errors:
+        # 3. Strict COG validation — warnings are failures
+        strict_result = validate_strict_cog(str(cog_path))
+        if not strict_result.valid:
             raise ValueError(
                 f"COG strict validation failed for flag {dst}: "
-                + "; ".join(strict_errors)
+                + "; ".join(strict_result.errors + strict_result.warnings)
             )
 
         # 4. Upload

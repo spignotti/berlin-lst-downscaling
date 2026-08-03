@@ -73,12 +73,11 @@ def build_inventory_from_ledgers(
 
     This builds the complete inventory without requiring prior profiling output.
     """
-    from berlin_lst_downscaling.data.ard.contract import contract_for_source
     from berlin_lst_downscaling.data.profiling.inventory import (
         build_ard_assets,
         build_ard_flag_assets,
-        build_static_assets,
         build_dynamic_assets,
+        build_static_assets,
     )
 
     # Build all assets
@@ -176,7 +175,15 @@ def build_inventory(
                 "asset_kind": "data",
                 "source": row_data.get("source"),
                 "partition": row_data.get("partition"),
-                "year": int(row_data["year"]) if row_data.get("year") and not (isinstance(row_data["year"], float) and math.isnan(row_data["year"])) else None,
+                "year": (
+                    int(row_data["year"])
+                    if row_data.get("year")
+                    and not (
+                        isinstance(row_data["year"], float)
+                        and math.isnan(row_data["year"])
+                    )
+                    else None
+                ),
                 "generation": metadata.get("generation", 0),
                 "metageneration": metadata.get("metageneration", 0),
                 "size": metadata.get("size", 0),
@@ -240,12 +247,17 @@ def _get_gcs_metadata(uri: str) -> dict[str, Any]:
 
 
 def _set_pre_repair_errors(table: pa.Table) -> pa.Table:
-    """Set pre_repair_errors for each pending row."""
+    """Set pre_repair_errors for each pending row using strict validation.
+
+    Stores both errors and warnings as failures.
+    """
     rows = table.to_pylist()
     for i, row in enumerate(rows):
         if row["status"] == "pending":
-            errors = validate_strict_cog(row["uri"])
-            rows[i]["pre_repair_errors"] = errors
+            strict_result = validate_strict_cog(row["uri"])
+            # Warnings are failures — store both
+            all_issues = list(strict_result.errors) + list(strict_result.warnings)
+            rows[i]["pre_repair_errors"] = all_issues
     return pa.table(rows, schema=table.schema)
 
 
@@ -294,10 +306,11 @@ def prove_cogger(
                 if result.returncode != 0:
                     raise RuntimeError(f"Cogger failed: {result.stderr}")
 
-                # Validate strict COG
-                strict_errors = validate_strict_cog(str(tmp_cog))
-                if strict_errors:
-                    raise ValueError(f"Strict validation failed: {strict_errors}")
+                # Validate strict COG — warnings are failures
+                strict_result = validate_strict_cog(str(tmp_cog))
+                if not strict_result.valid:
+                    all_issues = list(strict_result.errors) + list(strict_result.warnings)
+                    raise ValueError(f"Strict validation failed: {all_issues}")
 
                 # Compare rasters
                 compare_errors = assert_raster_equivalent(gdal_uri(uri_val), tmp_cog)
@@ -376,10 +389,11 @@ def apply_repair(
                 if result.returncode != 0:
                     raise RuntimeError(f"Cogger failed: {result.stderr}")
 
-                # Validate strict COG
-                strict_errors = validate_strict_cog(str(tmp_cog))
-                if strict_errors:
-                    raise ValueError(f"Strict validation failed: {strict_errors}")
+                # Validate strict COG — warnings are failures
+                strict_result = validate_strict_cog(str(tmp_cog))
+                if not strict_result.valid:
+                    all_issues = list(strict_result.errors) + list(strict_result.warnings)
+                    raise ValueError(f"Strict validation failed: {all_issues}")
 
                 # Compare rasters
                 compare_errors = assert_raster_equivalent(gdal_uri(uri_val), tmp_cog)
@@ -427,8 +441,14 @@ def apply_repair(
         # Convert None values to defaults
         for row in rows:
             row["year"] = row["year"] if row["year"] is not None else 0
-            row["generation"] = row["generation"] if row["generation"] is not None else 0
-            row["metageneration"] = row["metageneration"] if row["metageneration"] is not None else 0
+            row["generation"] = (
+                row["generation"] if row["generation"] is not None else 0
+            )
+            row["metageneration"] = (
+                row["metageneration"]
+                if row["metageneration"] is not None
+                else 0
+            )
             row["size"] = row["size"] if row["size"] is not None else 0
 
         arrays = []
@@ -495,10 +515,11 @@ def verify_repair(
         row = rows[idx]
         uri_val = row["uri"]
 
-        strict_errors = validate_strict_cog(uri_val)
-        if strict_errors:
+        strict_result = validate_strict_cog(uri_val)
+        if not strict_result.valid:
             rows[idx]["status"] = "failed"
-            errors.append(f"Verify failed for {uri_val}: {strict_errors}")
+            all_issues = list(strict_result.errors) + list(strict_result.warnings)
+            errors.append(f"Verify failed for {uri_val}: {all_issues}")
         else:
             rows[idx]["status"] = "verified"
 
