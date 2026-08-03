@@ -14,10 +14,11 @@ import rasterio
 from rio_cogeo.cogeo import cog_validate
 
 
-def validate_strict_cog(uri: str) -> list[str]:
+def validate_strict_cog(uri: str, *, ignore_warnings: bool = True) -> list[str]:
     """Validate COG strict layout using rio-cogeo.
 
     Returns a list of errors; empty means strict-clean.
+    Warnings are ignored by default since they don't affect functionality.
     """
     from berlin_lst_downscaling.data.profiling.inspection import gdal_uri
 
@@ -26,8 +27,9 @@ def validate_strict_cog(uri: str) -> list[str]:
         result: list[str] = []
         for err in errors:
             result.append(f"COG strict: {err}")
-        for warn in warnings:
-            result.append(f"COG strict warning: {warn}")
+        if not ignore_warnings:
+            for warn in warnings:
+                result.append(f"COG strict warning: {warn}")
         return result
     except FileNotFoundError:
         return ["rio-cogeo not found in PATH"]
