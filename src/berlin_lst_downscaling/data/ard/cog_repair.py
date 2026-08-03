@@ -36,7 +36,7 @@ ASSET_SCHEMA = pa.schema(
         pa.field("asset_kind", pa.string(), nullable=False),  # "data" or "flag"
         pa.field("source", pa.string()),
         pa.field("partition", pa.string()),
-        pa.field("year", pa.int32()),
+        pa.field("year", pa.int32(), nullable=True),
         pa.field("generation", pa.int64()),
         pa.field("metageneration", pa.int64()),
         pa.field("size", pa.int64()),
