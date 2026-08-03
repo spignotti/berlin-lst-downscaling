@@ -312,7 +312,16 @@ def prove_cogger(
                 rows[idx]["pre_repair_errors"] = [f"Cogger proof failed: {exc}"]
                 _logger.error("Cogger proof failed for %s: %s", uri_val, exc)
 
-    return pa.table(rows, schema=table.schema)
+    # Create table arrays directly
+    if not rows:
+        return table
+
+    arrays = []
+    for field in table.schema:
+        col_data = [row[field.name] for row in rows]
+        arrays.append(pa.array(col_data, type=field.type, from_pandas=False))
+
+    return pa.table(arrays, schema=table.schema)
 
 
 # ── apply ──────────────────────────────────────────────────────────────
