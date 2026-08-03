@@ -85,8 +85,19 @@ def assert_raster_equivalent(
                 )
 
             # NoData
-            if src.nodata != rep.nodata:
-                errors.append(f"NoData mismatch: {src.nodata} vs {rep.nodata}")
+            if src.nodata is None and rep.nodata is not None:
+                errors.append(f"NoData mismatch: None vs {rep.nodata}")
+            elif src.nodata is not None and rep.nodata is None:
+                errors.append(f"NoData mismatch: {src.nodata} vs None")
+            elif src.nodata is not None and rep.nodata is not None:
+                # Handle NaN comparison
+                import math
+                src_is_nan = isinstance(src.nodata, float) and math.isnan(src.nodata)
+                rep_is_nan = isinstance(rep.nodata, float) and math.isnan(rep.nodata)
+                if src_is_nan != rep_is_nan:
+                    errors.append(f"NoData mismatch: {src.nodata} vs {rep.nodata}")
+                elif not src_is_nan and src.nodata != rep.nodata:
+                    errors.append(f"NoData mismatch: {src.nodata} vs {rep.nodata}")
 
             # Per-band checks
             for i in range(1, src.count + 1):
@@ -135,8 +146,14 @@ def assert_raster_equivalent(
             if src_overviews and rep_overviews:
                 for src_ov, rep_ov in zip(src_overviews, rep_overviews, strict=True):
                     for i in range(1, src.count + 1):
-                        src_ov_arr = src.read(i, overview_level=src_overviews.index(src_ov))
-                        rep_ov_arr = rep.read(i, overview_level=rep_overviews.index(rep_ov))
+                        # Read overview using out_shape
+                        src_h = src.height // src_ov
+                        src_w = src.width // src_ov
+                        rep_h = rep.height // rep_ov
+                        rep_w = rep.width // rep_ov
+                        
+                        src_ov_arr = src.read(i, out_shape=(src_h, src_w))
+                        rep_ov_arr = rep.read(i, out_shape=(rep_h, rep_w))
 
                         if src_ov_arr.shape != rep_ov_arr.shape:
                             errors.append(
