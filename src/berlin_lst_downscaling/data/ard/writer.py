@@ -5,9 +5,10 @@ URIs (local path, ``gs://`` bucket, or ``~/.mnt/`` mount) and write
 atomically via the storage module.
 
 The COG writer uses a 2-pass procedure on a local temp file:
-1. Write all bands with final compression (deflate) to a temp file.
-2. Build overviews in-place.
-3. Read the temp file into bytes, call ``atomic_write``.
+1. Write all bands to a staging temp file (no overviews).
+2. Copy to final COG via GDAL COG driver (CreateCopy).
+3. Strict-validate the temp COG.
+4. Upload the validated COG.
 """
 
 from __future__ import annotations
@@ -20,11 +21,16 @@ from typing import Any
 
 import numpy as np
 import rasterio
+import rasterio.shutil
 import xarray as xr
-from rasterio.enums import Resampling
 
+from berlin_lst_downscaling.data.ard.cog_layout import validate_strict_cog
 from berlin_lst_downscaling.data.ard.contract import Contract
 from berlin_lst_downscaling.data.io.storage import atomic_upload, atomic_write, exists
+
+# Overview resampling: average for numeric data, nearest for flags
+_NUMERIC_OV_RESAMPLING = "AVERAGE"
+_FLAG_OV_RESAMPLING = "NEAREST"
 
 # ── COG write (main band file, float32) ──────────────────────────────
 
@@ -37,8 +43,8 @@ def write_cog_atomic(
     """Write a multi-band COG atomically.
 
     Bands are written in ``ds.data_vars`` order. The file is written to a
-    local temp, then pushed via ``atomic_write`` to *dst* (local path or
-    GCS URI).
+    local staging temp, then copied to a COG temp via the GDAL COG driver,
+    validated, and uploaded via ``atomic_upload`` to *dst*.
 
     Parameters
     ----------
@@ -89,7 +95,7 @@ def write_cog_atomic(
     else:
         nodata = None
 
-    profile = _build_profile(
+    staging_profile = _build_staging_profile(
         common_dtype=common_dtype,
         n_bands=len(bands),
         h=h,
@@ -100,23 +106,46 @@ def write_cog_atomic(
         nodata=nodata,
     )
 
-    # Write to local temp file (2-pass: write + overviews). The temp
-    # directory is auto-cleaned on exit; no leftover state in the repo.
+    # 2-pass: staging → COG copy → validate → upload
     with tempfile.TemporaryDirectory() as tmp_dir_str:
-        dst_tmp = Path(tmp_dir_str) / f"_{Path(dst).name}.cog"
-        with rasterio.open(dst_tmp, "w", **profile) as tmp:
+        tmp_dir = Path(tmp_dir_str)
+        staging_path = tmp_dir / f"_staging_{Path(dst).name}.tif"
+        cog_path = tmp_dir / f"_cog_{Path(dst).name}.tif"
+
+        # 1. Write staging GTiff (no overviews)
+        with rasterio.open(staging_path, "w", **staging_profile) as tmp:
             for i, (name, arr) in enumerate(arrays, 1):
                 out_arr = arr.astype(common_dtype, copy=False)
                 tmp.write(out_arr, i)
                 tmp.set_band_description(i, name)
 
-        ov_levels = list(contract.tiling.overviews)
-        if ov_levels:
-            with rasterio.open(dst_tmp, "r+") as tmp:
-                tmp.build_overviews(ov_levels, Resampling.average)
+        # 2. Copy to COG via GDAL COG driver
+        cog_options: dict[str, str] = {
+            "BLOCKSIZE": str(contract.tiling.blocksize),
+            "COMPRESS": contract.tiling.compress.upper(),
+            "PREDICTOR": str(contract.tiling.predictor),
+            "BIGTIFF": "IF_SAFER",
+            "OVERVIEW_RESAMPLING": _NUMERIC_OV_RESAMPLING,
+        }
 
-        # Upload via streaming (no full-COG-in-RAM for large multi-band files)
-        atomic_upload(dst_tmp, dst, overwrite=overwrite)
+        rasterio.shutil.copy(
+            str(staging_path),
+            str(cog_path),
+            driver="COG",
+            strict=True,
+            **cog_options,
+        )
+
+        # 3. Strict COG validation
+        strict_errors = validate_strict_cog(str(cog_path))
+        if strict_errors:
+            raise ValueError(
+                f"COG strict validation failed for {dst}: "
+                + "; ".join(strict_errors)
+            )
+
+        # 4. Upload via streaming (no full-COG-in-RAM for large multi-band files)
+        atomic_upload(cog_path, dst, overwrite=overwrite)
 
     return dst
 
@@ -143,7 +172,7 @@ def write_flag_cog_atomic(
     crs = flag_da.rio.crs
     geo_transform = flag_da.rio.transform()
 
-    profile = _build_profile(
+    staging_profile = _build_staging_profile(
         common_dtype="uint8",
         n_bands=1,
         h=h,
@@ -152,16 +181,47 @@ def write_flag_cog_atomic(
         transform=geo_transform,
         contract=contract,
     )
-    profile["compress"] = "zstd"
-    profile["predictor"] = 1
+    # Override compression for flags
+    staging_profile["compress"] = "zstd"
+    staging_profile["predictor"] = 1
 
     with tempfile.TemporaryDirectory() as tmp_dir_str:
-        dst_tmp = Path(tmp_dir_str) / f"_{Path(dst).name}"
-        with rasterio.open(dst_tmp, "w", **profile) as tmp:
+        tmp_dir = Path(tmp_dir_str)
+        staging_path = tmp_dir / f"_staging_{Path(dst).name}.tif"
+        cog_path = tmp_dir / f"_cog_{Path(dst).name}.tif"
+
+        # 1. Write staging GTiff
+        with rasterio.open(staging_path, "w", **staging_profile) as tmp:
             tmp.write(arr_2d, 1)
             tmp.set_band_description(1, "flag")
 
-        atomic_upload(dst_tmp, dst, overwrite=overwrite)
+        # 2. Copy to COG via GDAL COG driver (nearest for flags)
+        cog_options: dict[str, str] = {
+            "BLOCKSIZE": str(contract.tiling.blocksize),
+            "COMPRESS": "ZSTD",
+            "PREDICTOR": "1",
+            "BIGTIFF": "IF_SAFER",
+            "OVERVIEW_RESAMPLING": _FLAG_OV_RESAMPLING,
+        }
+
+        rasterio.shutil.copy(
+            str(staging_path),
+            str(cog_path),
+            driver="COG",
+            strict=True,
+            **cog_options,
+        )
+
+        # 3. Strict COG validation
+        strict_errors = validate_strict_cog(str(cog_path))
+        if strict_errors:
+            raise ValueError(
+                f"COG strict validation failed for flag {dst}: "
+                + "; ".join(strict_errors)
+            )
+
+        # 4. Upload
+        atomic_upload(cog_path, dst, overwrite=overwrite)
 
     return dst
 
@@ -199,7 +259,7 @@ def write_stac_atomic(
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-def _build_profile(
+def _build_staging_profile(
     common_dtype: str,
     n_bands: int,
     h: int,
@@ -209,6 +269,7 @@ def _build_profile(
     contract: Contract,
     nodata: float | None = None,
 ) -> dict[str, Any]:
+    """Build a staging GTiff profile (no overviews, no COG driver)."""
     profile: dict[str, Any] = {
         "driver": "GTiff",
         "dtype": common_dtype,

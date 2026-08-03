@@ -148,6 +148,46 @@ def build_ard_assets(
     return assets
 
 
+def build_ard_flag_assets(
+    ledger_uri: str = _ARD_LEDGER,
+) -> list[ProfileAsset]:
+    """Build expected ARD flag assets from ledger."""
+    ledger = _read_parquet_table(ledger_uri)
+
+    assets: list[ProfileAsset] = []
+    for i in range(ledger.num_rows):
+        row = ledger.slice(i, 1).to_pydict()
+        scene_id = row["scene_id"][0]
+        source = row["source"][0]
+        flag_uri = row.get("path_flag", [None])[0]
+
+        if not flag_uri:
+            continue
+
+        year = int(row["year"][0])
+        partition = "training" if year in _TRAINING_YEARS else "inference"
+
+        grid = canon_grid_for_resolution(_SOURCE_RESOLUTION.get(source, 10))
+
+        assets.append(
+            ProfileAsset(
+                item_id=f"{scene_id}__flag",
+                source=f"{source}__flag",
+                cog_uri=flag_uri,
+                partition=partition,
+                year=year,
+                expected_crs="EPSG:25833",
+                expected_resolution=grid.transform.a,
+                expected_shape=(grid.shape.x, grid.shape.y),
+                expected_bands=1,
+                expected_band_specs=("flag",),
+                resolution_m=_SOURCE_RESOLUTION.get(source, 10),
+            )
+        )
+
+    return assets
+
+
 def build_static_assets(
     sources_root: str = _STATIC_SOURCES_ROOT,
     derived_root: str = _STATIC_DERIVED_ROOT,
@@ -417,6 +457,7 @@ def build_all_assets(
     """Build the complete expected asset inventory."""
     assets: list[ProfileAsset] = []
     assets.extend(build_ard_assets(manifest_uri, ard_ledger_uri))
+    assets.extend(build_ard_flag_assets(ard_ledger_uri))
     assets.extend(build_static_assets(static_sources_root, static_derived_root))
     assets.extend(build_dynamic_assets(dynamic_root, inference_root))
     return assets

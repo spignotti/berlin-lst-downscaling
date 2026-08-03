@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import rasterio
 from odc.geo.geobox import GeoBox
-from rio_cogeo.cogeo import cog_validate
 
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.io.storage import exists
@@ -140,19 +139,9 @@ def validate_cog_structure(
 
 
 def validate_cogeo_internal(uri: str) -> list[str]:
-    """Validate COG internal structure with rio-cogeo (in-process)."""
-    try:
-        valid, errors, warnings = cog_validate(gdal_uri(uri), strict=True)
-        result_errors: list[str] = []
-        for err in errors:
-            result_errors.append(f"COG validation: {err}")
-        for warn in warnings:
-            result_errors.append(f"COG validation warning: {warn}")
-        return result_errors
-    except FileNotFoundError:
-        return ["rio-cogeo not found in PATH"]
-    except Exception as exc:
-        return [f"COG validation failed: {exc}"]
+    """Validate COG internal structure with shared strict validation."""
+    from berlin_lst_downscaling.data.ard.cog_layout import validate_strict_cog
+    return validate_strict_cog(uri)
 
 
 __all__ = [
