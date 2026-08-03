@@ -119,7 +119,7 @@ def build_inventory_from_ledgers(
             }
         )
 
-    return pa.table(rows, schema=ASSET_SCHEMA)
+    return pa.table(rows).cast(ASSET_SCHEMA)
 
 
 def build_inventory(
