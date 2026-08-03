@@ -41,7 +41,6 @@ ASSET_SCHEMA = pa.schema(
         pa.field("metageneration", pa.int64()),
         pa.field("size", pa.int64()),
         pa.field("crc32c", pa.string()),
-        pa.field("md5", pa.string()),
         pa.field("content_type", pa.string()),
         pa.field("metadata_json", pa.string()),
         pa.field("pre_repair_errors", pa.list_(pa.string())),
