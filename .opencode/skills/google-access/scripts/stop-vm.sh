@@ -1,30 +1,35 @@
 #!/usr/bin/env bash
 # Stop the berlin-lst-vm On-Demand VM (keeps boot disk; resumable).
 #
-# Lifecycle: start → run pipeline → stop. Disk is retained between runs.
-# Cost while stopped: ~$1/month for 50-GB pd-balanced.
+# Fails closed if the pinned identity / disk does not match.
 #
-# Usage: scripts/stop-vm.sh
+# Usage: scripts/stop-vm.sh [--dry-run]
 
 set -euo pipefail
 
-ZONE="europe-west3-a"
-NAME="berlin-lst-vm"
-PROJECT="masterarbeit-berlin-lst-v2"
+DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    *)         echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
 
-CUR=$(rtk gcloud compute instances describe "$NAME" --zone="$ZONE" --project="$PROJECT" --format='get(status)' 2>/dev/null || echo "MISSING")
-echo "Current state: $CUR"
+SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPTS_DIR/vm-identity.sh"
 
-case "$CUR" in
+assert_vm_identity RUNNING TERMINATED STOPPED
+
+case "$VM_ACTUAL_STATE" in
   RUNNING)
-    echo "Stopping..."
-    rtk gcloud compute instances stop "$NAME" --zone="$ZONE" --project="$PROJECT"
+    echo "Stopping $VM_NAME (ID: $VM_INSTANCE_ID)..."
+    if [[ "$DRY_RUN" == "true" ]]; then
+      echo "[dry-run] Would execute: gcloud compute instances stop $VM_NAME --zone=$VM_ZONE --project=$VM_PROJECT"
+    else
+      rtk gcloud compute instances stop "$VM_NAME" --zone="$VM_ZONE" --project="$VM_PROJECT"
+    fi
     ;;
   TERMINATED|STOPPED)
-    echo "Already stopped." ;;
-  MISSING)
-    echo "VM does not exist. Use scripts/start-vm.sh to create it." ;;
-  *)
-    echo "Unexpected state: $CUR — exiting."
-    exit 1 ;;
+    echo "Already stopped."
+    ;;
 esac

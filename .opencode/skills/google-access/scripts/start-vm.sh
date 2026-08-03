@@ -1,58 +1,48 @@
 #!/usr/bin/env bash
-# Start the berlin-lst-vm On-Demand VM (creates it if it does not exist).
+# Start the berlin-lst-vm On-Demand VM.
 #
-# Lifecycle: start → run pipeline → stop. Disk is retained between runs.
-# Uses n2-highmem-2 (16 GB RAM) with a 50-GB pd-balanced boot disk.
+# Fails closed if the VM is missing, has been replaced with a
+# different instance, or the identity assertions fail.
+# NEVER creates a new VM.
 #
-# Usage: scripts/start-vm.sh
+# Usage: scripts/start-vm.sh [--dry-run]
 
 set -euo pipefail
 
-ZONE="europe-west3-a"
-NAME="berlin-lst-vm"
-PROJECT="masterarbeit-berlin-lst-v2"
-SA="masterarbeit-vertex@${PROJECT}.iam.gserviceaccount.com"
-MACHINE="n2-highmem-2"
-DISK_SIZE="50"
-DISK_TYPE="pd-balanced"
+DRY_RUN=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=true; shift ;;
+    *)         echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
 
-status() { rtk gcloud compute instances describe "$NAME" --zone="$ZONE" --project="$PROJECT" --format='get(status)' 2>/dev/null || echo "MISSING"; }
+SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPTS_DIR/vm-identity.sh"
 
-CUR=$(status)
-echo "Current state: $CUR"
+assert_vm_identity RUNNING TERMINATED STOPPED
 
-case "$CUR" in
+case "$VM_ACTUAL_STATE" in
   RUNNING)
-    echo "Already running." ;;
+    echo "Already running."
+    ;;
   TERMINATED|STOPPED)
-    echo "Starting..."
-    rtk gcloud compute instances start "$NAME" --zone="$ZONE" --project="$PROJECT"
+    echo "Starting $VM_NAME (ID: $VM_INSTANCE_ID)..."
+    if [[ "$DRY_RUN" == "true" ]]; then
+      echo "[dry-run] Would execute: gcloud compute instances start $VM_NAME --zone=$VM_ZONE --project=$VM_PROJECT"
+      exit 0
+    fi
+    rtk gcloud compute instances start "$VM_NAME" --zone="$VM_ZONE" --project="$VM_PROJECT"
     ;;
-  MISSING)
-    echo "VM does not exist. Creating On-Demand ${MACHINE}..."
-    rtk gcloud compute instances create "$NAME" \
-      --project="$PROJECT" \
-      --zone="$ZONE" \
-      --machine-type="$MACHINE" \
-      --image-family=debian-12 --image-project=debian-cloud \
-      --boot-disk-size="$DISK_SIZE" --boot-disk-type="$DISK_TYPE" \
-      --service-account="$SA" \
-      --scopes=cloud-platform \
-      --no-autodelete-boot-disk \
-      --labels=purpose=berlin-lst-runner,owner=silas
-    ;;
-  *)
-    echo "Unexpected state: $CUR — exiting."
-    exit 1 ;;
 esac
 
-echo
+echo ""
 echo "Waiting for external IP..."
 for i in {1..30}; do
-  IP=$(rtk gcloud compute instances describe "$NAME" --zone="$ZONE" --project="$PROJECT" --format='get(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || true)
+  IP=$(vm_external_ip)
   if [[ -n "$IP" && "$IP" != "(unset)" ]]; then
     echo "External IP: $IP"
-    echo "SSH with: scripts/ssh-vm.sh"
+    echo "SSH with: scripts/ssh-vm.sh [-- command]"
     exit 0
   fi
   sleep 2

@@ -5,12 +5,12 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 
 ## Quick Reference
 
-- Mount bucket:    `mount-berlin`
-- List bucket:     `ls ~/.mnt/berlin-lst/`
-- Start VM:        `.opencode/skills/google-access/scripts/start-vm.sh`
-- Stop VM:         `.opencode/skills/google-access/scripts/stop-vm.sh`
-- SSH into VM:     `.opencode/skills/google-access/scripts/ssh-vm.sh`
-- Run Dynamic:     `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
+- Status:         `.opencode/skills/google-access/scripts/status-vm.sh`
+- Start VM:       `.opencode/skills/google-access/scripts/start-vm.sh`
+- Stop VM:        `.opencode/skills/google-access/scripts/stop-vm.sh`
+- SSH into VM:    `.opencode/skills/google-access/scripts/ssh-vm.sh`
+- SSH readiness:  `.opencode/skills/google-access/scripts/ssh-vm.sh --check`
+- Run Dynamic:    `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
 - Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
 
 ## Purpose
@@ -206,13 +206,26 @@ for blob in bucket.list_blobs(max_results=5):
 
 ## Troubleshooting
 
+### SSH / VM lifecycle
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `ssh-vm.sh` fails with "Instance ID mismatch" | VM was deleted and recreated with same name | Verify with `status-vm.sh`. If intentional, update pinned ID in `vm-identity.sh` and re-run host-key ceremony. |
+| `ssh-vm.sh` fails with "No host-key entry" | Host key never provisioned or was cleared | Run the host-key ceremony (see above). |
+| `ssh-vm.sh` fails with "Connection refused" | VM is stopped or SSH daemon not ready | Check state with `status-vm.sh`. Start if needed. |
+| `ssh-vm.sh` fails with "Connection timed out" | No external IP or firewall rule missing | Check `status-vm.sh` for external IP. If absent, VM may need restart. |
+| `start-vm.sh` fails with "does not exist" | VM was deleted | Requires manual recreation — this script will NOT create one. |
+| `start-vm.sh` fails with "Unexpected state" | VM in PROVISIONING/STAGING/REPAIRING | Wait and retry. If persistent, investigate via GCP console. |
+| `stop-vm.sh` shows "auto-delete=true" warning | Boot disk would be destroyed on `gcloud compute instances delete` | Run `gcloud compute instances set-disk-auto-delete berlin-lst-vm --disk=persistent-disk-0 --no-auto-delete --zone=europe-west3-a` to fix. |
+
+### GCS / rclone
+
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `rclone ls gcs-masterarbeit:` fails | `project_number` missing in rclone config | Add `project_number = 469137882515` to `~/.config/rclone/rclone.conf` |
 | `gcloud auth application-default` fails | `GOOGLE_APPLICATION_CREDENTIALS` not set | `export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcp-keys/masterarbeit-berlin-lst-v2.json"` |
 | Mount directory empty after start | VFS cache not populated yet | Wait a few seconds (rclone lazily fetches files on first access). Run `ls` again. |
 | `google.cloud` import fails | `google-cloud-storage` not installed | `uv add google-cloud-storage` |
-| SSH to VM hangs on first connect | VM first-boot or `gcloud` needs to push SSH key | Wait 60s; `gcloud compute ssh` pushes the key automatically on first connect |
 | Pipeline on VM says all scenes already `done` | Ledger at `gs://.../ledger.parquet` is from a previous run | `rclone delete gcs-masterarbeit:berlin-lst-data/<output_root>/ledger.parquet` before re-running |
 
 ## Compute Engine VM (berlin-lst-vm)
@@ -225,36 +238,103 @@ the VM uses VM ADC (no JSON key, no `GOOGLE_APPLICATION_CREDENTIALS`).
 | Field | Value |
 |-------|-------|
 | Name | `berlin-lst-vm` |
+| Instance ID | `8456019039456721311` |
 | Zone | `europe-west3-a` |
 | Machine | `n2-highmem-2` (2 vCPU / 16 GB) |
 | Image | `debian-12` |
-| Disk | 50 GB `pd-balanced` (retained between runs) |
+| Disk | 50 GB `pd-balanced` (`persistent-disk-0`, retained between runs) |
 | Provisioning | On-Demand (no preemption) |
 | Service account | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
 | Required SA roles | `roles/compute.instanceAdmin.v1`, `roles/serviceusage.serviceUsageAdmin`, `roles/iam.serviceAccountUser` |
 | Labels | `purpose=berlin-lst-runner,owner=silas` |
 
+### Fail-closed lifecycle
+
+All lifecycle scripts assert the pinned identity (project, zone, name, instance
+ID, boot-disk attachment) before any operation. On mismatch they STOP — no
+retry, no fallback, no creation.
+
+- `start-vm.sh` **never creates** a new VM. If the pinned instance does not
+  exist or has been replaced, it refuses to start. Use `--dry-run` to preview.
+- `stop-vm.sh` asserts the exact instance and disk before stopping. Use
+  `--dry-run` to preview.
+- `ssh-vm.sh` uses direct OpenSSH with `StrictHostKeyChecking=yes` and a
+  fixed `HostKeyAlias=compute.<instance-id>`. It **never** writes known-hosts,
+  generates keys, or provisions metadata keys.
+- `status-vm.sh` is a read-only probe that reports identity, state, disk
+  attachment, protection, external IP, and SSH host-key readiness.
+
+### Pinned identity constants (vm-identity.sh)
+
+| Constant | Value |
+|----------|-------|
+| `VM_PROJECT` | `masterarbeit-berlin-lst-v2` |
+| `VM_ZONE` | `europe-west3-a` |
+| `VM_NAME` | `berlin-lst-vm` |
+| `VM_EXPECTED_ID` | `8456019039456721311` |
+| `VM_SA` | `masterarbeit-vertex@…` |
+| `VM_DISK_DEVICE` | `persistent-disk-0` |
+
+Change these values only when the instance is knowingly re-created and the new
+identity is independently verified.
+
 ### Lifecycle
 
 ```bash
-# Start (creates if missing, starts if stopped)
+# Read-only status (never changes anything)
+.opencode/skills/google-access/scripts/status-vm.sh
+
+# Start (fails closed; never creates; supports --dry-run)
 .opencode/skills/google-access/scripts/start-vm.sh
+.opencode/skills/google-access/scripts/start-vm.sh --dry-run
+
+# SSH readiness check (read-only, no connection)
+.opencode/skills/google-access/scripts/ssh-vm.sh --check
+
+# SSH (direct OpenSSH, strict host-key)
+.opencode/skills/google-access/scripts/ssh-vm.sh
+.opencode/skills/google-access/scripts/ssh-vm.sh -- uptime
 
 # Run a Dynamic config end-to-end (start → deploy → run → validate → stop)
 .opencode/skills/google-access/scripts/run-dynamic-vm.sh full main
 .opencode/skills/google-access/scripts/run-dynamic-vm.sh inference_2026 main
 
-# SSH (interactive shell, or pass commands)
-.opencode/skills/google-access/scripts/ssh-vm.sh
-.opencode/skills/google-access/scripts/ssh-vm.sh -- uptime
-
-# Stop (keeps disk, resumable; ~$1.50/month for 50-GB pd-balanced)
+# Stop (keeps disk, resumable; supports --dry-run)
 .opencode/skills/google-access/scripts/stop-vm.sh
+.opencode/skills/google-access/scripts/stop-vm.sh --dry-run
 ```
 
 The pipeline is ledger-aware and idempotent — re-running skips scenes already
 at `status=done`. Products live in GCS, not on the VM disk. The boot disk
 preserves the workspace, venv, and VM-side secrets between runs.
+
+### Host-key recovery ceremony (manual, separately authorized)
+
+If `ssh-vm.sh --check` reports no host-key entry or a key mismatch after a
+VM reboot/recreate, the host key must be provisioned through an independently
+authenticated channel — never by accepting whatever the VM presents.
+
+1. Verify the VM is the expected instance (`status-vm.sh`).
+2. Obtain the public host key through an authenticated out-of-band path:
+   - Create a snapshot of the boot disk; clone it to a temporary disk;
+     mount the clone read-only and inspect `/etc/ssh/ssh_host_*_key.pub`.
+   - Or use an authenticated GCP console session to read guest attributes
+     (requires guest attributes enabled on the instance).
+3. Compute the fingerprint of the presented key and compare it with the
+   offline-obtained fingerprint. If they differ: **STOP** — do not connect.
+4. Back up `~/.ssh/google_compute_known_hosts`.
+5. Remove only the `compute.<instance-id>` entry:
+   ```bash
+   ssh-keygen -R "compute.8456019039456721311"
+   ```
+6. Add the verified key:
+   ```bash
+   echo "compute.8456019039456721311 <key-type> <key-blob>" \
+     >> ~/.ssh/google_compute_known_hosts
+   ```
+7. Re-run `ssh-vm.sh --check` to confirm.
+
+If no independent fingerprint source exists: **halt**, do not trust the key.
 
 ### One-time provisioning (inside the VM)
 
