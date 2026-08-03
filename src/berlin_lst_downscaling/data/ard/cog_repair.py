@@ -420,8 +420,34 @@ def apply_repair(
                 rows[idx]["pre_repair_errors"] = [f"Repair failed: {exc}"]
                 _logger.error("Repair failed for %s: %s", uri_val, exc)
 
-    asset_table = pa.table(rows, schema=ASSET_SCHEMA)
-    audit_table = pa.table(audit_rows, schema=AUDIT_SCHEMA)
+    # Create table arrays directly
+    if not rows:
+        asset_table = pa.table([], schema=ASSET_SCHEMA)
+    else:
+        # Convert None values to defaults
+        for row in rows:
+            row["year"] = row["year"] if row["year"] is not None else 0
+            row["generation"] = row["generation"] if row["generation"] is not None else 0
+            row["metageneration"] = row["metageneration"] if row["metageneration"] is not None else 0
+            row["size"] = row["size"] if row["size"] is not None else 0
+
+        arrays = []
+        for field in ASSET_SCHEMA:
+            col_data = [row[field.name] for row in rows]
+            arrays.append(pa.array(col_data, type=field.type, from_pandas=False))
+
+        asset_table = pa.table(arrays, schema=ASSET_SCHEMA)
+
+    # Create audit table
+    if not audit_rows:
+        audit_table = pa.table([], schema=AUDIT_SCHEMA)
+    else:
+        audit_arrays = []
+        for field in AUDIT_SCHEMA:
+            col_data = [row[field.name] for row in audit_rows]
+            audit_arrays.append(pa.array(col_data, type=field.type, from_pandas=False))
+        audit_table = pa.table(audit_arrays, schema=AUDIT_SCHEMA)
+
     return asset_table, audit_table
 
 
