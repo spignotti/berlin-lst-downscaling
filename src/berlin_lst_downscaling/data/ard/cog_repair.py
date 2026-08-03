@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -98,12 +99,11 @@ def build_inventory(
                 "asset_kind": "data",
                 "source": row_data.get("source"),
                 "partition": row_data.get("partition"),
-                "year": int(row_data["year"]) if row_data.get("year") else None,
+                "year": int(row_data["year"]) if row_data.get("year") and not (isinstance(row_data["year"], float) and math.isnan(row_data["year"])) else None,
                 "generation": metadata.get("generation", 0),
                 "metageneration": metadata.get("metageneration", 0),
                 "size": metadata.get("size", 0),
                 "crc32c": metadata.get("crc32c", ""),
-                "md5": metadata.get("md5", ""),
                 "content_type": metadata.get("content_type", ""),
                 "metadata_json": json.dumps(metadata.get("metadata", {})),
                 "pre_repair_errors": [],  # filled later
