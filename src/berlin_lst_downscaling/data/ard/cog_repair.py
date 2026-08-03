@@ -130,7 +130,13 @@ def build_inventory_from_ledgers(
         row["metageneration"] = row["metageneration"] if row["metageneration"] is not None else 0
         row["size"] = row["size"] if row["size"] is not None else 0
 
-    return pa.table(rows, schema=ASSET_SCHEMA)
+    # Build arrays from rows
+    arrays = []
+    for field in ASSET_SCHEMA:
+        col_data = [row[field.name] for row in rows]
+        arrays.append(pa.array(col_data, type=field.type, from_pandas=False))
+
+    return pa.table(arrays, schema=ASSET_SCHEMA)
 
 
 def build_inventory(
