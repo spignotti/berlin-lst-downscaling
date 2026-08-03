@@ -4,6 +4,11 @@
 # Lifecycle: start VM → deploy code → launch pipeline → poll → validate → stop VM.
 # The boot disk is retained after stop; pipeline products live in GCS.
 #
+# Every remote command uses ssh-vm.sh (strict host-key verification).
+# Each run writes an immutable marker on the VM so that a later
+# status-dynamic-vm.sh can report running/completed/failed/connection-lost
+# without relaunching the process.
+#
 # Usage:
 #   scripts/run-dynamic-vm.sh full [branch]
 #   scripts/run-dynamic-vm.sh inference_2026 [branch]
@@ -15,13 +20,16 @@
 set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-ZONE="europe-west3-a"
-NAME="berlin-lst-vm"
-PROJECT="masterarbeit-berlin-lst-v2"
+source "$SCRIPTS_DIR/vm-identity.sh"
+
 APP_DIR="/workspace/app"
 MANIFEST_URI="gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet"
 
-# ── args ──────────────────────────────────────────────────────────────
+CONNECTION_RETRIES=5
+CONNECTION_RETRY_WAIT=30
+
+# ── args ─────────────────────────────────────────────────────────────────────
+
 CONFIG="${1:-}"
 BRANCH="${2:-main}"
 
@@ -35,78 +43,168 @@ if [[ "$CONFIG" != "full" && "$CONFIG" != "inference_2026" ]]; then
   exit 1
 fi
 
-echo "Config: $CONFIG | Branch: $BRANCH"
+RUN_ID="${CONFIG}-$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_DIR="$APP_DIR/logs/runs/$RUN_ID"
+MARKER="$LOG_DIR/marker.json"
+STATUS_FILE="$LOG_DIR/exit_status"
+REMOTE_LOG="$LOG_DIR/nohup.log"
+REMOTE_PID_FILE="$LOG_DIR/pid"
 
-# ── start VM ──────────────────────────────────────────────────────────
+echo "Config: $CONFIG | Branch: $BRANCH | Run ID: $RUN_ID"
+
+# ── SSH helper ───────────────────────────────────────────────────────────────
+
+ssh_cmd() {
+  "$SCRIPTS_DIR/ssh-vm.sh" -- "$@"
+}
+
+# ── start VM ─────────────────────────────────────────────────────────────────
+
 echo "Starting VM..."
 "$SCRIPTS_DIR/start-vm.sh"
 
-# ── push branch so VM can fetch ──────────────────────────────────────
+# ── push branch so VM can fetch ─────────────────────────────────────────────
+
 echo "Pushing branch $BRANCH to origin..."
 git push origin "$BRANCH" --quiet
 
-# ── deploy code on VM ────────────────────────────────────────────────
+# ── deploy code on VM ───────────────────────────────────────────────────────
+
 echo "Deploying code on VM..."
-rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
+ssh_cmd "
   cd $APP_DIR && \
   git fetch origin && \
   git checkout $BRANCH && \
   uv sync --frozen --quiet
 "
 
-# ── launch pipeline ──────────────────────────────────────────────────
-LOG_DIR="$APP_DIR/logs/dynamic"
-MARKER="$LOG_DIR/${CONFIG}_exit_code"
+# ── prepare run directory + marker ──────────────────────────────────────────
 
-# Clean stale marker
-rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
-  rm -f '$MARKER'
+echo "Creating run marker: $RUN_ID"
+ssh_cmd "
+  mkdir -p '$LOG_DIR' && \
+  cat > '$MARKER' <<MARKER_JSON
+{
+  \"run_id\": \"$RUN_ID\",
+  \"config\": \"$CONFIG\",
+  \"branch\": \"$BRANCH\",
+  \"started\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+  \"pid\": 0,
+  \"log\": \"$REMOTE_LOG\",
+  \"status_file\": \"$STATUS_FILE\"
+}
+MARKER_JSON
 "
+
+# ── launch pipeline ─────────────────────────────────────────────────────────
 
 echo "Launching pipeline on VM..."
-rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
+ssh_cmd "
   cd $APP_DIR && \
-  nohup uv run python scripts/run_dynamic.py \\
-    --config-name $CONFIG \\
-    manifest_uri=$MANIFEST_URI \\
-    > $LOG_DIR/${CONFIG}_nohup.log 2>&1 &
-  echo \$! > $LOG_DIR/${CONFIG}_pid
+  nohup uv run python scripts/run_dynamic.py \
+    --config-name $CONFIG \
+    manifest_uri=$MANIFEST_URI \
+    > '$REMOTE_LOG' 2>&1 &
+  echo \$! > '$REMOTE_PID_FILE'
 "
 
-# Get the PID for log tracking
-REMOTE_PID=$(rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="cat $LOG_DIR/${CONFIG}_pid" 2>/dev/null || echo "unknown")
+# Read PID and update marker
+REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
 echo "Remote PID: $REMOTE_PID"
 
-# ── poll for completion ──────────────────────────────────────────────
-echo "Polling for pipeline completion..."
+# Update marker with actual PID
+ssh_cmd "
+  sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
+" 2>/dev/null || true
+
+# ── write terminal status on exit (detached wrapper) ─────────────────────────
+
+echo "Registering terminal status writer..."
+ssh_cmd "
+  ( while kill -0 $REMOTE_PID 2>/dev/null; do sleep 5; done; \
+    echo \$? > '$STATUS_FILE' ) &
+"
+
+# ── poll for completion ─────────────────────────────────────────────────────
+
+echo "Polling for pipeline completion (run $RUN_ID)..."
+POLL_FAILURES=0
+
 while true; do
   sleep 60
 
-  # Check if the process is still running
-  IS_RUNNING=$(rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
+  # Check terminal status file first — avoids PID-reuse ambiguity
+  TERMINAL=$(ssh_cmd "cat '$STATUS_FILE'" 2>/dev/null) || TERMINAL=""
+
+  if [[ -n "$TERMINAL" ]]; then
+    if [[ "$TERMINAL" == "0" ]]; then
+      echo "  [$(date +%H:%M:%S)] Pipeline completed successfully."
+    else
+      echo "  [$(date +%H:%M:%S)] Pipeline exited with code $TERMINAL."
+    fi
+    break
+  fi
+
+  # No terminal status yet — check if PID is still alive
+  IS_RUNNING=$(ssh_cmd "
     if kill -0 $REMOTE_PID 2>/dev/null; then echo running; else echo stopped; fi
-  " 2>/dev/null || echo "unknown")
+  " 2>/dev/null) || {
+    # Connection failure — do not give up immediately
+    POLL_FAILURES=$((POLL_FAILURES + 1))
+    if [[ $POLL_FAILURES -ge $CONNECTION_RETRIES ]]; then
+      echo "  [$(date +%H:%M:%S)] Lost contact after $POLL_FAILURES attempts."
+      echo ""
+      echo "CONNECTION LOST — remote process may still be running."
+      echo "  Run ID:     $RUN_ID"
+      echo "  Remote PID: $REMOTE_PID"
+      echo "  Marker:     $MARKER"
+      echo ""
+      echo "To check later: scripts/status-dynamic-vm.sh --run-id $RUN_ID"
+      echo "The VM will NOT be stopped automatically."
+      exit 2
+    fi
+    echo "  [$(date +%H:%M:%S)] Connection lost (attempt $POLL_FAILURES/$CONNECTION_RETRIES). Retrying in ${CONNECTION_RETRY_WAIT}s..."
+    sleep "$CONNECTION_RETRY_WAIT"
+    continue
+  }
+
+  # Reset failure counter on successful contact
+  POLL_FAILURES=0
 
   if [[ "$IS_RUNNING" == "stopped" ]]; then
+    # PID is dead — terminal status should appear shortly
+    echo "  [$(date +%H:%M:%S)] PID $REMOTE_PID stopped. Waiting for exit status..."
+    sleep 5
+    TERMINAL=$(ssh_cmd "cat '$STATUS_FILE'" 2>/dev/null) || TERMINAL=""
+    if [[ -n "$TERMINAL" ]]; then
+      break
+    fi
+    echo "  [$(date +%H:%M:%S)] No exit status written. Check logs manually."
     break
   fi
 
   # Print last log line for progress visibility
-  LAST_LOG=$(rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
-    tail -1 '$LOG_DIR/${CONFIG}_nohup.log' 2>/dev/null || echo 'waiting...'
+  LAST_LOG=$(ssh_cmd "
+    tail -1 '$REMOTE_LOG' 2>/dev/null || echo 'waiting...'
   " 2>/dev/null || echo "polling...")
   echo "  [$(date +%H:%M:%S)] $LAST_LOG"
 done
 
-# ── check exit code ──────────────────────────────────────────────────
-# The pipeline writes its own log; check the nohup output for errors
-PIPELINE_FAILED=$(rtk gcloud compute ssh "$NAME" --zone="$ZONE" --project="$PROJECT" --command="
-  grep -c 'error\\|ERROR\\|Traceback\\|SystemExit' '$LOG_DIR/${CONFIG}_nohup.log' 2>/dev/null || echo 0
-" 2>/dev/null || echo "0")
+# ── check exit code ─────────────────────────────────────────────────────────
 
-echo "Pipeline finished. Error lines in log: $PIPELINE_FAILED"
+PIPELINE_EXIT=$(ssh_cmd "cat '$STATUS_FILE'" 2>/dev/null || echo "unknown")
+PIPELINE_ERRORS=$(ssh_cmd "
+  grep -c 'error\\|ERROR\\|Traceback\\|SystemExit' '$REMOTE_LOG' 2>/dev/null || echo 0
+" 2>/dev/null || echo "unknown")
 
-# ── validate ─────────────────────────────────────────────────────────
+echo ""
+echo "Pipeline finished."
+echo "  Exit code:   $PIPELINE_EXIT"
+echo "  Error lines: $PIPELINE_ERRORS"
+echo "  Run ID:      $RUN_ID"
+
+# ── validate ─────────────────────────────────────────────────────────────────
+
 if [[ "$CONFIG" == "full" ]]; then
   EXPECTED_ROLE="anchor"
   EXPECTED_SCENES="324"
@@ -115,7 +213,6 @@ else
   EXPECTED_SCENES="21"
 fi
 
-# Map config name to GCS root
 case "$CONFIG" in
   full) OUTPUT_ROOT="gs://berlin-lst-data/dynamic/full" ;;
   inference_2026) OUTPUT_ROOT="gs://berlin-lst-data/dynamic/inference/2026" ;;
@@ -129,15 +226,20 @@ uv run python scripts/validate_dynamic.py \
   --check-bands \
   && VALIDATION_OK=0 || VALIDATION_OK=1
 
-# ── stop VM ──────────────────────────────────────────────────────────
+# ── stop VM ─────────────────────────────────────────────────────────────────
+
 echo "Stopping VM..."
 "$SCRIPTS_DIR/stop-vm.sh"
 
-# ── report ────────────────────────────────────────────────────────────
-if [[ "$VALIDATION_OK" -eq 0 ]]; then
+# ── report ───────────────────────────────────────────────────────────────────
+
+if [[ "$VALIDATION_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
   echo "SUCCESS: $CONFIG completed and validated."
+  echo "  Run ID: $RUN_ID"
 else
   echo "FAIL: $CONFIG validation failed or pipeline had errors."
-  echo "Check VM-side log: $LOG_DIR/${CONFIG}_nohup.log (VM is stopped, disk retained)"
+  echo "  Run ID:     $RUN_ID"
+  echo "  Remote log: $REMOTE_LOG"
+  echo "  Check VM-side files with: scripts/status-dynamic-vm.sh --run-id $RUN_ID"
   exit 1
 fi

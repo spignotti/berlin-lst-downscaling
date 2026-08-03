@@ -11,6 +11,7 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - SSH into VM:    `.opencode/skills/google-access/scripts/ssh-vm.sh`
 - SSH readiness:  `.opencode/skills/google-access/scripts/ssh-vm.sh --check`
 - Run Dynamic:    `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
+- Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
 - Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
 
 ## Purpose
@@ -299,6 +300,9 @@ identity is independently verified.
 .opencode/skills/google-access/scripts/run-dynamic-vm.sh full main
 .opencode/skills/google-access/scripts/run-dynamic-vm.sh inference_2026 main
 
+# Check status of a running or completed run
+.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id full-20260804T120000Z
+
 # Stop (keeps disk, resumable; supports --dry-run)
 .opencode/skills/google-access/scripts/stop-vm.sh
 .opencode/skills/google-access/scripts/stop-vm.sh --dry-run
@@ -307,6 +311,31 @@ identity is independently verified.
 The pipeline is ledger-aware and idempotent — re-running skips scenes already
 at `status=done`. Products live in GCS, not on the VM disk. The boot disk
 preserves the workspace, venv, and VM-side secrets between runs.
+
+### Run markers and reconnection
+
+Each `run-dynamic-vm.sh` execution writes an immutable run marker on the VM:
+
+```
+/workspace/app/logs/runs/<config>-<timestamp>/marker.json
+```
+
+The marker contains: `run_id`, `config`, `branch`, `started`, `pid`, `log`,
+and `status_file`.  On process completion, the wrapper writes an exit-status
+file at the same location.
+
+If the local session is interrupted (SSH failure, machine sleep, agent crash):
+
+1. **Do NOT relaunch.** The remote process may still be running.
+2. Run `status-dynamic-vm.sh --run-id <id>` to probe the marker.
+3. It reports one of:
+   - `RUNNING` — process is alive; last log line shown.
+   - `COMPLETED` — exit code 0; safe to validate and stop VM.
+   - `FAILED` — non-zero exit; check VM-side log.
+   - `CONNECTION_LOST` — cannot reach VM; try later.
+   - `AMBIGUOUS` — PID is dead but no exit status was written; investigate manually.
+4. The VM is **never** stopped automatically after a connection loss. An
+   operator must explicitly decide to stop after confirming the run state.
 
 ### Host-key recovery ceremony (manual, separately authorized)
 
