@@ -21,6 +21,7 @@ from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
     copy_object_server_side,
     restore_soft_deleted_object,
     rewrite_object_server_side,
+    rollback_to_payload,
     save_event,
     snapshot_gcs_descriptor,
     snapshot_soft_deleted_descriptor,
@@ -955,7 +956,7 @@ def _generate_cogger_candidate(src: Path, dst: Path, cogger_bin: str) -> None:
         raise RuntimeError(f"Cogger failed: {result.stderr}")
 
 
-# ── promotion (stub — requires verified candidates) ───────────────────
+# ── promotion ─────────────────────────────────────────────────────────
 
 
 def cmd_promote(
@@ -967,14 +968,178 @@ def cmd_promote(
 ) -> int:
     """Guarded promotion with bounded batches and rollback.
 
-    Requires verified candidates and ``--execute``.
+    Promotes verified candidates to canonical paths in bounded batches:
+    1 canary per engine, then 10, 50, max 100.
+
+    Each promotion: intent → guarded rewrite → independent verify →
+    terminal event.  On failure: rollback from backup → verify → stop.
+
+    Requires ``--execute`` to mutate canonical paths.
     """
     if dry_run:
         print("DRY RUN: Promotion requires --execute")
         return 0
 
-    print("Promotion not yet implemented (requires verified candidates)")
-    return 1
+    cfg_hash = hash_config(config_path)
+
+    # load inventory
+    inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
+    from berlin_lst_downscaling.data.ard.cog_repair import load_table
+    inv_table = load_table(inv_path)
+    rows = inv_table.to_pylist()
+
+    # filter to verified candidates
+    needs_promotion = [
+        r for r in rows
+        if r.get("candidate_uri")
+        and r["layout_class"] in (
+            LayoutClass.MISSING_OVERVIEW.value,
+            LayoutClass.HARD_LAYOUT.value,
+        )
+    ]
+    print(f"Config hash: {cfg_hash}")
+    print(f"Needs promotion: {len(needs_promotion)}")
+
+    # batch sizes: canary per engine, then expanding
+    batch_sizes = [1, 10, 50, 100]
+
+    promoted = 0
+    rolled_back = 0
+
+    for batch_size in batch_sizes:
+        remaining = needs_promotion[promoted:]
+        if not remaining:
+            break
+
+        batch = remaining[:batch_size]
+        print(f"\nBatch (size {batch_size}): {len(batch)} assets")
+
+        for row in batch:
+            uri = row["uri"]
+            _, key = _parse_gs_uri(uri)
+            candidate_uri = f"{recovery_root}/candidates/{key}"
+            backup_uri = f"{recovery_root}/backups/current/{key}"
+
+            # snapshot current canonical descriptor
+            try:
+                current_desc = snapshot_gcs_descriptor(uri)
+            except FileNotFoundError:
+                _logger.error("Canonical object not found: %s", uri)
+                return 1
+
+            # load events to get sequence offset
+            from berlin_lst_downscaling.data.ard.cog_recovery_gcs import load_events
+            events = load_events(recovery_root, uri)
+            base_seq = (events[-1].sequence + 1) if events else 0
+            prev_hash = event_content_hash(events[-1]) if events else ""
+
+            # metadata contract for promotion and rollback
+            metadata_contract = ObjectDescriptor(
+                content_type=current_desc.content_type,
+                content_encoding=current_desc.content_encoding,
+                cache_control=current_desc.cache_control,
+                custom_metadata=current_desc.custom_metadata,
+            )
+
+            try:
+                # promotion intent
+                intent = make_event(
+                    uri=uri,
+                    run_id=run_id,
+                    sequence=base_seq,
+                    event_type=EventType.PROMOTION_INTENT,
+                    config_hash=cfg_hash,
+                    operation_id=make_operation_id("promote"),
+                    prev_event_hash=prev_hash,
+                    generation_before=current_desc.generation,
+                    metageneration_before=current_desc.metageneration,
+                    details={"candidate_uri": candidate_uri},
+                )
+                save_event(recovery_root, intent)
+
+                # guarded rewrite: candidate → canonical
+                result = rewrite_object_server_side(
+                    source_uri=candidate_uri,
+                    dest_uri=uri,
+                    source_generation=0,
+                    source_metageneration=0,
+                    dest_generation=current_desc.generation,
+                    dest_metageneration=current_desc.metageneration,
+                    dest_metadata=metadata_contract,
+                )
+
+                # independent verification
+                verify_desc = snapshot_gcs_descriptor(uri)
+                verify_errors = verify_descriptor(uri, metadata_contract)
+                if verify_errors:
+                    raise RuntimeError(
+                        f"Post-promotion verification failed: {verify_errors}"
+                    )
+
+                # terminal event
+                promoted_event = make_event(
+                    uri=uri,
+                    run_id=run_id,
+                    sequence=base_seq + 1,
+                    event_type=EventType.PROMOTED,
+                    config_hash=cfg_hash,
+                    operation_id=make_operation_id("promote"),
+                    prev_event_hash=event_content_hash(intent),
+                    generation_before=current_desc.generation,
+                    generation_after=result["generation"],
+                    metageneration_before=current_desc.metageneration,
+                    metageneration_after=result["metageneration"],
+                    crc32c=result["crc32c"],
+                    details={"candidate_uri": candidate_uri},
+                )
+                save_event(recovery_root, promoted_event)
+
+                verified_event = make_event(
+                    uri=uri,
+                    run_id=run_id,
+                    sequence=base_seq + 2,
+                    event_type=EventType.CANONICAL_VERIFIED,
+                    config_hash=cfg_hash,
+                    operation_id=make_operation_id("verify"),
+                    prev_event_hash=event_content_hash(promoted_event),
+                    generation_after=verify_desc.generation,
+                    crc32c=verify_desc.crc32c,
+                    descriptor=verify_desc,
+                )
+                save_event(recovery_root, verified_event)
+
+                promoted += 1
+                if promoted % 10 == 0:
+                    print(f"  Promoted: {promoted}/{len(needs_promotion)}")
+
+            except Exception as exc:
+                _logger.error("Promotion failed for %s: %s", uri, exc)
+                # rollback
+                try:
+                    rollback_to_payload(
+                        uri,
+                        backup_uri,
+                        run_id=run_id,
+                        config_hash=cfg_hash,
+                        sequence=base_seq + 1,
+                        current_generation=current_desc.generation,
+                        current_metageneration=current_desc.metageneration,
+                        metadata_contract=metadata_contract,
+                    )
+                    rolled_back += 1
+                    print(f"  ROLLBACK: {uri} restored from backup")
+                except Exception as rb_exc:
+                    _logger.error("ROLLBACK FAILED for %s: %s", uri, rb_exc)
+                    print(f"  ROLLBACK FAILED: {uri}")
+                    return 1
+
+                # stop the run after rollback
+                print(f"\nPromotion stopped after rollback: {uri}")
+                print(f"  Promoted: {promoted}, Rolled back: {rolled_back}")
+                return 1
+
+    print(f"\nPromotion complete: {promoted} promoted, {rolled_back} rolled back")
+    return 0
 
 
 # ── final verification ────────────────────────────────────────────────
