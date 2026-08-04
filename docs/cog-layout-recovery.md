@@ -2,9 +2,9 @@
 
 ## Incident Summary
 
-**Date:** 2026-08-03  
-**Duration:** ~2.5 hours (14:19–16:35 UTC)  
-**Affected assets:** 2,079 canonical COGs  
+**Date:** 2026-08-03
+**Duration:** ~2.5 hours (14:19–16:35 UTC)
+**Affected assets:** 2,079 canonical COGs
 **Root cause:** COG repair process without fail-closed validation
 
 ### Timeline
@@ -40,7 +40,7 @@
 
 1. **GCS access:** Service account with `storage.objectAdmin` on both main and recovery buckets
 2. **Recovery bucket:** `gs://berlin-lst-data-recovery` in same region (`europe-west3`)
-3. **Cogger binary:** `/tmp/cog-repair/cogger` (SHA-256: `79f6e988...`)
+3. **Cogger binary:** verified against official `v0.1.1` Linux AMD64 ZIP hash
 4. **VM:** `berlin-lst-vm` started and accessible
 
 ## Recovery Procedure
@@ -59,8 +59,8 @@ Verify bucket policies, IAM, and inventory key set.
 # Run preflight
 cd /workspace/app
 uv run python scripts/repair_cog_layout.py preflight \
-    --config configs/cog_repair/recovery.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation
 ```
 
 **Expected output:**
@@ -75,82 +75,126 @@ uv run python scripts/repair_cog_layout.py preflight \
 - Soft delete deadline passed
 - Recovery bucket not accessible
 
-### Phase 2: Classify
+### Phase 2: Rebaseline
 
-Build inventory + evidence matrix.
+Build immutable baseline: inventory, Soft Delete catalog, and run manifest.
 
 ```bash
-uv run python scripts/repair_cog_layout.py classify \
-    --config configs/cog_repair/recovery.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03 \
-    --workers 4
+uv run python scripts/repair_cog_layout.py rebaseline \
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
+    --run-id <run-id>
 ```
 
 **Expected output:**
 - Layout classes: strict_clean=1243, missing_overview=164, hard_layout=672
 - Evidence classes: audited_match=638, unaudited_overwrite=769, untouched=672
-- Total: 2,079
+- Soft Delete catalog: 1,407 canonical generations
+- Deadline runway: 3× runtime + 24h margin
+- Run manifest persisted
 
 **STOP conditions:**
-- Unexpected layout class
-- Count mismatch
-- Classification error
+- Layout count mismatch
+- Soft Delete count mismatch
+- Insufficient deadline runway
 
-### Phase 3: Backup
+### Phase 3: Canary
 
-Preserve all current live objects to recovery bucket.
+Prove GCS transaction semantics on isolated scratch paths.
 
 ```bash
-uv run python scripts/repair_cog_layout.py backup \
-    --config configs/cog_repair/recovery.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03
+uv run python scripts/smoke_cog_recovery.py \
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-canary
 ```
 
 **Expected output:**
-- All 2,079 objects backed up
-- CRC32C verified
-- Backup root: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03/backups/current/`
+- All tests pass (basic copy, soft delete restore, rewrite with metadata, event persistence)
+- Canary report persisted
 
 **STOP conditions:**
-- Any backup failure
-- CRC mismatch
+- Any test failure
 
-### Phase 4: Stage Candidates
+### Phase 4: Capture Originals
 
-Generate repair candidates to recovery bucket.
+Preserve all 1,407 pre-incident generations before hard-delete deadline.
+
+```bash
+uv run python scripts/repair_cog_layout.py capture-originals \
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
+    --run-id <run-id> \
+    --execute
+```
+
+**Expected output:**
+- 1,407 originals captured
+- All canonical objects restored to baseline
+- Immutable events for each capture
+
+**STOP conditions:**
+- Any capture failure
+- Deadline exhaustion
+- Metadata mismatch
+
+### Phase 5: Stage Candidates
+
+Generate 164 GDAL and 672 Cogger candidates.
 
 ```bash
 uv run python scripts/repair_cog_layout.py stage \
-    --config configs/cog_repair/recovery.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03 \
-    --cogger-bin /tmp/cog-repair/cogger
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
+    --run-id <run-id> \
+    --cogger-bin /path/to/cogger \
+    --execute
 ```
 
 **Expected output:**
-- Cogger: 672 candidates for hard layout errors
-- GDAL COG: 164 candidates for missing-overview flags
-- All candidates pass strict validation
-- All candidates pass semantic comparison
+- 164 GDAL COG candidates (missing-overview flags)
+- 672 Cogger candidates (hard-layout errors)
+- All candidates strict-clean and semantically equivalent
 
 **STOP conditions:**
 - Candidate validation failure
 - Semantic mismatch
 - Cogger/GDAL error
 
-### Phase 5: Promote
+### Phase 6: Validate Candidates
 
-Guarded canonical promotion with rollback.
+Independent verification of all candidates.
+
+```bash
+uv run python scripts/validate_cog_recovery.py \
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
+    --run-id <run-id> \
+    --workers 4
+```
+
+**Expected output:**
+- All 836 candidates valid
+- Validation report persisted
+
+**STOP conditions:**
+- Any invalid candidate
+
+### Phase 7: Promote
+
+Guarded promotion with bounded batches and rollback.
 
 ```bash
 uv run python scripts/repair_cog_layout.py promote \
-    --config configs/cog_repair/recovery.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03
+    --config configs/cog_repair/remediation.yaml \
+    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
+    --run-id <run-id> \
+    --execute
 ```
 
 **Expected output:**
 - Each candidate promoted with generation guard
-- Each promoted object verified
-- Rollback on failure
+- Each promoted object independently verified
+- Rollback on failure (stops run)
 - Immutable events recorded
 
 **STOP conditions:**
@@ -158,20 +202,18 @@ uv run python scripts/repair_cog_layout.py promote \
 - Verification failure
 - Rollback failure
 
-### Phase 6: Verify Recovery
+### Phase 8: Verify Recovery
 
 Independent verification of all canonical assets.
 
 ```bash
 uv run python scripts/repair_cog_layout.py verify-recovery \
-    --config configs/cog_repair/recovery.yaml \
-    --workers 4
+    --config configs/cog_repair/remediation.yaml
 ```
 
 **Expected output:**
-- All 2,079 assets valid
+- All 2,079 assets strict-clean
 - Zero errors, zero warnings
-- Verification PASSED
 
 **STOP conditions:**
 - Any invalid asset
@@ -181,66 +223,48 @@ uv run python scripts/repair_cog_layout.py verify-recovery \
 After recovery, run all validators:
 
 ```bash
-# ARD validation
-uv run python scripts/validate_ard.py \
-    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
-    --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
-
-# Dynamic validation
-uv run python scripts/validate_dynamic.py \
-    --output-root gs://berlin-lst-data/dynamic/full \
-    --expected-role anchor \
-    --expected-scenes 324
-
-uv run python scripts/validate_dynamic.py \
-    --output-root gs://berlin-lst-data/dynamic/inference/2026 \
-    --expected-role inference \
-    --expected-scenes 21
-
-# Profiling validation
-uv run python scripts/validate_profiling.py \
-    --output-root gs://berlin-lst-data/profiling/wb2c-1 \
-    --require-clean --expected-assets 2079
-
 # Full validation gate
 uv run nox
-```
-
-## Rollback Procedure
-
-If recovery fails, restore from backup:
-
-```bash
-# Load backup inventory
-uv run python -c "
-from berlin_lst_downscaling.data.ard.cog_repair import load_table
-table = load_table('gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03/snapshots/inventory.parquet')
-print(f'Inventory: {table.num_rows} URIs')
-"
-
-# Restore from backup
-# (Implementation in cog_recovery_gcs.py)
 ```
 
 ## Evidence Retention
 
 Recovery artifacts retained until approved deletion date:
 
-- Backups: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03/backups/`
-- Candidates: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03/candidates/`
-- Events: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03/events/`
-- Reports: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03/reports/`
+- Backups: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/backups/`
+- Originals: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/originals/`
+- Candidates: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/candidates/`
+- Events: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/events/`
+- Reports: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/reports/`
 
-## Stop Authority
+## Architecture
 
-The approved plan, including its Build Stop Conditions, is an execution contract. Before each task or package, read its Scope, Validation, Risk checkpoints, and Stop Conditions.
+```text
+Fresh baseline + Soft Delete catalog
+             │
+             ▼
+ per-object original capture saga
+             │
+     ┌───────┴────────┐
+     ▼                ▼
+164 GDAL flags   672 Cogger layouts
+     └───────┬────────┘
+             ▼
+ independent candidate validation
+             ▼
+ guarded promotion + rollback
+             ▼
+ fresh 2,079-object final validation
+```
 
-**STOP immediately when:**
-- A plan Stop Condition is observed
-- Implementation requires a new dependency, external operation, configuration/infra/schema/public-contract change not named in the plan
-- Repository or runtime evidence contradicts a plan assumption
-- Validation cannot pass through a one- or two-line self-inflicted correction in the same file and current task
+## Key Files
 
-## Contact
-
-For questions or issues during recovery, consult the plan documentation or halt and ask for clarification.
+| File | Purpose |
+|------|---------|
+| `src/.../cog_recovery_state.py` | Event models, reducer, classification |
+| `src/.../cog_recovery_gcs.py` | GCS operations, descriptors, events |
+| `src/.../cog_recovery.py` | Saga orchestrator |
+| `scripts/repair_cog_layout.py` | CLI |
+| `scripts/smoke_cog_recovery.py` | GCS transaction canary |
+| `scripts/validate_cog_recovery.py` | Independent candidate validator |
+| `configs/cog_repair/remediation.yaml` | Immutable run configuration |
