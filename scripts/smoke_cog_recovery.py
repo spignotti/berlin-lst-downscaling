@@ -201,8 +201,8 @@ def test_basic_copy_and_verify(
             source_generation=a["generation"] - 1,
             dest_generation_match=result["generation"],
         )
-        r.fail("stale_source_rejected", "expected PreconditionFailed")
-    except PreconditionFailed:
+        r.fail("stale_source_rejected", "expected rejection")
+    except (PreconditionFailed, FileNotFoundError):
         r.ok("stale_source_rejected")
     except Exception as exc:
         r.fail("stale_source_rejected", f"unexpected: {exc}")

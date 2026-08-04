@@ -27,6 +27,11 @@ legacy:
 recovery_bucket: gs://berlin-lst-data-recovery
 recovery_prefix: cog-layout-recovery/2026-08-03-remediation
 
+# Legacy recovery root (read-only) — contains 2,079 payload backups from
+# the initial backup run.  Used as source for baseline reconstruction and
+# Cogger candidate generation.
+legacy_recovery_root: gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03
+
 # Incident timeline (UTC)
 incident:
   first_overwrite: "2026-08-03T14:19:03Z"

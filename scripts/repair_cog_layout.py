@@ -92,6 +92,15 @@ def main() -> int:
     p_capture.add_argument("--run-id", required=True)
     p_capture.add_argument("--execute", action="store_true", default=False)
 
+    # restore-baseline
+    p_restore = subparsers.add_parser(
+        "restore-baseline", help="Restore canonical objects to snapshot state",
+    )
+    p_restore.add_argument("--config", required=True)
+    p_restore.add_argument("--recovery-root", required=True)
+    p_restore.add_argument("--run-id", required=True)
+    p_restore.add_argument("--execute", action="store_true", default=False)
+
     # stage
     p_stage = subparsers.add_parser(
         "stage", help="Generate repair candidates",
@@ -139,6 +148,7 @@ def main() -> int:
         cmd_preflight,
         cmd_promote,
         cmd_rebaseline,
+        cmd_restore_baseline,
         cmd_stage_candidates,
         cmd_verify_recovery,
     )
@@ -154,6 +164,12 @@ def main() -> int:
             run_id=args.run_id,
         ),
         "capture-originals": lambda: cmd_capture_originals(
+            args.config,
+            recovery_root=args.recovery_root,
+            run_id=args.run_id,
+            dry_run=not args.execute,
+        ),
+        "restore-baseline": lambda: cmd_restore_baseline(
             args.config,
             recovery_root=args.recovery_root,
             run_id=args.run_id,

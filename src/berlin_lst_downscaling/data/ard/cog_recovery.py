@@ -677,10 +677,8 @@ def cmd_capture_originals(
 
             # ── step 4: reconstruct baseline ──────────────────────────
             # rewrite canonical from LEGACY backup with frozen live metadata
-            legacy_backup_root = (
-                f"{config['recovery_bucket']}/{config['recovery_prefix']}"
-            )
-            legacy_backup_uri = f"{legacy_backup_root}/backups/current/{key}"
+            legacy_root = config["legacy_recovery_root"]
+            legacy_backup_uri = f"{legacy_root}/backups/current/{key}"
 
             # snapshot the displaced live metadata (before restore overwrote it)
             # we use restored_desc since it captured the original's metadata
@@ -768,6 +766,106 @@ def cmd_capture_originals(
     return 0 if failed == 0 else 1
 
 
+# ── restore baseline ─────────────────────────────────────────────────
+
+
+def cmd_restore_baseline(
+    config_path: str | Path,
+    *,
+    recovery_root: str,
+    run_id: str,
+    dry_run: bool = True,
+) -> int:
+    """Restore canonical objects to their rebaseline snapshot state.
+
+    For each of the 1,407 overwritten objects, rewrites canonical from
+    the legacy backup payload with the frozen metadata contract from the
+    rebaseline snapshot.  Used to recover from a failed capture that left
+    objects in an intermediate state.
+
+    Requires ``--execute``.
+    """
+    if dry_run:
+        print("DRY RUN: Restore baseline requires --execute")
+        return 0
+
+    config = _load_config(config_path)
+    cfg_hash = hash_config(config_path)
+    legacy_root = config["legacy_recovery_root"]
+
+    # load inventory snapshot
+    inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
+    from berlin_lst_downscaling.data.ard.cog_repair import load_table
+    inv_table = load_table(inv_path)
+    rows = inv_table.to_pylist()
+
+    # filter to overwritten objects
+    overwritten = [
+        r for r in rows
+        if r.get("original_generation")
+        and r["original_generation"] != r["current_generation"]
+    ]
+    print(f"Config hash: {cfg_hash}")
+    print(f"Overwritten objects: {len(overwritten)}")
+
+    success = 0
+    failed = 0
+
+    for row in overwritten:
+        uri = row["uri"]
+        _, key = _parse_gs_uri(uri)
+
+        try:
+            # snapshot current live descriptor
+            current_desc = snapshot_gcs_descriptor(uri)
+
+            # skip if already matches snapshot
+            if current_desc.generation == row["current_generation"]:
+                success += 1
+                continue
+
+            # legacy backup source
+            legacy_backup_uri = f"{legacy_root}/backups/current/{key}"
+            backup_desc = snapshot_gcs_descriptor(legacy_backup_uri)
+
+            # frozen metadata contract from snapshot
+            frozen_desc = ObjectDescriptor(
+                content_type=row.get("current_content_type", ""),
+                custom_metadata=json.loads(row["current_metadata_json"])
+                if row.get("current_metadata_json")
+                else {},
+            )
+
+            # guarded rewrite: legacy backup → canonical
+            rewrite_object_server_side(
+                source_uri=legacy_backup_uri,
+                dest_uri=uri,
+                source_generation=backup_desc.generation,
+                source_metageneration=backup_desc.metageneration,
+                dest_generation=current_desc.generation,
+                dest_metageneration=current_desc.metageneration,
+                dest_metadata=frozen_desc,
+            )
+
+            # verify restored state
+            verify_errors = verify_descriptor(uri, frozen_desc)
+            if verify_errors:
+                _logger.error("Verify failed for %s: %s", uri, verify_errors)
+                failed += 1
+                continue
+
+            success += 1
+            if success % 100 == 0:
+                print(f"  Restored: {success}/{len(overwritten)}")
+
+        except Exception as exc:
+            _logger.error("Failed to restore %s: %s", uri, exc)
+            failed += 1
+
+    print(f"\nRestore complete: {success} success, {failed} failed")
+    return 0 if failed == 0 else 1
+
+
 # ── candidate staging ─────────────────────────────────────────────────
 
 
@@ -792,6 +890,7 @@ def cmd_stage_candidates(
         return 0
 
     cfg_hash = hash_config(config_path)
+    config = _load_config(config_path)
 
     # load inventory
     inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
@@ -841,9 +940,13 @@ def cmd_stage_candidates(
                 tmp_src = Path(tmp_dir) / "source.tif"
                 tmp_candidate = Path(tmp_dir) / "candidate.tif"
 
-                # download original from recovery originals
-                original_uri = f"{recovery_root}/originals/{key}"
-                src_bytes = _read_gs_bytes(original_uri)
+                # route source: flags from originals, hard-layout from legacy backups
+                if layout_class == LayoutClass.MISSING_OVERVIEW.value:
+                    source_uri = f"{recovery_root}/originals/{key}"
+                else:
+                    legacy_root = config["legacy_recovery_root"]
+                    source_uri = f"{legacy_root}/backups/current/{key}"
+                src_bytes = _read_gs_bytes(source_uri)
                 tmp_src.write_bytes(src_bytes)
 
                 # route to engine
@@ -1277,6 +1380,7 @@ __all__ = [
     "cmd_preflight",
     "cmd_rebaseline",
     "cmd_capture_originals",
+    "cmd_restore_baseline",
     "cmd_stage_candidates",
     "cmd_promote",
     "cmd_verify_recovery",
