@@ -479,72 +479,13 @@ def rewrite_object_server_side(
     }
 
 
-def promote_candidate_to_canonical(
-    uri: str,
-    candidate_uri: str,
-    *,
-    run_id: str,
-    config_hash: str,
-    sequence: int,
-    current_generation: int,
-    current_metageneration: int,
-    metadata_contract: ObjectDescriptor | None = None,
-) -> dict[str, Any]:
-    """Promote a staged candidate to the canonical path.
-
-    Uses generation-pinned server-side rewrite.  Emits
-    ``PROMOTION_INTENT`` before mutation and ``PROMOTED`` on success.
-
-    Returns a dict with ``generation``, ``metageneration``,
-    ``crc32c``, ``size``.
-    """
-    # persist intent
-    intent = make_event(
-        uri=uri,
-        run_id=run_id,
-        sequence=sequence,
-        event_type=EventType.PROMOTION_INTENT,
-        config_hash=config_hash,
-        generation_before=current_generation,
-        metageneration_before=current_metageneration,
-        details={"candidate_uri": candidate_uri},
-    )
-    save_event(run_id, intent)
-
-    # server-side rewrite
-    result = rewrite_object_server_side(
-        source_uri=candidate_uri,
-        dest_uri=uri,
-        source_generation=0,  # candidate is pinned by name only
-        source_metageneration=0,
-        dest_generation=current_generation,
-        dest_metageneration=current_metageneration,
-        dest_metadata=metadata_contract,
-    )
-
-    # persist result
-    promoted = make_event(
-        uri=uri,
-        run_id=run_id,
-        sequence=sequence + 1,
-        event_type=EventType.PROMOTED,
-        config_hash=config_hash,
-        generation_before=current_generation,
-        generation_after=result["generation"],
-        metageneration_before=current_metageneration,
-        metageneration_after=result["metageneration"],
-        crc32c=result["crc32c"],
-        details={"candidate_uri": candidate_uri},
-    )
-    save_event(run_id, promoted)
-
-    return result
 
 
 def rollback_to_payload(
     uri: str,
     backup_uri: str,
     *,
+    recovery_root: str,
     run_id: str,
     config_hash: str,
     sequence: int,
@@ -570,7 +511,7 @@ def rollback_to_payload(
         metageneration_before=current_metageneration,
         details={"backup_uri": backup_uri},
     )
-    save_event(run_id, intent)
+    save_event(recovery_root, intent)
 
     result = rewrite_object_server_side(
         source_uri=backup_uri,
@@ -595,7 +536,7 @@ def rollback_to_payload(
         crc32c=result["crc32c"],
         details={"backup_uri": backup_uri},
     )
-    save_event(run_id, rolled)
+    save_event(recovery_root, rolled)
 
     return result
 
@@ -648,7 +589,6 @@ __all__ = [
     "backup_current_live",
     "restore_soft_deleted_object",
     "rewrite_object_server_side",
-    "promote_candidate_to_canonical",
     "rollback_to_payload",
     "list_soft_deleted_generations",
 ]

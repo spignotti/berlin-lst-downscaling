@@ -674,9 +674,8 @@ def cmd_capture_originals(
             prev_hash = event_content_hash(copied_event)
 
             # ── step 4: reconstruct baseline ──────────────────────────
-            # upload backup bytes with pre-incident metadata contract
-            backup_key = f"backups/current/{key}"
-            backup_uri = f"{recovery_root}/{backup_key}"
+            # use captured original bytes with pre-incident metadata contract
+            original_backup_uri = f"{recovery_root}/originals/{key}"
 
             metadata_contract = ObjectDescriptor(
                 content_type=restored_desc.content_type,
@@ -686,7 +685,7 @@ def cmd_capture_originals(
             )
 
             baseline_result = rewrite_object_server_side(
-                source_uri=backup_uri,
+                source_uri=original_backup_uri,
                 dest_uri=uri,
                 source_generation=0,
                 source_metageneration=0,
@@ -873,14 +872,28 @@ def cmd_stage_candidates(
                 )
                 blob.reload()
 
-                # persist events
+                # persist events (continuing from existing sequence)
+                from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
+                    load_events,
+                )
+                existing_events = load_events(recovery_root, uri)
+                base_seq = (
+                    existing_events[-1].sequence + 1 if existing_events else 0
+                )
+                prev_hash = (
+                    event_content_hash(existing_events[-1])
+                    if existing_events
+                    else ""
+                )
+
                 staged_event = make_event(
                     uri=uri,
                     run_id=run_id,
-                    sequence=0,
+                    sequence=base_seq,
                     event_type=EventType.CANDIDATE_STAGED,
                     config_hash=cfg_hash,
                     operation_id=make_operation_id("stage"),
+                    prev_event_hash=prev_hash,
                     generation_after=blob.generation,
                     crc32c=blob.crc32c,
                     details={
@@ -897,7 +910,7 @@ def cmd_stage_candidates(
                 verified_event = make_event(
                     uri=uri,
                     run_id=run_id,
-                    sequence=1,
+                    sequence=base_seq + 1,
                     event_type=EventType.CANDIDATE_VERIFIED,
                     config_hash=cfg_hash,
                     operation_id=make_operation_id("verify"),
@@ -1018,7 +1031,7 @@ def cmd_promote(
             uri = row["uri"]
             _, key = _parse_gs_uri(uri)
             candidate_uri = f"{recovery_root}/candidates/{key}"
-            backup_uri = f"{recovery_root}/backups/current/{key}"
+            backup_uri = f"{recovery_root}/originals/{key}"
 
             # snapshot current canonical descriptor
             try:
@@ -1119,6 +1132,7 @@ def cmd_promote(
                     rollback_to_payload(
                         uri,
                         backup_uri,
+                        recovery_root=recovery_root,
                         run_id=run_id,
                         config_hash=cfg_hash,
                         sequence=base_seq + 1,
