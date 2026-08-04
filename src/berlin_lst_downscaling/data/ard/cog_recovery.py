@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,7 +28,9 @@ from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
 )
 from berlin_lst_downscaling.data.ard.cog_recovery_state import (
     EventType,
+    LayoutClass,
     ObjectDescriptor,
+    assert_raster_equivalent,
     classify_evidence,
     event_content_hash,
     hash_config,
@@ -755,7 +758,7 @@ def cmd_capture_originals(
     return 0 if failed == 0 else 1
 
 
-# ── candidate staging (stub — requires canary) ────────────────────────
+# ── candidate staging ─────────────────────────────────────────────────
 
 
 def cmd_stage_candidates(
@@ -763,18 +766,193 @@ def cmd_stage_candidates(
     *,
     recovery_root: str,
     run_id: str,
+    cogger_bin: str = "cogger",
     dry_run: bool = True,
 ) -> int:
     """Generate 164 GDAL and 672 Cogger candidates.
 
-    Requires canary report and ``--execute``.
+    Routes assets to GDAL COG (missing-overview flags) or Cogger
+    (hard-layout errors).  Each candidate is strict-validated and
+    semantically compared before staging.
+
+    Requires ``--execute`` to write to recovery bucket.
     """
     if dry_run:
         print("DRY RUN: Candidate staging requires --execute")
         return 0
 
-    print("Candidate staging not yet implemented (requires canary)")
-    return 1
+    cfg_hash = hash_config(config_path)
+
+    # load inventory
+    inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
+    from berlin_lst_downscaling.data.ard.cog_repair import load_table
+    inv_table = load_table(inv_path)
+    rows = inv_table.to_pylist()
+
+    # filter to assets needing repair
+    needs_repair = [
+        r for r in rows
+        if r["layout_class"] in (
+            LayoutClass.HARD_LAYOUT.value,
+            LayoutClass.MISSING_OVERVIEW.value,
+        )
+    ]
+    print(f"Config hash: {cfg_hash}")
+    print(f"Needs repair: {len(needs_repair)}")
+    n_flag = sum(
+        1 for r in needs_repair
+        if r["layout_class"] == LayoutClass.MISSING_OVERVIEW.value
+    )
+    n_hard = sum(
+        1 for r in needs_repair
+        if r["layout_class"] == LayoutClass.HARD_LAYOUT.value
+    )
+    print(f"  Missing overview: {n_flag}")
+    print(f"  Hard layout: {n_hard}")
+
+    # verify Cogger binary
+    import shutil
+    cogger_path = shutil.which(cogger_bin)
+    if cogger_path:
+        print(f"Cogger binary: {cogger_path}")
+    else:
+        print(f"WARNING: Cogger binary not found at '{cogger_bin}'")
+
+    success = 0
+    failed = 0
+
+    for row in needs_repair:
+        uri = row["uri"]
+        layout_class = row["layout_class"]
+        _, key = _parse_gs_uri(uri)
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_src = Path(tmp_dir) / "source.tif"
+                tmp_candidate = Path(tmp_dir) / "candidate.tif"
+
+                # download original from recovery originals
+                original_uri = f"{recovery_root}/originals/{key}"
+                src_bytes = _read_gs_bytes(original_uri)
+                tmp_src.write_bytes(src_bytes)
+
+                # route to engine
+                if layout_class == LayoutClass.MISSING_OVERVIEW.value:
+                    # GDAL COG with NEAREST overviews for flags
+                    _generate_gdal_candidate(tmp_src, tmp_candidate)
+                elif layout_class == LayoutClass.HARD_LAYOUT.value:
+                    # Cogger byte-reshuffle
+                    _generate_cogger_candidate(
+                        tmp_src, tmp_candidate, cogger_bin,
+                    )
+                else:
+                    raise ValueError(f"Unexpected layout class: {layout_class}")
+
+                # strict validate candidate
+                strict_result = validate_strict_cog(str(tmp_candidate))
+                if not strict_result.valid:
+                    all_issues = list(strict_result.errors) + list(strict_result.warnings)
+                    raise ValueError(f"Candidate validation failed: {all_issues}")
+
+                # semantic comparison
+                compare_errors = assert_raster_equivalent(str(tmp_src), tmp_candidate)
+                if compare_errors:
+                    raise ValueError(f"Semantic comparison failed: {compare_errors}")
+
+                # upload candidate create-only
+                candidate_uri = f"{recovery_root}/candidates/{key}"
+                bucket_name, candidate_key = _parse_gs_uri(candidate_uri)
+                client = _gcs_client()
+                bucket = client.bucket(bucket_name)
+                blob = bucket.blob(candidate_key)
+                blob.upload_from_filename(
+                    str(tmp_candidate),
+                    if_generation_match=0,
+                    checksum="crc32c",
+                )
+                blob.reload()
+
+                # persist events
+                staged_event = make_event(
+                    uri=uri,
+                    run_id=run_id,
+                    sequence=0,
+                    event_type=EventType.CANDIDATE_STAGED,
+                    config_hash=cfg_hash,
+                    operation_id=make_operation_id("stage"),
+                    generation_after=blob.generation,
+                    crc32c=blob.crc32c,
+                    details={
+                        "candidate_uri": candidate_uri,
+                        "engine": (
+                            "gdal_cog"
+                            if layout_class == LayoutClass.MISSING_OVERVIEW.value
+                            else "cogger"
+                        ),
+                    },
+                )
+                save_event(recovery_root, staged_event)
+
+                verified_event = make_event(
+                    uri=uri,
+                    run_id=run_id,
+                    sequence=1,
+                    event_type=EventType.CANDIDATE_VERIFIED,
+                    config_hash=cfg_hash,
+                    operation_id=make_operation_id("verify"),
+                    prev_event_hash=event_content_hash(staged_event),
+                    generation_after=blob.generation,
+                    crc32c=blob.crc32c,
+                    descriptor=ObjectDescriptor(
+                        generation=blob.generation or 0,
+                        metageneration=blob.metageneration or 0,
+                        crc32c=blob.crc32c or "",
+                        size=blob.size or 0,
+                        content_type=blob.content_type or "",
+                    ),
+                )
+                save_event(recovery_root, verified_event)
+
+                success += 1
+                if success % 50 == 0:
+                    print(f"  Staged: {success}/{len(needs_repair)}")
+
+        except Exception as exc:
+            failed += 1
+            _logger.error("Failed to stage %s: %s", uri, exc)
+
+    print(f"\nStaging complete: {success} success, {failed} failed")
+    return 0 if failed == 0 else 1
+
+
+def _generate_gdal_candidate(src: Path, dst: Path) -> None:
+    """Generate a GDAL COG candidate from source."""
+    import rasterio.shutil
+
+    rasterio.shutil.copy(
+        str(src),
+        str(dst),
+        driver="COG",
+        overview_resampling="NEAREST",
+        blocksize=512,
+        compress="ZSTD",
+        predictor=1,
+        bigtiff="IF_SAFER",
+    )
+
+
+def _generate_cogger_candidate(src: Path, dst: Path, cogger_bin: str) -> None:
+    """Generate a Cogger candidate from source."""
+    import subprocess
+
+    result = subprocess.run(  # noqa: S603
+        [cogger_bin, "-output", str(dst), str(src)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Cogger failed: {result.stderr}")
 
 
 # ── promotion (stub — requires verified candidates) ───────────────────

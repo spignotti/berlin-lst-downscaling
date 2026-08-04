@@ -99,6 +99,7 @@ def main() -> int:
     p_stage.add_argument("--config", required=True)
     p_stage.add_argument("--recovery-root", required=True)
     p_stage.add_argument("--run-id", required=True)
+    p_stage.add_argument("--cogger-bin", default="cogger")
     p_stage.add_argument("--execute", action="store_true", default=False)
 
     # promote
@@ -160,6 +161,7 @@ def main() -> int:
             args.config,
             recovery_root=args.recovery_root,
             run_id=args.run_id,
+            cogger_bin=args.cogger_bin,
             dry_run=not args.execute,
         ),
         "promote": lambda: cmd_promote(
