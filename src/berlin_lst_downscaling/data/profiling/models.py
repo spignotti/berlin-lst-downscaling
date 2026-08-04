@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from berlin_lst_downscaling.data.ard.contract import BandSpec
+
 
 @dataclass(frozen=True)
 class HistogramSpec:
@@ -44,6 +46,7 @@ class ProfileAsset:
     expected_shape: tuple[int, int] | None = None
     expected_bands: int = 1
     expected_band_specs: tuple[str, ...] = ()
+    expected_band_contracts: tuple[BandSpec, ...] = ()
     expected_histogram_specs: tuple[HistogramSpec | None, ...] = ()
     resolution_m: int | None = None
 
@@ -77,6 +80,45 @@ class BandStatistics:
 
 
 @dataclass
+class ContractCheckResult:
+    """Per-band contract validation outcomes."""
+
+    dtype_mismatches: list[str] = field(default_factory=list)
+    nodata_mismatches: list[str] = field(default_factory=list)
+    band_description_mismatches: list[str] = field(default_factory=list)
+    band_order_mismatches: list[str] = field(default_factory=list)
+    unit_absent: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (
+            self.dtype_mismatches
+            or self.nodata_mismatches
+            or self.band_description_mismatches
+            or self.band_order_mismatches
+        )
+
+
+@dataclass
+class CompletenessResult:
+    """Manifest↔ARD-ledger completeness diff."""
+
+    manifest_key_count: int = 0
+    ledger_key_count: int = 0
+    missing_in_ledger: list[str] = field(default_factory=list)
+    extra_in_ledger: list[str] = field(default_factory=list)
+    duplicate_keys: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (
+            self.missing_in_ledger
+            or self.extra_in_ledger
+            or self.duplicate_keys
+        )
+
+
+@dataclass
 class ProfileRow:
     """Profiling result for one COG asset."""
 
@@ -97,6 +139,9 @@ class ProfileRow:
     provenance_exists: bool = False
     completion_exists: bool = False
 
+    # Contract validation
+    contract_check: ContractCheckResult = field(default_factory=ContractCheckResult)
+
     # Per-band statistics
     band_stats: list[BandStatistics] = field(default_factory=list)
 
@@ -109,5 +154,7 @@ __all__ = [
     "HistogramSpec",
     "ProfileAsset",
     "BandStatistics",
+    "ContractCheckResult",
+    "CompletenessResult",
     "ProfileRow",
 ]

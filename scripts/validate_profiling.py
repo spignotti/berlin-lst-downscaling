@@ -13,7 +13,7 @@ Usage::
     # Validate full run with strict checks
     uv run python scripts/validate_profiling.py \\
         --output-root gs://berlin-lst-data/profiling/wb2c-1 \\
-        --require-clean --expected-assets 1570
+        --require-clean --expected-assets 2079
 """
 
 from __future__ import annotations
@@ -88,12 +88,39 @@ def main() -> int:
     if args.expected_assets is not None and total_assets != args.expected_assets:
         errors.append(f"total_assets: expected {args.expected_assets}, got {total_assets}")
 
+    # Check contract checks
+    contract = summary.get("contract_checks", {})
+    if args.require_clean:
+        for key in ("dtype_mismatches", "nodata_mismatches",
+                     "band_description_mismatches", "band_order_mismatches"):
+            count = contract.get(key, 0)
+            if count > 0:
+                errors.append(f"contract_checks.{key}: {count} mismatches")
+
+    # Check completeness
+    completeness = summary.get("manifest_ledger_completeness", {})
+    if completeness and not completeness.get("ok", True):
+        missing = len(completeness.get("missing_in_ledger", []))
+        extra = len(completeness.get("extra_in_ledger", []))
+        dups = len(completeness.get("duplicate_keys", []))
+        errors.append(
+            f"completeness: {missing} missing, {extra} extra, {dups} duplicates"
+        )
+
     # Print summary
     print(f"Artifact root: {args.output_root}")
     print(f"  Total assets: {total_assets}")
     print(f"  Hard failures: {hard_failures}")
     print(f"  By source: {len(summary.get('by_source', {}))} sources")
     print(f"  By partition: {summary.get('by_partition', {})}")
+    if contract:
+        print(f"  Contract: dtype={contract.get('dtype_mismatches', 0)}, "
+              f"nodata={contract.get('nodata_mismatches', 0)}, "
+              f"desc={contract.get('band_description_mismatches', 0)}")
+    if completeness:
+        print(f"  Completeness: ok={completeness.get('ok', 'n/a')}, "
+              f"manifest={completeness.get('manifest_key_count', 0)}, "
+              f"ledger={completeness.get('ledger_key_count', 0)}")
 
     if errors:
         print("\nValidation FAILED:")
