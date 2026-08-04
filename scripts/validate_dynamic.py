@@ -52,6 +52,15 @@ _ERA5_BAND_UNITS = {
     "tp_48_72h": "mm",
 }
 
+_ERA5_INPUT_VARIABLES = [
+    "2m_temperature",
+    "2m_dewpoint_temperature",
+    "10m_u_component_of_wind",
+    "10m_v_component_of_wind",
+    "surface_solar_radiation_downwards",
+    "total_precipitation",
+]
+
 
 def _read_ledger(output_root: str) -> dict:
     ledger_path = f"{output_root.rstrip('/')}/_state/dynamic/ledger.parquet"
@@ -97,7 +106,7 @@ def _summarise(table) -> dict:
 
 
 def _validate_cog_bands(cog_uri: str) -> list[str]:
-    """Check COG has 8 bands with expected names and float32 dtype."""
+    """Check COG has the published eight-band ERA5 contract."""
     errors = []
     try:
         import rasterio
@@ -107,22 +116,28 @@ def _validate_cog_bands(cog_uri: str) -> list[str]:
                 errors.append(f"band count: expected 8, got {src.count}")
             if src.dtypes[0] != "float32":
                 errors.append(f"dtype: expected float32, got {src.dtypes[0]}")
+            descriptions = list(src.descriptions)
+            if descriptions != _ERA5_BAND_NAMES:
+                errors.append(
+                    f"band names: expected {_ERA5_BAND_NAMES}, got {descriptions}"
+                )
     except Exception as exc:
         errors.append(f"cannot open COG: {exc}")
     return errors
 
 
 def _validate_era5_provenance(prov_uri: str) -> list[str]:
-    """Check ERA5 provenance carries 8-band channel list."""
+    """Check ERA5 provenance carries its published input-variable list."""
     errors = []
     try:
         from berlin_lst_downscaling.data.io.storage import read_bytes
 
         prov = json.loads(read_bytes(prov_uri))
-        channels = prov.get("era5_channels", prov.get("channels", []))
-        if len(channels) != 8:
+        variables = prov.get("source_metadata", {}).get("era5_variables", [])
+        if variables != _ERA5_INPUT_VARIABLES:
             errors.append(
-                f"provenance channel count: expected 8, got {len(channels)}"
+                "provenance era5_variables: "
+                f"expected {_ERA5_INPUT_VARIABLES}, got {variables}"
             )
     except Exception as exc:
         errors.append(f"cannot read provenance: {exc}")
