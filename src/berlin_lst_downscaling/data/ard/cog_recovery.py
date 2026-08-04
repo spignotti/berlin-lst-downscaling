@@ -17,13 +17,22 @@ from pathlib import Path
 from typing import Any
 
 from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
+    copy_object_server_side,
+    restore_soft_deleted_object,
+    rewrite_object_server_side,
+    save_event,
     snapshot_gcs_descriptor,
     snapshot_soft_deleted_descriptor,
+    verify_descriptor,
 )
 from berlin_lst_downscaling.data.ard.cog_recovery_state import (
+    EventType,
     ObjectDescriptor,
     classify_evidence,
+    event_content_hash,
     hash_config,
+    make_event,
+    make_operation_id,
     validate_strict_cog,
 )
 from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
@@ -113,6 +122,15 @@ def _inventory_hash(rows: list[dict[str, Any]]) -> str:
 def _file_hash(path: str | Path) -> str:
     import hashlib
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:16]
+
+
+def _read_gs_bytes(uri: str) -> bytes:
+    """Read full object content from a GCS URI."""
+    bucket_name, key = _parse_gs_uri(uri)
+    client = _gcs_client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(key)
+    return blob.download_as_bytes()
 
 
 def _check_deadline(earliest_hard_delete: str, margin_hours: float = 24.0) -> None:
@@ -511,7 +529,7 @@ def cmd_rebaseline(
     return 0
 
 
-# ── original capture (stub — requires canary) ─────────────────────────
+# ── original capture ──────────────────────────────────────────────────
 
 
 def cmd_capture_originals(
@@ -523,14 +541,218 @@ def cmd_capture_originals(
 ) -> int:
     """Serial per-object original capture saga.
 
-    Requires canary report and ``--execute`` to mutate canonical paths.
+    For each overwritten asset:
+    1. Check deadline runway
+    2. Restore pre-incident generation to canonical path
+    3. Copy restored generation to recovery originals
+    4. Reconstruct baseline from backup bytes + metadata contract
+    5. Verify and persist terminal event
+
+    Requires ``--execute`` to mutate canonical paths.
     """
     if dry_run:
         print("DRY RUN: Original capture requires --execute")
         return 0
 
-    print("Original capture not yet implemented (requires canary)")
-    return 1
+    cfg_hash = hash_config(config_path)
+
+    # load inventory
+    inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
+    from berlin_lst_downscaling.data.ard.cog_repair import load_table
+    inv_table = load_table(inv_path)
+    rows = inv_table.to_pylist()
+
+    # load run manifest for deadline
+    manifest_path = f"{recovery_root}/manifests/{run_id}.json"
+    manifest_bytes = _read_gs_bytes(manifest_path)
+    manifest = json.loads(manifest_bytes)
+    earliest_hd_str = manifest.get("earliest_hard_delete", "")
+
+    # filter to overwritten assets that need capture
+    overwritten = [
+        r for r in rows
+        if r.get("original_generation")
+        and r["original_generation"] != r["current_generation"]
+    ]
+    print(f"Overwritten assets: {len(overwritten)}")
+    print(f"Config hash: {cfg_hash}")
+    print(f"Run ID: {run_id}")
+
+    success = 0
+    failed = 0
+    skipped = 0
+
+    for _i, row in enumerate(overwritten):
+        uri = row["uri"]
+
+        # deadline check before each asset
+        if earliest_hd_str:
+            _check_deadline(earliest_hd_str, margin_hours=1.0)
+
+        seq = 0
+        op_id = make_operation_id("capture")
+        prev_hash = ""
+
+        try:
+            # ── step 1: persist intent ────────────────────────────────
+            intent = make_event(
+                uri=uri,
+                run_id=run_id,
+                sequence=seq,
+                event_type=EventType.ORIGINAL_CAPTURE_INTENT,
+                config_hash=cfg_hash,
+                operation_id=op_id,
+                generation_before=row["current_generation"],
+                metageneration_before=row["current_metageneration"],
+            )
+            save_event(recovery_root, intent)
+            seq += 1
+            prev_hash = event_content_hash(intent)
+
+            # ── step 2: restore pre-incident generation ───────────────
+            restored_desc = restore_soft_deleted_object(
+                uri,
+                soft_deleted_generation=row["original_generation"],
+                current_generation=row["current_generation"],
+                current_metageneration=row["current_metageneration"],
+                restore_token=row.get("restore_token"),
+            )
+            restored_event = make_event(
+                uri=uri,
+                run_id=run_id,
+                sequence=seq,
+                event_type=EventType.ORIGINAL_RESTORED,
+                config_hash=cfg_hash,
+                operation_id=op_id,
+                prev_event_hash=prev_hash,
+                generation_before=row["current_generation"],
+                generation_after=restored_desc.generation,
+                metageneration_before=row["current_metageneration"],
+                metageneration_after=restored_desc.metageneration,
+                crc32c=restored_desc.crc32c,
+                descriptor=restored_desc,
+            )
+            save_event(recovery_root, restored_event)
+            seq += 1
+            prev_hash = event_content_hash(restored_event)
+
+            # verify restored descriptor matches expected
+            if row.get("original_crc32c") and restored_desc.crc32c != row["original_crc32c"]:
+                raise RuntimeError(
+                    f"Restored CRC mismatch: expected {row['original_crc32c']}, "
+                    f"got {restored_desc.crc32c}"
+                )
+
+            # ── step 3: copy restored generation to recovery originals ─
+            _, key = _parse_gs_uri(uri)
+            original_uri = f"{recovery_root}/originals/{key}"
+            copy_result = copy_object_server_side(
+                source_uri=uri,
+                dest_uri=original_uri,
+                source_generation=restored_desc.generation,
+                source_metageneration=restored_desc.metageneration,
+                dest_generation_match=0,
+            )
+            copied_event = make_event(
+                uri=uri,
+                run_id=run_id,
+                sequence=seq,
+                event_type=EventType.ORIGINAL_COPIED,
+                config_hash=cfg_hash,
+                operation_id=op_id,
+                prev_event_hash=prev_hash,
+                generation_after=copy_result["generation"],
+                crc32c=copy_result["crc32c"],
+                details={"original_uri": original_uri},
+            )
+            save_event(recovery_root, copied_event)
+            seq += 1
+            prev_hash = event_content_hash(copied_event)
+
+            # ── step 4: reconstruct baseline ──────────────────────────
+            # upload backup bytes with pre-incident metadata contract
+            backup_key = f"backups/current/{key}"
+            backup_uri = f"{recovery_root}/{backup_key}"
+
+            metadata_contract = ObjectDescriptor(
+                content_type=restored_desc.content_type,
+                content_encoding=restored_desc.content_encoding,
+                cache_control=restored_desc.cache_control,
+                custom_metadata=restored_desc.custom_metadata,
+            )
+
+            baseline_result = rewrite_object_server_side(
+                source_uri=backup_uri,
+                dest_uri=uri,
+                source_generation=0,
+                source_metageneration=0,
+                dest_generation=restored_desc.generation,
+                dest_metageneration=restored_desc.metageneration,
+                dest_metadata=metadata_contract,
+            )
+            baseline_event = make_event(
+                uri=uri,
+                run_id=run_id,
+                sequence=seq,
+                event_type=EventType.BASELINE_RECONSTRUCTED,
+                config_hash=cfg_hash,
+                operation_id=op_id,
+                prev_event_hash=prev_hash,
+                generation_before=restored_desc.generation,
+                generation_after=baseline_result["generation"],
+                metageneration_before=restored_desc.metageneration,
+                metageneration_after=baseline_result["metageneration"],
+                crc32c=baseline_result["crc32c"],
+            )
+            save_event(recovery_root, baseline_event)
+            seq += 1
+            prev_hash = event_content_hash(baseline_event)
+
+            # ── step 5: verify baseline ───────────────────────────────
+            final_desc = snapshot_gcs_descriptor(uri)
+            verify_errors = verify_descriptor(uri, metadata_contract)
+            if verify_errors:
+                raise RuntimeError(f"Baseline metadata mismatch: {verify_errors}")
+
+            verified_event = make_event(
+                uri=uri,
+                run_id=run_id,
+                sequence=seq,
+                event_type=EventType.ORIGINAL_VERIFIED,
+                config_hash=cfg_hash,
+                operation_id=op_id,
+                prev_event_hash=prev_hash,
+                generation_after=final_desc.generation,
+                crc32c=final_desc.crc32c,
+                descriptor=final_desc,
+            )
+            save_event(recovery_root, verified_event)
+
+            success += 1
+            if success % 10 == 0:
+                print(f"  Captured: {success}/{len(overwritten)}")
+
+        except Exception as exc:
+            failed += 1
+            _logger.error("Failed to capture %s: %s", uri, exc)
+            # persist blocked event
+            try:
+                blocked = make_event(
+                    uri=uri,
+                    run_id=run_id,
+                    sequence=seq,
+                    event_type=EventType.BLOCKED,
+                    config_hash=cfg_hash,
+                    operation_id=op_id,
+                    prev_event_hash=prev_hash if seq > 0 else "",
+                    details={"error": str(exc)},
+                )
+                save_event(recovery_root, blocked)
+            except Exception:
+                _logger.error("Failed to persist blocked event for %s", uri)
+
+    print(f"\nCapture complete: {success} success, {failed} failed, {skipped} skipped")
+    return 0 if failed == 0 else 1
 
 
 # ── candidate staging (stub — requires canary) ────────────────────────
