@@ -18,9 +18,9 @@ from typing import Any
 
 from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
     snapshot_gcs_descriptor,
+    snapshot_soft_deleted_descriptor,
 )
 from berlin_lst_downscaling.data.ard.cog_recovery_state import (
-    EvidenceClass,
     ObjectDescriptor,
     classify_evidence,
     hash_config,
@@ -262,7 +262,71 @@ def cmd_rebaseline(
 
     inv_hash = _inventory_hash(rows)
 
-    # classify each asset
+    # ── Soft Delete catalog (must be built before classification) ──────
+    print("Cataloging Soft Delete generations...")
+    main_bucket_name = config["canonical_roots"]["ard_full"].split("/")[2]
+
+    from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
+        list_soft_deleted_generations,
+    )
+
+    first_overwrite = datetime.fromisoformat(
+        config["incident"]["first_overwrite"].replace("Z", "+00:00")
+    )
+    last_overwrite = datetime.fromisoformat(
+        config["incident"]["last_overwrite"].replace("Z", "+00:00")
+    )
+    # inclusive upper bound: last_overwrite + 1s
+    time_hi = last_overwrite.replace(second=last_overwrite.second + 1)
+
+    all_soft_deleted = list_soft_deleted_generations(
+        main_bucket_name,
+        time_lo=first_overwrite,
+        time_hi=time_hi,
+    )
+
+    canonical_uris = {r["uri"] for r in rows}
+    canonical_sd = [
+        x for x in all_soft_deleted
+        if f"gs://{main_bucket_name}/{x['name']}" in canonical_uris
+    ]
+
+    print(f"Soft Delete window: {len(all_soft_deleted)} total")
+    print(f"  Canonical: {len(canonical_sd)}")
+    print(f"  Non-canonical: {len(all_soft_deleted) - len(canonical_sd)}")
+
+    expected_sd = 1407
+    if len(canonical_sd) != expected_sd:
+        print(f"  FAIL: Expected {expected_sd} canonical Soft Delete generations")
+        return 1
+
+    # earliest hard delete + runway check
+    hard_delete_times = [
+        datetime.fromisoformat(x["hard_delete_time"])
+        for x in canonical_sd
+        if x.get("hard_delete_time")
+    ]
+    earliest_hd = min(hard_delete_times) if hard_delete_times else None
+    if earliest_hd:
+        remaining_h = (earliest_hd - datetime.now(UTC)).total_seconds() / 3600
+        print(f"  Earliest hard delete: {earliest_hd.isoformat()}")
+        print(f"  Remaining: {remaining_h:.1f}h")
+        # 3× estimated runtime (1s/object) + 24h safety margin
+        est_capture_hours = expected_sd / 3600
+        required_margin = 3 * est_capture_hours + 24
+        if remaining_h < required_margin:
+            print(
+                f"  FAIL: Remaining {remaining_h:.1f}h < required "
+                f"{required_margin:.1f}h (3×{est_capture_hours:.1f}h + 24h)"
+            )
+            return 1
+
+    # index by canonical key for O(1) lookup during classification
+    sd_by_key: dict[str, dict[str, Any]] = {}
+    for x in canonical_sd:
+        sd_by_key[x["name"]] = x
+
+    # ── classify each asset ───────────────────────────────────────────
     print("Classifying assets...")
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -280,6 +344,8 @@ def cmd_rebaseline(
 
     def _classify_one(row: dict[str, Any]) -> dict[str, Any]:
         uri = row["uri"]
+        _, key = _parse_gs_uri(uri)
+
         # snapshot current descriptor
         try:
             descriptor = snapshot_gcs_descriptor(uri)
@@ -289,9 +355,10 @@ def cmd_rebaseline(
         # strict validation
         strict_result = validate_strict_cog(uri)
 
-        # evidence classification
+        # evidence classification using Soft Delete catalog
+        sd_entry = sd_by_key.get(key)
+        was_overwritten = sd_entry is not None
         has_legacy = uri in legacy_audit
-        was_overwritten = False  # determined by Soft Delete catalog later
         legacy_crc_match = None
         legacy_gen_match = None
 
@@ -307,6 +374,33 @@ def cmd_rebaseline(
             legacy_generation_match=legacy_gen_match,
         )
 
+        # populate Soft Delete metadata if overwritten
+        original_gen = None
+        original_meta = None
+        original_crc = None
+        original_size = None
+        original_desc_json = None
+        hard_delete_time = None
+        restore_token = None
+
+        if sd_entry:
+            original_gen = sd_entry["generation"]
+            hard_delete_time = sd_entry.get("hard_delete_time")
+            restore_token = sd_entry.get("restore_token")
+            # snapshot original descriptor from Soft Delete catalog
+            try:
+                orig_desc = snapshot_soft_deleted_descriptor(
+                    uri,
+                    generation=original_gen,
+                    restore_token=restore_token,
+                )
+                original_meta = orig_desc.metageneration
+                original_crc = orig_desc.crc32c
+                original_size = orig_desc.size
+                original_desc_json = json.dumps(orig_desc.to_dict())
+            except FileNotFoundError:
+                pass  # generation may have expired
+
         return {
             "uri": uri,
             "asset_kind": row["asset_kind"],
@@ -320,13 +414,13 @@ def cmd_rebaseline(
             "current_content_type": descriptor.content_type,
             "current_metadata_json": json.dumps(descriptor.custom_metadata),
             "current_descriptor_json": json.dumps(descriptor.to_dict()),
-            "original_generation": None,
-            "original_metageneration": None,
-            "original_crc32c": None,
-            "original_size": None,
-            "original_descriptor_json": None,
-            "hard_delete_time": None,
-            "restore_token": None,
+            "original_generation": original_gen,
+            "original_metageneration": original_meta,
+            "original_crc32c": original_crc,
+            "original_size": original_size,
+            "original_descriptor_json": original_desc_json,
+            "hard_delete_time": hard_delete_time,
+            "restore_token": restore_token,
             "layout_signature": strict_result.layout_signature,
             "layout_class": strict_result.layout_class,
             "evidence_class": evidence_class,
@@ -340,8 +434,7 @@ def cmd_rebaseline(
     with ThreadPoolExecutor(max_workers=4) as ex:
         futures = {ex.submit(_classify_one, row): row for row in rows}
         for future in as_completed(futures):
-            result = future.result()
-            classification_results.append(result)
+            classification_results.append(future.result())
 
     # layout/evidence summary
     from collections import Counter
@@ -363,83 +456,6 @@ def cmd_rebaseline(
     if dict(layout_counts) != expected_layouts:
         print(f"  FAIL: Expected layouts {expected_layouts}")
         return 1
-
-    # Soft Delete catalog
-    print("\nCataloging Soft Delete generations...")
-    main_bucket_name = config["canonical_roots"]["ard_full"].split("/")[2]
-    canonical_prefixes = set()
-    for root_key in config["canonical_roots"]:
-        root_uri = config["canonical_roots"][root_key]
-        _, prefix = _parse_gs_uri(root_uri)
-        canonical_prefixes.add(prefix.rstrip("/") + "/")
-
-    from berlin_lst_downscaling.data.ard.cog_recovery_gcs import (
-        list_soft_deleted_generations,
-    )
-
-    first_overwrite = datetime.fromisoformat(
-        config["incident"]["first_overwrite"].replace("Z", "+00:00")
-    )
-    last_overwrite = datetime.fromisoformat(
-        config["incident"]["last_overwrite"].replace("Z", "+00:00")
-    )
-    # inclusive upper bound: last_overwrite + 1s
-    time_hi = last_overwrite.replace(second=last_overwrite.second + 1)
-
-    all_soft_deleted = list_soft_deleted_generations(
-        main_bucket_name,
-        time_lo=first_overwrite,
-        time_hi=time_hi,
-    )
-
-    # filter to canonical objects only
-    canonical_uris = {r["uri"] for r in rows}
-    canonical_sd = [
-        x for x in all_soft_deleted
-        if f"gs://{main_bucket_name}/{x['name']}" in canonical_uris
-    ]
-
-    print(f"Soft Delete window: {len(all_soft_deleted)} total")
-    print(f"  Canonical: {len(canonical_sd)}")
-    print(f"  Non-canonical: {len(all_soft_deleted) - len(canonical_sd)}")
-
-    expected_sd = 1407
-    if len(canonical_sd) != expected_sd:
-        print(f"  FAIL: Expected {expected_sd} canonical Soft Delete generations")
-        return 1
-
-    # earliest hard delete
-    hard_delete_times = [
-        datetime.fromisoformat(x["hard_delete_time"])
-        for x in canonical_sd
-        if x.get("hard_delete_time")
-    ]
-    earliest_hd = min(hard_delete_times) if hard_delete_times else None
-    if earliest_hd:
-        print(f"  Earliest hard delete: {earliest_hd.isoformat()}")
-        remaining = (earliest_hd - datetime.now(UTC)).total_seconds() / 3600
-        print(f"  Remaining: {remaining:.1f}h")
-
-    # match soft-deleted generations to inventory
-    sd_by_name: dict[str, list[dict[str, Any]]] = {}
-    for x in canonical_sd:
-        sd_by_name.setdefault(x["name"], []).append(x)
-
-    for result in classification_results:
-        bucket_name, key = _parse_gs_uri(result["uri"])
-        sd_list = sd_by_name.get(key, [])
-        if sd_list:
-            sd = sd_list[0]  # should be exactly one per canonical name
-            result["original_generation"] = sd["generation"]
-            result["hard_delete_time"] = sd.get("hard_delete_time")
-            result["restore_token"] = sd.get("restore_token")
-            # update evidence class
-            result["evidence_class"] = (
-                EvidenceClass.UNAUDITED_OVERWRITE.value
-                if result["evidence_class"] == EvidenceClass.UNTOUCHED.value
-                and sd["generation"] != result["current_generation"]
-                else result["evidence_class"]
-            )
 
     # save inventory
     import pyarrow as pa
