@@ -828,12 +828,23 @@ def cmd_restore_baseline(
             legacy_backup_uri = f"{legacy_root}/backups/current/{key}"
             backup_desc = snapshot_gcs_descriptor(legacy_backup_uri)
 
-            # frozen metadata contract from snapshot
-            frozen_desc = ObjectDescriptor(
-                content_type=row.get("current_content_type", ""),
-                custom_metadata=json.loads(row["current_metadata_json"])
-                if row.get("current_metadata_json")
-                else {},
+            # metadata contract: use backup's content_type and custom_metadata
+            # but the snapshot's content_encoding/cache_control
+            frozen_desc = ObjectDescriptor.from_dict(
+                json.loads(row["current_descriptor_json"])
+                if row.get("current_descriptor_json")
+                else {}
+            )
+            # override CRC32C/size to match the legacy backup payload
+            frozen_desc_for_rewrite = ObjectDescriptor(
+                generation=frozen_desc.generation,
+                metageneration=frozen_desc.metageneration,
+                size=backup_desc.size,
+                crc32c=backup_desc.crc32c,
+                content_type=frozen_desc.content_type or backup_desc.content_type,
+                content_encoding=frozen_desc.content_encoding or backup_desc.content_encoding,
+                cache_control=frozen_desc.cache_control or backup_desc.cache_control,
+                custom_metadata=frozen_desc.custom_metadata or backup_desc.custom_metadata,
             )
 
             # guarded rewrite: legacy backup → canonical
@@ -844,11 +855,11 @@ def cmd_restore_baseline(
                 source_metageneration=backup_desc.metageneration,
                 dest_generation=current_desc.generation,
                 dest_metageneration=current_desc.metageneration,
-                dest_metadata=frozen_desc,
+                dest_metadata=frozen_desc_for_rewrite,
             )
 
-            # verify restored state
-            verify_errors = verify_descriptor(uri, frozen_desc)
+            # verify restored state matches legacy backup payload
+            verify_errors = verify_descriptor(uri, frozen_desc_for_rewrite)
             if verify_errors:
                 _logger.error("Verify failed for %s: %s", uri, verify_errors)
                 failed += 1
