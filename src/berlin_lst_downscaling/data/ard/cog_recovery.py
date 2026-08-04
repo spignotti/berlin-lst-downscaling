@@ -1167,6 +1167,18 @@ def cmd_promote(
                 _logger.error("Canonical object not found: %s", uri)
                 return 1
 
+            # snapshot candidate descriptor
+            try:
+                candidate_desc = snapshot_gcs_descriptor(candidate_uri)
+            except FileNotFoundError:
+                _logger.error("Candidate not found: %s", candidate_uri)
+                return 1
+
+            # skip if already promoted (canonical CRC matches candidate)
+            if current_desc.crc32c == candidate_desc.crc32c:
+                promoted += 1
+                continue
+
             # load events to get sequence offset
             from berlin_lst_downscaling.data.ard.cog_recovery_gcs import load_events
             events = load_events(recovery_root, uri)
@@ -1198,7 +1210,6 @@ def cmd_promote(
                 save_event(recovery_root, intent)
 
                 # guarded rewrite: candidate → canonical
-                candidate_desc = snapshot_gcs_descriptor(candidate_uri)
                 result = rewrite_object_server_side(
                     source_uri=candidate_uri,
                     dest_uri=uri,
@@ -1209,12 +1220,20 @@ def cmd_promote(
                     dest_metadata=metadata_contract,
                 )
 
-                # independent verification
+                # independent verification — check metadata contract only
+                # (CRC32C/size match is ensured by the guarded rewrite)
                 verify_desc = snapshot_gcs_descriptor(uri)
-                verify_errors = verify_descriptor(uri, metadata_contract)
-                if verify_errors:
+                meta_errors: list[str] = []
+                if verify_desc.content_type != metadata_contract.content_type:
+                    meta_errors.append(
+                        f"content_type: {verify_desc.content_type!r} vs "
+                        f"{metadata_contract.content_type!r}"
+                    )
+                if verify_desc.custom_metadata != metadata_contract.custom_metadata:
+                    meta_errors.append("custom_metadata mismatch")
+                if meta_errors:
                     raise RuntimeError(
-                        f"Post-promotion verification failed: {verify_errors}"
+                        f"Post-promotion metadata mismatch: {meta_errors}"
                     )
 
                 # terminal event
@@ -1255,8 +1274,9 @@ def cmd_promote(
 
             except Exception as exc:
                 _logger.error("Promotion failed for %s: %s", uri, exc)
-                # rollback
+                # rollback — re-read current generation (may have changed)
                 try:
+                    rollback_desc = snapshot_gcs_descriptor(uri)
                     rollback_to_payload(
                         uri,
                         backup_uri,
@@ -1264,8 +1284,8 @@ def cmd_promote(
                         run_id=run_id,
                         config_hash=cfg_hash,
                         sequence=base_seq + 1,
-                        current_generation=current_desc.generation,
-                        current_metageneration=current_desc.metageneration,
+                        current_generation=rollback_desc.generation,
+                        current_metageneration=rollback_desc.metageneration,
                         metadata_contract=metadata_contract,
                     )
                     rolled_back += 1
