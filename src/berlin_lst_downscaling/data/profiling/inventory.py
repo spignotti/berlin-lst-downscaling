@@ -14,13 +14,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
-from berlin_lst_downscaling.data.ard.contract import BandSpec, contract_for_source
+from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.profiling.contracts import get_histogram_spec
-from berlin_lst_downscaling.data.profiling.models import (
-    CompletenessResult,
-    HistogramSpec,
-    ProfileAsset,
-)
+from berlin_lst_downscaling.data.profiling.models import HistogramSpec, ProfileAsset
 from berlin_lst_downscaling.data.selection.validate import load_bundle
 
 _logger = logging.getLogger(__name__)
@@ -144,22 +140,12 @@ def build_ard_assets(
                 expected_shape=(grid.shape.x, grid.shape.y),
                 expected_bands=len(contract.output_bands),
                 expected_band_specs=band_specs,
-                expected_band_contracts=contract.output_bands,
                 expected_histogram_specs=histogram_specs,
                 resolution_m=_SOURCE_RESOLUTION[source],
             )
         )
 
     return assets
-
-
-# Flag band contract (separate uint8 COG, 255=nodata)
-_FLAG_BAND = BandSpec(
-    name="flag",
-    dtype="uint8",
-    nodata=255,
-    description="Quality flag bitmask",
-)
 
 
 def build_ard_flag_assets(
@@ -195,7 +181,6 @@ def build_ard_flag_assets(
                 expected_shape=(grid.shape.x, grid.shape.y),
                 expected_bands=1,
                 expected_band_specs=("flag",),
-                expected_band_contracts=(_FLAG_BAND,),
                 resolution_m=_SOURCE_RESOLUTION.get(source, 10),
             )
         )
@@ -254,7 +239,6 @@ def build_static_assets(
                     expected_shape=(grid.shape.x, grid.shape.y),
                     expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
-                    expected_band_contracts=contract.output_bands,
                     expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
@@ -300,7 +284,6 @@ def build_static_assets(
                     expected_shape=(grid.shape.x, grid.shape.y),
                     expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
-                    expected_band_contracts=contract.output_bands,
                     expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
@@ -441,7 +424,6 @@ def build_dynamic_assets(
                     expected_shape=(grid.shape.x, grid.shape.y),
                     expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
-                    expected_band_contracts=contract.output_bands,
                     expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
@@ -508,52 +490,6 @@ def select_assets(
     return selected
 
 
-def check_manifest_ledger_completeness(
-    manifest_uri: str = _MANIFEST_URI,
-    ledger_uri: str = _ARD_LEDGER,
-) -> CompletenessResult:
-    """Check manifest↔ARD-ledger completeness.
-
-    Returns a CompletenessResult with missing/extra/duplicate keys.
-    """
-    bundle, _ = load_bundle(manifest_uri, require_item_href=False)
-    manifest = bundle.manifest_table
-
-    manifest_keys: list[str] = []
-    for i in range(manifest.num_rows):
-        row = manifest.slice(i, 1).to_pydict()
-        scene_id = row["scene_id"][0]
-        source = row["source"][0]
-        manifest_keys.append(f"{scene_id}|{source}")
-
-    ledger = _read_parquet_table(ledger_uri)
-    ledger_keys: list[str] = []
-    for i in range(ledger.num_rows):
-        row = ledger.slice(i, 1).to_pydict()
-        scene_id = row["scene_id"][0]
-        source = row["source"][0]
-        ledger_keys.append(f"{scene_id}|{source}")
-
-    manifest_set = set(manifest_keys)
-    ledger_set = set(ledger_keys)
-
-    # Detect duplicates
-    seen: set[str] = set()
-    duplicates: list[str] = []
-    for k in manifest_keys:
-        if k in seen:
-            duplicates.append(k)
-        seen.add(k)
-
-    return CompletenessResult(
-        manifest_key_count=len(manifest_keys),
-        ledger_key_count=len(ledger_keys),
-        missing_in_ledger=sorted(manifest_set - ledger_set),
-        extra_in_ledger=sorted(ledger_set - manifest_set),
-        duplicate_keys=sorted(set(duplicates)),
-    )
-
-
 def _histogram_spec_for_band(
     band_name: str,
 ) -> HistogramSpec | None:
@@ -567,5 +503,4 @@ __all__ = [
     "build_dynamic_assets",
     "build_all_assets",
     "select_assets",
-    "check_manifest_ledger_completeness",
 ]

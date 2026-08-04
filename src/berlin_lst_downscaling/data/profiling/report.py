@@ -16,7 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.io.storage import atomic_write
-from berlin_lst_downscaling.data.profiling.models import CompletenessResult, ProfileRow
+from berlin_lst_downscaling.data.profiling.models import ProfileRow
 from berlin_lst_downscaling.data.profiling.paths import (
     profiles_csv_path,
     profiles_parquet_path,
@@ -113,35 +113,6 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
         cog_valid = sum(1 for r in group_rows if r.cog_valid)
 
         for band_name, band_stats_list in band_groups.items():
-            # Weighted aggregation
-            total_valid = sum(s.valid_count for s in band_stats_list)
-            total_missing = sum(s.missing_count for s in band_stats_list)
-            weighted_mean = float("nan")
-            weighted_std = float("nan")
-            if total_valid > 0:
-                weighted_sum = sum(
-                    s.mean_value * s.valid_count
-                    for s in band_stats_list
-                    if s.valid_count > 0 and not (s.mean_value != s.mean_value)  # not NaN
-                )
-                weighted_sum_sq = sum(
-                    (s.std_value**2 + s.mean_value**2) * s.valid_count
-                    for s in band_stats_list
-                    if s.valid_count > 0 and not (s.mean_value != s.mean_value)
-                )
-                weighted_mean = weighted_sum / total_valid
-                variance = (weighted_sum_sq / total_valid) - weighted_mean**2
-                weighted_std = max(0.0, variance) ** 0.5
-
-            # Combined histogram
-            combined_bins = band_stats_list[0].histogram_bins or ()
-            combined_counts: tuple[int, ...] = ()
-            if combined_bins and band_stats_list[0].histogram_counts:
-                combined_counts = tuple(
-                    sum(s.histogram_counts[j] for s in band_stats_list if s.histogram_counts)
-                    for j in range(len(combined_bins) - 1)
-                )
-
             agg_record = {
                 "scope": "aggregate",
                 "item_id": "",
@@ -164,9 +135,12 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
                 "total_assets": total_assets,
                 "hard_failures": hard_failures,
                 # Aggregate metrics
-                "valid_count": total_valid,
-                "missing_count": total_missing,
-                "missing_rate": total_missing / max(1, total_valid + total_missing),
+                "valid_count": sum(s.valid_count for s in band_stats_list),
+                "missing_count": sum(s.missing_count for s in band_stats_list),
+                "missing_rate": (
+                    sum(s.missing_count for s in band_stats_list)
+                    / max(1, sum(s.valid_count + s.missing_count for s in band_stats_list))
+                ),
                 "min_value": min(
                     (s.min_value for s in band_stats_list if s.valid_count > 0),
                     default=float("nan"),
@@ -175,27 +149,26 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
                     (s.max_value for s in band_stats_list if s.valid_count > 0),
                     default=float("nan"),
                 ),
-                "mean_value": weighted_mean,
-                "std_value": weighted_std,
-                "p1": float("nan"),  # histogram-CDF estimates only per-asset
+                "mean_value": float("nan"),  # Cannot aggregate without weights
+                "std_value": float("nan"),
+                "p1": float("nan"),
                 "p5": float("nan"),
                 "p25": float("nan"),
                 "p50": float("nan"),
                 "p75": float("nan"),
                 "p95": float("nan"),
                 "p99": float("nan"),
-                "histogram_bins": combined_bins and json.dumps(list(combined_bins)),
-                "histogram_counts": combined_counts and json.dumps(list(combined_counts)),
+                "histogram_bins": band_stats_list[0].histogram_bins
+                and json.dumps(list(band_stats_list[0].histogram_bins)),
+                "histogram_counts": band_stats_list[0].histogram_counts
+                and json.dumps(list(band_stats_list[0].histogram_counts)),
             }
             agg_records.append(agg_record)
 
     return pd.DataFrame(agg_records) if agg_records else pd.DataFrame()
 
 
-def aggregate_summary(
-    rows: list[ProfileRow],
-    completeness: CompletenessResult | None = None,
-) -> dict[str, Any]:
+def aggregate_summary(rows: list[ProfileRow]) -> dict[str, Any]:
     """Aggregate profile rows into summary statistics."""
     summary: dict[str, Any] = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -213,35 +186,7 @@ def aggregate_summary(
             "provenance_exists": sum(1 for r in rows if r.provenance_exists),
             "completion_exists": sum(1 for r in rows if r.completion_exists),
         },
-        "contract_checks": {
-            "dtype_mismatches": sum(
-                len(r.contract_check.dtype_mismatches) for r in rows
-            ),
-            "nodata_mismatches": sum(
-                len(r.contract_check.nodata_mismatches) for r in rows
-            ),
-            "band_description_mismatches": sum(
-                len(r.contract_check.band_description_mismatches) for r in rows
-            ),
-            "band_order_mismatches": sum(
-                len(r.contract_check.band_order_mismatches) for r in rows
-            ),
-            "unit_limitations_documented": sum(
-                len(r.contract_check.unit_absent) for r in rows
-            ),
-        },
     }
-
-    # Completeness result
-    if completeness is not None:
-        summary["manifest_ledger_completeness"] = {
-            "manifest_key_count": completeness.manifest_key_count,
-            "ledger_key_count": completeness.ledger_key_count,
-            "missing_in_ledger": completeness.missing_in_ledger[:10],
-            "extra_in_ledger": completeness.extra_in_ledger[:10],
-            "duplicate_keys": completeness.duplicate_keys[:10],
-            "ok": completeness.ok,
-        }
 
     # Aggregate by source
     for row in rows:
@@ -300,11 +245,10 @@ def aggregate_summary(
 def emit_artifacts(
     rows: list[ProfileRow],
     output_root: str,
-    completeness: CompletenessResult | None = None,
 ) -> None:
     """Emit the fixed artifact bundle."""
     df = profiles_to_long_dataframe(rows)
-    summary = aggregate_summary(rows, completeness=completeness)
+    summary = aggregate_summary(rows)
 
     # Write profiles.parquet
     table = pa.Table.from_pandas(df)

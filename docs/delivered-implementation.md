@@ -176,8 +176,8 @@ descriptive statistics, and emits a fixed artifact bundle.
 # Full profiling on VM
 uv run python scripts/run_profiling.py --config-name full
 
-# GCS smoke profiling (bounded subset)
-uv run python scripts/run_profiling.py --config-name smoke_gcs
+# Smoke profiling locally (bounded subset)
+uv run python scripts/run_profiling.py --config-name smoke
 
 # Override output root
 uv run python scripts/run_profiling.py --config-name full \
