@@ -121,6 +121,12 @@ def main() -> int:
     recovery_root = args.recovery_root
     run_id = args.run_id
 
+    # load config for legacy root
+    import yaml
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    legacy_root = config["legacy_recovery_root"]
+
     print(f"Config hash: {cfg_hash}")
     print(f"Run ID: {run_id}")
 
@@ -145,13 +151,17 @@ def main() -> int:
         futures = {}
         for row in has_candidate:
             _, key = _parse_gs_uri(row["uri"])
-            original_uri = f"{recovery_root}/originals/{key}"
+            # route source: flags from originals, hard-layout from legacy backups
+            if row["layout_class"] == "missing_overview":
+                source_uri = f"{recovery_root}/originals/{key}"
+            else:
+                source_uri = f"{legacy_root}/backups/current/{key}"
             candidate_uri = f"{recovery_root}/candidates/{key}"
             future = ex.submit(
                 _validate_one,
                 row["uri"],
                 recovery_root,
-                original_uri=original_uri,
+                original_uri=source_uri,
                 candidate_uri=candidate_uri,
             )
             futures[future] = row
