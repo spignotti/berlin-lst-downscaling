@@ -7,264 +7,151 @@
 **Affected assets:** 2,079 canonical COGs
 **Root cause:** COG repair process without fail-closed validation
 
-### Timeline
-
-| Time (UTC) | Event |
-|------------|-------|
-| 14:19:03 | First overwrite — 464 uploads without audit |
-| 14:42:42 | Second phase — 638 uploads with audit |
-| 16:03:16 | Third phase — 305 uploads, interrupted |
-| 16:35:43 | Last overwrite |
-| 17:40:16 | VM stopped |
-
 ### Impact
 
 - **1,243** assets are strict-valid (zero errors, zero warnings)
 - **164** assets have missing-overview warning only (flag COGs)
 - **672** assets have hard IFD/offset layout errors
-- **1,407** assets were overwritten; only **638** have durable audit
-- **769** assets lack post-upload verification evidence
+- **1,407** assets were overwritten; **672** untouched hard-layout failures
 
-## Recovery Rules
+## Recovery Strategy
 
-**Absolute rule — no workarounds:**
+```text
+1,243 strict-clean  → untouched (already correct)
+  164 flag COGs     → GDAL COG from captured originals
+  672 hard-layout   → Cogger from legacy payload backups
+```
 
-- Warnings are failures. No suppression, `--force`, fallback engine, skipped cohort, inferred original generation, best-effort continuation, or retry after a generation conflict.
-- Every mutation requires:
-  - Generation guard
-  - Recoverable original
-  - Post-write verification
-  - Immutable event record
+Source sets:
+- **164 GDAL candidates:** from captured pre-incident originals
+- **672 Cogger candidates:** from verified legacy payload backups
+- **Legacy candidates (164):** explicitly forbidden, never adopted
 
 ## Prerequisites
 
-1. **GCS access:** Service account with `storage.objectAdmin` on both main and recovery buckets
-2. **Recovery bucket:** `gs://berlin-lst-data-recovery` in same region (`europe-west3`)
-3. **Cogger binary:** verified against official `v0.1.1` Linux AMD64 ZIP hash
-4. **VM:** `berlin-lst-vm` started and accessible
+1. VM running, code at exact committed SHA
+2. Cogger v0.1.1 installed at `/workspace/tools/cogger-v0.1.1/cogger` with ZIP SHA `79f6e988…`
+3. Recovery bucket `gs://berlin-lst-data-recovery` accessible
+4. Legacy recovery root: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03`
 
-## Recovery Procedure
+## Execution
 
-### Phase 1: Preflight
-
-Verify bucket policies, IAM, and inventory key set.
+### Step 0: Deploy and verify
 
 ```bash
-# Start VM
-.opencode/skills/google-access/scripts/start-vm.sh
+# On local machine — deploy exact commit to VM
+S=.opencode/skills/google-access/scripts
+COMMIT=$(git rev-parse HEAD)
+"$S/start-vm.sh"
+"$S/ssh-vm.sh" -- "cd /workspace/app && git fetch origin && git checkout $COMMIT && uv sync --frozen && uv run nox"
 
-# SSH to VM
-.opencode/skills/google-access/scripts/ssh-vm.sh
-
-# Run preflight
-cd /workspace/app
-uv run python scripts/repair_cog_layout.py preflight \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation
+# Verify Cogger
+"$S/ssh-vm.sh" -- "sha256sum /workspace/tools/cogger-v0.1.1/cogger && /workspace/tools/cogger-v0.1.1/cogger -h"
 ```
 
-**Expected output:**
-- Config hash recorded
-- Main bucket: versioning disabled, 7-day soft delete
-- Recovery bucket: accessible
-- Inventory count: 2,079
-- Soft delete deadline: remaining hours > 0
-
-**STOP conditions:**
-- Count mismatch
-- Soft delete deadline passed
-- Recovery bucket not accessible
-
-### Phase 2: Rebaseline
-
-Build immutable baseline: inventory, Soft Delete catalog, and run manifest.
+### Step 1: Preflight
 
 ```bash
-uv run python scripts/repair_cog_layout.py rebaseline \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
-    --run-id <run-id>
+S=.opencode/skills/google-access/scripts
+CONFIG=configs/cog_repair/remediation.yaml
+ROOT=gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation
+RUN_ID="cog-recovery-$(date -u +%Y%m%dT%H%M%SZ)"
+
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/repair_cog_layout.py preflight \
+    --config $CONFIG --recovery-root $ROOT"
 ```
 
-**Expected output:**
-- Layout classes: strict_clean=1243, missing_overview=164, hard_layout=672
-- Evidence classes: audited_match=638, unaudited_overwrite=769, untouched=672
-- Soft Delete catalog: 1,407 canonical generations
-- Deadline runway: 3× runtime + 24h margin
-- Run manifest persisted
+**Gate:** config hash, inventory 2,079, deadline > 0.
 
-**STOP conditions:**
-- Layout count mismatch
-- Soft Delete count mismatch
-- Insufficient deadline runway
-
-### Phase 3: Canary
-
-Prove GCS transaction semantics on isolated scratch paths.
+### Step 2: Canary
 
 ```bash
-uv run python scripts/smoke_cog_recovery.py \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-canary
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/smoke_cog_recovery.py \
+    --config $CONFIG --recovery-root ${ROOT}-canary"
 ```
 
-**Expected output:**
-- All tests pass (basic copy, soft delete restore, rewrite with metadata, event persistence)
-- Canary report persisted
+**Gate:** all 4 test suites pass.
 
-**STOP conditions:**
-- Any test failure
-
-### Phase 4: Capture Originals
-
-Preserve all 1,407 pre-incident generations before hard-delete deadline.
+### Step 3: Rebaseline
 
 ```bash
-uv run python scripts/repair_cog_layout.py capture-originals \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
-    --run-id <run-id> \
-    --execute
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/repair_cog_layout.py rebaseline \
+    --config $CONFIG --recovery-root $ROOT --run-id $RUN_ID"
 ```
 
-**Expected output:**
-- 1,407 originals captured
-- All canonical objects restored to baseline
-- Immutable events for each capture
+**Gate:** layouts 1243/164/672, Soft Delete 1407, deadline runway OK.
 
-**STOP conditions:**
-- Any capture failure
-- Deadline exhaustion
-- Metadata mismatch
-
-### Phase 5: Stage Candidates
-
-Generate 164 GDAL and 672 Cogger candidates.
+### Step 4: Capture originals
 
 ```bash
-uv run python scripts/repair_cog_layout.py stage \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
-    --run-id <run-id> \
-    --cogger-bin /path/to/cogger \
-    --execute
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/repair_cog_layout.py capture-originals \
+    --config $CONFIG --recovery-root $ROOT --run-id $RUN_ID --execute"
 ```
 
-**Expected output:**
-- 164 GDAL COG candidates (missing-overview flags)
-- 672 Cogger candidates (hard-layout errors)
-- All candidates strict-clean and semantically equivalent
+This step for each of 1,407 overwritten assets:
+1. Restores pre-incident original to canonical path
+2. Copies restored original to `originals/` in recovery root
+3. Rewrites canonical from legacy backup with frozen metadata
+4. Verifies and records events
 
-**STOP conditions:**
-- Candidate validation failure
-- Semantic mismatch
-- Cogger/GDAL error
+**Gate:** 1,407 captured, zero failed.
 
-### Phase 6: Validate Candidates
-
-Independent verification of all candidates.
+### Step 5: Stage candidates
 
 ```bash
-uv run python scripts/validate_cog_recovery.py \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
-    --run-id <run-id> \
-    --workers 4
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/repair_cog_layout.py stage \
+    --config $CONFIG --recovery-root $ROOT --run-id $RUN_ID \
+    --cogger-bin /workspace/tools/cogger-v0.1.1/cogger --execute"
 ```
 
-**Expected output:**
-- All 836 candidates valid
-- Validation report persisted
+**Gate:** 836 staged (164 GDAL + 672 Cogger), zero failed.
 
-**STOP conditions:**
-- Any invalid candidate
-
-### Phase 7: Promote
-
-Guarded promotion with bounded batches and rollback.
+### Step 6: Validate candidates
 
 ```bash
-uv run python scripts/repair_cog_layout.py promote \
-    --config configs/cog_repair/remediation.yaml \
-    --recovery-root gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation \
-    --run-id <run-id> \
-    --execute
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/validate_cog_recovery.py \
+    --config $CONFIG --recovery-root $ROOT --run-id $RUN_ID --workers 4"
 ```
 
-**Expected output:**
-- Each candidate promoted with generation guard
-- Each promoted object independently verified
-- Rollback on failure (stops run)
-- Immutable events recorded
+**Gate:** 836 valid, zero invalid.
 
-**STOP conditions:**
-- Generation conflict
-- Verification failure
-- Rollback failure
-
-### Phase 8: Verify Recovery
-
-Independent verification of all canonical assets.
+### Step 7: Promote
 
 ```bash
-uv run python scripts/repair_cog_layout.py verify-recovery \
-    --config configs/cog_repair/remediation.yaml
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/repair_cog_layout.py promote \
+    --config $CONFIG --recovery-root $ROOT --run-id $RUN_ID --execute"
 ```
 
-**Expected output:**
-- All 2,079 assets strict-clean
-- Zero errors, zero warnings
+Batches: 1 GDAL canary, 1 Cogger canary, 10, 50, then 100s until all 836 promoted.
+Each batch: intent → guarded rewrite → independent verify → terminal event.
+On failure: rollback from legacy backup → stop entire run.
 
-**STOP conditions:**
-- Any invalid asset
+**Gate:** 836 promoted, zero rolled back.
 
-## Validation Gates
-
-After recovery, run all validators:
+### Step 8: Final verification
 
 ```bash
-# Full validation gate
-uv run nox
+"$S/ssh-vm.sh" -- "cd /workspace/app && uv run python scripts/repair_cog_layout.py verify-recovery \
+    --config $CONFIG --recovery-root $ROOT --run-id $RUN_ID --workers 4"
 ```
 
-## Evidence Retention
+Scans all 2,079 canonical assets. Writes `complete.json` on success.
 
-Recovery artifacts retained until approved deletion date:
+**Gate:** 2,079 strict-clean, `complete.json` exists.
 
-- Backups: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/backups/`
-- Originals: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/originals/`
-- Candidates: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/candidates/`
-- Events: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/events/`
-- Reports: `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/reports/`
+### Step 9: Stop VM
 
-## Architecture
-
-```text
-Fresh baseline + Soft Delete catalog
-             │
-             ▼
- per-object original capture saga
-             │
-     ┌───────┴────────┐
-     ▼                ▼
-164 GDAL flags   672 Cogger layouts
-     └───────┬────────┘
-             ▼
- independent candidate validation
-             ▼
- guarded promotion + rollback
-             ▼
- fresh 2,079-object final validation
+```bash
+"$S/stop-vm.sh"
 ```
 
-## Key Files
+## Evidence
 
-| File | Purpose |
-|------|---------|
-| `src/.../cog_recovery_state.py` | Event models, reducer, classification |
-| `src/.../cog_recovery_gcs.py` | GCS operations, descriptors, events |
-| `src/.../cog_recovery.py` | Saga orchestrator |
-| `scripts/repair_cog_layout.py` | CLI |
-| `scripts/smoke_cog_recovery.py` | GCS transaction canary |
-| `scripts/validate_cog_recovery.py` | Independent candidate validator |
-| `configs/cog_repair/remediation.yaml` | Immutable run configuration |
+All artifacts in `gs://berlin-lst-data-recovery/cog-layout-recovery/2026-08-03-remediation/<run-id>/`:
+- `manifests/` — run manifest
+- `snapshots/` — inventory
+- `originals/` — captured pre-incident generations
+- `candidates/` — GDAL and Cogger repair candidates
+- `events/` — immutable per-object event chains
+- `reports/` — validator reports
+- `complete.json` — final completion marker
