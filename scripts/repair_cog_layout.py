@@ -116,6 +116,8 @@ def main() -> int:
         "verify-recovery", help="Independent verification",
     )
     p_verify.add_argument("--config", required=True)
+    p_verify.add_argument("--recovery-root", default="")
+    p_verify.add_argument("--run-id", default="")
     p_verify.add_argument("--workers", type=int, default=4)
 
     # legacy commands
@@ -172,6 +174,8 @@ def main() -> int:
         ),
         "verify-recovery": lambda: cmd_verify_recovery(
             args.config,
+            recovery_root=args.recovery_root,
+            run_id=args.run_id,
             workers=args.workers,
         ),
     }

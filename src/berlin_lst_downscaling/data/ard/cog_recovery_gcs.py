@@ -513,11 +513,12 @@ def rollback_to_payload(
     )
     save_event(recovery_root, intent)
 
+    backup_desc = snapshot_gcs_descriptor(backup_uri)
     result = rewrite_object_server_side(
         source_uri=backup_uri,
         dest_uri=uri,
-        source_generation=0,
-        source_metageneration=0,
+        source_generation=backup_desc.generation,
+        source_metageneration=backup_desc.metageneration,
         dest_generation=current_generation,
         dest_metageneration=current_metageneration,
         dest_metadata=metadata_contract,

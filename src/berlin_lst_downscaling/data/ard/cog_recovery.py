@@ -485,22 +485,23 @@ def cmd_rebaseline(
     from berlin_lst_downscaling.data.ard.cog_repair import save_table
 
     inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
+    field_names = [
+        "uri", "asset_kind", "source", "partition", "year",
+        "current_generation", "current_metageneration",
+        "current_crc32c", "current_size", "current_content_type",
+        "current_metadata_json", "current_descriptor_json",
+        "original_generation", "original_metageneration",
+        "original_crc32c", "original_size", "original_descriptor_json",
+        "hard_delete_time", "restore_token",
+        "layout_signature", "layout_class", "evidence_class",
+        "recovery_bucket_uri", "original_backup_uri",
+        "current_backup_uri", "candidate_uri", "status",
+    ]
     arrays = [
         pa.array([r.get(f) for r in classification_results])
-        for f in [
-            "uri", "asset_kind", "source", "partition", "year",
-            "current_generation", "current_metageneration",
-            "current_crc32c", "current_size", "current_content_type",
-            "current_metadata_json", "current_descriptor_json",
-            "original_generation", "original_metageneration",
-            "original_crc32c", "original_size", "original_descriptor_json",
-            "hard_delete_time", "restore_token",
-            "layout_signature", "layout_class", "evidence_class",
-            "recovery_bucket_uri", "original_backup_uri",
-            "current_backup_uri", "candidate_uri", "status",
-        ]
+        for f in field_names
     ]
-    inv_table = pa.table(arrays)
+    inv_table = pa.table(arrays, names=field_names)
     save_table(inv_table, inv_path)
     print(f"\nSaved: {inv_path}")
 
@@ -559,6 +560,7 @@ def cmd_capture_originals(
         return 0
 
     cfg_hash = hash_config(config_path)
+    config = _load_config(config_path)
 
     # load inventory
     inv_path = f"{recovery_root}/snapshots/{run_id}/inventory.parquet"
@@ -674,9 +676,14 @@ def cmd_capture_originals(
             prev_hash = event_content_hash(copied_event)
 
             # ── step 4: reconstruct baseline ──────────────────────────
-            # use captured original bytes with pre-incident metadata contract
-            original_backup_uri = f"{recovery_root}/originals/{key}"
+            # rewrite canonical from LEGACY backup with frozen live metadata
+            legacy_backup_root = (
+                f"{config['recovery_bucket']}/{config['recovery_prefix']}"
+            )
+            legacy_backup_uri = f"{legacy_backup_root}/backups/current/{key}"
 
+            # snapshot the displaced live metadata (before restore overwrote it)
+            # we use restored_desc since it captured the original's metadata
             metadata_contract = ObjectDescriptor(
                 content_type=restored_desc.content_type,
                 content_encoding=restored_desc.content_encoding,
@@ -684,11 +691,14 @@ def cmd_capture_originals(
                 custom_metadata=restored_desc.custom_metadata,
             )
 
+            # pin source generation from the backup blob
+            backup_desc = snapshot_gcs_descriptor(legacy_backup_uri)
+
             baseline_result = rewrite_object_server_side(
-                source_uri=original_backup_uri,
+                source_uri=legacy_backup_uri,
                 dest_uri=uri,
-                source_generation=0,
-                source_metageneration=0,
+                source_generation=backup_desc.generation,
+                source_metageneration=backup_desc.metageneration,
                 dest_generation=restored_desc.generation,
                 dest_metageneration=restored_desc.metageneration,
                 dest_metadata=metadata_contract,
@@ -1001,11 +1011,10 @@ def cmd_promote(
     inv_table = load_table(inv_path)
     rows = inv_table.to_pylist()
 
-    # filter to verified candidates
+    # filter to assets needing promotion (candidate URI derived from key)
     needs_promotion = [
         r for r in rows
-        if r.get("candidate_uri")
-        and r["layout_class"] in (
+        if r["layout_class"] in (
             LayoutClass.MISSING_OVERVIEW.value,
             LayoutClass.HARD_LAYOUT.value,
         )
@@ -1013,19 +1022,23 @@ def cmd_promote(
     print(f"Config hash: {cfg_hash}")
     print(f"Needs promotion: {len(needs_promotion)}")
 
-    # batch sizes: canary per engine, then expanding
-    batch_sizes = [1, 10, 50, 100]
-
+    # batch sizes: canary per engine, then expanding until all promoted
+    batch_pattern = [1, 1, 10, 50]  # then 100 repeatedly
     promoted = 0
     rolled_back = 0
+    batch_idx = 0
 
-    for batch_size in batch_sizes:
-        remaining = needs_promotion[promoted:]
-        if not remaining:
-            break
+    while promoted < len(needs_promotion):
+        remaining = len(needs_promotion) - promoted
+        if batch_idx < len(batch_pattern):
+            batch_size = batch_pattern[batch_idx]
+        else:
+            batch_size = 100
+        batch_size = min(batch_size, remaining)
+        batch_idx += 1
 
-        batch = remaining[:batch_size]
-        print(f"\nBatch (size {batch_size}): {len(batch)} assets")
+        batch = needs_promotion[promoted : promoted + batch_size]
+        print(f"\nBatch {batch_idx} (size {batch_size}): {len(batch)} assets")
 
         for row in batch:
             uri = row["uri"]
@@ -1071,11 +1084,12 @@ def cmd_promote(
                 save_event(recovery_root, intent)
 
                 # guarded rewrite: candidate → canonical
+                candidate_desc = snapshot_gcs_descriptor(candidate_uri)
                 result = rewrite_object_server_side(
                     source_uri=candidate_uri,
                     dest_uri=uri,
-                    source_generation=0,
-                    source_metageneration=0,
+                    source_generation=candidate_desc.generation,
+                    source_metageneration=candidate_desc.metageneration,
                     dest_generation=current_desc.generation,
                     dest_metageneration=current_desc.metageneration,
                     dest_metadata=metadata_contract,
@@ -1162,6 +1176,8 @@ def cmd_promote(
 def cmd_verify_recovery(
     config_path: str | Path,
     *,
+    recovery_root: str = "",
+    run_id: str = "",
     workers: int = 4,
 ) -> int:
     """Independent verification of all canonical assets.
@@ -1220,6 +1236,35 @@ def cmd_verify_recovery(
 
     if invalid_count == 0:
         print("\nVerification PASSED — all assets are strict-clean")
+        # write create-only complete.json
+        if recovery_root and run_id:
+            complete = {
+                "run_id": run_id,
+                "config_hash": cfg_hash,
+                "verified_count": valid_count,
+                "expected_count": len(rows),
+                "timestamp": datetime.now(UTC).isoformat(),
+                "success": valid_count == len(rows),
+            }
+            complete_path = f"{recovery_root}/complete.json"
+            complete_content = json.dumps(
+                complete, indent=2, sort_keys=True,
+            ).encode()
+            from google.api_core.exceptions import PreconditionFailed
+            bucket_name, key = _parse_gs_uri(complete_path)
+            client = _gcs_client()
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(key)
+            try:
+                blob.upload_from_string(
+                    complete_content,
+                    content_type="application/json",
+                    if_generation_match=0,
+                    checksum="crc32c",
+                )
+                print(f"Complete marker: {complete_path}")
+            except PreconditionFailed:
+                print(f"WARNING: complete.json already exists at {complete_path}")
         return 0
     else:
         print(f"\nVerification FAILED — {invalid_count} assets are not strict-clean")
