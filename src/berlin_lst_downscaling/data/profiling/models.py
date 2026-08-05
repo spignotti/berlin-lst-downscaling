@@ -38,6 +38,8 @@ class ProfileAsset:
     stac_uri: str | None = None
     provenance_uri: str | None = None
     completion_uri: str | None = None
+    qa_flag_uri: str | None = None
+    requires_qa_flag: bool = False
     partition: Literal["training", "inference", "shared_static"] = "shared_static"
     year: int | None = None
     season: str | None = None
@@ -64,6 +66,8 @@ class BandStatistics:
     valid_count: int = 0
     missing_count: int = 0
     missing_rate: float = 0.0
+    qa_masked_count: int = 0
+    qa_masked_rate: float = 0.0
     min_value: float = float("nan")
     max_value: float = float("nan")
     mean_value: float = float("nan")
@@ -160,6 +164,8 @@ class ProfileRow:
     stac_valid: bool = False
     provenance_exists: bool = False
     completion_exists: bool = False
+    flag_required: bool = False
+    flag_valid: bool = False
 
     # Contract validation
     contract_check: ContractCheckResult = field(default_factory=ContractCheckResult)

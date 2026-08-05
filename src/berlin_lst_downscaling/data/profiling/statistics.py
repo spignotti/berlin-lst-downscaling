@@ -18,10 +18,15 @@ def profile_band(
     src: rasterio.DatasetReader,
     band_index: int,
     band_name: str,
+    flag: np.ndarray | None = None,
 ) -> BandStatistics:
-    """Profile a single band using blockwise reads.
+    """Profile a single band using blockwise reads, optionally QA-masked.
 
-    Accumulates statistics without loading the entire band into memory.
+    When *flag* is provided (aligned to *src*), pixels with ``flag != 0``
+    (fill/cloud/shadow/cirrus/saturation) are excluded from ``valid``
+    statistics and reported separately as ``qa_masked``. NoData pixels
+    are reported as ``missing``. Statistics and histograms describe only
+    QA-clean, non-nodata pixels.
     """
     stats = BandStatistics(band_index=band_index, band_name=band_name)
 
@@ -35,6 +40,8 @@ def profile_band(
 
     # Blockwise accumulation
     total_pixels = 0
+    missing_pixels = 0
+    qa_masked_pixels = 0
     valid_pixels = 0
     sum_value = 0.0
     sum_sq_value = 0.0
@@ -43,19 +50,31 @@ def profile_band(
 
     for _, window in src.block_windows(1):
         data = src.read(band_index, window=window, masked=True)
-        mask = data.mask if hasattr(data, "mask") else np.zeros_like(data, dtype=bool)
+        nodata_mask = data.mask if hasattr(data, "mask") else np.zeros_like(data, dtype=bool)
 
         # Handle nodata
         nodata = src.nodata
         if nodata is not None and not np.isnan(nodata):
-            mask = mask | (data == nodata)
+            nodata_mask = nodata_mask | (data == nodata)
         elif nodata is not None and np.isnan(nodata):
-            mask = mask | np.isnan(data)
+            nodata_mask = nodata_mask | np.isnan(data)
 
-        valid_mask = ~mask
-        valid_data = data[valid_mask].astype(np.float64)
+        block = np.asarray(data)  # underlying values (masked entries are nodata)
+        n = data.size
+        total_pixels += n
+        not_missing = ~nodata_mask
+        missing_pixels += int(n - int(not_missing.sum()))
 
-        total_pixels += data.size
+        if flag is not None:
+            flag_block = flag[window.toslices()]
+            qa_masked = not_missing & (flag_block != 0)
+            valid_mask = not_missing & (flag_block == 0)
+            qa_masked_pixels += int(qa_masked.sum())
+        else:
+            valid_mask = not_missing
+            qa_masked_pixels += 0
+
+        valid_data = block[valid_mask].astype(np.float64)
         valid_pixels += valid_data.size
 
         if valid_data.size > 0:
@@ -75,10 +94,12 @@ def profile_band(
                 stats.histogram_underflow += int((valid_data < edges[0]).sum())
                 stats.histogram_overflow += int((valid_data > edges[-1]).sum())
 
-    # Compute final statistics
+    # Final statistics — three disjoint sets
     stats.valid_count = valid_pixels
-    stats.missing_count = total_pixels - valid_pixels
-    stats.missing_rate = (total_pixels - valid_pixels) / total_pixels if total_pixels > 0 else 1.0
+    stats.missing_count = missing_pixels
+    stats.missing_rate = missing_pixels / total_pixels if total_pixels > 0 else 1.0
+    stats.qa_masked_count = qa_masked_pixels
+    stats.qa_masked_rate = qa_masked_pixels / total_pixels if total_pixels > 0 else 0.0
 
     if valid_pixels > 0:
         stats.mean_value = sum_value / valid_pixels
@@ -136,6 +157,23 @@ def profile_row_statistics(row: ProfileRow, asset: ProfileAsset | None = None) -
 
     from berlin_lst_downscaling.data.profiling.inspection import gdal_uri
 
+    # ARD main assets REQUIRE a QA flag COG: without it statistics would
+    # include masked cloud/shadow/fill pixels. Bail out (already a hard
+    # failure from inspect_asset) rather than profile unmasked.
+    if asset is not None and asset.requires_qa_flag and not row.flag_valid:
+        return row
+
+    # QA flag COG (ARD main assets): load once, aligned to the main COG.
+    flag = None
+    if asset is not None and asset.requires_qa_flag and row.flag_valid and asset.qa_flag_uri:
+        try:
+            with rasterio.open(gdal_uri(asset.qa_flag_uri)) as fsrc:
+                flag = fsrc.read(1)
+        except Exception as exc:
+            row.has_hard_failure = True
+            row.failure_reasons.append(f"QA flag read failed: {exc}")
+            return row
+
     try:
         with rasterio.open(gdal_uri(row.cog_uri)) as src:
             for band_index in range(1, src.count + 1):
@@ -143,7 +181,7 @@ def profile_row_statistics(row: ProfileRow, asset: ProfileAsset | None = None) -
                 if asset and band_index <= len(asset.expected_band_specs):
                     band_name = asset.expected_band_specs[band_index - 1]
 
-                stats = profile_band(src, band_index, band_name)
+                stats = profile_band(src, band_index, band_name, flag=flag)
                 row.band_stats.append(stats)
 
     except Exception as exc:

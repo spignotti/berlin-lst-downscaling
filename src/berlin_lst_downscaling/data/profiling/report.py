@@ -65,6 +65,8 @@ def profiles_to_long_dataframe(rows: list[ProfileRow]) -> pd.DataFrame:
                 "valid_count": stats.valid_count,
                 "missing_count": stats.missing_count,
                 "missing_rate": stats.missing_rate,
+                "qa_masked_count": stats.qa_masked_count,
+                "qa_masked_rate": stats.qa_masked_rate,
                 "min_value": stats.min_value,
                 "max_value": stats.max_value,
                 "mean_value": stats.mean_value,
@@ -155,6 +157,8 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
         for band_name, band_stats_list in band_groups.items():
             total_valid = sum(s.valid_count for s in band_stats_list)
             total_missing = sum(s.missing_count for s in band_stats_list)
+            total_qa_masked = sum(s.qa_masked_count for s in band_stats_list)
+            total_px = total_valid + total_missing + total_qa_masked
             weighted_mean = float("nan")
             weighted_std = float("nan")
             finite = [
@@ -212,7 +216,9 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
                 # Aggregate metrics
                 "valid_count": total_valid,
                 "missing_count": total_missing,
-                "missing_rate": total_missing / max(1, total_valid + total_missing),
+                "missing_rate": total_missing / max(1, total_px),
+                "qa_masked_count": total_qa_masked,
+                "qa_masked_rate": total_qa_masked / max(1, total_px),
                 "min_value": min(
                     (s.min_value for s in band_stats_list if s.valid_count > 0),
                     default=float("nan"),
@@ -263,6 +269,8 @@ def aggregate_summary(
             "stac_valid": sum(1 for r in rows if r.stac_valid),
             "provenance_exists": sum(1 for r in rows if r.provenance_exists),
             "completion_exists": sum(1 for r in rows if r.completion_exists),
+            "flag_required": sum(1 for r in rows if r.flag_required),
+            "flag_valid": sum(1 for r in rows if r.flag_valid),
         },
         "contract_checks": {
             "dtype_mismatches": sum(

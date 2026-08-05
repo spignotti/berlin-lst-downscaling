@@ -66,6 +66,11 @@ def main() -> int:
     lines.append(f"- STAC exists: {_fmt_pct(sc.get('stac_exists', 0), total)}")
     lines.append(f"- Provenance exists: {_fmt_pct(sc.get('provenance_exists', 0), total)}")
     lines.append(f"- Completion marker exists: {_fmt_pct(sc.get('completion_exists', 0), total)}")
+    if sc.get("flag_required", 0):
+        lines.append(
+            f"- ARD QA flag COG aligned: "
+            f"{_fmt_pct(sc.get('flag_valid', 0), sc.get('flag_required', 0))}"
+        )
     lines.append("")
 
     lines.append("## Contract checks")
@@ -124,6 +129,9 @@ def main() -> int:
                  "underflow/overflow pixels are reported separately and excluded from percentiles.")
     lines.append("- Aggregate mean/std are valid-pixel weighted across scenes per group.")
     lines.append("- Histogram underflow/overflow counts are reported explicitly.")
+    lines.append("- Per-asset metrics (valid/missing/QA-masked) are disjoint; "
+                 "QA-masked pixels (fill/cloud/shadow/cirrus/saturation) are excluded from "
+                 "distribution statistics and reported separately.")
     lines.append("- Prose description and unit metadata are not persisted by the writer; "
                  "channel order, dtype, and nodata are validated against contracts.")
     lines.append("")

@@ -116,6 +116,16 @@ def main() -> int:
                     f"expected {c.get('expected')}, found {c.get('found')}"
                 )
 
+    # Check QA flag coverage (ARD main assets)
+    if args.require_clean:
+        sc = summary.get("structural_checks", {})
+        flag_req = sc.get("flag_required", 0)
+        flag_ok = sc.get("flag_valid", 0)
+        if flag_req > 0 and flag_ok != flag_req:
+            errors.append(
+                f"qa_flag: {flag_ok}/{flag_req} ARD flag COGs aligned"
+            )
+
     # Print summary
     print(f"Artifact root: {args.output_root}")
     print(f"  Total assets: {total_assets}")
@@ -133,6 +143,11 @@ def main() -> int:
             f"  Completeness: ok={completeness.get('ok', 'n/a')}, "
             f"manifest={completeness.get('manifest_key_count', 0)}, "
             f"ledger={completeness.get('ledger_key_count', 0)}"
+        )
+    sc = summary.get("structural_checks", {})
+    if sc.get("flag_required", 0):
+        print(
+            f"  QA flags: {sc.get('flag_valid', 0)}/{sc.get('flag_required', 0)} aligned"
         )
     if coverage:
         for c in coverage:

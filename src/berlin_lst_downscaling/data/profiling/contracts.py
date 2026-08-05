@@ -29,7 +29,7 @@ ERA5_HISTOGRAMS: dict[str, HistogramSpec] = {
     ),
     "vpd_scene": HistogramSpec(
         band_name="vpd_scene",
-        bin_edges=tuple(x / 10 for x in range(0, 11)),
+        bin_edges=tuple(round(x / 10, 1) for x in range(0, 51)),
         description="Vapour pressure deficit (kPa)",
     ),
     "wind_speed_10m_scene": HistogramSpec(

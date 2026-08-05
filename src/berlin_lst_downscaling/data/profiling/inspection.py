@@ -111,6 +111,15 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
                 + contract_result.channel_order_mismatches
             )
 
+    # Validate QA flag COG alignment (ARD main assets only)
+    if asset.requires_qa_flag and row.cog_valid:
+        row.flag_required = True
+        flag_result = validate_qa_flag(asset)
+        row.flag_valid = flag_result.valid
+        if not flag_result.valid:
+            row.has_hard_failure = True
+            row.failure_reasons.extend(flag_result.errors)
+
     return row
 
 
@@ -169,6 +178,60 @@ def validate_cog_structure(
         errors.append(f"Cannot open COG: {exc}")
 
     return errors
+
+
+class FlagCheckResult:
+    """Outcome of QA flag COG alignment validation."""
+
+    __slots__ = ("valid", "errors")
+
+    def __init__(self, valid: bool, errors: list[str]) -> None:
+        self.valid = valid
+        self.errors = errors
+
+
+def validate_qa_flag(asset: ProfileAsset) -> FlagCheckResult:
+    """Validate that the QA flag COG exists and is aligned to the main COG.
+
+    The main ARD COG and its sidecar flag COG must share CRS, transform,
+    shape, and the flag COG must be single-band.
+    """
+    errors: list[str] = []
+    if not asset.qa_flag_uri:
+        errors.append("QA flag COG missing (expected from ARD ledger)")
+        return FlagCheckResult(False, errors)
+
+    try:
+        main_exists = exists(asset.cog_uri)
+        if not main_exists:
+            errors.append(f"Main COG missing: {asset.cog_uri}")
+            return FlagCheckResult(False, errors)
+    except Exception as exc:  # noqa: S110
+        return FlagCheckResult(False, [f"Main COG check failed: {exc}"])
+
+    try:
+        if not exists(asset.qa_flag_uri):
+            errors.append(f"QA flag COG not found: {asset.qa_flag_uri}")
+            return FlagCheckResult(False, errors)
+    except Exception as exc:
+        return FlagCheckResult(False, [f"QA flag COG check failed: {exc}"])
+
+    try:
+        with rasterio.open(gdal_uri(asset.cog_uri)) as main, rasterio.open(
+            gdal_uri(asset.qa_flag_uri)
+        ) as flag:
+            if str(main.crs).upper() != str(flag.crs).upper():
+                errors.append("Flag CRS mismatch vs main COG")
+            if main.transform != flag.transform:
+                errors.append("Flag transform mismatch vs main COG")
+            if (main.width, main.height) != (flag.width, flag.height):
+                errors.append("Flag shape mismatch vs main COG")
+            if flag.count != 1:
+                errors.append(f"Flag COG must be single-band; got {flag.count}")
+    except Exception as exc:
+        errors.append(f"Cannot open main/flag COGs: {exc}")
+
+    return FlagCheckResult(not errors, errors)
 
 
 def _isnan(value: float | None) -> bool:
@@ -273,5 +336,6 @@ __all__ = [
     "inspect_asset",
     "validate_cog_structure",
     "validate_band_contracts",
+    "validate_qa_flag",
     "validate_cogeo_internal",
 ]

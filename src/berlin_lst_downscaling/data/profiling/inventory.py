@@ -137,6 +137,8 @@ def build_ard_assets(
                 completion_uri=f"{ledger_row.get('path_cog', '').rsplit('/', 1)[0]}/complete.json"
                 if ledger_row.get("path_cog")
                 else None,
+                qa_flag_uri=ledger_row.get("path_flag") or None,
+                requires_qa_flag=True,
                 partition=partition,
                 year=year,
                 season=season,
