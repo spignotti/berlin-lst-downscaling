@@ -154,11 +154,12 @@ def build_ard_assets(
     return assets
 
 
-# Flag band contract (separate uint8 COG, 255=nodata)
+# Flag band contract (separate uint8 COG). The quality bitmask has no
+# scalar nodata value (fill is bit0), so the writer omits a nodata tag.
 _FLAG_BAND = BandSpec(
     name="flag",
     dtype="uint8",
-    nodata=255,
+    nodata=None,
     description="Quality flag bitmask",
 )
 
