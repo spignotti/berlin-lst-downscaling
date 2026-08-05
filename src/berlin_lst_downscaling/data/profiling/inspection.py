@@ -64,15 +64,17 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
         ("provenance", asset.provenance_uri),
         ("completion", asset.completion_uri),
     ]:
-        if uri and not exists(uri):
-            row.has_hard_failure = True
-            row.failure_reasons.append(f"{label} sidecar not found: {uri}")
-    if asset.stac_uri:
-        row.stac_exists = exists(asset.stac_uri)
-    if asset.provenance_uri:
-        row.provenance_exists = exists(asset.provenance_uri)
-    if asset.completion_uri:
-        row.completion_exists = exists(asset.completion_uri)
+        if uri:
+            present = exists(uri)
+            if not present:
+                row.has_hard_failure = True
+                row.failure_reasons.append(f"{label} sidecar not found: {uri}")
+            if label == "STAC":
+                row.stac_exists = present
+            elif label == "provenance":
+                row.provenance_exists = present
+            else:
+                row.completion_exists = present
 
     # Validate COG structure
     grid = canon_grid_for_resolution(asset.resolution_m or 10)
@@ -206,8 +208,8 @@ def validate_band_contracts(
                         f"got {src.dtypes[i]}, expected {spec.dtype}"
                     )
 
-                # nodata check
-                actual_nodata = src.nodata
+                # nodata check (per-band nodatavals)
+                actual_nodata = src.nodatavals[i]
                 if spec.nodata is not None:
                     if actual_nodata is None:
                         result.nodata_mismatches.append(
@@ -251,7 +253,7 @@ def validate_band_contracts(
                     )
 
     except Exception as exc:
-        result.dtype_mismatches.append(f"Contract validation failed: {exc}")
+        result.dtype_mismatches.append(f"Could not read COG metadata: {exc}")
 
     return result
 

@@ -158,7 +158,9 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
             weighted_mean = float("nan")
             weighted_std = float("nan")
             finite = [
-                s for s in band_stats_list if s.valid_count > 0 and s.mean_value == s.mean_value
+                s
+                for s in band_stats_list
+                if s.valid_count > 0 and s.mean_value == s.mean_value and s.std_value == s.std_value
             ]
             if finite and total_valid > 0:
                 weighted_sum = sum(s.mean_value * s.valid_count for s in finite)

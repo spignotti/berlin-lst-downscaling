@@ -609,7 +609,14 @@ def check_dynamic_coverage(
                 continue
             source = source_col[i]
             item_id = item_col[i]
-            scene_id = item_id[len(source) + 1 :] if item_id.startswith(f"{source}_") else item_id
+            if item_id.startswith(f"{source}_"):
+                scene_id = item_id[len(source) + 1 :]
+            else:
+                _logger.warning(
+                    "Unexpected dynamic item_id format (skipping coverage entry): %s",
+                    item_id,
+                )
+                continue
             found[default_partition].add(f"{source}|{scene_id}")
 
     results: list[CoverageResult] = []

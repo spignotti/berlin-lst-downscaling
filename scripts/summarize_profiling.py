@@ -120,7 +120,8 @@ def main() -> int:
 
     lines.append("## Limitations")
     lines.append("")
-    lines.append("- Quantiles (p1–p99) are histogram-CDF estimates, not exact percentiles.")
+    lines.append("- Quantiles (p1–p99) are histogram-CDF estimates from in-range values; "
+                 "underflow/overflow pixels are reported separately and excluded from percentiles.")
     lines.append("- Aggregate mean/std are valid-pixel weighted across scenes per group.")
     lines.append("- Histogram underflow/overflow counts are reported explicitly.")
     lines.append("- Prose description and unit metadata are not persisted by the writer; "
