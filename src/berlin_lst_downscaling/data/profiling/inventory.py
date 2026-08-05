@@ -534,7 +534,10 @@ def check_manifest_ledger_completeness(
         row = manifest.slice(i, 1).to_pydict()
         manifest_keys.append(f"{row['scene_id'][0]}|{row['source'][0]}")
 
-    ledger = _read_parquet_table(ledger_uri)
+    try:
+        ledger = _read_parquet_table(ledger_uri)
+    except Exception as e:
+        raise RuntimeError(f"Failed to read ARD ledger at {ledger_uri}: {e}") from e
     ledger_keys: list[str] = []
     status_col = ledger.column("status").to_pylist()
     scene_col = ledger.column("scene_id").to_pylist()

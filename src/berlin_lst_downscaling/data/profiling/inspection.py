@@ -71,6 +71,7 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
                 row.failure_reasons.append(f"{label} sidecar not found: {uri}")
             if label == "STAC":
                 row.stac_exists = present
+                row.stac_valid = present
             elif label == "provenance":
                 row.provenance_exists = present
             else:
