@@ -230,8 +230,10 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
                 "p75": p75,
                 "p95": p95,
                 "p99": p99,
-                "histogram_bins": combined_bins and json.dumps(list(combined_bins)),
-                "histogram_counts": combined_counts and json.dumps(list(combined_counts)),
+                "histogram_bins": json.dumps(list(combined_bins)) if combined_bins else "[]",
+                "histogram_counts": (
+                    json.dumps(list(combined_counts)) if combined_counts else "[]"
+                ),
                 "histogram_underflow": combined_underflow,
                 "histogram_overflow": combined_overflow,
             }
