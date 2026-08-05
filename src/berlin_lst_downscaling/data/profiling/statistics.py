@@ -49,18 +49,22 @@ def profile_band(
     max_value = float("-inf")
 
     for _, window in src.block_windows(1):
-        data = src.read(band_index, window=window, masked=True)
-        nodata_mask = data.mask if hasattr(data, "mask") else np.zeros_like(data, dtype=bool)
+        data = src.read(band_index, window=window, masked=False)
 
-        # Handle nodata
+        # Build a plain boolean nodata mask (avoids MaskedArray pitfalls
+        # with integer nodata on fully-masked blocks).
         nodata = src.nodata
-        if nodata is not None and not np.isnan(nodata):
-            nodata_mask = nodata_mask | (data == nodata)
-        elif nodata is not None and np.isnan(nodata):
-            nodata_mask = nodata_mask | np.isnan(data)
+        if nodata is None:
+            nodata_mask = np.zeros(data.shape, dtype=bool)
+            if np.issubdtype(data.dtype, np.floating):
+                nodata_mask |= np.isnan(data)
+        elif np.isnan(float(nodata)):
+            nodata_mask = np.isnan(data)
+        else:
+            nodata_mask = data == nodata
 
-        block = np.asarray(data)  # underlying values (masked entries are nodata)
-        n = data.size
+        block = data.astype(np.float64)
+        n = block.size
         total_pixels += n
         not_missing = ~nodata_mask
         missing_pixels += int(n - int(not_missing.sum()))
@@ -74,7 +78,7 @@ def profile_band(
             valid_mask = not_missing
             qa_masked_pixels += 0
 
-        valid_data = block[valid_mask].astype(np.float64)
+        valid_data = block[valid_mask]
         valid_pixels += valid_data.size
 
         if valid_data.size > 0:
