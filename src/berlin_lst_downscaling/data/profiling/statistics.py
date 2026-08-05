@@ -42,40 +42,38 @@ def profile_band(
     max_value = float("-inf")
 
     for _, window in src.block_windows(1):
-        try:
-            data = src.read(band_index, window=window, masked=True)
-            mask = data.mask if hasattr(data, "mask") else np.zeros_like(data, dtype=bool)
+        data = src.read(band_index, window=window, masked=True)
+        mask = data.mask if hasattr(data, "mask") else np.zeros_like(data, dtype=bool)
 
-            # Handle nodata
-            nodata = src.nodata
-            if nodata is not None and not np.isnan(nodata):
-                mask = mask | (data == nodata)
-            elif nodata is not None and np.isnan(nodata):
-                mask = mask | np.isnan(data)
+        # Handle nodata
+        nodata = src.nodata
+        if nodata is not None and not np.isnan(nodata):
+            mask = mask | (data == nodata)
+        elif nodata is not None and np.isnan(nodata):
+            mask = mask | np.isnan(data)
 
-            valid_mask = ~mask
-            valid_data = data[valid_mask].astype(np.float64)
+        valid_mask = ~mask
+        valid_data = data[valid_mask].astype(np.float64)
 
-            total_pixels += data.size
-            valid_pixels += valid_data.size
+        total_pixels += data.size
+        valid_pixels += valid_data.size
 
-            if valid_data.size > 0:
-                sum_value += valid_data.sum()
-                sum_sq_value += (valid_data**2).sum()
-                min_value = min(min_value, float(valid_data.min()))
-                max_value = max(max_value, float(valid_data.max()))
+        if valid_data.size > 0:
+            sum_value += valid_data.sum()
+            sum_sq_value += (valid_data**2).sum()
+            min_value = min(min_value, float(valid_data.min()))
+            max_value = max(max_value, float(valid_data.max()))
 
-                # Update histogram
-                if stats.histogram_bins:
-                    counts, _ = np.histogram(valid_data, bins=list(stats.histogram_bins))
-                    stats.histogram_counts = tuple(
-                        existing + int(count)
-                        for existing, count in zip(stats.histogram_counts, counts, strict=True)
-                    )
-
-        except Exception:  # noqa: S112
-            # Skip blocks that fail to read
-            continue
+            # Update histogram
+            if stats.histogram_bins:
+                edges = stats.histogram_bins
+                counts, _ = np.histogram(valid_data, bins=list(edges))
+                stats.histogram_counts = tuple(
+                    existing + int(count)
+                    for existing, count in zip(stats.histogram_counts, counts, strict=True)
+                )
+                stats.histogram_underflow += int((valid_data < edges[0]).sum())
+                stats.histogram_overflow += int((valid_data > edges[-1]).sum())
 
     # Compute final statistics
     stats.valid_count = valid_pixels

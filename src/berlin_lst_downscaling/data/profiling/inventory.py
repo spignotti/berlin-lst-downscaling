@@ -14,9 +14,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
-from berlin_lst_downscaling.data.ard.contract import contract_for_source
+from berlin_lst_downscaling.data.ard.contract import BandSpec, contract_for_source
 from berlin_lst_downscaling.data.profiling.contracts import get_histogram_spec
-from berlin_lst_downscaling.data.profiling.models import HistogramSpec, ProfileAsset
+from berlin_lst_downscaling.data.profiling.models import (
+    CompletenessResult,
+    CoverageResult,
+    HistogramSpec,
+    ProfileAsset,
+)
 from berlin_lst_downscaling.data.selection.validate import load_bundle
 
 _logger = logging.getLogger(__name__)
@@ -140,12 +145,22 @@ def build_ard_assets(
                 expected_shape=(grid.shape.x, grid.shape.y),
                 expected_bands=len(contract.output_bands),
                 expected_band_specs=band_specs,
+                expected_band_contracts=contract.output_bands,
                 expected_histogram_specs=histogram_specs,
                 resolution_m=_SOURCE_RESOLUTION[source],
             )
         )
 
     return assets
+
+
+# Flag band contract (separate uint8 COG, 255=nodata)
+_FLAG_BAND = BandSpec(
+    name="flag",
+    dtype="uint8",
+    nodata=255,
+    description="Quality flag bitmask",
+)
 
 
 def build_ard_flag_assets(
@@ -181,6 +196,7 @@ def build_ard_flag_assets(
                 expected_shape=(grid.shape.x, grid.shape.y),
                 expected_bands=1,
                 expected_band_specs=("flag",),
+                expected_band_contracts=(_FLAG_BAND,),
                 resolution_m=_SOURCE_RESOLUTION.get(source, 10),
             )
         )
@@ -239,6 +255,7 @@ def build_static_assets(
                     expected_shape=(grid.shape.x, grid.shape.y),
                     expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
+                    expected_band_contracts=contract.output_bands,
                     expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
@@ -284,6 +301,7 @@ def build_static_assets(
                     expected_shape=(grid.shape.x, grid.shape.y),
                     expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
+                    expected_band_contracts=contract.output_bands,
                     expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
@@ -424,6 +442,7 @@ def build_dynamic_assets(
                     expected_shape=(grid.shape.x, grid.shape.y),
                     expected_bands=len(contract.output_bands),
                     expected_band_specs=band_specs,
+                    expected_band_contracts=contract.output_bands,
                     expected_histogram_specs=histogram_specs,
                     resolution_m=10,
                 )
@@ -497,10 +516,125 @@ def _histogram_spec_for_band(
     return get_histogram_spec(band_name)
 
 
+def check_manifest_ledger_completeness(
+    manifest_uri: str = _MANIFEST_URI,
+    ledger_uri: str = _ARD_LEDGER,
+) -> CompletenessResult:
+    """Check manifest↔ARD-ledger completeness over ``done`` rows.
+
+    Only ledger rows in ``status == done`` count as published COGs. Any
+    missing, extra, or duplicate key renders the inventory incomplete.
+    """
+    bundle, _ = load_bundle(manifest_uri, require_item_href=False)
+    manifest = bundle.manifest_table
+
+    manifest_keys: list[str] = []
+    for i in range(manifest.num_rows):
+        row = manifest.slice(i, 1).to_pydict()
+        manifest_keys.append(f"{row['scene_id'][0]}|{row['source'][0]}")
+
+    ledger = _read_parquet_table(ledger_uri)
+    ledger_keys: list[str] = []
+    status_col = ledger.column("status").to_pylist()
+    scene_col = ledger.column("scene_id").to_pylist()
+    source_col = ledger.column("source").to_pylist()
+    for i in range(ledger.num_rows):
+        if status_col[i] == "done":
+            ledger_keys.append(f"{scene_col[i]}|{source_col[i]}")
+
+    manifest_set = set(manifest_keys)
+    ledger_set = set(ledger_keys)
+
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for k in manifest_keys:
+        if k in seen:
+            duplicates.append(k)
+        seen.add(k)
+
+    return CompletenessResult(
+        manifest_key_count=len(manifest_keys),
+        ledger_key_count=len(ledger_keys),
+        missing_in_ledger=sorted(manifest_set - ledger_set),
+        extra_in_ledger=sorted(ledger_set - manifest_set),
+        duplicate_keys=sorted(set(duplicates)),
+    )
+
+
+_DYNAMIC_SOURCES = ("era5_land", "shadow_building", "shadow_vegetation")
+
+
+def check_dynamic_coverage(
+    manifest_uri: str = _MANIFEST_URI,
+    dynamic_root: str = _DYNAMIC_FULL_ROOT,
+    inference_root: str = _DYNAMIC_INFERENCE_ROOT,
+) -> list[CoverageResult]:
+    """Check dynamic COG coverage against manifest Landsat anchors.
+
+    Every Landsat anchor scene is expected to publish one COG per dynamic
+    source. Returns one ``CoverageResult`` per partition (training,
+    inference). Only ``done`` ledger rows count as published.
+    """
+    bundle, _ = load_bundle(manifest_uri, require_item_href=False)
+    manifest = bundle.manifest_table
+
+    expected: dict[str, set[str]] = {"training": set(), "inference": set()}
+    src_col = manifest.column("source").to_pylist()
+    role_col = manifest.column("role").to_pylist()
+    scene_col = manifest.column("scene_id").to_pylist()
+    year_col = manifest.column("year").to_pylist()
+    for i in range(manifest.num_rows):
+        if src_col[i] != "landsat-c2-l2" or role_col[i] != "anchor":
+            continue
+        year = int(year_col[i])
+        partition = "training" if year in _TRAINING_YEARS else "inference"
+        scene_id = scene_col[i]
+        for source in _DYNAMIC_SOURCES:
+            expected[partition].add(f"{source}|{scene_id}")
+
+    found: dict[str, set[str]] = {"training": set(), "inference": set()}
+    for root, default_partition in [
+        (dynamic_root, "training"),
+        (inference_root, "inference"),
+    ]:
+        try:
+            ledger = _read_parquet_table(f"{root}/_state/dynamic/ledger.parquet")
+        except Exception as e:
+            raise RuntimeError(f"Failed to read dynamic ledger at {root}: {e}") from e
+        status_col = ledger.column("status").to_pylist()
+        item_col = ledger.column("item_id").to_pylist()
+        source_col = ledger.column("source").to_pylist()
+        for i in range(ledger.num_rows):
+            if status_col[i] != "done":
+                continue
+            source = source_col[i]
+            item_id = item_col[i]
+            scene_id = item_id[len(source) + 1 :] if item_id.startswith(f"{source}_") else item_id
+            found[default_partition].add(f"{source}|{scene_id}")
+
+    results: list[CoverageResult] = []
+    for partition in ("training", "inference"):
+        exp = expected[partition]
+        fnd = found[partition]
+        results.append(
+            CoverageResult(
+                partition=partition,
+                expected=len(exp),
+                found=len(fnd),
+                missing=sorted(exp - fnd),
+                extra=sorted(fnd - exp),
+            )
+        )
+    return results
+
+
 __all__ = [
     "build_ard_assets",
+    "build_ard_flag_assets",
     "build_static_assets",
     "build_dynamic_assets",
     "build_all_assets",
     "select_assets",
+    "check_manifest_ledger_completeness",
+    "check_dynamic_coverage",
 ]

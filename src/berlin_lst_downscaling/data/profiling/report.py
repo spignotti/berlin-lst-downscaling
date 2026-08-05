@@ -11,12 +11,17 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.io.storage import atomic_write
-from berlin_lst_downscaling.data.profiling.models import ProfileRow
+from berlin_lst_downscaling.data.profiling.models import (
+    CompletenessResult,
+    CoverageResult,
+    ProfileRow,
+)
 from berlin_lst_downscaling.data.profiling.paths import (
     profiles_csv_path,
     profiles_parquet_path,
@@ -79,6 +84,8 @@ def profiles_to_long_dataframe(rows: list[ProfileRow]) -> pd.DataFrame:
             else:
                 record["histogram_bins"] = "[]"
                 record["histogram_counts"] = "[]"
+            record["histogram_underflow"] = stats.histogram_underflow
+            record["histogram_overflow"] = stats.histogram_overflow
 
             records.append(record)
 
@@ -90,6 +97,39 @@ def profiles_to_long_dataframe(rows: list[ProfileRow]) -> pd.DataFrame:
         df = pd.concat([df, agg_df], ignore_index=True)
 
     return df
+
+
+def _combined_cdf_percentiles(
+    bin_edges: tuple[float, ...],
+    counts: tuple[int, ...],
+) -> tuple[float, ...]:
+    """Derive p1/p5/p25/p50/p75/p95/p99 from a combined histogram CDF.
+
+    Returns NaN placeholders if the histogram is empty.
+    """
+    total = sum(counts)
+    empty = (float("nan"),) * 7
+    if total == 0 or len(bin_edges) < 2:
+        return empty
+
+    cdf = np.cumsum(counts) / total
+    edges = np.array(bin_edges, dtype=float)
+    percentile_values: list[float] = []
+    for p in (1, 5, 25, 50, 75, 95, 99):
+        idx = int(np.searchsorted(cdf, p / 100.0))
+        if idx >= len(edges) - 1:
+            percentile_values.append(float(edges[-1]))
+        elif idx == 0:
+            percentile_values.append(float(edges[0]))
+        else:
+            lo, hi = edges[idx - 1], edges[idx]
+            c_lo, c_hi = float(cdf[idx - 1]), float(cdf[idx])
+            if c_hi > c_lo:
+                frac = (p / 100.0 - c_lo) / (c_hi - c_lo)
+                percentile_values.append(float(lo + frac * (hi - lo)))
+            else:
+                percentile_values.append(float(lo))
+    return tuple(percentile_values)
 
 
 def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
@@ -113,6 +153,39 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
         cog_valid = sum(1 for r in group_rows if r.cog_valid)
 
         for band_name, band_stats_list in band_groups.items():
+            total_valid = sum(s.valid_count for s in band_stats_list)
+            total_missing = sum(s.missing_count for s in band_stats_list)
+            weighted_mean = float("nan")
+            weighted_std = float("nan")
+            finite = [
+                s for s in band_stats_list if s.valid_count > 0 and s.mean_value == s.mean_value
+            ]
+            if finite and total_valid > 0:
+                weighted_sum = sum(s.mean_value * s.valid_count for s in finite)
+                weighted_sum_sq = sum(
+                    (s.std_value**2 + s.mean_value**2) * s.valid_count for s in finite
+                )
+                weighted_mean = weighted_sum / total_valid
+                variance = (weighted_sum_sq / total_valid) - weighted_mean**2
+                weighted_std = max(0.0, variance) ** 0.5
+
+            # Combined histogram + underflow/overflow + CDF percentiles
+            combined_bins: tuple[float, ...] = ()
+            combined_counts: tuple[int, ...] = ()
+            combined_underflow = 0
+            combined_overflow = 0
+            if band_stats_list and band_stats_list[0].histogram_bins:
+                combined_bins = band_stats_list[0].histogram_bins
+                combined_counts = tuple(
+                    sum(s.histogram_counts[j] for s in band_stats_list if s.histogram_counts)
+                    for j in range(len(combined_bins) - 1)
+                )
+                combined_underflow = sum(s.histogram_underflow for s in band_stats_list)
+                combined_overflow = sum(s.histogram_overflow for s in band_stats_list)
+            p1, p5, p25, p50, p75, p95, p99 = _combined_cdf_percentiles(
+                combined_bins, combined_counts
+            )
+
             agg_record = {
                 "scope": "aggregate",
                 "item_id": "",
@@ -135,12 +208,9 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
                 "total_assets": total_assets,
                 "hard_failures": hard_failures,
                 # Aggregate metrics
-                "valid_count": sum(s.valid_count for s in band_stats_list),
-                "missing_count": sum(s.missing_count for s in band_stats_list),
-                "missing_rate": (
-                    sum(s.missing_count for s in band_stats_list)
-                    / max(1, sum(s.valid_count + s.missing_count for s in band_stats_list))
-                ),
+                "valid_count": total_valid,
+                "missing_count": total_missing,
+                "missing_rate": total_missing / max(1, total_valid + total_missing),
                 "min_value": min(
                     (s.min_value for s in band_stats_list if s.valid_count > 0),
                     default=float("nan"),
@@ -149,26 +219,30 @@ def _build_aggregate_records(rows: list[ProfileRow]) -> pd.DataFrame:
                     (s.max_value for s in band_stats_list if s.valid_count > 0),
                     default=float("nan"),
                 ),
-                "mean_value": float("nan"),  # Cannot aggregate without weights
-                "std_value": float("nan"),
-                "p1": float("nan"),
-                "p5": float("nan"),
-                "p25": float("nan"),
-                "p50": float("nan"),
-                "p75": float("nan"),
-                "p95": float("nan"),
-                "p99": float("nan"),
-                "histogram_bins": band_stats_list[0].histogram_bins
-                and json.dumps(list(band_stats_list[0].histogram_bins)),
-                "histogram_counts": band_stats_list[0].histogram_counts
-                and json.dumps(list(band_stats_list[0].histogram_counts)),
+                "mean_value": weighted_mean,
+                "std_value": weighted_std,
+                "p1": p1,
+                "p5": p5,
+                "p25": p25,
+                "p50": p50,
+                "p75": p75,
+                "p95": p95,
+                "p99": p99,
+                "histogram_bins": combined_bins and json.dumps(list(combined_bins)),
+                "histogram_counts": combined_counts and json.dumps(list(combined_counts)),
+                "histogram_underflow": combined_underflow,
+                "histogram_overflow": combined_overflow,
             }
             agg_records.append(agg_record)
 
     return pd.DataFrame(agg_records) if agg_records else pd.DataFrame()
 
 
-def aggregate_summary(rows: list[ProfileRow]) -> dict[str, Any]:
+def aggregate_summary(
+    rows: list[ProfileRow],
+    completeness: CompletenessResult | None = None,
+    coverage: list[CoverageResult] | None = None,
+) -> dict[str, Any]:
     """Aggregate profile rows into summary statistics."""
     summary: dict[str, Any] = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -186,7 +260,49 @@ def aggregate_summary(rows: list[ProfileRow]) -> dict[str, Any]:
             "provenance_exists": sum(1 for r in rows if r.provenance_exists),
             "completion_exists": sum(1 for r in rows if r.completion_exists),
         },
+        "contract_checks": {
+            "dtype_mismatches": sum(
+                len(r.contract_check.dtype_mismatches) for r in rows
+            ),
+            "nodata_mismatches": sum(
+                len(r.contract_check.nodata_mismatches) for r in rows
+            ),
+            "channel_order_mismatches": sum(
+                len(r.contract_check.channel_order_mismatches) for r in rows
+            ),
+            "prose_description_absent": sum(
+                len(r.contract_check.prose_description_absent) for r in rows
+            ),
+            "unit_absent": sum(
+                len(r.contract_check.unit_absent) for r in rows
+            ),
+        },
     }
+
+    # Completeness result
+    if completeness is not None:
+        summary["manifest_ledger_completeness"] = {
+            "manifest_key_count": completeness.manifest_key_count,
+            "ledger_key_count": completeness.ledger_key_count,
+            "missing_in_ledger": completeness.missing_in_ledger[:10],
+            "extra_in_ledger": completeness.extra_in_ledger[:10],
+            "duplicate_keys": completeness.duplicate_keys[:10],
+            "ok": completeness.ok,
+        }
+
+    # Dynamic coverage results
+    if coverage is not None:
+        summary["dynamic_coverage"] = [
+            {
+                "partition": c.partition,
+                "expected": c.expected,
+                "found": c.found,
+                "missing": c.missing[:10],
+                "extra": c.extra[:10],
+                "ok": c.ok,
+            }
+            for c in coverage
+        ]
 
     # Aggregate by source
     for row in rows:
@@ -245,10 +361,12 @@ def aggregate_summary(rows: list[ProfileRow]) -> dict[str, Any]:
 def emit_artifacts(
     rows: list[ProfileRow],
     output_root: str,
+    completeness: CompletenessResult | None = None,
+    coverage: list[CoverageResult] | None = None,
 ) -> None:
     """Emit the fixed artifact bundle."""
     df = profiles_to_long_dataframe(rows)
-    summary = aggregate_summary(rows)
+    summary = aggregate_summary(rows, completeness=completeness, coverage=coverage)
 
     # Write profiles.parquet
     table = pa.Table.from_pandas(df)

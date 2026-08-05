@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from berlin_lst_downscaling.data.ard.contract import BandSpec
+
 
 @dataclass(frozen=True)
 class HistogramSpec:
@@ -44,6 +46,7 @@ class ProfileAsset:
     expected_shape: tuple[int, int] | None = None
     expected_bands: int = 1
     expected_band_specs: tuple[str, ...] = ()
+    expected_band_contracts: tuple[BandSpec, ...] = ()
     expected_histogram_specs: tuple[HistogramSpec | None, ...] = ()
     resolution_m: int | None = None
 
@@ -67,6 +70,8 @@ class BandStatistics:
     std_value: float = float("nan")
     histogram_bins: tuple[float, ...] = ()
     histogram_counts: tuple[int, ...] = ()
+    histogram_underflow: int = 0
+    histogram_overflow: int = 0
     p1: float = float("nan")
     p5: float = float("nan")
     p25: float = float("nan")
@@ -74,6 +79,65 @@ class BandStatistics:
     p75: float = float("nan")
     p95: float = float("nan")
     p99: float = float("nan")
+
+
+@dataclass
+class ContractCheckResult:
+    """Per-band contract validation outcomes.
+
+    ``dtype_mismatches``, ``nodata_mismatches`` and
+    ``channel_order_mismatches`` are hard failures. Prose description and
+    unit metadata are not persisted by the writer; their absence is a
+    documented limitation, not a validation failure.
+    """
+
+    dtype_mismatches: list[str] = field(default_factory=list)
+    nodata_mismatches: list[str] = field(default_factory=list)
+    channel_order_mismatches: list[str] = field(default_factory=list)
+    prose_description_absent: list[str] = field(default_factory=list)
+    unit_absent: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (
+            self.dtype_mismatches
+            or self.nodata_mismatches
+            or self.channel_order_mismatches
+        )
+
+
+@dataclass
+class CompletenessResult:
+    """Manifest↔ARD-ledger completeness diff (done rows only)."""
+
+    manifest_key_count: int = 0
+    ledger_key_count: int = 0
+    missing_in_ledger: list[str] = field(default_factory=list)
+    extra_in_ledger: list[str] = field(default_factory=list)
+    duplicate_keys: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (
+            self.missing_in_ledger
+            or self.extra_in_ledger
+            or self.duplicate_keys
+        )
+
+
+@dataclass
+class CoverageResult:
+    """Dynamic COG coverage vs manifest Landsat anchors (by partition)."""
+
+    partition: str = ""
+    expected: int = 0
+    found: int = 0
+    missing: list[str] = field(default_factory=list)
+    extra: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.expected == self.found and not (self.missing or self.extra)
 
 
 @dataclass
@@ -97,6 +161,9 @@ class ProfileRow:
     provenance_exists: bool = False
     completion_exists: bool = False
 
+    # Contract validation
+    contract_check: ContractCheckResult = field(default_factory=ContractCheckResult)
+
     # Per-band statistics
     band_stats: list[BandStatistics] = field(default_factory=list)
 
@@ -109,5 +176,8 @@ __all__ = [
     "HistogramSpec",
     "ProfileAsset",
     "BandStatistics",
+    "ContractCheckResult",
+    "CompletenessResult",
+    "CoverageResult",
     "ProfileRow",
 ]

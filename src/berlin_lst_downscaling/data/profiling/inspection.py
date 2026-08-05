@@ -6,12 +6,19 @@ rio-cogeo validation, and records structural findings.
 
 from __future__ import annotations
 
+import math
+
 import rasterio
 from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
+from berlin_lst_downscaling.data.ard.contract import BandSpec
 from berlin_lst_downscaling.data.io.storage import exists
-from berlin_lst_downscaling.data.profiling.models import ProfileAsset, ProfileRow
+from berlin_lst_downscaling.data.profiling.models import (
+    ContractCheckResult,
+    ProfileAsset,
+    ProfileRow,
+)
 
 
 def gdal_uri(uri: str) -> str:
@@ -51,7 +58,15 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
 
     row.cog_exists = True
 
-    # Check sidecar existence
+    # Check sidecar existence — missing expected sidecars are hard failures
+    for label, uri in [
+        ("STAC", asset.stac_uri),
+        ("provenance", asset.provenance_uri),
+        ("completion", asset.completion_uri),
+    ]:
+        if uri and not exists(uri):
+            row.has_hard_failure = True
+            row.failure_reasons.append(f"{label} sidecar not found: {uri}")
     if asset.stac_uri:
         row.stac_exists = exists(asset.stac_uri)
     if asset.provenance_uri:
@@ -78,6 +93,20 @@ def inspect_asset(asset: ProfileAsset) -> ProfileRow:
         row.cog_errors.extend(all_issues)
         row.has_hard_failure = True
         row.failure_reasons.extend(all_issues)
+
+    # Validate band contracts (dtype, nodata, channel order)
+    if asset.expected_band_contracts and row.cog_valid:
+        contract_result = validate_band_contracts(
+            asset.cog_uri, asset.expected_band_contracts
+        )
+        row.contract_check = contract_result
+        if not contract_result.ok:
+            row.has_hard_failure = True
+            row.failure_reasons.extend(
+                contract_result.dtype_mismatches
+                + contract_result.nodata_mismatches
+                + contract_result.channel_order_mismatches
+            )
 
     return row
 
@@ -139,6 +168,94 @@ def validate_cog_structure(
     return errors
 
 
+def _isnan(value: float | None) -> bool:
+    return isinstance(value, float) and math.isnan(value)
+
+
+def _fmt_nodata(value: float) -> str:
+    if _isnan(value):
+        return "NaN"
+    return str(value)
+
+
+def validate_band_contracts(
+    uri: str,
+    expected_contracts: tuple[BandSpec, ...],
+) -> ContractCheckResult:
+    """Validate per-band dtype, nodata, and channel order against contracts.
+
+    Channel order is validated against ``BandSpec.name`` (the persisted
+    channel description). Prose descriptions and units are not persisted
+    by the writer; their absence is a documented limitation, not a
+    validation failure.
+    """
+    result = ContractCheckResult()
+
+    try:
+        with rasterio.open(gdal_uri(uri)) as src:
+            n_bands = min(src.count, len(expected_contracts))
+
+            for i in range(n_bands):
+                spec = expected_contracts[i]
+                band_idx = i + 1
+
+                # dtype check
+                if src.dtypes[i] != spec.dtype:
+                    result.dtype_mismatches.append(
+                        f"Band {band_idx} ({spec.name}): dtype "
+                        f"got {src.dtypes[i]}, expected {spec.dtype}"
+                    )
+
+                # nodata check
+                actual_nodata = src.nodata
+                if spec.nodata is not None:
+                    if actual_nodata is None:
+                        result.nodata_mismatches.append(
+                            f"Band {band_idx} ({spec.name}): nodata "
+                            f"got None, expected {_fmt_nodata(spec.nodata)}"
+                        )
+                    elif _isnan(spec.nodata):
+                        if not (_isnan(actual_nodata) if actual_nodata is not None else False):
+                            result.nodata_mismatches.append(
+                                f"Band {band_idx} ({spec.name}): nodata "
+                                f"got {actual_nodata}, expected NaN"
+                            )
+                    elif actual_nodata != spec.nodata:
+                        result.nodata_mismatches.append(
+                            f"Band {band_idx} ({spec.name}): nodata "
+                            f"got {actual_nodata}, expected {_fmt_nodata(spec.nodata)}"
+                        )
+
+            # channel order: persisted descriptions carry the channel name
+            if src.descriptions and len(expected_contracts) > 1:
+                actual_names = [
+                    (d.split(";")[0].strip() if d else "")
+                    for d in src.descriptions[:n_bands]
+                ]
+                expected_names = [s.name for s in expected_contracts[:n_bands]]
+                if actual_names != expected_names:
+                    result.channel_order_mismatches.append(
+                        f"Channel order: got {actual_names}, expected {expected_names}"
+                    )
+
+            # documented writer limitations, not failures
+            for i, spec in enumerate(expected_contracts[:n_bands], 1):
+                if spec.description:
+                    result.prose_description_absent.append(
+                        f"Band {i} ({spec.name}): prose description not persisted by writer"
+                    )
+                if spec.unit:
+                    result.unit_absent.append(
+                        f"Band {i} ({spec.name}): "
+                        f"unit '{spec.unit}' not persisted by writer"
+                    )
+
+    except Exception as exc:
+        result.dtype_mismatches.append(f"Contract validation failed: {exc}")
+
+    return result
+
+
 def validate_cogeo_internal(uri: str):
     """Validate COG internal structure with shared strict validation.
 
@@ -152,5 +269,6 @@ __all__ = [
     "gdal_uri",
     "inspect_asset",
     "validate_cog_structure",
+    "validate_band_contracts",
     "validate_cogeo_internal",
 ]

@@ -28,7 +28,12 @@ from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io.run_logging import RunLogSession, log_event
 from berlin_lst_downscaling.data.profiling.inspection import inspect_asset
-from berlin_lst_downscaling.data.profiling.inventory import build_all_assets, select_assets
+from berlin_lst_downscaling.data.profiling.inventory import (
+    build_all_assets,
+    check_dynamic_coverage,
+    check_manifest_ledger_completeness,
+    select_assets,
+)
 from berlin_lst_downscaling.data.profiling.models import ProfileRow
 from berlin_lst_downscaling.data.profiling.report import emit_artifacts
 from berlin_lst_downscaling.data.profiling.statistics import profile_row_statistics
@@ -51,6 +56,40 @@ def run_profiling(cfg: DictConfig) -> int:
         static_derived_root=str(cfg.get("static_derived_root", "gs://berlin-lst-data/static/derived/full")),
     )
     log_event(_logger, logging.INFO, "inventory_built", total_assets=len(assets))
+
+    # Check manifest↔ledger completeness (hard failure on ledger read errors)
+    log_event(_logger, logging.INFO, "checking_completeness")
+    completeness = check_manifest_ledger_completeness(
+        manifest_uri=cfg.manifest_uri,
+        ledger_uri=cfg.ard_ledger_uri,
+    )
+    if not completeness.ok:
+        log_event(
+            _logger,
+            logging.WARNING,
+            "completeness_issues",
+            missing=len(completeness.missing_in_ledger),
+            extra=len(completeness.extra_in_ledger),
+            duplicates=len(completeness.duplicate_keys),
+        )
+
+    # Check dynamic coverage against manifest anchors
+    log_event(_logger, logging.INFO, "checking_dynamic_coverage")
+    coverage = check_dynamic_coverage(
+        manifest_uri=cfg.manifest_uri,
+        dynamic_root=cfg.dynamic_root,
+        inference_root=cfg.inference_root,
+    )
+    for c in coverage:
+        if not c.ok:
+            log_event(
+                _logger,
+                logging.WARNING,
+                "dynamic_coverage_issue",
+                partition=c.partition,
+                expected=c.expected,
+                found=c.found,
+            )
 
     # Apply asset selection for smoke runs
     limit = cfg.get("max_assets_per_source_and_partition")
@@ -77,7 +116,7 @@ def run_profiling(cfg: DictConfig) -> int:
 
     # Emit artifacts
     log_event(_logger, logging.INFO, "emitting_artifacts")
-    emit_artifacts(rows, output_root)
+    emit_artifacts(rows, output_root, completeness=completeness, coverage=coverage)
 
     # Summary
     hard_failures = sum(1 for r in rows if r.has_hard_failure)
