@@ -206,9 +206,8 @@ def validate_qa_flag(asset: ProfileAsset) -> FlagCheckResult:
         if not main_exists:
             errors.append(f"Main COG missing: {asset.cog_uri}")
             return FlagCheckResult(False, errors)
-    except Exception as exc:  # noqa: S110
+    except Exception as exc:
         return FlagCheckResult(False, [f"Main COG check failed: {exc}"])
-
     try:
         if not exists(asset.qa_flag_uri):
             errors.append(f"QA flag COG not found: {asset.qa_flag_uri}")

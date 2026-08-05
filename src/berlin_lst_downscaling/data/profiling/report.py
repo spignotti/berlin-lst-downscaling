@@ -351,12 +351,14 @@ def aggregate_summary(
                     "count": 0,
                     "total_valid": 0,
                     "total_missing": 0,
+                    "total_qa_masked": 0,
                     "min_value": float("inf"),
                     "max_value": float("-inf"),
                 }
             band_stats_agg[stats.band_name]["count"] += 1
             band_stats_agg[stats.band_name]["total_valid"] += stats.valid_count
             band_stats_agg[stats.band_name]["total_missing"] += stats.missing_count
+            band_stats_agg[stats.band_name]["total_qa_masked"] += stats.qa_masked_count
             if stats.valid_count > 0:
                 band_stats_agg[stats.band_name]["min_value"] = min(
                     band_stats_agg[stats.band_name]["min_value"], stats.min_value
