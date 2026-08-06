@@ -106,6 +106,9 @@ uv run python scripts/run_lod_vintages.py --reconcile-only \
 # manifests, no geometry mapping. Rebuilds only the requested products
 # per vintage from existing finalised inputs (building DSMs, corrected
 # vegetation DSM). Currently supports combined_dsm,svf.
+# Ordering: run the full static-derived pipeline first so the corrected
+# vegetation_dsm rebuilds horizon_vegetation (and its provenance hash);
+# only then does the dynamic pipeline invalidate vegetation shadows.
 uv run python scripts/run_lod_vintages.py --derive-only \
     --source-root gs://berlin-lst-data/static/sources/full \
     --derived-root gs://berlin-lst-data/static/derived/full \

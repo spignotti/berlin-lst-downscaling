@@ -1211,11 +1211,12 @@ def derive_vintage_products(
     2024-derived bundle since their inputs are vintage-agnostic.
 
     When ``products`` is given, only those products are computed.
-    ``building_dsm`` and ``horizon_building`` are then resolved from the
-    existing finalised artefacts instead of being recomputed, so a
-    derived-only repair never touches building outputs.  ``svf`` always
-    fingerprints the actual ``combined_dsm`` config hash rather than the
-    geometry ID, so it rebuilds when the vegetation input changes.
+    ``building_dsm``, ``horizon_building``, and — for an svf-only request —
+    ``combined_dsm`` are resolved from the existing finalised artefacts
+    instead of being recomputed, so a derived-only repair never touches
+    building outputs.  ``svf`` always fingerprints the actual
+    ``combined_dsm`` config hash rather than the geometry ID, so it
+    rebuilds when the vegetation input changes.
 
     Parameters
     ----------
@@ -1338,10 +1339,12 @@ def derive_vintage_products(
                 f"{bldg_cog_uri}; combined_dsm cannot be produced."
             )
 
-    combined_dsm = None
-    combined_artifacts = None
+    combined_cog_uri = ""
+    combined_hash = ""
 
-    # 4. combined_dsm — uses vegetation_dsm/2024 from upstream derived root
+    # 4. combined_dsm — uses vegetation_dsm/2024 from upstream derived root.
+    #    When only svf is requested, the existing finalised combined_dsm is
+    #    resolved instead so svf can still fingerprint its actual input.
     if "combined_dsm" in requested:
         veg_dsm_geom = "dgm1-2021__lod2-2024__vh-2020"
         veg_dsm_cog = derived_product_cog(veg_dsm_root, "vegetation_dsm", veg_dsm_geom)
@@ -1367,7 +1370,28 @@ def derive_vintage_products(
         combined_artifacts = finalize_secondary_product(
             combined_dsm, grid, combined_dir, run_id
         )
-        artefacts["combined_dsm"] = combined_artifacts.cog_uri
+        combined_cog_uri = combined_artifacts.cog_uri
+        combined_hash = combined_dsm.config_hash
+        artefacts["combined_dsm"] = combined_cog_uri
+    elif "svf" in requested:
+        combined_cog_uri = derived_product_cog(derived_root, "combined_dsm", geometry_id)
+        combined_complete = (
+            f"{derived_product_dir(derived_root, 'combined_dsm', geometry_id)}/complete.json"
+        )
+        if not exists(combined_cog_uri) or not exists(combined_complete):
+            raise ValueError(
+                "Existing combined_dsm is required but incomplete at "
+                f"{combined_cog_uri}; svf cannot be produced."
+            )
+        combined_prov = (
+            f"{derived_product_dir(derived_root, 'combined_dsm', geometry_id)}/provenance.json"
+        )
+        combined_hash = _read_config_hash(combined_prov)
+        if not combined_hash:
+            raise ValueError(
+                "Existing combined_dsm provenance missing config_hash at "
+                f"{combined_prov}; svf cannot be produced."
+            )
 
     # 5. horizon_building (from building_dsm)
     if "horizon_building" in requested:
@@ -1389,17 +1413,17 @@ def derive_vintage_products(
 
     # 6. svf (from combined_dsm)
     if "svf" in requested:
-        if combined_dsm is None or combined_artifacts is None:
+        if not combined_cog_uri or not combined_hash:
             raise ValueError("svf requires combined_dsm in requested products")
         svf_dir = derived_product_dir(derived_root, "svf", geometry_id)
         svf_product = svf_mod.prepare_svf(
-            combined_artifacts.cog_uri,
+            combined_cog_uri,
             derived_root,
             run_id,
             item_key=geometry_id,
             # lineage: fingerprint the actual combined DSM input, so a
             # corrected vegetation source rebuilds this vintage's SVF.
-            upstream_hash=combined_dsm.config_hash,
+            upstream_hash=combined_hash,
             max_radius=svf_max_radius,
             n_directions=svf_n_directions,
             grid=grid,

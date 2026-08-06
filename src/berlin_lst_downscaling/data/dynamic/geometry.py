@@ -150,7 +150,9 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
     if exists(vh_prov):
         try:
             vh_hash = str(json.loads(read_bytes(vh_prov)).get("config_hash", ""))
-        except Exception:  # noqa: S110 — surfaced as missing hash below
+        except Exception:
+            # Fail closed: an unreadable provenance surfaces as a missing
+            # config hash below, which aborts the geometry load.
             vh_hash = ""
     if not vh_hash:
         errors.append(f"Vegetation horizon provenance missing config_hash: {vh_prov}")
