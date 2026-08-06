@@ -417,6 +417,12 @@ def _run_horizon_svf(
     veg_dsm_cog = derived_product_cog(derived_root, "vegetation_dsm", geometry_id)
     combined_cog = derived_product_cog(derived_root, "combined_dsm", geometry_id)
 
+    # Lineage hashes of the finalised upstream DSMs.  Horizon and SVF
+    # fingerprints must track the actual input — which changes when the
+    # vegetation source is corrected — not the static geometry ID.
+    veg_dsm_hash = _ledger_product_hash(led, "vegetation_dsm", geometry_id)
+    combined_hash = _ledger_product_hash(led, "combined_dsm", geometry_id)
+
     # Building horizon — from building_dsm
     if exists(bldg_dsm_cog):
         horizon_bldg_hash = config_hash_for_horizon("building", max_radius_m, geometry_id)
@@ -504,8 +510,17 @@ def _run_horizon_svf(
         )
 
     # Vegetation horizon — from vegetation_dsm
-    if exists(veg_dsm_cog):
-        horizon_veg_hash = config_hash_for_horizon("vegetation", max_radius_m, geometry_id)
+    if exists(veg_dsm_cog) and not veg_dsm_hash:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "skipped_missing_upstream_hash",
+            product="horizon_vegetation",
+            upstream="vegetation_dsm",
+        )
+        failed += 1
+    elif exists(veg_dsm_cog):
+        horizon_veg_hash = config_hash_for_horizon("vegetation", max_radius_m, veg_dsm_hash)
         todo = reconcile(
             [("horizon_vegetation", "horizon_vegetation", geometry_id)],
             led,
@@ -530,7 +545,7 @@ def _run_horizon_svf(
                     run_id,
                     item_key=geometry_id,
                     component="vegetation",
-                    upstream_hash=geometry_id,
+                    upstream_hash=veg_dsm_hash,
                     max_radius_m=max_radius_m,
                     grid=grid,
                 )
@@ -590,8 +605,17 @@ def _run_horizon_svf(
         )
 
     # SVF — from combined DSM
-    if exists(combined_cog):
-        svf_hash = config_hash_for_svf(svf_max_radius, svf_n_dir, geometry_id)
+    if exists(combined_cog) and not combined_hash:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "skipped_missing_upstream_hash",
+            product="svf",
+            upstream="combined_dsm",
+        )
+        failed += 1
+    elif exists(combined_cog):
+        svf_hash = config_hash_for_svf(svf_max_radius, svf_n_dir, combined_hash)
         todo = reconcile(
             [("svf", "svf", geometry_id)],
             led,
@@ -615,7 +639,7 @@ def _run_horizon_svf(
                     derived_root,
                     run_id,
                     item_key=geometry_id,
-                    upstream_hash=geometry_id,
+                    upstream_hash=combined_hash,
                     max_radius=svf_max_radius,
                     n_directions=svf_n_dir,
                     grid=grid,
@@ -672,6 +696,14 @@ def _run_horizon_svf(
     return failed
 
 # ── helpers ──────────────────────────────────────────────────────────
+
+def _ledger_product_hash(led: SecondaryLedger, item_id: str, geometry_id: str) -> str:
+    """Return the config_hash of a done derived ledger row, else ``""``."""
+    row = led.get(item_id, item_id, geometry_id)
+    if row is None or row.status != "done":
+        return ""
+    return row.config_hash or ""
+
 
 def _banner(
     cfg: DictConfig,

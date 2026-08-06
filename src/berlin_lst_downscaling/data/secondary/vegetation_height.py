@@ -60,7 +60,7 @@ VEGETATION_HEIGHT_LICENSE = "dl-de/zero-2.0"
 
 # ── contract ──────────────────────────────────────────────────────────────
 
-_CONFIG_HASH_PREFIX = "vegetation_height:v2:"
+_CONFIG_HASH_PREFIX = "vegetation_height:v3:"
 
 def contract_for_vegetation_height() -> Contract:
     """Return the output Contract for vegetation-height COGs (2 bands)."""
@@ -114,7 +114,9 @@ def prepare_vegetation_height(
 
     Produces two bands: ``vegetation_height_mean`` (average resampling)
     and ``vegetation_height_max`` (max resampling).  Non-vegetated cells
-    within the AOI are 0; cells outside the AOI remain NaN.
+    within the AOI are 0; cells outside the AOI remain NaN.  Native
+    decimetre values are scaled by 0.1 so the published contract
+    (metres) matches the raster content.
     """
     if vintage != 2020:
         raise ValueError(f"Only vintage 2020 is available; got {vintage}")
@@ -168,13 +170,21 @@ def prepare_vegetation_height(
             dst_nodata=np.nan,
         )
 
-    # ── 4. normalize: non-vegetated → 0, outside AOI → NaN ───────────
+    # ── 4. convert native decimetres to metres ───────────────────────
+    # The official raster stores vegetation heights in decimetres; the
+    # published contract declares metres.  Scale once, before any QA
+    # statistics are derived, so every consumer sees metres.
+    _DM_TO_M = 0.1
+    mean_arr *= _DM_TO_M
+    max_arr *= _DM_TO_M
+
+    # ── 5. normalize: non-vegetated → 0, outside AOI → NaN ───────────
     # Within the AOI, any cell that was NaN (no vegetation) becomes 0.
     # Outside the AOI, cells remain NaN.
     _normalize_non_vegetated(mean_arr, grid)
     _normalize_non_vegetated(max_arr, grid)
 
-    # ── 5. build canonical xr.Dataset ─────────────────────────────────
+    # ── 6. build canonical xr.Dataset ─────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
     ds = xr.Dataset(
@@ -207,6 +217,9 @@ def prepare_vegetation_height(
             "atom_feed": VEGETATION_HEIGHT_ATOM_FEED,
             "csw_record": VEGETATION_HEIGHT_CSW_RECORD,
             "dataset_identifier": VEGETATION_HEIGHT_DATASET_ID,
+            "native_unit": "dm",
+            "output_unit": "m",
+            "unit_conversion_factor": _DM_TO_M,
             "native_metadata": native_meta,
             "bands": ["vegetation_height_mean", "vegetation_height_max"],
             "resampling": {"mean": "average", "max": "max"},

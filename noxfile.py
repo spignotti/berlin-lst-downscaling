@@ -564,14 +564,28 @@ def smoke_static_derived(session: nox.Session) -> None:
         session,
         output_root,
         required_suffixes=(
-            "building_dsm",
-            "vegetation_dsm",
-            "combined_dsm",
-            "horizon_building",
-            "horizon_vegetation",
-            "svf",
+            # Derived products — canonical layout: COG + completion marker
+            # per product under <geometry_id>; ledger under _state/.
+            "ard/static/derived/building_dsm/dgm1-2021__lod2-2024__vh-2020/"
+            "building_dsm_dgm1-2021__lod2-2024__vh-2020.tif",
+            "ard/static/derived/building_dsm/dgm1-2021__lod2-2024__vh-2020/complete.json",
+            "ard/static/derived/vegetation_dsm/dgm1-2021__lod2-2024__vh-2020/"
+            "vegetation_dsm_dgm1-2021__lod2-2024__vh-2020.tif",
+            "ard/static/derived/vegetation_dsm/dgm1-2021__lod2-2024__vh-2020/complete.json",
+            "ard/static/derived/combined_dsm/dgm1-2021__lod2-2024__vh-2020/"
+            "combined_dsm_dgm1-2021__lod2-2024__vh-2020.tif",
+            "ard/static/derived/combined_dsm/dgm1-2021__lod2-2024__vh-2020/complete.json",
+            "ard/static/derived/horizon_building/dgm1-2021__lod2-2024__vh-2020/"
+            "horizon_building_dgm1-2021__lod2-2024__vh-2020.tif",
+            "ard/static/derived/horizon_building/dgm1-2021__lod2-2024__vh-2020/complete.json",
+            "ard/static/derived/horizon_vegetation/dgm1-2021__lod2-2024__vh-2020/"
+            "horizon_vegetation_dgm1-2021__lod2-2024__vh-2020.tif",
+            "ard/static/derived/horizon_vegetation/dgm1-2021__lod2-2024__vh-2020/complete.json",
+            "ard/static/derived/svf/dgm1-2021__lod2-2024__vh-2020/"
+            "svf_dgm1-2021__lod2-2024__vh-2020.tif",
+            "ard/static/derived/svf/dgm1-2021__lod2-2024__vh-2020/complete.json",
+            "_state/static/derived/ledger.parquet",
             "report.json",
-            "ledger.parquet",
         ),
     )
 
