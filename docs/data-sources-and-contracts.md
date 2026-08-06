@@ -102,6 +102,18 @@ uv run python scripts/run_lod_vintages.py --reconcile-only \
     --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
     --vintages 2017,2021,2022
 
+# Derived-only repair — no archives, no morphology publishing, no raw
+# manifests, no geometry mapping. Rebuilds only the requested products
+# per vintage from existing finalised inputs (building DSMs, corrected
+# vegetation DSM). Currently supports combined_dsm,svf.
+uv run python scripts/run_lod_vintages.py --derive-only \
+    --source-root gs://berlin-lst-data/static/sources/full \
+    --derived-root gs://berlin-lst-data/static/derived/full \
+    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
+    --raw-root gs://berlin-lst-data \
+    --vintages 2017,2021,2022 \
+    --derived-products combined_dsm,svf
+
 # Structural validation (fast, no archive download).
 uv run python scripts/validate_lod_vintages.py \
     --source-root gs://berlin-lst-data/static/sources/full \

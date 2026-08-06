@@ -20,6 +20,17 @@ Usage
         --raw-root gs://berlin-lst-data \\
         --vintages 2017,2021,2022
 
+    # Derived-only repair — no archives, no morphology, no mapping.
+    # Rebuilds only combined_dsm + svf per vintage from existing
+    # finalised building DSMs and the corrected vegetation DSM.
+    uv run python scripts/run_lod_vintages.py --derive-only \\
+        --source-root gs://berlin-lst-data/static/sources/full \\
+        --derived-root gs://berlin-lst-data/static/derived/full \\
+        --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \\
+        --raw-root gs://berlin-lst-data \\
+        --vintages 2017,2021,2022 \\
+        --derived-products combined_dsm,svf
+
     # Local smoke against an arbitrary local archive
     uv run python scripts/run_lod_vintages.py --smoke-archive \\
         data/LoD2/LoD2_2022.zip --vintages 2022 \\
@@ -132,6 +143,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-derived",
         action="store_true",
         help="Skip the morphology-dependent derived products.",
+    )
+    parser.add_argument(
+        "--derive-only",
+        action="store_true",
+        help="Skip archive streaming and morphology publishing; derive only "
+        "the products named in --derived-products from existing finalised "
+        "inputs. Never writes archives, raw manifests, or geometry mapping.",
+    )
+    parser.add_argument(
+        "--derived-products",
+        default=None,
+        help="Comma-separated derived products to compute (building_dsm, "
+        "combined_dsm, horizon_building, svf). Required with --derive-only, "
+        "which supports only combined_dsm,svf for the vegetation repair.",
     )
     parser.add_argument(
         "--skip-raw-upload",
@@ -545,6 +570,118 @@ def _reconcile_only(
     return 0
 
 
+def _usage_error(message: str) -> None:
+    """Abort with a usage error on stderr and a non-zero exit code."""
+    raise SystemExit(f"error: {message}")
+
+
+def _run_archive_vintages(
+    args: argparse.Namespace,
+    run_id: str,
+    grid,
+    vintages: list[int],
+) -> tuple[dict[int, dict], list[str]]:
+    """Stream archives and publish vintage morphology products.
+
+    Returns ``(vintage_artifacts, failures)``.  Skipped entirely in
+    ``--derive-only`` mode, which never touches archives, raw manifests,
+    or source products.
+    """
+    vintage_artifacts: dict[int, dict] = {}
+    failures: list[str] = []
+
+    for vintage in vintages:
+        try:
+            # 1. Materialise the LoD2 archive for this vintage
+            #    (always the 2021 archive for vintage=2017).
+            source_vintage = 2021 if vintage == 2017 else vintage
+
+            if args.smoke_archive:
+                archive_ctx = _smoke_archive_ctx(
+                    _VINTAGE_SOURCES[source_vintage],
+                    Path(args.smoke_archive),
+                )
+            elif args.dry_run:
+                log_event(
+                    _logger,
+                    logging.WARNING,
+                    "dry_run_no_archive",
+                    vintage=vintage,
+                )
+                continue
+            else:
+                archive_ctx = materialize_vintage_archive(
+                    _VINTAGE_SOURCES[source_vintage], args.raw_root
+                )
+
+            with archive_ctx as lod2_mat:
+                # 2. Materialise the LoD1 archive when filtering 2017
+                lod1_mat = None
+                lod1_ctx = None
+                if vintage == 2017:
+                    if args.smoke_archive:
+                        lod1_ctx = _smoke_archive_ctx(
+                            _VINTAGE_SOURCES[2017],
+                            Path(args.smoke_archive),
+                        )
+                    else:
+                        lod1_ctx = materialize_vintage_archive(
+                            _VINTAGE_SOURCES[2017], args.raw_root
+                        )
+
+                if lod1_ctx is not None:
+                    with lod1_ctx as lod1_mat_in:
+                        lod1_mat = lod1_mat_in
+                        artifacts, _stats = _publish_one_vintage(
+                            vintage,
+                            args,
+                            run_id,
+                            grid,
+                            lod1_mat,
+                            lod2_mat,
+                        )
+                else:
+                    artifacts, _stats = _publish_one_vintage(
+                        vintage,
+                        args,
+                        run_id,
+                        grid,
+                        None,
+                        lod2_mat,
+                    )
+
+                raw_manifest_uri = _publish_archive_manifest(
+                    args.raw_root, args.source_root, lod2_mat
+                )
+                if lod1_mat is not None:
+                    _publish_archive_manifest(
+                        args.raw_root, args.source_root, lod1_mat
+                    )
+
+                vintage_artifacts[vintage] = {
+                    "geometry_id": vintage_geometry_id(vintage),
+                    "lod2_morphology": artifacts.cog_uri,
+                    "stac": artifacts.stac_uri,
+                    "provenance": artifacts.provenance_uri,
+                    "completion": artifacts.completion_uri,
+                    "raw_manifest": raw_manifest_uri,
+                    "archive_uri": artifacts.archive_uri,
+                    "archive_sha256": artifacts.archive_sha256,
+                    "archive_byte_count": artifacts.archive_byte_count,
+                }
+        except Exception as exc:
+            log_event(
+                _logger,
+                logging.ERROR,
+                "vintage_failed",
+                vintage=vintage,
+                error=str(exc),
+            )
+            failures.append(f"{vintage}: {exc}")
+
+    return vintage_artifacts, failures
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     vintages = _resolve_vintages(args.vintages)
@@ -578,6 +715,29 @@ def main(argv: list[str] | None = None) -> int:
                 elapsed_s=round(time.perf_counter() - t0, 1),
             )
             return rc
+
+    # ── derive-only mode validation ───────────────────────────────────
+    derived_products: list[str] | None = None
+    if args.derived_products:
+        derived_products = [
+            p.strip() for p in args.derived_products.split(",") if p.strip()
+        ]
+    if args.derive_only:
+        if args.dry_run:
+            _usage_error("--dry-run cannot be combined with --derive-only")
+        if args.skip_derived:
+            _usage_error("--skip-derived cannot be combined with --derive-only")
+        if args.reconcile_only:
+            _usage_error("--reconcile-only cannot be combined with --derive-only")
+        if args.stage_local:
+            _usage_error("--stage-local cannot be combined with --derive-only")
+        if not derived_products:
+            _usage_error("--derived-products is required with --derive-only")
+        unsupported = set(derived_products) - {"combined_dsm", "svf"}
+        if unsupported:
+            _usage_error(
+                f"--derive-only supports only combined_dsm,svf; got: {sorted(unsupported)}"
+            )
 
     log_root = args.source_root
     grid = None
@@ -631,95 +791,12 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(f"stage-{args.stage_local}: {exc}")
 
         vintage_artifacts: dict[int, dict] = {}
-
-        for vintage in vintages:
-            try:
-                # 1. Materialise the LoD2 archive for this vintage
-                #    (always the 2021 archive for vintage=2017).
-                source_vintage = 2021 if vintage == 2017 else vintage
-
-                if args.smoke_archive:
-                    archive_ctx = _smoke_archive_ctx(
-                        _VINTAGE_SOURCES[source_vintage],
-                        Path(args.smoke_archive),
-                    )
-                elif args.dry_run:
-                    log_event(
-                        _logger,
-                        logging.WARNING,
-                        "dry_run_no_archive",
-                        vintage=vintage,
-                    )
-                    continue
-                else:
-                    archive_ctx = materialize_vintage_archive(
-                        _VINTAGE_SOURCES[source_vintage], args.raw_root
-                    )
-
-                with archive_ctx as lod2_mat:
-                    # 2. Materialise the LoD1 archive when filtering 2017
-                    lod1_mat = None
-                    lod1_ctx = None
-                    if vintage == 2017:
-                        if args.smoke_archive:
-                            lod1_ctx = _smoke_archive_ctx(
-                                _VINTAGE_SOURCES[2017],
-                                Path(args.smoke_archive),
-                            )
-                        else:
-                            lod1_ctx = materialize_vintage_archive(
-                                _VINTAGE_SOURCES[2017], args.raw_root
-                            )
-
-                    if lod1_ctx is not None:
-                        with lod1_ctx as lod1_mat_in:
-                            lod1_mat = lod1_mat_in
-                            artifacts, _stats = _publish_one_vintage(
-                                vintage,
-                                args,
-                                run_id,
-                                grid,
-                                lod1_mat,
-                                lod2_mat,
-                            )
-                    else:
-                        artifacts, _stats = _publish_one_vintage(
-                            vintage,
-                            args,
-                            run_id,
-                            grid,
-                            None,
-                            lod2_mat,
-                        )
-
-                    raw_manifest_uri = _publish_archive_manifest(
-                        args.raw_root, args.source_root, lod2_mat
-                    )
-                    if lod1_mat is not None:
-                        _publish_archive_manifest(
-                            args.raw_root, args.source_root, lod1_mat
-                        )
-
-                    vintage_artifacts[vintage] = {
-                        "geometry_id": vintage_geometry_id(vintage),
-                        "lod2_morphology": artifacts.cog_uri,
-                        "stac": artifacts.stac_uri,
-                        "provenance": artifacts.provenance_uri,
-                        "completion": artifacts.completion_uri,
-                        "raw_manifest": raw_manifest_uri,
-                        "archive_uri": artifacts.archive_uri,
-                        "archive_sha256": artifacts.archive_sha256,
-                        "archive_byte_count": artifacts.archive_byte_count,
-                    }
-            except Exception as exc:
-                log_event(
-                    _logger,
-                    logging.ERROR,
-                    "vintage_failed",
-                    vintage=vintage,
-                    error=str(exc),
-                )
-                failures.append(f"{vintage}: {exc}")
+        archive_failures: list[str] = []
+        if not args.derive_only:
+            vintage_artifacts, archive_failures = _run_archive_vintages(
+                args, run_id, grid, vintages
+            )
+            failures.extend(archive_failures)
 
         # Derived products (only after every vintage succeeded)
         derived_success: dict[int, dict] = {}
@@ -736,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
                         upstream_source_root=upstream_src,
                         upstream_derived_root=upstream_drv,
                         grid=grid,
+                        products=derived_products,
                     )
                     derived_success[vintage] = artefact
                 except Exception as exc:

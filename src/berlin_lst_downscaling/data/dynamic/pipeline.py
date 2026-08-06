@@ -30,6 +30,7 @@ from berlin_lst_downscaling.data.dynamic.paths import ledger_path, scene_product
 from berlin_lst_downscaling.data.dynamic.schema import (
     config_hash_for_dynamic,
     config_hash_for_era5,
+    config_hash_for_shadow_vegetation,
 )
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
@@ -134,10 +135,19 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
         mapping.content_hash,
         output_root,
     )
-    shadow_hash = config_hash_for_dynamic(
+    # Building shadows keep the legacy dynamic fingerprint; vegetation
+    # shadows additionally track the finalised vegetation horizon's hash
+    # so a corrected horizon invalidates only the vegetation shadows.
+    shadow_hash_building = config_hash_for_dynamic(
         manifest_report.manifest_hash,
         mapping.content_hash,
         output_root,
+    )
+    shadow_hash_vegetation = config_hash_for_shadow_vegetation(
+        manifest_report.manifest_hash,
+        mapping.content_hash,
+        output_root,
+        mapping.vegetation_horizon_hash,
     )
 
     grid = canon_grid_10m()
@@ -286,14 +296,18 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                         if component == "building":
                             horizon_uri = scene_geom.building_horizon_uri
                             horizon_geom_id = scene_geom.building_geometry_id
+                            comp_shadow_hash = shadow_hash_building
+                            comp_horizon_hash = ""
                         else:
                             horizon_uri = scene_geom.vegetation_horizon_uri
                             horizon_geom_id = "dgm1-2021__lod2-2024__vh-2020"
+                            comp_shadow_hash = shadow_hash_vegetation
+                            comp_horizon_hash = scene_geom.vegetation_horizon_hash
 
                         shadow_todo = reconcile(
                             [(shadow_item_id, shadow_source, scene.scene_id)],
                             led,
-                            shadow_hash,
+                            comp_shadow_hash,
                         )
 
                         if shadow_todo:
@@ -322,7 +336,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                     run_id=run_id,
                                     grid=grid,
                                     geometry_id=horizon_geom_id,
-                                    geometry_hash=shadow_hash,
+                                    config_hash=comp_shadow_hash,
+                                    horizon_config_hash=comp_horizon_hash,
                                     acquisition_datetime=scene.acquisition_datetime,
                                 )
 
@@ -342,7 +357,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                                         period_or_vintage=scene.scene_id,
                                         status="done",
                                         run_id=run_id,
-                                        config_hash=shadow_hash,
+                                        config_hash=comp_shadow_hash,
                                         output_uri=artifacts.cog_uri,
                                         stac_uri=artifacts.stac_uri,
                                         provenance_uri=artifacts.provenance_uri,

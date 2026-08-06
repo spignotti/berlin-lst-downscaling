@@ -74,9 +74,37 @@ def config_hash_for_era5(
     )
     return sha256(payload.encode()).hexdigest()[:16]
 
+def config_hash_for_shadow_vegetation(
+    manifest_hash: str,
+    geometry_mapping_hash: str,
+    era5_cache_root: str,
+    vegetation_horizon_hash: str,
+    antecedent_hours: int = 72,
+) -> str:
+    """Config hash for vegetation shadow products.
+
+    Extends the building-shadow fingerprint with the finalised vegetation
+    horizon's config hash, so a corrected horizon (e.g. after a vegetation
+    unit fix) invalidates only the vegetation shadows.
+    """
+    payload = json.dumps(
+        {
+            "manifest_hash": manifest_hash,
+            "geometry_mapping_hash": geometry_mapping_hash,
+            "era5_channels": list(ERA5_CHANNELS),
+            "shadow_channels": ["shadow_vegetation"],
+            "era5_cache_root": era5_cache_root,
+            "antecedent_hours": antecedent_hours,
+            "vegetation_horizon_hash": vegetation_horizon_hash,
+        },
+        sort_keys=True,
+    )
+    return sha256(payload.encode()).hexdigest()[:16]
+
 __all__ = [
     "ERA5_CHANNELS",
     "SHADOW_CHANNELS",
     "config_hash_for_dynamic",
     "config_hash_for_era5",
+    "config_hash_for_shadow_vegetation",
 ]

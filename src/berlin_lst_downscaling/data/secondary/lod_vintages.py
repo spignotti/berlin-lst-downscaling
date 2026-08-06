@@ -1178,6 +1178,9 @@ def vintage_geometry_id(vintage: int) -> str:
     return f"dgm1-2021__lod2-{vintage}__vh-2020"
 
 
+_DERIVED_PRODUCTS = ("building_dsm", "combined_dsm", "horizon_building", "svf")
+
+
 def derive_vintage_products(
     vintage: int,
     source_root: str,
@@ -1190,6 +1193,7 @@ def derive_vintage_products(
     max_radius_m: float = 200.0,
     svf_max_radius: int = 3,
     svf_n_directions: int = 16,
+    products: list[str] | None = None,
 ) -> dict:
     """Build the morphology-dependent derived products for one vintage.
 
@@ -1206,6 +1210,13 @@ def derive_vintage_products(
     ``horizon_vegetation``) are reused unchanged from the existing
     2024-derived bundle since their inputs are vintage-agnostic.
 
+    When ``products`` is given, only those products are computed.
+    ``building_dsm`` and ``horizon_building`` are then resolved from the
+    existing finalised artefacts instead of being recomputed, so a
+    derived-only repair never touches building outputs.  ``svf`` always
+    fingerprints the actual ``combined_dsm`` config hash rather than the
+    geometry ID, so it rebuilds when the vegetation input changes.
+
     Parameters
     ----------
     upstream_source_root :
@@ -1216,6 +1227,9 @@ def derive_vintage_products(
         Optional override for ``derived_root`` used to locate the
         vintage-agnostic ``vegetation_dsm`` predecessor.  Defaults to
         *derived_root*.
+    products :
+        Optional subset of ``_DERIVED_PRODUCTS`` to compute.  Defaults to
+        all four.
     """
     from berlin_lst_downscaling.data.io.storage import exists
     from berlin_lst_downscaling.data.secondary import dsm as dsm_mod
@@ -1289,76 +1303,109 @@ def derive_vintage_products(
         "vh": vh.config_hash,
     }
 
-    artefacts: dict[str, str] = {}
+    requested = set(products) if products is not None else set(_DERIVED_PRODUCTS)
+    unknown = requested - set(_DERIVED_PRODUCTS)
+    if unknown:
+        raise ValueError(f"Unsupported derived products: {sorted(unknown)}")
 
-    # 3. building_dsm
-    bldg_dir = derived_product_dir(derived_root, "building_dsm", geometry_id)
-    building_dsm = dsm_mod.prepare_building_dsm(
-        terrain.cog_uri,
-        lod2_cog,
-        derived_root,
-        run_id,
-        item_key=geometry_id,
-        upstream_hashes=upstream_hashes,
-        grid=grid,
-    )
-    building_dsm_artifacts = finalize_secondary_product(building_dsm, grid, bldg_dir, run_id)
-    artefacts["building_dsm"] = building_dsm_artifacts.cog_uri
+    artefacts: dict[str, str] = {}
+    bldg_cog_uri = ""
+
+    # 3. building_dsm — computed when requested; otherwise resolved from the
+    #    existing finalised product so repair runs never touch building data.
+    if "building_dsm" in requested:
+        bldg_dir = derived_product_dir(derived_root, "building_dsm", geometry_id)
+        building_dsm = dsm_mod.prepare_building_dsm(
+            terrain.cog_uri,
+            lod2_cog,
+            derived_root,
+            run_id,
+            item_key=geometry_id,
+            upstream_hashes=upstream_hashes,
+            grid=grid,
+        )
+        building_dsm_artifacts = finalize_secondary_product(building_dsm, grid, bldg_dir, run_id)
+        bldg_cog_uri = building_dsm_artifacts.cog_uri
+        artefacts["building_dsm"] = bldg_cog_uri
+    else:
+        bldg_cog_uri = derived_product_cog(derived_root, "building_dsm", geometry_id)
+        bldg_complete = (
+            f"{derived_product_dir(derived_root, 'building_dsm', geometry_id)}/complete.json"
+        )
+        if not exists(bldg_cog_uri) or not exists(bldg_complete):
+            raise ValueError(
+                "Existing building_dsm is required but incomplete at "
+                f"{bldg_cog_uri}; combined_dsm cannot be produced."
+            )
+
+    combined_dsm = None
+    combined_artifacts = None
 
     # 4. combined_dsm — uses vegetation_dsm/2024 from upstream derived root
-    veg_dsm_cog = derived_product_cog(
-        veg_dsm_root, "vegetation_dsm", "dgm1-2021__lod2-2024__vh-2020"
-    )
-    if not exists(veg_dsm_cog):
-        raise ValueError(
-            "Required vegetation_dsm/2024 is missing at "
-            f"{veg_dsm_cog}; combined_dsm cannot be produced."
+    if "combined_dsm" in requested:
+        veg_dsm_geom = "dgm1-2021__lod2-2024__vh-2020"
+        veg_dsm_cog = derived_product_cog(veg_dsm_root, "vegetation_dsm", veg_dsm_geom)
+        veg_dsm_complete = (
+            f"{derived_product_dir(veg_dsm_root, 'vegetation_dsm', veg_dsm_geom)}/complete.json"
         )
+        if not exists(veg_dsm_cog) or not exists(veg_dsm_complete):
+            raise ValueError(
+                "Required vegetation_dsm/2024 is missing at "
+                f"{veg_dsm_cog}; combined_dsm cannot be produced."
+            )
 
-    combined_dir = derived_product_dir(derived_root, "combined_dsm", geometry_id)
-    combined_dsm = dsm_mod.prepare_combined_dsm(
-        building_dsm_artifacts.cog_uri,
-        veg_dsm_cog,
-        derived_root,
-        run_id,
-        item_key=geometry_id,
-        upstream_hashes=upstream_hashes,
-        grid=grid,
-    )
-    combined_artifacts = finalize_secondary_product(combined_dsm, grid, combined_dir, run_id)
-    artefacts["combined_dsm"] = combined_artifacts.cog_uri
+        combined_dir = derived_product_dir(derived_root, "combined_dsm", geometry_id)
+        combined_dsm = dsm_mod.prepare_combined_dsm(
+            bldg_cog_uri,
+            veg_dsm_cog,
+            derived_root,
+            run_id,
+            item_key=geometry_id,
+            upstream_hashes=upstream_hashes,
+            grid=grid,
+        )
+        combined_artifacts = finalize_secondary_product(
+            combined_dsm, grid, combined_dir, run_id
+        )
+        artefacts["combined_dsm"] = combined_artifacts.cog_uri
 
     # 5. horizon_building (from building_dsm)
-    horizon_dir = derived_product_dir(derived_root, "horizon_building", geometry_id)
-    horizon_bldg = horizon_mod.prepare_horizon(
-        building_dsm_artifacts.cog_uri,
-        derived_root,
-        run_id,
-        item_key=geometry_id,
-        component="building",
-        upstream_hash=geometry_id,
-        max_radius_m=max_radius_m,
-        grid=grid,
-    )
-    horizon_artifacts = finalize_secondary_product(
-        horizon_bldg, grid, horizon_dir, run_id
-    )
-    artefacts["horizon_building"] = horizon_artifacts.cog_uri
+    if "horizon_building" in requested:
+        horizon_dir = derived_product_dir(derived_root, "horizon_building", geometry_id)
+        horizon_bldg = horizon_mod.prepare_horizon(
+            bldg_cog_uri,
+            derived_root,
+            run_id,
+            item_key=geometry_id,
+            component="building",
+            upstream_hash=geometry_id,
+            max_radius_m=max_radius_m,
+            grid=grid,
+        )
+        horizon_artifacts = finalize_secondary_product(
+            horizon_bldg, grid, horizon_dir, run_id
+        )
+        artefacts["horizon_building"] = horizon_artifacts.cog_uri
 
     # 6. svf (from combined_dsm)
-    svf_dir = derived_product_dir(derived_root, "svf", geometry_id)
-    svf_product = svf_mod.prepare_svf(
-        combined_artifacts.cog_uri,
-        derived_root,
-        run_id,
-        item_key=geometry_id,
-        upstream_hash=geometry_id,
-        max_radius=svf_max_radius,
-        n_directions=svf_n_directions,
-        grid=grid,
-    )
-    svf_artifacts = finalize_secondary_product(svf_product, grid, svf_dir, run_id)
-    artefacts["svf"] = svf_artifacts.cog_uri
+    if "svf" in requested:
+        if combined_dsm is None or combined_artifacts is None:
+            raise ValueError("svf requires combined_dsm in requested products")
+        svf_dir = derived_product_dir(derived_root, "svf", geometry_id)
+        svf_product = svf_mod.prepare_svf(
+            combined_artifacts.cog_uri,
+            derived_root,
+            run_id,
+            item_key=geometry_id,
+            # lineage: fingerprint the actual combined DSM input, so a
+            # corrected vegetation source rebuilds this vintage's SVF.
+            upstream_hash=combined_dsm.config_hash,
+            max_radius=svf_max_radius,
+            n_directions=svf_n_directions,
+            grid=grid,
+        )
+        svf_artifacts = finalize_secondary_product(svf_product, grid, svf_dir, run_id)
+        artefacts["svf"] = svf_artifacts.cog_uri
 
     log_event(
         _logger,

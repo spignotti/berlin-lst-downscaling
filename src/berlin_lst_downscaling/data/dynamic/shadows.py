@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import math
 from datetime import UTC, datetime
-from hashlib import sha256
 
 import numpy as np
 import rioxarray  # noqa: F401
@@ -151,7 +150,8 @@ def prepare_shadow(
     *,
     grid=None,
     geometry_id: str = "",
-    geometry_hash: str = "",
+    config_hash: str = "",
+    horizon_config_hash: str = "",
     acquisition_datetime: datetime | None = None,
     day_of_year: int | None = None,
     scene_year: int | None = None,
@@ -170,6 +170,12 @@ def prepare_shadow(
         Landsat scene ID.
     output_root, run_id :
         Pipeline context.
+    config_hash :
+        Caller-selected lineage fingerprint.  Used verbatim as the product's
+        config hash so ledger, STAC, and provenance agree on the same value.
+    horizon_config_hash :
+        Config hash of the finalised horizon product (vegetation only);
+        recorded in provenance for traceability.
     acquisition_datetime :
         Scene acquisition time (UTC). Required for correct provenance.
     day_of_year :
@@ -178,7 +184,7 @@ def prepare_shadow(
         Scene year. Derived from acquisition_datetime if not given.
     """
     grid = grid or canon_grid_10m()
-    c_hash = sha256(f"shadow_{component}:{scene_id}".encode()).hexdigest()[:12]
+    c_hash = config_hash
 
     # Derive temporal fields from acquisition_datetime
     if scene_year is None and acquisition_datetime is not None:
@@ -232,6 +238,7 @@ def prepare_shadow(
         nominal_interval=vintage_interval(scene_year),
         source_metadata={
             "horizon_uri": horizon_uri,
+            "horizon_config_hash": horizon_config_hash,
             "solar_azimuth_deg": round(azimuth_deg, 3),
             "solar_elevation_deg": round(elevation_deg, 3),
             "geometry_id": geometry_id,

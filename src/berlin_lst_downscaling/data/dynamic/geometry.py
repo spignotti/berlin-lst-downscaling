@@ -30,6 +30,7 @@ class GeometryMapping:
     vintages: dict[int, dict]
     building_horizons: dict[int, str]  # vintage -> horizon COG URI
     vegetation_horizon_uri: str  # fixed VH-2020 horizon
+    vegetation_horizon_hash: str  # config hash of the finalised VH horizon
 
 @dataclass
 class SceneGeometry:
@@ -40,6 +41,7 @@ class SceneGeometry:
     building_geometry_id: str
     building_horizon_uri: str
     vegetation_horizon_uri: str
+    vegetation_horizon_hash: str
 
 @dataclass
 class GeometryMappingReport:
@@ -63,7 +65,8 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
     - All years 2017–2026 are covered.
     - No future vintage is assigned to any year.
     - All referenced building horizon COGs and completion markers exist.
-    - Vegetation horizon (VH-2020) exists.
+    - Vegetation horizon (VH-2020) exists and its provenance carries a
+      config hash (the lineage fingerprint for vegetation shadows).
     """
     errors: list[str] = []
 
@@ -134,8 +137,23 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
         f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
         f"horizon_vegetation/{vh_geom_id}/complete.json"
     )
+    vh_prov = (
+        f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+        f"horizon_vegetation/{vh_geom_id}/provenance.json"
+    )
     if not exists(vh_uri) or not exists(vh_comp):
         errors.append(f"Vegetation horizon incomplete: geom_id={vh_geom_id}")
+
+    # The vegetation horizon's config hash is the lineage fingerprint for
+    # vegetation shadows — a corrected horizon must invalidate them.
+    vh_hash = ""
+    if exists(vh_prov):
+        try:
+            vh_hash = str(json.loads(read_bytes(vh_prov)).get("config_hash", ""))
+        except Exception:  # noqa: S110 — surfaced as missing hash below
+            vh_hash = ""
+    if not vh_hash:
+        errors.append(f"Vegetation horizon provenance missing config_hash: {vh_prov}")
 
     if errors:
         return GeometryMappingReport(errors=errors)
@@ -149,6 +167,7 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
         vintages={int(k): v for k, v in vintages.items()},
         building_horizons=building_horizons,
         vegetation_horizon_uri=vh_uri,
+        vegetation_horizon_hash=vh_hash,
     )
 
     log_event(
@@ -191,6 +210,7 @@ def resolve_scene_geometry(
         building_geometry_id=geometry_id,
         building_horizon_uri=building_horizon,
         vegetation_horizon_uri=mapping.vegetation_horizon_uri,
+        vegetation_horizon_hash=mapping.vegetation_horizon_hash,
     )
 
 __all__ = [
