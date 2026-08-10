@@ -84,12 +84,14 @@ from berlin_lst_downscaling.data.secondary.citygml import (
     parse_lod1_footprints,
     parse_lod2_buildings,
 )
+from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.lod2 import (
     config_hash_for_vintage,
     contract_for_lod2_morphology,
 )
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
+    ProductArtifacts,
     finalize_secondary_product,
     vintage_interval,
 )
@@ -1237,6 +1239,7 @@ def derive_vintage_products(
     from berlin_lst_downscaling.data.secondary import horizon as horizon_mod
     from berlin_lst_downscaling.data.secondary import svf as svf_mod
     from berlin_lst_downscaling.data.secondary.paths import (
+        derived_ledger_path,
         derived_product_cog,
         derived_product_dir,
         source_product_cog,
@@ -1311,6 +1314,7 @@ def derive_vintage_products(
 
     artefacts: dict[str, str] = {}
     bldg_cog_uri = ""
+    ledger_rows: list[SecondaryLedgerRow] = []
 
     # 3. building_dsm — computed when requested; otherwise resolved from the
     #    existing finalised product so repair runs never touch building data.
@@ -1328,6 +1332,15 @@ def derive_vintage_products(
         building_dsm_artifacts = finalize_secondary_product(building_dsm, grid, bldg_dir, run_id)
         bldg_cog_uri = building_dsm_artifacts.cog_uri
         artefacts["building_dsm"] = bldg_cog_uri
+        ledger_rows.append(
+            _ledger_row(
+                "building_dsm",
+                geometry_id,
+                run_id,
+                building_dsm.config_hash,
+                building_dsm_artifacts,
+            )
+        )
     else:
         bldg_cog_uri = derived_product_cog(derived_root, "building_dsm", geometry_id)
         bldg_complete = (
@@ -1373,6 +1386,15 @@ def derive_vintage_products(
         combined_cog_uri = combined_artifacts.cog_uri
         combined_hash = combined_dsm.config_hash
         artefacts["combined_dsm"] = combined_cog_uri
+        ledger_rows.append(
+            _ledger_row(
+                "combined_dsm",
+                geometry_id,
+                run_id,
+                combined_dsm.config_hash,
+                combined_artifacts,
+            )
+        )
     elif "svf" in requested:
         combined_cog_uri = derived_product_cog(derived_root, "combined_dsm", geometry_id)
         combined_complete = (
@@ -1410,6 +1432,15 @@ def derive_vintage_products(
             horizon_bldg, grid, horizon_dir, run_id
         )
         artefacts["horizon_building"] = horizon_artifacts.cog_uri
+        ledger_rows.append(
+            _ledger_row(
+                "horizon_building",
+                geometry_id,
+                run_id,
+                horizon_bldg.config_hash,
+                horizon_artifacts,
+            )
+        )
 
     # 6. svf (from combined_dsm)
     if "svf" in requested:
@@ -1430,6 +1461,23 @@ def derive_vintage_products(
         )
         svf_artifacts = finalize_secondary_product(svf_product, grid, svf_dir, run_id)
         artefacts["svf"] = svf_artifacts.cog_uri
+        ledger_rows.append(
+            _ledger_row(
+                "svf",
+                geometry_id,
+                run_id,
+                svf_product.config_hash,
+                svf_artifacts,
+            )
+        )
+
+    # Persist the derived ledger so rows stay consistent with the artefacts
+    # just finalised (mirrors run_derived).  Repair runs never touch the
+    # source ledger, raw archives, or geometry mapping.
+    if ledger_rows:
+        led = SecondaryLedger.open(derived_ledger_path(derived_root))
+        for row in ledger_rows:
+            led.upsert(row)
 
     log_event(
         _logger,
@@ -1456,6 +1504,28 @@ def _read_config_hash(provenance_uri: str) -> str:
         return str(payload.get("config_hash", ""))
     except Exception:  # noqa: S110 — fall through, surface as missing hash
         return ""
+
+
+def _ledger_row(
+    source: str,
+    geometry_id: str,
+    run_id: str,
+    config_hash: str,
+    artifacts: ProductArtifacts,
+) -> SecondaryLedgerRow:
+    """Build a done ledger row for a just-finalised derived product."""
+    return SecondaryLedgerRow(
+        item_id=source,
+        source=source,
+        period_or_vintage=geometry_id,
+        status="done",
+        run_id=run_id,
+        config_hash=config_hash,
+        output_uri=artifacts.cog_uri,
+        stac_uri=artifacts.stac_uri,
+        provenance_uri=artifacts.provenance_uri,
+        completion_uri=artifacts.completion_uri,
+    )
 
 
 # ── local input staging (CLI helper) ─────────────────────────────────
