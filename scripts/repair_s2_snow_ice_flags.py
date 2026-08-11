@@ -582,6 +582,15 @@ def run_restore(cfg: dict[str, Any], repair_id: str) -> int:
     ] + completions
 
     print(f"Restoring repair {repair_id} from {backup_root}")
+    # Mirror publication: remove every existing completion marker up
+    # front (generation-guarded) so no scene advertises completeness
+    # while earlier objects are being restored. They are recreated from
+    # their backups as the final restore step.
+    for uri in completions:
+        snap = snapshot_object(client, uri)
+        if snap is not None:
+            delete_generation(client, uri, if_generation_match=snap["generation"])
+            print(f"  removed stale {uri}")
     for uri in restore_plan:
         backup_uri = f"{backup_root}/{uri.removeprefix('gs://berlin-lst-data/')}"
         data = read_gcs_bytes(client, backup_uri)
