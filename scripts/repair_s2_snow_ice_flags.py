@@ -573,7 +573,9 @@ def run_restore(cfg: dict[str, Any], repair_id: str) -> int:
     restore_uris.update(receipt["reflectance_snapshots"].keys())
     restore_uris.update(receipt["flag_snapshots"].keys())
     restore_uris.update(receipt["sidecar_snapshots"].keys())
-    restore_plan = [str(cfg["ard_ledger_uri"])] + sorted(restore_uris - {str(cfg["ard_ledger_uri"])})
+    restore_plan = [str(cfg["ard_ledger_uri"])] + sorted(
+        restore_uris - {str(cfg["ard_ledger_uri"])}
+    )
 
     print(f"Restoring repair {repair_id} from {backup_root}")
     for uri in restore_plan:
