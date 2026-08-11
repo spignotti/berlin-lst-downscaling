@@ -48,7 +48,8 @@ class Contract:
     FLAG_SHADOW: ClassVar[int] = 1 << 2
     FLAG_CIRRUS: ClassVar[int] = 1 << 3
     FLAG_SATURATED: ClassVar[int] = 1 << 4
-    # bits 5-7 reserved
+    FLAG_SNOW_ICE: ClassVar[int] = 1 << 5
+    # bits 6-7 reserved
 
     # ── helpers ─────────────────────────────────────────────────────
 
@@ -69,7 +70,7 @@ def contract_for_source(source: str) -> Contract:
         target_crs="EPSG:25833",
         output_bands=_bands,  # flag band is separate (own uint8 COG)
         tiling=TilingSpec(),
-        schema_version=6,
+        schema_version=7,
         flag_mode="separate",
     )
 

@@ -39,10 +39,11 @@ def compute_aoi_metrics(
     -------
     dict
         ``aoi_clear_px``, ``aoi_cloudy_px``, ``aoi_shadow_px``,
-        ``aoi_cirrus_px``, ``aoi_saturated_px``, ``aoi_fill_px``,
-        ``aoi_total_px`` (non-fill, non-no-data pixels inside AOI),
-        ``aoi_overlap_px`` (all pixels inside COG∩AOI, including fill),
-        ``aoi_clear_frac`` (clear / total inside AOI, NaN if total=0).
+        ``aoi_cirrus_px``, ``aoi_saturated_px``, ``aoi_snow_ice_px``,
+        ``aoi_fill_px``, ``aoi_total_px`` (non-fill, non-no-data pixels
+        inside AOI), ``aoi_overlap_px`` (all pixels inside COG∩AOI,
+        including fill), ``aoi_clear_frac`` (clear / total inside AOI,
+        NaN if total=0).
     """
     # ── load flag COG ────────────────────────────────────────────────
     with rasterio.open(flag_uri) as src:
@@ -91,18 +92,37 @@ def compute_aoi_metrics(
     shadow_mask = (flag_data & contract.FLAG_SHADOW) != 0
     cirrus_mask = (flag_data & contract.FLAG_CIRRUS) != 0
     saturated_mask = (flag_data & contract.FLAG_SATURATED) != 0
+    snow_ice_mask = (flag_data & contract.FLAG_SNOW_ICE) != 0
 
-    # Clear = not fill, not cloudy, not shadow, not cirrus, not saturated
-    clear_mask = ~fill_mask & ~cloudy_mask & ~shadow_mask & ~cirrus_mask & ~saturated_mask
+    # Clear = no flag bit set at all (equivalent to flag_data == 0).
+    # Any defined flag — including snow/ice — makes the pixel invalid.
+    clear_mask = (
+        ~fill_mask
+        & ~cloudy_mask
+        & ~shadow_mask
+        & ~cirrus_mask
+        & ~saturated_mask
+        & ~snow_ice_mask
+    )
 
     aoi_fill_px = int(np.sum(inside & fill_mask))
     aoi_cloudy_px = int(np.sum(inside & cloudy_mask))
     aoi_shadow_px = int(np.sum(inside & shadow_mask))
     aoi_cirrus_px = int(np.sum(inside & cirrus_mask))
     aoi_saturated_px = int(np.sum(inside & saturated_mask))
+    aoi_snow_ice_px = int(np.sum(inside & snow_ice_mask))
     aoi_clear_px = int(np.sum(inside & clear_mask))
 
-    aoi_total_px = aoi_clear_px + aoi_cloudy_px + aoi_shadow_px + aoi_cirrus_px + aoi_saturated_px
+    # Flag categories are disjoint bits; summing without fill gives the
+    # total non-fill AOI pixels exactly once.
+    aoi_total_px = (
+        aoi_clear_px
+        + aoi_cloudy_px
+        + aoi_shadow_px
+        + aoi_cirrus_px
+        + aoi_saturated_px
+        + aoi_snow_ice_px
+    )
 
     # scenes whose valid data only covers a tiny fraction of the overlap area
     # (e.g. off-target swaths where the COG covers AOI but all LST pixels are NaN).
@@ -116,6 +136,7 @@ def compute_aoi_metrics(
         "aoi_shadow_px": aoi_shadow_px,
         "aoi_cirrus_px": aoi_cirrus_px,
         "aoi_saturated_px": aoi_saturated_px,
+        "aoi_snow_ice_px": aoi_snow_ice_px,
         "aoi_fill_px": aoi_fill_px,
         "aoi_total_px": aoi_total_px,
         "aoi_overlap_px": aoi_overlap_px,

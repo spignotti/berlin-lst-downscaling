@@ -194,6 +194,28 @@ Per-pipeline root shape:
 - ARD `<output_root>/<source>/<scene_id>/<name>.tif`
 - Dynamic `<output_root>/<era5_land|shadow_building|shadow_vegetation>/<scene_id>/<name>.tif`
 
+### ARD flag band
+
+Each ARD scene carries a separate single-band uint8 flag COG
+(`<scene_id>.flag.tif`). Pixels are flagged, never silently deleted —
+downstream consumers (profiling, joint validity masks, QA) treat any
+non-zero flag as invalid. Bit layout (`data/ard/contract.py`, schema
+version 7):
+
+| Bit | Value | Flag | Sources |
+|-----|------:|------|---------|
+| 0 | 1 | fill | all (S2 SCL 0, Landsat QA fill/DN=0, ECOSTRESS cloud/water/QC fill) |
+| 1 | 2 | cloudy | all |
+| 2 | 4 | cloud shadow | S2 SCL 3 (+ directional projection), Landsat QA bit 4 |
+| 3 | 8 | cirrus | S2 SCL 10, Landsat QA bit 2 |
+| 4 | 16 | saturated | S2 SCL 1, ECOSTRESS QC degraded |
+| 5 | 32 | snow/ice | S2 SCL 11 |
+
+Sentinel-2 SCL class 11 (snow/ice) is flagged and excluded from clear
+pixels — matching the selection layer, which already treats SCL 11 as
+not clear. AOI metrics count it as `aoi_snow_ice_px` and include it in
+`aoi_total_px`; `aoi_clear_px` counts only pixels with no flag bit set.
+
 Land/Imperviousness products accept exact COG contracts via
 `data.ard.contract.Contract` (`data.secondary.contract.Contract` was
 consolidated into the ARD contract layer); each `BandSpec` carries

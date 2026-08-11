@@ -166,6 +166,10 @@ def mask_s2(
     # saturated
     flag[scl == 1] |= contract.FLAG_SATURATED
 
+    # snow / ice — SCL class 11 (excluded from clear sky like the
+    # selection layer, which treats SCL 11 as not-clear)
+    flag[scl == 11] |= contract.FLAG_SNOW_ICE
+
     cloud_mask = (scl == 8) | (scl == 9)
     if cloud_mask.any() and sun_elevation_deg > 0.5:
         transform = ds.rio.transform()
@@ -339,7 +343,7 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
 
     return out
 
-_FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated"
+_FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated, bit5=snow_ice"
 
 __all__ = [
     "landsat_qa_to_clear_bits",
