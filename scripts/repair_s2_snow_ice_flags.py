@@ -573,9 +573,13 @@ def run_restore(cfg: dict[str, Any], repair_id: str) -> int:
     restore_uris.update(receipt["reflectance_snapshots"].keys())
     restore_uris.update(receipt["flag_snapshots"].keys())
     restore_uris.update(receipt["sidecar_snapshots"].keys())
-    restore_plan = [str(cfg["ard_ledger_uri"])] + sorted(
-        restore_uris - {str(cfg["ard_ledger_uri"])}
-    )
+    # Non-completion objects first (ledger first), completion markers
+    # last — no scene advertises completeness mid-restore.
+    non_completions = sorted(u for u in restore_uris if not u.endswith("complete.json"))
+    completions = sorted(u for u in restore_uris if u.endswith("complete.json"))
+    restore_plan = [str(cfg["ard_ledger_uri"])] + [
+        u for u in non_completions if u != str(cfg["ard_ledger_uri"])
+    ] + completions
 
     print(f"Restoring repair {repair_id} from {backup_root}")
     for uri in restore_plan:
