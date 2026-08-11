@@ -26,13 +26,14 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import rasterio
-# decision: `# noqa: F401` on the rioxarray import, because its side effect
-# registers the `.rio` accessor required by write_flag_cog_atomic; xarray does
-# not register it via entry points (verified). Repo-standard pattern
-# (masking.py:12); plan-approved. Compensating evidence: bit-probe + dry-run
-# exercise the `.rio` path.
-import rioxarray  # noqa: F401 — registers the .rio accessor (repo-standard, masking.py:12)
+import rioxarray  # noqa: F401  — registers the .rio accessor (repo-standard, masking.py:12)
 import xarray as xr
+
+# decision: the F401 suppression on the explicit rioxarray import above is
+# required because its side effect registers the `.rio` accessor used by
+# write_flag_cog_atomic; xarray does not register it via entry points
+# (verified). Repo-standard pattern (masking.py:12); plan-approved.
+# Compensating evidence: bit-probe + dry-run exercise the `.rio` path.
 
 _logger = logging.getLogger(__name__)
 
