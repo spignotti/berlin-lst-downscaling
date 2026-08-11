@@ -131,6 +131,28 @@ def run_derived(cfg: DictConfig, run_id: str | None = None) -> int:
 
 # ── DSM stage ────────────────────────────────────────────────────────
 
+# Narrowly scoped re-publication hook: only the three Base-DSM products
+# may be forced, so a metadata-lineage repair can never reschedule
+# horizons, SVF, or any other stage.
+_FORCEABLE_DSM_PRODUCTS = ("building_dsm", "vegetation_dsm", "combined_dsm")
+
+
+def _validated_force_dsm_products(cfg: DictConfig) -> set[str]:
+    """Return the validated set of DSM products forced for this run.
+
+    Raises ValueError on unknown names instead of silently ignoring them,
+    so a typo cannot produce a run that publishes nothing.
+    """
+    raw = [str(p) for p in cfg.get("force_dsm_products", []) or []]
+    unknown = set(raw) - set(_FORCEABLE_DSM_PRODUCTS)
+    if unknown:
+        raise ValueError(
+            f"Unsupported force_dsm_products: {sorted(unknown)}; "
+            f"allowed: {list(_FORCEABLE_DSM_PRODUCTS)}"
+        )
+    return set(raw)
+
+
 def _run_dsm_products(
     led: SecondaryLedger,
     cfg: DictConfig,
@@ -167,18 +189,28 @@ def _run_dsm_products(
         log_event(_logger, logging.WARNING, "dsm_skipped_missing_upstream", missing=missing)
         return 1
 
+    # decision: keys match the ``dsm`` preparation readers ("terrain",
+    # "lod2", "vh") so the finalized provenance/STAC fingerprint equals the
+    # ledger fingerprint.  Previously "_hash"-suffixed keys silently fell
+    # through to empty strings in the COG metadata.
     upstream_hashes = {
-        "terrain_hash": terrain.config_hash,
-        "lod2_hash": lod2.config_hash,
-        "vh_hash": vh.config_hash,
+        "terrain": terrain.config_hash,
+        "lod2": lod2.config_hash,
+        "vh": vh.config_hash,
     }
+    force_dsm_products = _validated_force_dsm_products(cfg)
 
     # Building DSM
     bldg_item = "building_dsm"
-    bldg_hash = config_hash_for_dsm("building", **upstream_hashes)
+    bldg_hash = config_hash_for_dsm(
+        "building",
+        terrain_hash=upstream_hashes["terrain"],
+        lod2_hash=upstream_hashes["lod2"],
+        vh_hash=upstream_hashes["vh"],
+    )
     todo = reconcile([(bldg_item, bldg_item, geometry_id)], led, bldg_hash)
 
-    if todo:
+    if todo or bldg_item in force_dsm_products:
         log_event(_logger, logging.INFO, "processing", product="building_dsm")
         led.upsert(
             SecondaryLedgerRow(
@@ -243,10 +275,15 @@ def _run_dsm_products(
 
     # Vegetation DSM
     veg_item = "vegetation_dsm"
-    veg_hash = config_hash_for_dsm("vegetation", **upstream_hashes)
+    veg_hash = config_hash_for_dsm(
+        "vegetation",
+        terrain_hash=upstream_hashes["terrain"],
+        lod2_hash=upstream_hashes["lod2"],
+        vh_hash=upstream_hashes["vh"],
+    )
     todo = reconcile([(veg_item, veg_item, geometry_id)], led, veg_hash)
 
-    if todo:
+    if todo or veg_item in force_dsm_products:
         log_event(_logger, logging.INFO, "processing", product="vegetation_dsm")
         led.upsert(
             SecondaryLedgerRow(
@@ -317,10 +354,15 @@ def _run_dsm_products(
 
     if exists(bldg_cog) and exists(veg_cog):
         combined_item = "combined_dsm"
-        combined_hash = config_hash_for_dsm("combined", **upstream_hashes)
+        combined_hash = config_hash_for_dsm(
+            "combined",
+            terrain_hash=upstream_hashes["terrain"],
+            lod2_hash=upstream_hashes["lod2"],
+            vh_hash=upstream_hashes["vh"],
+        )
         todo = reconcile([(combined_item, combined_item, geometry_id)], led, combined_hash)
 
-        if todo:
+        if todo or combined_item in force_dsm_products:
             log_event(_logger, logging.INFO, "processing", product="combined_dsm")
             led.upsert(
                 SecondaryLedgerRow(

@@ -24,6 +24,10 @@ svf_max_radius: 3
 svf_n_directions: 16
 horizon_max_radius_m: 200
 
+# Optional forced re-publication of Base-DSM products (metadata repair).
+# Values must be a subset of building_dsm, vegetation_dsm, combined_dsm.
+force_dsm_products: []
+
 # Logging
 logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
 
