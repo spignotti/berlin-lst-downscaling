@@ -94,16 +94,9 @@ def compute_aoi_metrics(
     saturated_mask = (flag_data & contract.FLAG_SATURATED) != 0
     snow_ice_mask = (flag_data & contract.FLAG_SNOW_ICE) != 0
 
-    # Clear = no flag bit set at all (equivalent to flag_data == 0).
-    # Any defined flag — including snow/ice — makes the pixel invalid.
-    clear_mask = (
-        ~fill_mask
-        & ~cloudy_mask
-        & ~shadow_mask
-        & ~cirrus_mask
-        & ~saturated_mask
-        & ~snow_ice_mask
-    )
+    # Clear = no flag bit set at all. Any nonzero flag — including
+    # reserved bits 6-7 — makes the pixel invalid.
+    clear_mask = flag_data == 0
 
     aoi_fill_px = int(np.sum(inside & fill_mask))
     aoi_cloudy_px = int(np.sum(inside & cloudy_mask))
@@ -113,16 +106,10 @@ def compute_aoi_metrics(
     aoi_snow_ice_px = int(np.sum(inside & snow_ice_mask))
     aoi_clear_px = int(np.sum(inside & clear_mask))
 
-    # Flag categories are disjoint bits; summing without fill gives the
-    # total non-fill AOI pixels exactly once.
-    aoi_total_px = (
-        aoi_clear_px
-        + aoi_cloudy_px
-        + aoi_shadow_px
-        + aoi_cirrus_px
-        + aoi_saturated_px
-        + aoi_snow_ice_px
-    )
+    # Total non-fill AOI pixels — each pixel counted exactly once, even
+    # when multiple flag bits are set (e.g. projected shadow OR'd onto
+    # cloud).
+    aoi_total_px = int(np.sum(inside & ~fill_mask))
 
     # scenes whose valid data only covers a tiny fraction of the overlap area
     # (e.g. off-target swaths where the COG covers AOI but all LST pixels are NaN).
