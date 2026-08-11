@@ -185,7 +185,7 @@ def _audit_one_scene(
         item = resolve_item_from_href(str(item_href), expected_id=scene_id)
         ds, _ = load_s2_scene(items=[item], bands=["SCL"], resolution=10)
         scl = np.round(ds["SCL"].values.squeeze()).astype(np.uint8)
-    except Exception as exc:  # noqa: BLE001 — record and continue to next scene
+    except Exception as exc:  # record and continue to next scene
         row["error"] = f"SCL reload failed: {exc}"
         return row
 
@@ -196,26 +196,33 @@ def _audit_one_scene(
         return row
     try:
         with rasterio.open(gdal_uri(led.path_flag)) as src:
+            # Full affine comparison (origin, resolution, rotation) against
+            # the canonical 10 m grid — same tolerance style as ARD checks.
             grid_ok = (
                 str(src.crs).upper() == "EPSG:25833"
                 and (src.height, src.width) == (gbox.shape.y, gbox.shape.x)
-                and abs(src.transform.xoff - gbox.transform.xoff) < 0.01
-                and abs(src.transform.yoff - gbox.transform.yoff) < 0.01
+                and all(
+                    abs(g - e) < 0.01
+                    for g, e in zip(src.transform, gbox.transform, strict=True)
+                )
             )
             if not grid_ok:
                 row["error"] = (
                     f"flag COG grid mismatch vs canonical 10 m grid "
                     f"(crs={str(src.crs).upper()}, shape=({src.height},{src.width}), "
-                    f"origin=({src.transform.xoff:.1f},{src.transform.yoff:.1f}))"
+                    f"transform={src.transform})"
                 )
                 return row
             flag = src.read(1)
-    except Exception as exc:  # noqa: BLE001 — record and continue to next scene
+    except Exception as exc:  # record and continue to next scene
         row["error"] = f"flag COG read failed: {exc}"
         return row
 
     if scl.shape != flag.shape:
         row["error"] = f"SCL shape {scl.shape} != flag shape {flag.shape}"
+        return row
+    if scl.shape != aoi_mask.shape:
+        row["error"] = f"SCL shape {scl.shape} != AOI mask shape {aoi_mask.shape}"
         return row
 
     # ── counts within the AOI ────────────────────────────────────────
@@ -250,7 +257,7 @@ def _load_aoi_mask(aoi_mask_uri: str, gbox) -> np.ndarray:
     with rasterio.open(aoi_mask_uri) as src:
         aoi_data = src.read(1)
         destination = np.empty((gbox.shape.y, gbox.shape.x), dtype=aoi_data.dtype)
-        rwarp.reproject(
+        aoi_data, _ = rwarp.reproject(
             source=aoi_data,
             src_transform=src.transform,
             src_width=src.width,
@@ -261,7 +268,7 @@ def _load_aoi_mask(aoi_mask_uri: str, gbox) -> np.ndarray:
             dst_transform=gbox.transform,
             resampling=rwarp.Resampling.nearest,
         )
-    return destination == 1
+    return aoi_data == 1
 
 
 # ── summary + artifacts ─────────────────────────────────────────────

@@ -7,7 +7,8 @@ manifest_uri: null
 # ARD ledger — REQUIRED. Published ledger providing per-scene flag paths.
 ard_ledger_uri: null
 
-# AOI mask on the canonical grid (1 = inside Berlin).
+# Pre-baked Berlin AOI mask (uint8, 1 = inside Berlin); reprojected to
+# the canonical 10 m grid at runtime.
 aoi_mask_uri: "gs://berlin-lst-data/boundaries/aoi_10m.tif"
 
 # Overwrite-only artifact root.
