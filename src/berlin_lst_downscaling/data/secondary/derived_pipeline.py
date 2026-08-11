@@ -424,6 +424,14 @@ def _run_dsm_products(
                     )
                 )
                 failed += 1
+    elif "combined_dsm" in force_dsm_products:
+        log_event(
+            _logger,
+            logging.WARNING,
+            "skipped_forced_product",
+            product="combined_dsm",
+            reason="building_dsm or vegetation_dsm COG not found",
+        )
 
     return failed
 
