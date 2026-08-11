@@ -67,6 +67,7 @@ from berlin_lst_downscaling.data.qa.repair_s2_snow_ice import (
     upload_bytes_generation,
     upload_file_generation,
     verify_after_state,
+    verify_completions,
 )
 
 _logger = logging.getLogger(__name__)
@@ -312,6 +313,22 @@ def run_apply(cfg: dict[str, Any]) -> int:
                     backup_root=backup_root,
                 )
 
+                # ── phase A0: remove ALL completion markers first ────
+                # No scene advertises completion while the repair is
+                # partial; they are recreated last (phase B).
+                for cand in candidates:
+                    delete_generation(
+                        client,
+                        cand.comp_uri,
+                        if_generation_match=snapshots[cand.comp_uri]["generation"],
+                    )
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "completions_removed",
+                    scenes=len(candidates),
+                )
+
                 # ── phase A: flags + sidecars (no completions) ───────
                 for cand in candidates:
                     _publish_scene(client, cand, snapshots)
@@ -322,21 +339,6 @@ def run_apply(cfg: dict[str, Any]) -> int:
                         scene_id=cand.scene_id,
                         added_snow_px=cand.added_snow_px,
                     )
-
-                # ── phase B: all completion markers last ─────────────
-                for cand in candidates:
-                    atomic_write(
-                        cand.comp_uri,
-                        json.dumps(cand.comp_payload, indent=2),
-                        overwrite=True,
-                        if_generation_match=0,
-                    )
-                log_event(
-                    _logger,
-                    logging.INFO,
-                    "completions_published",
-                    scenes=len(candidates),
-                )
 
                 # ── ledger (single CAS write) ────────────────────────
                 _, ledger_bytes = stage_ledger(cfg, candidates, tmpdir, run_id, contract)
@@ -352,7 +354,7 @@ def run_apply(cfg: dict[str, Any]) -> int:
                         raise RuntimeError(f"ledger reload missing {cand.scene_id}")
                 log_event(_logger, logging.INFO, "ledger_published", rows=len(candidates))
 
-                # ── after-state verification ─────────────────────────
+                # ── core after-state verification (no completions) ───
                 after = verify_after_state(client, cfg, candidates, ledger_bytes, snapshots)
                 log_event(_logger, logging.INFO, "after_state_verified")
 
@@ -372,6 +374,22 @@ def run_apply(cfg: dict[str, Any]) -> int:
                         f"{post_summary['scl11_unflagged_px']}"
                     )
                 log_event(_logger, logging.INFO, "post_audit_zero")
+
+                # ── phase B: all completion markers LAST ─────────────
+                for cand in candidates:
+                    atomic_write(
+                        cand.comp_uri,
+                        json.dumps(cand.comp_payload, indent=2),
+                        overwrite=True,
+                        if_generation_match=0,
+                    )
+                verify_completions(client, candidates)
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "completions_published",
+                    scenes=len(candidates),
+                )
 
                 # ── receipts + summary ───────────────────────────────
                 receipt = build_receipt(cfg, candidates, snapshots, run_id, head, "apply")
@@ -459,8 +477,10 @@ def _run_post_audit(cfg: dict[str, Any], evidence: str, run_id: str) -> dict[str
 def _publish_scene(client, cand, snapshots: dict[str, dict[str, Any]]) -> None:
     """Publish one scene's flag + sidecars with generation guards.
 
-    Completion markers are deliberately NOT written here — they are
-    written for every scene only after all scenes succeeded (phase B).
+    Completion markers are managed by the caller: all are deleted before
+    any scene is published (phase A0) and all are recreated only after
+    flags, sidecars, ledger, verification, and post-audit succeeded
+    (phase B).
     """
     from berlin_lst_downscaling.data.ard.cog_layout import validate_strict_cog
     from berlin_lst_downscaling.data.io.storage import atomic_write
@@ -469,12 +489,8 @@ def _publish_scene(client, cand, snapshots: dict[str, dict[str, Any]]) -> None:
     snap_flag = snapshots[cand.flag_uri]
     snap_prov = snapshots[cand.prov_uri]
     snap_stac = snapshots[cand.stac_uri]
-    snap_comp = snapshots[cand.comp_uri]
 
-    # 1. remove completion marker first (exact generation)
-    delete_generation(client, cand.comp_uri, if_generation_match=snap_comp["generation"])
-
-    # 2. flag COG (exact generation precondition)
+    # 1. flag COG (exact generation precondition)
     upload_file_generation(
         client,
         cand.local_flag_path,

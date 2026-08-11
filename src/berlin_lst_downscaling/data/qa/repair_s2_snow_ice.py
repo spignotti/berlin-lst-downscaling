@@ -43,7 +43,7 @@ def _retry(fn, *args, **kwargs):
     412 preconditions and 404s are not transient — they must fail fast
     (concurrent modification / missing object).
     """
-    from google.api_core.exceptions import (  # type: ignore[import-untyped]
+    from google.api_core.exceptions import (
         GatewayTimeout,
         InternalServerError,
         ServiceUnavailable,
@@ -685,11 +685,10 @@ def verify_after_state(
     ledger_bytes: bytes,
     pre_snapshots: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    """Verify every touched object post-publication and protected objects.
+    """Verify post-publication state before completion markers are written.
 
-    Returns after-state snapshots. Raises on any mismatch: staged payload
-    sha for flags/sidecars/completions/ledger; byte-identical
-    generation/crc32c/size for reflectance, manifest, and baseline audit.
+    Checks every mutable artifact except completion markers (which are
+    written last) plus all protected objects. Raises on any mismatch.
     """
     after: dict[str, Any] = {"touched": {}, "protected": {}}
 
@@ -700,7 +699,6 @@ def verify_after_state(
         for uri, staged_sha in (
             (cand.stac_uri, cand.stac_payload_sha),
             (cand.prov_uri, cand.prov_payload_sha),
-            (cand.comp_uri, cand.comp_payload_sha),
         ):
             remote = read_gcs_bytes(client, uri)
             if sha256_bytes(remote) != staged_sha:
@@ -708,7 +706,6 @@ def verify_after_state(
         after["touched"][cand.flag_uri] = snapshot_object(client, cand.flag_uri)
         after["touched"][cand.stac_uri] = snapshot_object(client, cand.stac_uri)
         after["touched"][cand.prov_uri] = snapshot_object(client, cand.prov_uri)
-        after["touched"][cand.comp_uri] = snapshot_object(client, cand.comp_uri)
 
     ledger_remote = read_gcs_bytes(client, str(cfg["ard_ledger_uri"]))
     if sha256_bytes(ledger_remote) != sha256_bytes(ledger_bytes):
@@ -740,6 +737,14 @@ def verify_after_state(
     return after
 
 
+def verify_completions(client, candidates: list[SceneCandidate]) -> None:
+    """Verify every completion marker matches its staged payload (written last)."""
+    for cand in candidates:
+        remote = read_gcs_bytes(client, cand.comp_uri)
+        if sha256_bytes(remote) != cand.comp_payload_sha:
+            raise RuntimeError(f"{cand.scene_id}: completion hash mismatch")
+
+
 __all__ = [
     "SceneCandidate",
     "assert_candidate",
@@ -763,4 +768,5 @@ __all__ = [
     "upload_bytes_generation",
     "upload_file_generation",
     "verify_after_state",
+    "verify_completions",
 ]
