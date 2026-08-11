@@ -1,0 +1,28 @@
+# @package _global_
+# S2 snow/ice audit — read-only raw-QA gate (WB2c-2, Stufe 1).
+
+# Manifest bundle — REQUIRED. Published v3 manifest.parquet (pairings derived).
+manifest_uri: null
+
+# ARD ledger — REQUIRED. Published ledger providing per-scene flag paths.
+ard_ledger_uri: null
+
+# AOI mask on the canonical grid (1 = inside Berlin).
+aoi_mask_uri: "gs://berlin-lst-data/boundaries/aoi_10m.tif"
+
+# Overwrite-only artifact root.
+output_root: "gs://berlin-lst-data/qa/wb2c-2/raw/s2-snow-ice"
+
+# Bounded smoke support — audit only the first N paired S2 scenes.
+max_scenes: null
+
+# Logging
+logging_level: INFO
+
+# Hydra overrides (suppress run dir and cwd changes)
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false

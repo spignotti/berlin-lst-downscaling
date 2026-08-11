@@ -186,6 +186,34 @@ uv run python scripts/run_profiling.py --config-name full \
 
 Output: `profiles.parquet`, `profiles.csv`, `summary.json`
 
+## WB2c-2 raw QA gate — S2 snow/ice audit
+
+`scripts/run_s2_snow_ice_audit.py` quantifies how many SCL=11
+(snow/ice) pixels in the published S2 ARD data are currently
+unflagged, by comparing the source SCL band (reloaded from the
+manifest `item_href` onto the canonical 10 m grid) against the
+published flag COG for every unique paired S2 scene. Read-only — no
+ARD artifact is written.
+
+```bash
+# Full audit against canonical GCS roots
+uv run python scripts/run_s2_snow_ice_audit.py --config-name s2_snow_ice \
+    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
+    ard_ledger_uri=gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
+
+# One-scene smoke against the canonical manifest, local output
+uv run python scripts/run_s2_snow_ice_audit.py --config-name s2_snow_ice \
+    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
+    ard_ledger_uri=gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
+    max_scenes=1 output_root=data/smoke/qa/s2-snow-ice
+```
+
+Output (overwrite-only, no versioning):
+`gs://berlin-lst-data/qa/wb2c-2/raw/s2-snow-ice/`
+`scene_audit.parquet` + `scene_audit.csv` (one row per unique paired
+S2 scene) + `summary.json` (written last). Any CRS/shape/transform/
+identity mismatch fails that scene row and makes the run exit non-zero.
+
 ## Smoke gates
 
 The `noxfile.py` sessions are the documented smoke matrix:
