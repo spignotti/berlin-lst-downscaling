@@ -564,21 +564,16 @@ def run_restore(cfg: dict[str, Any], repair_id: str) -> int:
                 f"refusing to restore {repair_id!r}"
             )
 
-    # Build the ordered restore plan: ledger first, then per scene.
-    restore_plan: list[str] = []
-    ledger_uri = str(cfg["ard_ledger_uri"])
-    restore_plan.append(ledger_uri)
-    for cand in receipt["target_scenes"]:
-        flag_uri = cand["flag_uri"]
-        scene_dir = "/".join(flag_uri.split("/")[:-1])
-        name = flag_uri.split("/")[-1].replace(".flag.tif", "")
-        restore_plan += [
-            flag_uri,
-            f"{scene_dir}/{name}.stac.json",
-            f"{scene_dir}/provenance.json",
-            f"{scene_dir}/complete.json",
-        ]
-    restore_plan += list(receipt["reflectance_snapshots"].keys())
+    # Build the ordered restore plan from the receipt: every object that
+    # was backed up (flags, sidecars, completions, reflectance COGs,
+    # ledger, audit artifacts, manifest bundle). Ledger first, then the
+    # rest.
+    restore_uris: set[str] = set()
+    restore_uris.add(str(cfg["ard_ledger_uri"]))
+    restore_uris.update(receipt["reflectance_snapshots"].keys())
+    restore_uris.update(receipt["flag_snapshots"].keys())
+    restore_uris.update(receipt["sidecar_snapshots"].keys())
+    restore_plan = [str(cfg["ard_ledger_uri"])] + sorted(restore_uris - {str(cfg["ard_ledger_uri"])})
 
     print(f"Restoring repair {repair_id} from {backup_root}")
     for uri in restore_plan:
