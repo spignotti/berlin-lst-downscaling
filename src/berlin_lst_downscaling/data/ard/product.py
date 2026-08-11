@@ -96,7 +96,7 @@ def build_ard_stac_item(
         assets["flag"] = {
             "href": flag_href,
             "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-            "title": "Quality flag (bitmask: fill, cloudy, shadow, cirrus, saturated)",
+            "title": "Quality flag (bitmask: fill, cloudy, shadow, cirrus, saturated, snow/ice)",
             "roles": ["quality"],
             "raster:bands": [
                 {

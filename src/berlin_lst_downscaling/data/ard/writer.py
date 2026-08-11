@@ -160,8 +160,8 @@ def write_flag_cog_atomic(
     """Write a single-band uint8 flag COG atomically.
 
     The flag band stores a bitmask (fill, cloudy, shadow, cirrus,
-    saturated).  It is written as a separate COG to avoid promoting
-    uint8 to float32 in the multi-band COG.
+    saturated, snow/ice).  It is written as a separate COG to avoid
+    promoting uint8 to float32 in the multi-band COG.
     """
     if exists(dst) and not overwrite:
         raise FileExistsError(dst)
