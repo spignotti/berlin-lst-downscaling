@@ -942,7 +942,13 @@ def _finalize_preflight(
         "targets": plan_targets,
         "allowed_write_uris": {
             "canonical_completions": [t["comp_uri"] for t in plan_targets],
-            "recovery_evidence": [f"{recovery}/prepared.json"],
+            "recovery_evidence": [
+                f"{recovery}/prepared.json",
+                f"{recovery}/receipt.json",
+                f"{recovery}/summary.json",
+                f"{recovery}/complete.json",
+                f"{recovery}/audit/",
+            ],
             "lock_delete": lock_uri,
         },
     }
