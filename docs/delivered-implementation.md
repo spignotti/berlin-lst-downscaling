@@ -186,33 +186,27 @@ uv run python scripts/run_profiling.py --config-name full \
 
 Output: `profiles.parquet`, `profiles.csv`, `summary.json`
 
-## WB2c-2 raw QA gate — S2 snow/ice audit
+## WB2c-2 S2 snow/ice repair (completed)
 
-`scripts/run_s2_snow_ice_audit.py` quantifies how many SCL=11
-(snow/ice) pixels in the published S2 ARD data are currently
-unflagged, by comparing the source SCL band (reloaded from the
-manifest `item_href` onto the canonical 10 m grid) against the
-published flag COG for every unique paired S2 scene. Read-only — no
-ARD artifact is written.
+The WB2c-2 raw QA gate found SCL=11 (snow/ice) pixels in the published
+S2 ARD flags that predated the `FLAG_SNOW_ICE` bit (schema version 7).
+One-off repair `s2-snow-ice-20260811T215612` OR-ed bit 5 into the flag
+COGs of exactly the 75 affected scenes, updated their STAC/provenance
+and ledger rows, and was finalized on 2026-08-12 (completions
+published, post-audit zero unflagged, repair lock released).
 
-```bash
-# Full audit against canonical GCS roots
-uv run python scripts/run_s2_snow_ice_audit.py --config-name s2_snow_ice \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
-    ard_ledger_uri=gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
-
-# One-scene smoke against the canonical manifest, local output
-uv run python scripts/run_s2_snow_ice_audit.py --config-name s2_snow_ice \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
-    ard_ledger_uri=gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
-    max_scenes=1 output_root=data/smoke/qa/s2-snow-ice
-```
-
-Output (overwrite-only, no versioning):
-`gs://berlin-lst-data/qa/wb2c-2/raw/s2-snow-ice/`
-`scene_audit.parquet` + `scene_audit.csv` (one row per unique paired
-S2 scene) + `summary.json` (written last). Any CRS/shape/transform/
-identity mismatch fails that scene row and makes the run exit non-zero.
+- Baseline audit `cbedd8db`: 158/158 S2 scenes, 75 with SCL=11,
+  1,065,660 of 2,116,536 SCL=11 pixels unflagged.
+- Post-repair audit: 158/158 compared, 0 failed, 0 unflagged SCL=11
+  pixels (all 2,116,536 flagged).
+- Reflectance COGs byte-identical before/after (generation, CRC32C,
+  and size unchanged for all 75 scenes).
+- Evidence (backups, receipts, audits):
+  `gs://berlin-lst-data/qa/repairs/s2-snow-ice-20260811T215612/`
+  (`backup/`, `post_audit/`, `logs/`, `recovery/`).
+- Future S2 masking sets bit 5 from SCL 11 natively
+  (`data/ard/masking.py`); the one-off repair and audit tooling was
+  removed after completion.
 
 ## Smoke gates
 
