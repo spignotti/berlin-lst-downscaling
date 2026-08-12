@@ -137,6 +137,7 @@ def main() -> int:
         path_cog = row_dict["path_cog"][0]
         path_flag = row_dict.get("path_flag", [None])[0]
         path_stac = row_dict["path_stac"][0]
+        schema_version = row_dict.get("schema_version", [None])[0]
 
         res = SceneResult(scene_id=scene_id, source=source)
 
@@ -167,11 +168,11 @@ def main() -> int:
 
         # Validate STAC content
         if path_stac and exists(path_stac):
-            _validate_stac(path_stac, res)
+            _validate_stac(path_stac, res, schema_version)
 
         # Validate provenance content
         if exists(prov_path):
-            _validate_provenance(prov_path, source, scene_id, res)
+            _validate_provenance(prov_path, source, scene_id, res, schema_version)
 
         # Validate completion marker content
         if exists(comp_path):
@@ -198,7 +199,7 @@ def main() -> int:
     return 0
 
 
-def _validate_stac(stac_uri: str, res: SceneResult) -> None:
+def _validate_stac(stac_uri: str, res: SceneResult, schema_version: int | None = None) -> None:
     """Validate STAC item structure and extension schemas."""
     try:
         import json as _json
@@ -249,11 +250,26 @@ def _validate_stac(stac_uri: str, res: SceneResult) -> None:
         if "proj:code" not in props:
             res.fail("STAC properties missing proj:code")
 
+        # Ledger ↔ STAC schema-version consistency
+        if schema_version is not None:
+            stac_version = props.get("ard:schema_version")
+            if stac_version != str(schema_version):
+                res.fail(
+                    f"STAC ard:schema_version {stac_version!r} != ledger "
+                    f"{schema_version!r}"
+                )
+
     except Exception as exc:
         res.fail(f"Cannot validate STAC: {exc}")
 
 
-def _validate_provenance(prov_uri: str, source: str, scene_id: str, res: SceneResult) -> None:
+def _validate_provenance(
+    prov_uri: str,
+    source: str,
+    scene_id: str,
+    res: SceneResult,
+    schema_version: int | None = None,
+) -> None:
     """Validate provenance.json structure."""
     try:
         import json as _json
@@ -273,6 +289,13 @@ def _validate_provenance(prov_uri: str, source: str, scene_id: str, res: SceneRe
             res.fail("Provenance missing completed_at")
         if "output_bands" not in prov:
             res.fail("Provenance missing output_bands")
+
+        # Ledger ↔ provenance schema-version consistency
+        if schema_version is not None and prov.get("schema_version") != schema_version:
+            res.fail(
+                f"Provenance schema_version {prov.get('schema_version')!r} != "
+                f"ledger {schema_version!r}"
+            )
 
     except Exception as exc:
         res.fail(f"Cannot validate provenance: {exc}")

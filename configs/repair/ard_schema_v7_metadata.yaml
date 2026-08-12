@@ -1,0 +1,38 @@
+# One-off ARD schema v7 metadata migration (WB2c-2 follow-up).
+#
+# Bumps the 434 remaining done v6 rows (345 Landsat + 83 S2 without
+# SCL=11 + 6 ECOSTRESS) to schema_version 7 in ledger, STAC, and
+# provenance so a future run_ard reconcile skips them (Contract v7,
+# idempotency.py compares schema_version). Metadata-only: COG and flag
+# objects are never written. Tool is temporary — removed after apply.
+
+manifest_uri: "gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet"
+ard_ledger_uri: "gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet"
+ard_root: "gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z"
+
+# Baseline S2 snow/ice audit — proves the 83 v6 S2 scenes have no SCL=11.
+audit_root: "gs://berlin-lst-data/qa/wb2c-2/raw/s2-snow-ice"
+
+# Evidence prefix for backups, receipts, and post-migration evidence.
+evidence_prefix: "gs://berlin-lst-data/qa/repairs"
+
+# Fixed shared lock so concurrent migrations exclude one another.
+lock_uri: "gs://berlin-lst-data/qa/repairs/ARD-SCHEMA-V7-ACTIVE.lock"
+
+# Target version and expected target breakdown (done rows, v6, hash '6').
+target_schema_version: 7
+expected_targets_total: 434
+expected_by_source:
+  landsat-c2-l2: 345
+  sentinel-2-l2a: 83
+  ecostress: 6
+
+# Ledger invariants.
+expected_ledger_rows: 509
+expected_ledger_done: 509
+
+# Required commits (ancestors of HEAD at apply time).
+required_commits:
+  - "99d6e3f"
+  - "99182b1"
+  - "cd5e708"
