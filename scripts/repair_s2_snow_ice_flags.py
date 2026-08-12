@@ -908,7 +908,17 @@ def _finalize_preflight(
             comp_snap = snapshot_object(client, t["comp_uri"])
             if comp_snap is not None:
                 existing = read_gcs_bytes(client, t["comp_uri"])
-                if sha256_bytes(existing) != payload_sha:
+                existing_payload = json.loads(existing)
+                if (
+                    existing_payload.get("run_id") == run_id
+                    and existing_payload.get("repair") is True
+                ):
+                    # Completion from the apply's own Phase B (or a prior
+                    # finalizer attempt without a frozen plan): adopt it
+                    # byte-for-byte instead of rewriting.
+                    payload = existing_payload
+                    payload_sha = sha256_bytes(existing)
+                elif sha256_bytes(existing) != payload_sha:
                     raise RuntimeError(
                         f"{t['scene_id']}: existing completion differs from planned payload"
                     )
