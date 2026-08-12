@@ -860,8 +860,19 @@ def _finalize_preflight(
     if frozen is not None:
         if frozen.get("receipt_sha256") != receipt_sha:
             raise RuntimeError("existing prepared.json does not match this receipt")
+        comp_by_uri = {t["comp_uri"]: t["comp_payload_sha"] for t in frozen["targets"]}
         for uri, expected_gen in frozen["expected_generations"].items():
             now = snapshot_object(client, uri)
+            if uri in comp_by_uri:
+                # Completions may already be published from a prior attempt:
+                # accept absent or byte-identical to the frozen payload.
+                if now is None:
+                    continue
+                if sha256_bytes(read_gcs_bytes(client, uri)) != comp_by_uri[uri]:
+                    raise RuntimeError(
+                        f"completion differs from frozen payload: {uri}"
+                    )
+                continue
             if now is None or now["generation"] != expected_gen:
                 raise RuntimeError(f"mutable object generation drifted: {uri}")
         plan_targets = frozen["targets"]
@@ -1079,9 +1090,11 @@ def run_finalize(
 
     # ── release the owned lock (frozen generation) ───────────────────
     lock_snap = snapshot_object(client, active_lock_uri(cfg))
-    if lock_snap is not None:
-        if lock_snap["generation"] != plan["lock_generation"]:
-            raise RuntimeError("lock generation changed since preflight")
+    if lock_snap is None:
+        print("lock already absent at release time")
+    elif lock_snap["generation"] != plan["lock_generation"]:
+        raise RuntimeError("lock generation changed since preflight")
+    else:
         delete_generation(
             client, active_lock_uri(cfg), if_generation_match=lock_snap["generation"]
         )
