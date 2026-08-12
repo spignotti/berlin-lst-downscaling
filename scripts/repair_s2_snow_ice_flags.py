@@ -97,6 +97,20 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Restore a previously applied repair from its evidence prefix",
     )
+    parser.add_argument(
+        "--finalize-failed",
+        metavar="REPAIR_ID",
+        default=None,
+        help="Finalize a failed apply whose flags/sidecars/ledger were already "
+        "published (read-only preflight by default; --apply writes only the "
+        "missing completion markers + recovery evidence and releases the lock)",
+    )
+    parser.add_argument(
+        "--dry-receipt",
+        metavar="PATH",
+        default=None,
+        help="Local dry-run receipt path for --finalize-failed (required)",
+    )
     return parser.parse_args()
 
 
@@ -613,12 +627,482 @@ def run_restore(cfg: dict[str, Any], repair_id: str) -> int:
     return 0
 
 
+# ── finalize a failed apply ──────────────────────────────────────────
+
+
+def _finalize_targets(cfg: dict[str, Any], receipt: dict[str, Any]) -> list[dict[str, Any]]:
+    """Derive finalizer targets from the dry receipt + deterministic paths."""
+    from berlin_lst_downscaling.data.ard.paths import (
+        completion_path,
+        provenance_path,
+        stac_path,
+    )
+
+    root = str(cfg["ard_root"])
+    source = str(cfg["source"])
+    targets: list[dict[str, Any]] = []
+    for t in receipt["target_scenes"]:
+        scene_id = str(t["scene_id"])
+        year = int(t["year"])
+        targets.append(
+            {
+                "scene_id": scene_id,
+                "year": year,
+                "flag_uri": str(t["flag_uri"]),
+                "cog_uri": str(t["cog_uri"]),
+                "stac_uri": stac_path(root, source, year, scene_id),
+                "prov_uri": provenance_path(root, source, year, scene_id),
+                "comp_uri": completion_path(root, source, year, scene_id),
+                "candidate_flag_sha": str(t["candidate_flag_sha"]),
+                "stac_payload_sha": str(t["stac_payload_sha"]),
+                "prov_payload_sha": str(t["prov_payload_sha"]),
+            }
+        )
+    return targets
+
+
+def _receipt_snapshot_map(receipt: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Unique pre-repair snapshot map from the receipt (382 objects)."""
+    snaps: dict[str, dict[str, Any]] = {}
+    snaps.update(receipt["reflectance_snapshots"])
+    snaps.update(receipt["flag_snapshots"])
+    snaps.update(receipt["sidecar_snapshots"])
+    snaps[receipt["ledger_snapshot"]["uri"]] = receipt["ledger_snapshot"]
+    return snaps
+
+
+def _ledger_rows(uri: str) -> list[dict[str, Any]]:
+    """Read a parquet ledger URI into pylist rows."""
+    import io
+
+    import pyarrow.parquet as pq
+
+    from berlin_lst_downscaling.data.io.storage import read_bytes
+
+    return pq.read_table(io.BytesIO(read_bytes(uri))).to_pylist()
+
+
+def _finalize_preflight(
+    cfg: dict[str, Any],
+    repair_id: str,
+    receipt_path: str,
+    client,
+    evidence: str,
+    frozen: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Verify current state against the dry receipt; return the frozen plan.
+
+    Read-only. Raises on any mismatch; no GCS write is performed here.
+    """
+    import hashlib
+    import json as _json
+    from pathlib import Path
+
+    finalize = cfg["finalize"]
+
+    # ── receipt binding ─────────────────────────────────────────────
+    receipt_bytes = Path(receipt_path).read_bytes()
+    receipt_sha = hashlib.sha256(receipt_bytes).hexdigest()
+    if receipt_sha != str(finalize["dry_receipt_sha256"]):
+        raise RuntimeError(
+            f"receipt sha256 {receipt_sha} != expected {finalize['dry_receipt_sha256']}"
+        )
+    receipt = _json.loads(receipt_bytes)
+    if receipt.get("mode") != "dry-run":
+        raise RuntimeError(f"receipt mode {receipt.get('mode')!r} != 'dry-run'")
+    if len(receipt["target_scenes"]) != int(finalize["expected_scenes_with_scl11"]):
+        raise RuntimeError("receipt target count != expected")
+    targets = _finalize_targets(cfg, receipt)
+
+    # ── lock ownership ──────────────────────────────────────────────
+    lock_uri = active_lock_uri(cfg)
+    lock_snap = snapshot_object(client, lock_uri)
+    if lock_snap is None:
+        raise RuntimeError(f"lock {lock_uri} is absent — nothing to finalize")
+    lock_payload = _json.loads(read_gcs_bytes(client, lock_uri))
+    if lock_payload.get("repair_id") != repair_id:
+        raise RuntimeError(
+            f"lock belongs to {lock_payload.get('repair_id')!r}, not {repair_id!r}"
+        )
+    if receipt.get("git_head") != lock_payload.get("git_head"):
+        raise RuntimeError("receipt git_head != lock git_head")
+
+    # ── backup inventory (382 unique objects, no extras) ────────────
+    snap_map = _receipt_snapshot_map(receipt)
+    unique_uris = set(snap_map)
+    if len(receipt["reflectance_snapshots"]) != len(targets):
+        raise RuntimeError("receipt reflectance snapshot count != target count")
+    backup_root = f"{evidence}/backup"
+    prefix = backup_root.removeprefix("gs://")
+    bucket_name, backup_key_prefix = prefix.split("/", 1)
+    listed = {
+        b.name for b in client.bucket(bucket_name).list_blobs(prefix=backup_key_prefix)
+    }
+    if len(listed) != len(unique_uris):
+        raise RuntimeError(
+            f"backup inventory {len(listed)} != expected {len(unique_uris)}"
+        )
+    for uri in unique_uris:
+        backup_uri = f"{backup_root}/{uri.removeprefix('gs://berlin-lst-data/')}"
+        snap = snapshot_object(client, backup_uri)
+        if snap is None:
+            raise RuntimeError(f"backup object missing: {backup_uri}")
+        want = snap_map[uri]
+        if snap["crc32c"] != want["crc32c"] or snap["size"] != want["size"]:
+            raise RuntimeError(f"backup mismatch vs receipt: {backup_uri}")
+
+    # ── protected objects unchanged (81: 75 reflectance + 6 audit/manifest) ──
+    protected_uris = [t["cog_uri"] for t in targets] + [
+        str(cfg["manifest_uri"]),
+        str(cfg["manifest_uri"]).replace("manifest.parquet", "pairings.parquet"),
+        str(cfg["manifest_uri"]).replace("manifest.parquet", "manifest_report.json"),
+        f"{str(cfg['audit_root']).rstrip('/')}/scene_audit.parquet",
+        f"{str(cfg['audit_root']).rstrip('/')}/scene_audit.csv",
+        f"{str(cfg['audit_root']).rstrip('/')}/summary.json",
+    ]
+    protected_snapshot: dict[str, dict[str, Any]] = {}
+    for uri in protected_uris:
+        now = snapshot_object(client, uri)
+        want = snap_map[uri]
+        if (
+            now is None
+            or now["generation"] != want["generation"]
+            or now["crc32c"] != want["crc32c"]
+            or now["size"] != want["size"]
+        ):
+            raise RuntimeError(f"protected object changed since receipt: {uri}")
+        protected_snapshot[uri] = now
+
+    # ── published flag/sidecar state matches the apply's candidates ──
+    # flag + STAC are deterministic → byte-hash against the receipt.
+    # provenance carries apply-time fields (run_id, completed_at) so it
+    # is verified field-by-field instead.
+    from berlin_lst_downscaling.data.ard.contract import contract_for_source
+
+    contract = contract_for_source(str(cfg["source"]))
+    apply_run_id = str(lock_payload["run_id"])
+    apply_git_head = str(lock_payload["git_head"])
+    for t in targets:
+        flag = read_gcs_bytes(client, t["flag_uri"])
+        if sha256_bytes(flag) != t["candidate_flag_sha"]:
+            raise RuntimeError(f"{t['scene_id']}: flag hash != receipt candidate")
+        stac = read_gcs_bytes(client, t["stac_uri"])
+        if sha256_bytes(stac) != t["stac_payload_sha"]:
+            raise RuntimeError(f"{t['scene_id']}: STAC hash != receipt candidate")
+        prov = json.loads(read_gcs_bytes(client, t["prov_uri"]))
+        if prov.get("scene_id") != t["scene_id"]:
+            raise RuntimeError(f"{t['scene_id']}: provenance scene_id mismatch")
+        if prov.get("source") != str(cfg["source"]):
+            raise RuntimeError(f"{t['scene_id']}: provenance source mismatch")
+        if int(prov.get("year", -1)) != t["year"]:
+            raise RuntimeError(f"{t['scene_id']}: provenance year mismatch")
+        if prov.get("schema_version") != contract.schema_version:
+            raise RuntimeError(f"{t['scene_id']}: provenance schema_version mismatch")
+        if prov.get("run_id") != apply_run_id:
+            raise RuntimeError(
+                f"{t['scene_id']}: provenance run_id {prov.get('run_id')} != apply {apply_run_id}"
+            )
+        if prov.get("repair") is not True:
+            raise RuntimeError(f"{t['scene_id']}: provenance repair flag missing")
+        if prov.get("repair_commit") != apply_git_head:
+            raise RuntimeError(f"{t['scene_id']}: provenance repair_commit mismatch")
+        if prov.get("output_bands") != [s.name for s in contract.output_bands]:
+            raise RuntimeError(f"{t['scene_id']}: provenance output_bands mismatch")
+        if "completed_at" not in prov:
+            raise RuntimeError(f"{t['scene_id']}: provenance completed_at missing")
+        backup_prov_uri = (
+            f"{backup_root}/{t['prov_uri'].removeprefix('gs://berlin-lst-data/')}"
+        )
+        backup_prov = json.loads(read_gcs_bytes(client, backup_prov_uri))
+        if prov.get("source_metadata") != backup_prov.get("source_metadata"):
+            raise RuntimeError(
+                f"{t['scene_id']}: provenance source_metadata changed vs backup"
+            )
+
+    # ── ledger: only allowed fields on the 75 target rows ───────────
+    current_rows = _ledger_rows(str(cfg["ard_ledger_uri"]))
+    backup_ledger_uri = (
+        f"{backup_root}/{str(cfg['ard_ledger_uri']).removeprefix('gs://berlin-lst-data/')}"
+    )
+    backup_rows = _ledger_rows(backup_ledger_uri)
+    if len(current_rows) != len(backup_rows):
+        raise RuntimeError("ledger row count changed since backup")
+    key_index = {(r["scene_id"], r["source"]): i for i, r in enumerate(current_rows)}
+    target_keys = {(t["scene_id"], str(cfg["source"])) for t in targets}
+    allowed = {
+        "schema_hash",
+        "schema_version",
+        "run_id",
+        "updated_at",
+        "aoi_clear_px",
+        "aoi_clear_frac",
+        "aoi_total_px",
+    }
+    for b_row in backup_rows:
+        key = (b_row["scene_id"], b_row["source"])
+        idx = key_index.get(key)
+        if idx is None:
+            raise RuntimeError(f"ledger row missing in current: {key}")
+        c_row = current_rows[idx]
+        if key in target_keys:
+            for field, c_val in c_row.items():
+                if field in allowed:
+                    continue
+                if c_val != b_row.get(field):
+                    raise RuntimeError(
+                        f"ledger target row {key} changed outside allowed fields: {field}"
+                    )
+        elif c_row != b_row:
+            raise RuntimeError(f"ledger non-target row changed: {key}")
+
+    # ── mutable object generations + completion payloads ─────────────
+    run_id = str(lock_payload["run_id"])
+    if frozen is not None:
+        if frozen.get("receipt_sha256") != receipt_sha:
+            raise RuntimeError("existing prepared.json does not match this receipt")
+        for uri, expected_gen in frozen["expected_generations"].items():
+            now = snapshot_object(client, uri)
+            if now is None or now["generation"] != expected_gen:
+                raise RuntimeError(f"mutable object generation drifted: {uri}")
+        plan_targets = frozen["targets"]
+        expected_generations = frozen["expected_generations"]
+    else:
+        expected_generations: dict[str, int] = {}
+        for t in targets:
+            for uri_key in ("flag_uri", "stac_uri", "prov_uri", "comp_uri"):
+                uri = t[uri_key]
+                snap = snapshot_object(client, uri)
+                if snap is None:
+                    expected_generations[uri] = -1  # absent (completion)
+                else:
+                    expected_generations[uri] = snap["generation"]
+        ledger_snap = snapshot_object(client, str(cfg["ard_ledger_uri"]))
+        if ledger_snap is None:
+            raise RuntimeError("ledger object missing")
+        expected_generations[str(cfg["ard_ledger_uri"])] = ledger_snap["generation"]
+
+        comp_payloads: dict[str, tuple[dict[str, Any], str]] = {}
+        for t in targets:
+            payload = {
+                "published_at": datetime.now(UTC).isoformat(),
+                "run_id": run_id,
+                "repair": True,
+            }
+            payload_bytes = json.dumps(payload, indent=2).encode("utf-8")
+            comp_payloads[t["scene_id"]] = (payload, sha256_bytes(payload_bytes))
+
+        plan_targets = []
+        for t in targets:
+            payload, payload_sha = comp_payloads[t["scene_id"]]
+            comp_snap = snapshot_object(client, t["comp_uri"])
+            if comp_snap is not None:
+                existing = read_gcs_bytes(client, t["comp_uri"])
+                if sha256_bytes(existing) != payload_sha:
+                    raise RuntimeError(
+                        f"{t['scene_id']}: existing completion differs from planned payload"
+                    )
+            plan_targets.append(
+                {**t, "comp_payload": payload, "comp_payload_sha": payload_sha}
+            )
+
+    recovery = f"{evidence}/recovery"
+    plan = {
+        "repair_id": repair_id,
+        "run_id": run_id,
+        "git_head": str(lock_payload["git_head"]),
+        "receipt_sha256": receipt_sha,
+        "prepared_at": datetime.now(UTC).isoformat(),
+        "backup_root": backup_root,
+        "recovery_root": recovery,
+        "audit_output_root": f"{recovery}/audit",
+        "lock_generation": lock_snap["generation"],
+        "expected_generations": expected_generations,
+        "protected_snapshot": protected_snapshot,
+        "targets": plan_targets,
+        "allowed_write_uris": {
+            "canonical_completions": [t["comp_uri"] for t in plan_targets],
+            "recovery_evidence": [f"{recovery}/prepared.json"],
+            "lock_delete": lock_uri,
+        },
+    }
+    return plan
+
+
+def run_finalize(
+    cfg: dict[str, Any],
+    repair_id: str,
+    receipt_path: str,
+    apply: bool,
+) -> int:
+    """Finalize a failed apply: preflight, then completions + evidence + lock.
+
+    Read-only by default (``apply=False`` prints the frozen plan digest).
+    With ``--apply`` the only canonical writes are the 75 missing
+    ``complete.json`` markers; recovery evidence goes to
+    ``<evidence>/recovery/`` and the owned lock is deleted last.
+    """
+    from berlin_lst_downscaling.data.io.storage import atomic_write
+    from berlin_lst_downscaling.data.qa.s2_snow_ice import run_s2_snow_ice_audit
+
+    evidence = evidence_root(cfg, repair_id)
+    client = gcs_client()
+    recovery = f"{evidence}/recovery"
+    prepared_uri = f"{recovery}/prepared.json"
+
+    existing_prepared = snapshot_object(client, prepared_uri)
+    frozen = None
+    if existing_prepared is not None:
+        frozen = json.loads(read_gcs_bytes(client, prepared_uri))
+        print(f"found frozen plan at {prepared_uri}")
+
+    plan = _finalize_preflight(cfg, repair_id, receipt_path, client, evidence, frozen)
+    n_completions = len(plan["targets"])
+
+    print(f"\nFinalizer preflight passed for repair {repair_id}")
+    print(f"  targets: {n_completions}")
+    print(f"  protected objects unchanged: {len(plan['protected_snapshot'])}")
+    print(f"  canonical writes (missing complete.json): {n_completions}")
+    print(f"  recovery evidence root: {recovery}")
+    if not apply:
+        print("  read-only preflight — zero GCS writes performed")
+        return 0
+
+    # ── freeze the plan (first durable write, immutable) ─────────────
+    if existing_prepared is None:
+        atomic_write(
+            prepared_uri,
+            json.dumps(plan, indent=2),
+            overwrite=True,
+            if_generation_match=0,
+        )
+        print(f"froze plan at {prepared_uri}")
+
+    # ── fresh full audit (GCS-byte flag reads, no /vsigs/) ───────────
+    audit_result = run_s2_snow_ice_audit(
+        manifest_uri=str(cfg["manifest_uri"]),
+        ard_ledger_uri=str(cfg["ard_ledger_uri"]),
+        aoi_mask_uri=str(cfg["aoi_mask_uri"]),
+        output_root=plan["audit_output_root"],
+        run_id=plan["run_id"],
+    )
+    summary = audit_result.summary
+    finalize = cfg["finalize"]
+    gates = {
+        "scenes_total": int(finalize["expected_scenes_total"]),
+        "scenes_compared": int(finalize["expected_scenes_total"]),
+        "scenes_failed": 0,
+        "scenes_with_scl11": int(finalize["expected_scenes_with_scl11"]),
+        "scenes_with_unflagged_scl11": 0,
+        "scl11_px": int(finalize["expected_scl11_px"]),
+        "scl11_invalid_px": int(finalize["expected_scl11_invalid_px"]),
+        "scl11_unflagged_px": int(finalize["expected_scl11_unflagged_px"]),
+    }
+    for key, expected in gates.items():
+        if summary.get(key) != expected:
+            raise RuntimeError(
+                f"finalizer audit gate {key}={summary.get(key)} != {expected}"
+            )
+    print(
+        f"finalizer audit passed: 158/158 compared, 0 failed, "
+        f"scl11_unflagged_px={summary['scl11_unflagged_px']}"
+    )
+
+    # ── completion markers last (resumable, absent-precondition) ─────
+    for t in plan["targets"]:
+        uri = t["comp_uri"]
+        payload_bytes = json.dumps(t["comp_payload"], indent=2).encode("utf-8")
+        comp_snap = snapshot_object(client, uri)
+        if comp_snap is not None:
+            if sha256_bytes(read_gcs_bytes(client, uri)) != t["comp_payload_sha"]:
+                raise RuntimeError(
+                    f"{t['scene_id']}: existing completion differs from frozen payload"
+                )
+            continue
+        atomic_write(uri, payload_bytes, overwrite=True, if_generation_match=0)
+    for t in plan["targets"]:
+        remote = read_gcs_bytes(client, t["comp_uri"])
+        if sha256_bytes(remote) != t["comp_payload_sha"]:
+            raise RuntimeError(f"{t['scene_id']}: completion verification failed")
+    print(f"published + verified {len(plan['targets'])} completion markers")
+
+    # ── recovery evidence ────────────────────────────────────────────
+    recovery_payload = {
+        "repair_id": repair_id,
+        "run_id": plan["run_id"],
+        "git_head": plan["git_head"],
+        "receipt_sha256": plan["receipt_sha256"],
+        "completed_at": datetime.now(UTC).isoformat(),
+        "backup_root": plan["backup_root"],
+        "audit": summary,
+        "completions": [
+            {
+                "scene_id": t["scene_id"],
+                "comp_uri": t["comp_uri"],
+                "comp_payload_sha": t["comp_payload_sha"],
+            }
+            for t in plan["targets"]
+        ],
+        "protected_unchanged": len(plan["protected_snapshot"]),
+    }
+    atomic_write(
+        f"{recovery}/receipt.json",
+        json.dumps(recovery_payload, indent=2),
+        overwrite=True,
+    )
+    atomic_write(
+        f"{recovery}/summary.json",
+        json.dumps(
+            {
+                "repair_id": repair_id,
+                "run_id": plan["run_id"],
+                "completed_at": recovery_payload["completed_at"],
+                "audit": summary,
+                "completions": len(plan["targets"]),
+            },
+            indent=2,
+        ),
+        overwrite=True,
+    )
+    atomic_write(
+        f"{recovery}/complete.json",
+        json.dumps(
+            {
+                "repair_id": repair_id,
+                "run_id": plan["run_id"],
+                "completed_at": recovery_payload["completed_at"],
+            },
+            indent=2,
+        ),
+        overwrite=True,
+    )
+    print(f"wrote recovery evidence under {recovery}")
+
+    # ── release the owned lock (frozen generation) ───────────────────
+    lock_snap = snapshot_object(client, active_lock_uri(cfg))
+    if lock_snap is not None:
+        if lock_snap["generation"] != plan["lock_generation"]:
+            raise RuntimeError("lock generation changed since preflight")
+        delete_generation(
+            client, active_lock_uri(cfg), if_generation_match=lock_snap["generation"]
+        )
+        print("released owned repair lock")
+
+    print(f"\nFinalized repair {repair_id} — completions published, lock released")
+    print(f"  recovery evidence: {recovery}")
+    print("  verify with scripts/validate_ard.py and a fresh audit")
+    return 0
+
+
 # ── main ──────────────────────────────────────────────────────────────
 
 
 def main() -> int:
     args = parse_args()
     cfg = load_config(args.config)
+    if args.finalize_failed:
+        if not args.dry_receipt:
+            raise SystemExit("--finalize-failed requires --dry-receipt PATH")
+        return run_finalize(cfg, args.finalize_failed, args.dry_receipt, args.apply)
     if args.restore and args.apply:
         return run_restore(cfg, args.restore)
     if args.apply:

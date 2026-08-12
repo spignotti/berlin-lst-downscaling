@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,8 +35,9 @@ from berlin_lst_downscaling.data.acquisition.pc_client import resolve_item_from_
 from berlin_lst_downscaling.data.acquisition.sentinel2 import load_s2_scene
 from berlin_lst_downscaling.data.ard.ledger import Ledger
 from berlin_lst_downscaling.data.io.storage import atomic_write
-from berlin_lst_downscaling.data.profiling.inspection import gdal_uri
 from berlin_lst_downscaling.data.selection.validate import load_bundle
+
+_logger = logging.getLogger(__name__)
 
 # ── artifact paths ──────────────────────────────────────────────────
 
@@ -149,6 +151,81 @@ def run_s2_snow_ice_audit(
 # ── per-scene comparison ────────────────────────────────────────────
 
 
+def _download_flag_bytes(flag_uri: str) -> bytes:
+    """Download the flag COG bytes via GCS with bounded transient retry.
+
+    Reads through the storage client (not /vsigs/) so transient range-read
+    failures cannot corrupt the audit; the download is retried only on
+    transient transport errors. 404s and 412 preconditions fail fast.
+    """
+    from google.api_core.exceptions import (
+        GatewayTimeout,
+        InternalServerError,
+        ServiceUnavailable,
+        TooManyRequests,
+    )
+    from google.cloud import storage
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    transient = (
+        ConnectionError,
+        TimeoutError,
+        GatewayTimeout,
+        InternalServerError,
+        ServiceUnavailable,
+        TooManyRequests,
+    )
+    client = storage.Client()
+    bucket_name, key = flag_uri.removeprefix("gs://").split("/", 1)
+    blob = client.bucket(bucket_name).blob(key)
+
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(transient),
+        reraise=True,
+    )
+    def _do() -> bytes:
+        blob.reload()
+        return blob.download_as_bytes(
+            if_generation_match=blob.generation,
+            checksum="auto",
+        )
+
+    return _do()
+
+
+def _read_flag_band(flag_uri: str, gbox) -> tuple[np.ndarray | None, bool, str]:
+    """Read band 1 of the flag COG in memory and check the canonical grid.
+
+    Returns ``(flag, grid_ok, grid_detail)``; ``grid_detail`` describes
+    the mismatch when ``grid_ok`` is False.
+    """
+    from rasterio.io import MemoryFile
+
+    data = _download_flag_bytes(flag_uri)
+    with MemoryFile(data) as mem:
+        with mem.open() as src:
+            crs_ok = str(src.crs).upper() == "EPSG:25833"
+            shape_ok = (src.height, src.width) == (gbox.shape.y, gbox.shape.x)
+            transform_ok = all(
+                abs(g - e) < 0.01
+                for g, e in zip(src.transform, gbox.transform, strict=True)
+            )
+            if not (crs_ok and shape_ok and transform_ok):
+                detail = (
+                    f"(crs={str(src.crs).upper()}, shape=({src.height},{src.width}), "
+                    f"transform={src.transform})"
+                )
+                return None, False, detail
+            return src.read(1), True, ""
+
+
 def _empty_row(scene_id: str, anchor_count: int, error: str) -> dict[str, Any]:
     return {
         "scene_id": scene_id,
@@ -195,25 +272,12 @@ def _audit_one_scene(
         row["error"] = "ARD ledger row missing, not done, or flag path absent"
         return row
     try:
-        with rasterio.open(gdal_uri(led.path_flag)) as src:
-            # Full affine comparison (origin, resolution, rotation) against
-            # the canonical 10 m grid — same tolerance style as ARD checks.
-            grid_ok = (
-                str(src.crs).upper() == "EPSG:25833"
-                and (src.height, src.width) == (gbox.shape.y, gbox.shape.x)
-                and all(
-                    abs(g - e) < 0.01
-                    for g, e in zip(src.transform, gbox.transform, strict=True)
-                )
-            )
-            if not grid_ok:
-                row["error"] = (
-                    f"flag COG grid mismatch vs canonical 10 m grid "
-                    f"(crs={str(src.crs).upper()}, shape=({src.height},{src.width}), "
-                    f"transform={src.transform})"
-                )
-                return row
-            flag = src.read(1)
+        flag, grid_ok, grid_detail = _read_flag_band(led.path_flag, gbox)
+        if not grid_ok:
+            row["error"] = f"flag COG grid mismatch vs canonical 10 m grid {grid_detail}"
+            return row
+        if flag is None:  # unreachable with grid_ok, kept for type narrowing
+            raise RuntimeError("flag band read returned no data")
     except Exception as exc:  # record and continue to next scene
         row["error"] = f"flag COG read failed: {exc}"
         return row

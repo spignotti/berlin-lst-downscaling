@@ -38,3 +38,18 @@ required_commits:
   - "e1e6bb6"
   - "bc05928"
   - "b1adbde"
+
+# Incident finalizer pinning (WB2c-2, one-off). Binds the finalizer to the
+# exact failed apply and its dry-run receipt; the receipt is the only
+# durable binding of backup -> pre-repair state (the failed apply never
+# wrote its final receipt/summary).
+finalize:
+  repair_id: "s2-snow-ice-20260811T215612"
+  dry_receipt_sha256: "384b5426c64d007bb23d9b7739ca2fb060796090f7b80a181439364c6b8b790d"
+  expected_scenes_total: 158
+  expected_scenes_with_scl11: 75
+  expected_scl11_px: 2116536
+  # Post-repair: every SCL11 pixel is flagged (== scl11_px). The pre-repair
+  # expected_scl11_invalid_px above is the baseline, NOT the finalizer gate.
+  expected_scl11_invalid_px: 2116536
+  expected_scl11_unflagged_px: 0
