@@ -162,7 +162,7 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 def run(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the ARD pipeline — manifest-driven (mode=full).
 
-    ``smoke_primary`` builds a 3-row manifest and runs ``mode=full``
+    ``smoke_primary`` builds the 8-row smoke bundle and runs ``mode=full``
     end-to-end.
 
     Returns 0 on success, 1 if any scene failed.
@@ -545,12 +545,10 @@ def _run_scene(
             contract=contract,
             masked=masked,
             run_id=run_id,
-            cog_uri=cog_dst,
             flag_uri=flag_dst if contract.flag_mode == "separate" else None,
             target_resolution=resolution,
         )
         stac_dst = stac_path(root, source, year, scene_id)
-
         elapsed = time.perf_counter() - t0
         ledger.upsert(
             LedgerRow(

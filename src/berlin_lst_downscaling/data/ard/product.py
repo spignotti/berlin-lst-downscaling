@@ -202,7 +202,6 @@ def finalize_ard_product(
     masked: xr.Dataset,
     run_id: str,
     *,
-    cog_uri: str,
     flag_uri: str | None = None,
     target_resolution: int,
     source_metadata: dict[str, Any] | None = None,

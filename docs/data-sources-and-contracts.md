@@ -259,3 +259,24 @@ Scene IDs must be assigned to train/validation/test **before** creating
 or sampling patches.  Every patch inherits its scene's split.  One scene
 cannot occur in multiple splits.  Split policy and sampler enforcement
 belong to a future task (WB2c-4).
+
+## Reproducibility boundary
+
+The pipeline is manifest-driven, idempotent, and deterministic in
+layout: the immutable r2 bundle, SHA-256-pinned LoD archives, and the
+ERA5 monthly cache (`_raw/dynamic/era5_land/`) let a fresh run
+reproduce the published product set with the same COG/STAC/provenance
+structure.
+
+It is **not** byte-exact reproducible from an empty bucket:
+
+- ARD/ECOSTRESS inputs are fetched live from PC STAC and NASA CMR at
+  run time; published provenance records no input asset hashes.
+- Ledger, provenance, STAC, and logs embed per-run `run_id` values and
+  wall-clock timestamps.
+- The published ARD ledger is a deliberate mix of 434 v6 + 75 v7 rows;
+  current code writes schema v7, so a fresh full run rewrites the v6
+  rows deterministically.
+
+Validators and the pinned bundle/caches, not byte identity, are the
+reproducibility basis.
