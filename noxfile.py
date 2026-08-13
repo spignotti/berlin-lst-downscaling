@@ -204,11 +204,12 @@ def _assert_dynamic_done(session: nox.Session, output_root: str, expected: int) 
 
 @nox.session(venv_backend="none", name="smoke-selection-couple")
 def smoke_selection_couple(session: nox.Session) -> None:
-    """Run Szenen-Selektion coupling against the bounded ARD smoke bundle.
+    """Run Szenen-Selektion coupling for the bounded smoke window.
 
-    Produces a local couple-mode bundle whose manifest rows feed ARD's
-    bounded smoke-primary run. The bundle remains in
-    ``data/manifest_build/v3/smoke`` — it is never published.
+    Produces a local couple-mode bundle in ``data/manifest_build/v3/smoke``
+    — it is never published. The May-2017 window is chosen so the bundle
+    contains the fixed Landsat anchor consumed by ``smoke-dynamic`` and
+    ``smoke-dwd-validation``.
     """
     session.run(
         "uv",
@@ -216,8 +217,8 @@ def smoke_selection_couple(session: nox.Session) -> None:
         "python",
         "scripts/build_manifest.py",
         "output_root=data/manifest_build/v3/smoke",
-        "years=[2024]",
-        "months=[6,7]",
+        "years=[2017]",
+        "months=[5]",
         "cutoff_utc=2024-07-31T23:59:59Z",
         external=True,
     )
