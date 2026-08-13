@@ -2,7 +2,7 @@
 # Full volume scan: May–Sep 2017–2025 complete + 2026 through cutoff.
 # Writes manifest.parquet + pairings.parquet + manifest_report.json.
 defaults:
-  - default
+  - _base
   - _self_
 
 mode: couple

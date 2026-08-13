@@ -217,6 +217,7 @@ def smoke_selection_couple(session: nox.Session) -> None:
         "python",
         "scripts/build_manifest.py",
         "output_root=data/manifest_build/v3/smoke",
+        "checkpoint_dir=data/manifest_build/v3/smoke/checkpoints",
         "years=[2017]",
         "months=[5]",
         "cutoff_utc=2024-07-31T23:59:59Z",
