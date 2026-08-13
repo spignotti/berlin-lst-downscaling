@@ -28,39 +28,6 @@ Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Compu
 
 `data-pipeline`
 
-## Structure
-
-```
-src/berlin_lst_downscaling/    # main package
-    data/acquisition/          # PC STAC loaders + ECOSTRESS CMR
-    data/ard/                  # ARD pipeline (COG write, masking, ledger, STAC)
-    data/secondary/            # Static A + B (sources + derived geometry)
-    data/dynamic/              # ERA5-Land + shadows
-    data/selection/            # v3 manifest selection & coupling
-    data/io/                   # Storage (local + GCS), run logger, ephemeral staging
-    common/                    # Canonical 10 m grid, env config
-configs/                       # Hydra configs (ARD + selection + static_sources
-                               #   + static_derived + dynamic)
-scripts/                       # Entry points (run_ard.py, run_static_sources.py,
-                               #   run_static_derived.py, run_dynamic.py,
-                               #   run_dynamic_isolated.py,
-                               #   build_manifest.py, validators)
-```
-
-See `docs/phase-1-delivery.md` for the delivered products, metadata
-interface, and phase-2 handoff. See
-`docs/data-sources-and-contracts.md` for the data and ledger
-contracts.
-
-### DWD-vs-ERA5 validation (retired)
-
-The DWD validation subsystem was retired: the post-rebuild ERA5-Land
-`t2m_scene` channel cannot be re-validated with it (a timezone join
-defect in the anchor-hour comparison yields zero matched pairs).
-`gs://berlin-lst-data/dwd_validation/r3/` remains as **historical
-retained evidence** — it validated the pre-rebuild scalar ERA5 products.
-DWD never fed into training or normalisation.
-
 ## Validation
 
 - `uv run nox` — full validation gate; run before every commit
@@ -68,37 +35,13 @@ DWD never fed into training or normalisation.
 - `nox -s lint typecheck` — structural changes (new modules, imports, type signatures)
 - No test session — tests are opt-in. Quality validated via real-data QA gates (smoke, spike scripts), not unit tests.
 
-## Python Stack
+## Data Safety
 
-- `uv` — package and environment management
-- `ruff` — linting and formatting
-- `pyright` — type checking
-- `nox` — validation entrypoint; run `uv run nox` before every commit
-- `wandb` — experiment tracking
-- `pydantic-settings` — env-based config
-
-## Repository & Data Hygiene
-
-- Keep the repository and bucket in the exact state that reproduces the
-  current published data: current code, current docs, no legacy.
-- GCS buckets split into three kinds of prefixes:
-  - **Canonical products** (`ard/`, `manifests/`, `static/sources/full/`,
-    `static/derived/full/`, `dynamic/`, `boundaries/`, `lod_vintages/`,
-    `static/geometry_vintages/v1/`) — immutable, never delete.
-  - **Retained evidence** (`qa/`, `profiling/wb2c-1/`,
-    `dwd_validation/r3/`) — historical QA/repair records, keep as-is.
-  - **Ephemeral prefixes** (`*/smoke/`, `*/vm-smoke/`, `_staging/`,
-    `.tmp/`, accidental run outputs) — delete them in the task that
-    created them; never leave them for a later session.
-- Logs live only at `<output_root>/logs/<pipeline>/`; never at the repo
-  root or outside the run's output root.
-- Remove temporary/one-off scripts before closing a task. Promote a
-  script to a documented entrypoint only when it is part of the
-  reproducible pipeline.
-- Cleanup work must never start a pipeline, validator, or QA run; it
-  lists, verifies, and deletes only.
-- The VM stays stopped and protected (deletion protection on, boot disk
-  not auto-delete) when not actively running the Dynamic pipeline.
+- The bucket holds immutable canonical products, retained QA evidence, and ephemeral run outputs. Never delete or rewrite canonical products outside a planned task; never modify retained evidence; remove ephemeral outputs in the task that created them.
+- Logs live only at `<output_root>/logs/<pipeline>/`; never at the repo root or outside the run's output root.
+- Remove temporary/one-off scripts before closing a task.
+- The VM stays stopped and protected (deletion protection on, boot disk not auto-delete) when not actively running the Dynamic pipeline.
+- Secrets via ENV, never committed.
 
 ## Conventions
 
@@ -106,18 +49,7 @@ DWD never fed into training or normalisation.
 - keep the README honest and presentable — this is portfolio work
 - **No tests unless explicitly requested** — QA is validated through real-data smoke/spike scripts, not unit tests
 - **Build order:** Spike → Core → Framework (not the reverse — no premature scaffolding)
-
-## Runtime Logging
-
-All productive pipeline entrypoints use the shared run logger (`data/io/run_logging.py`).
-
-- Use `log_event(logger, level, event, **fields)` — never raw `print()` for pipeline telemetry.
-- `print()` is allowed only for validators, spikes, and human-oriented CLI summaries.
-- Every run emits: lifecycle start/end, config context, work-unit outcomes, duration, QA summary, and tracebacks for caught failures.
-- Log levels: `DEBUG` for tile detail, `INFO` for lifecycle/progress, `WARNING` for recoverable degradation, `ERROR` for failures.
-- JSONL contract: `<output_root>/logs/<pipeline>/<run_id>.jsonl`. GCS runs publish after exit.
-- Ledger, QA reports, STAC, provenance, and completion markers remain authoritative domain artifacts — logs complement them, not replace them.
-- No secrets, tokens, credentials, or signed URLs in logs.
+- Pipeline telemetry goes through `log_event` (`data/io/run_logging.py`), never raw `print()`; `print()` is allowed only for validators, spikes, and human-oriented CLI summaries.
 
 ## Library Documentation
 
@@ -127,8 +59,14 @@ Context7 MCP is available in this project. When working with any external librar
 
 - Storage: Bucket mounted locally via rclone (not gcsfuse — x86_64 macOS limitation) at `~/.mnt/berlin-lst/`. See `.opencode/skills/google-access/` for mount/access commands.
 - Reproducibility: env lock (uv), Git commit hash logged per W&B run.
-- Secrets via ENV, never committed.
 - macOS x86_64 ceiling: `numpy<2`, `torch<2.3` for training stack.
+
+## Documentation
+
+- `README.md` — operations, smoke gates, data-safety rules.
+- `docs/phase-1-delivery.md` — delivered data products and phase-2 handoff.
+- `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger contracts.
+- `docs/phase-2-preparation.md` — phase-2 preparation state.
 
 ## Notion Integration
 

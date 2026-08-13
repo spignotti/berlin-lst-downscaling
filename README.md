@@ -213,10 +213,18 @@ uv run nox -s smoke-dynamic -- \
 Cloud variants (`cloud-smoke-*`) mirror the local smokes and assume ADC
 + CDS API access + the published v3 manifest.
 
+## Logging
+
+Pipeline telemetry goes through `log_event` (`data/io/run_logging.py`)
+as JSONL at `<output_root>/logs/<pipeline>/<run_id>.jsonl`; GCS runs
+publish the log after exit. `print()` is reserved for validators,
+spikes, and human-oriented CLI summaries.
+
 ## Documentation
 
 - `docs/phase-1-delivery.md` — delivered data products, metadata interface, phase-2 handoff.
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest and ledger contracts.
+- `docs/phase-2-preparation.md` — preparation state for the next QA phase.
 
 ## Stack
 

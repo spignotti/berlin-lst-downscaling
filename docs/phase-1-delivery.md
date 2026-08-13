@@ -88,9 +88,8 @@ reproduce the published product set with the same structure. It is
 Known limits of the delivered state:
 
 - The published ARD ledger is a deliberate mix of 428 schema-v6 + 81
-  schema-v7 rows (the six ECOSTRESS validation scenes were republished
-  at v7 in 2026-08-13); current code writes v7, so a future full
-  `run_ard` deterministically rewrites the v6 rows.
+  schema-v7 rows; current code writes v7, so a future full `run_ard`
+  deterministically rewrites the v6 rows.
 - DWD r3 is **historical**: it validated the pre-rebuild scalar ERA5
   products (run `dyn-20260721T092945-4a4de9`). It is not evidence for
   the current 8-band spatial ERA5 fields.
@@ -102,67 +101,58 @@ Known limits of the delivered state:
 - DWD r3 metrics (historical): bias −0.03 °C, MAE 0.77 °C,
   RMSE 0.98 °C across 1 508 matched pairs (562 DWD-missing, 0
   ERA5-missing).
-- **DWD validation retired (2026-08-13):** the active subsystem was
-  removed. The post-rebuild ERA5-Land `t2m_scene` channel cannot be
-  re-validated with it — `normalize_acquisition_hour` returns naive UTC
-  while the DWD timestamps are timezone-aware, so every anchor/station
-  pair mismatches (0 / 2070 matched pairs under current code, vs 1 508
-  in r3). r3 remains the historical pre-rebuild check.
-- **ECOSTRESS NaN/fill invariant repaired (2026-08-13):** the published
-  ECOSTRESS LST COGs carried a NaN halo (~15–40% of grid pixels,
-  granule-dependent) that the flag COG marked as clear — bilinear LST
-  reprojection spread NaN beyond the nearest-classified fill region.
-  `mask_ecostress` now closes the invariant (any NaN LST also sets
-  `FLAG_FILL`), and the six validation scenes were republished
-  (`ard/full/2017-2026-cutoff-20260717T235959Z`, run `3822b6d0`).
-  `scripts/validate_ecostress_scenes.py` now passes all six scenes.
+- **DWD validation retired:** the active subsystem was removed;
+  `dwd_validation/r3/` remains as historical retained evidence.
+- **ECOSTRESS validation scenes:** the six published validation
+  granules satisfy the native `NaN ⟺ FLAG_FILL` contract and the 70 m
+  STAC `spatial_resolution` declaration; `scripts/validate_ecostress_scenes.py`
+  enforces both on the published artifacts.
 
 ## Pre-training diagnostic probes
 
-Two read-only probes run before feature engineering. Neither writes any
-file, GCS object, mask, or figure — they print results only, and the
-cloud audit deliberately contains **no encoded pass/fail decision**; a
-human decides from the numbers whether additional cloud removal is worth
-a separate processing step.
+Two read-only probes run before feature engineering. Neither changes any
+published mask or product; they read the published artifacts and the
+cloud audit additionally saves bounded, descriptive QA evidence.
 
 ```bash
 # 1. Published ECOSTRESS validation scenes (six granules): structural +
-#    grid + NaN/flag contract checks and flag fractions.
+#    grid + STAC-resolution + NaN/flag contract checks and flag fractions.
 uv run python scripts/validate_ecostress_scenes.py \
     --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
     --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
 
-# 2. Sampled cloud-masking comparison: 24 deterministic pairs stratified
-#    by platform × season × cloud cover. Compares the published ARD
-#    mask, a conservative native-QA view (Landsat low-confidence bits +
-#    S2 SCL class 7 as candidates), s2cloudless probabilities (needs a
-#    B10-capable L1C source via --l1c-root; otherwise reported
-#    unavailable), and optional local overlays (--show, nothing saved).
+# 2. Sampled cloud-masking comparison: a deterministic sample of
+#    Landsat→S2 pairs. Compares the published ARD mask against a
+#    conservative native-QA view (Landsat QA_PIXEL raw/dilated-cloud bits,
+#    S2 SCL class 7 as candidates) and saves bounded, risk-ranked visual
+#    evidence (PNG overlays for the top-risk pairs, plus index.csv and
+#    summary.json) under the run-scoped output root.
 uv run python scripts/audit_cloud_masking.py \
     --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
     --pairings gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/pairings.parquet \
     --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
+    --output-root gs://berlin-lst-data/qa/cloud_masking/<run-id> \
     --seed 42 --n-pairs 24
 ```
+
+The audit contains **no encoded pass/fail decision**; a human decides
+from the evidence whether additional cloud removal is worth a separate
+processing step. The comparison is descriptive only and writes nothing
+outside its output root.
 
 Source semantics behind the probes:
 
 - **ECOSTRESS v002 cloud state** lives in the product's `cloud` layer,
-  not in the QC bits (NASA LP DAAC). The published ARD flag COG already
-  folds cloud, water, and QC-fill into the fill/cloudy bits, which is
+  not in the QC bits (NASA LP DAAC). The published ARD flag COG folds
+  cloud, water, and QC-fill into the fill/cloudy bits, which is
   sufficient for the fast structural probe; a separate water-vs-QC split
   is not recoverable from the published flag artefact.
-- **s2cloudless** (audit-only dependency, `scripts/audit_cloud_masking.py`)
-  requires the ten-band reflectance tensor including **B10**, which the
-  Planetary Computer `sentinel-2-l2a` collection does not expose. The
-  comparator therefore needs an exact-match L1C/B10-capable source per
-  sampled scene; without one the view is reported as unavailable and the
-  other three diagnostics still run. Historical note: commit `d505104`
-  removed an earlier s2cloudless integration after a DN-scaling bug; this
-  rerun is evidence gathering, not a presumed improvement.
+- The audit compares published flags against native QA views only; no
+  external cloud-probability model is involved.
 
 ## Documentation map
 
 - `README.md` — pipeline operations, production and validation commands, smoke matrix.
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger/artefact contracts.
+- `phase-2-preparation.md` — preparation state for the next QA phase.
 - This file — delivered products, metadata interface, handoff state.
