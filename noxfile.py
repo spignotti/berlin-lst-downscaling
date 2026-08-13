@@ -794,7 +794,7 @@ def smoke_dwd_validation(session: nox.Session) -> None:
     Usage:
         uv run nox -s smoke-dwd-validation -- \\
             data/manifest_build/v3/smoke/manifest.parquet \\
-            gs://berlin-lst-data/dynamic/full/<run_id>
+            data/dynamic/smoke
     """
     import uuid
     from datetime import UTC, datetime
