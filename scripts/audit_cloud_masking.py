@@ -381,11 +381,12 @@ def _s2cloudless_proba(
             b10 = src.read(1).astype(np.float32)
     except Exception:
         return None, "s2cloudless: unavailable — B10 source not supplied"
-
     # decision: mirror the historical s2cloudless integration (removed in
-    # d505104 after a DN-scaling bug) — load all ten bands on the 10 m grid
-    # and divide by 10000 for scaled reflectance; this rerun is evidence
-    # gathering, not a production change.
+    # d505104 after a DN-scaling bug) — load the nine STAC bands on the
+    # 10 m grid and divide by 10000 for scaled reflectance; B10 is inserted
+    # between B09 and B11 to match s2cloudless' required ordered tensor
+    # [B01, B02, B04, B05, B08, B8A, B09, B10, B11, B12]. This rerun is
+    # evidence gathering, not a production change.
     ds = stac_load(
         items=[item],
         bands=bands,
@@ -396,10 +397,9 @@ def _s2cloudless_proba(
     if b10.shape != ds[bands[0]].values[0].shape:
         return None, "s2cloudless: B10 source shape does not match S2 bands"
 
-    stack = np.stack(
-        [ds[b].values[0].astype(np.float32) / 10000.0 for b in bands] + [b10 / 10000.0],
-        axis=-1,
-    )
+    stack_bands = [ds[b].values[0].astype(np.float32) / 10000.0 for b in bands]
+    stack_bands.insert(7, b10 / 10000.0)  # B10 between B09 and B11
+    stack = np.stack(stack_bands, axis=-1)
     stack[np.isnan(stack)] = 0.0
     detector = S2PixelCloudDetector(threshold=0.4, average_over=1, dilation_size=1)
     proba = detector.get_cloud_probability_maps(stack[np.newaxis, ...])[0]
@@ -471,7 +471,7 @@ def _quantile_line(label: str, values: list[float]) -> str:
         return f"{label:<38} n={len(finite):<4} (insufficient samples)"
     qs = quantiles(finite, n=4, method="inclusive")
     return (
-        f"{label:<38} min={min(finite):.3f} p50={qs[1]:.3f} p90={qs[2]:.3f} max={max(finite):.3f}"
+        f"{label:<38} min={min(finite):.3f} p50={qs[1]:.3f} p75={qs[2]:.3f} max={max(finite):.3f}"
     )
 
 
@@ -513,8 +513,9 @@ def main() -> int:
         print("Error: sample too small", file=sys.stderr)
         return 1
 
-    # 10-band set for the s2cloudless comparator (B10 comes from --l1c-root).
-    s2c_bands = ["B01", "B02", "B04", "B05", "B08", "B8A", "B09", "B11", "B12"]
+    # Nine bands loaded from STAC; B10 comes separately from --l1c-root and
+    # is inserted between B09 and B11 inside _s2cloudless_proba.
+    s2c_stac_bands = ["B01", "B02", "B04", "B05", "B08", "B8A", "B09", "B11", "B12"]
 
     diagnostics: list[PairDiagnostics] = []
     print(
@@ -583,7 +584,7 @@ def main() -> int:
                     lambda href=s2["item_href"]: resolve_item_from_href(str(href)),
                     base_delay=args.sleep,
                 )
-                proba, note = _s2cloudless_proba(s2_item, s2c_bands, args.l1c_root)
+                proba, note = _s2cloudless_proba(s2_item, s2c_stac_bands, args.l1c_root)
                 if proba is not None:
                     diag.s2cloudless_frac = float(np.sum(proba > 0.4)) / max(int(proba.size), 1)
                 diag.s2cloudless_note = note

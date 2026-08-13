@@ -272,7 +272,7 @@ def main() -> int:
             f"{row['scene_id']:<44} {str(row['ok']):<4} "
             f"{row['lst_min_k'] if row['lst_min_k'] is not None else float('nan'):>8.1f} "
             f"{row['lst_max_k'] if row['lst_max_k'] is not None else float('nan'):>8.1f} "
-            f"{(row['ledger_clear_frac'] or float('nan')) * 100.0:>7.1f} "
+            f"{_pct(row['ledger_clear_frac']):>7.1f} "
             f"{_pct(row['flag_fill']):>6.1f} "
             f"{_pct(row['flag_cloudy']):>7.1f}"
         )
