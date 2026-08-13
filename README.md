@@ -182,6 +182,39 @@ uv run python scripts/run_dynamic_isolated.py \
     --config-name inference_2026 --years 2026 --dataset-role inference --resume
 ```
 
+### Stage-1 raw-input QA gate
+
+Validates every published raw input of the training universe (COG/grid
+contracts, flag semantics, fixed physical ranges) and computes a
+diagnostic joint-support statistic at 100 m: a target cell is fully
+supported when the Landsat LST cell is valid and all present 10 m
+subpixels of S2, static morphology, ERA5-Land, and shadows are valid.
+The gate is **read-only and mask-free** by design: it reports support as
+a metric and never persists a validity/selection mask. The final
+training-eligibility mask is decided after feature computation and the
+Stage-2 gate.
+
+```bash
+# Smoke: one deterministic pair on a bounded bbox, local ephemeral output
+# (requires ADC). Output is removed after the run.
+uv run nox -s smoke-qa-stage1
+
+# Full: the published 2017-2025 universe (324 pairs), evidence to GCS.
+uv run python scripts/run_qa_stage1_raw.py --config-name stage1_raw_full
+
+# Independent report validation (schema, counts, fingerprints, no-mask invariant).
+uv run python scripts/validate_qa_stage1_raw.py \
+    --run-prefix gs://berlin-lst-data/qa/wb2c-2/raw/<run-id>
+
+# Full run on the VM (start → deploy → run → validate → stop).
+scripts/run_qa_stage1_vm.sh main
+```
+
+Evidence (summary.json, scenes.parquet, scenes.csv, logs) lands under
+`gs://berlin-lst-data/qa/wb2c-2/raw/<run-id>/`. The gate exits non-zero
+on any contract/range/input finding within the training universe; 2026
+inference scenes are reported as exclusions, never failures.
+
 ### Validators
 
 ```bash
@@ -208,6 +241,7 @@ uv run nox -s smoke-static-derived
 uv run nox -s smoke-selection-couple  # builds the local smoke manifest below
 uv run nox -s smoke-dynamic -- \
     data/manifest_build/v3/smoke/manifest.parquet
+uv run nox -s smoke-qa-stage1         # Stage-1 QA gate, one real pair
 ```
 
 Cloud variants (`cloud-smoke-*`) mirror the local smokes and assume ADC

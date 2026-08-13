@@ -9,6 +9,7 @@ _NAN = float("nan")
 
 # ── band / tiling specs ──────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class BandSpec:
     """Description of one band in the output COG."""
@@ -20,6 +21,7 @@ class BandSpec:
     unit: str = ""
     valid_range: tuple[float, float] | None = None  # (min, max) inclusive
 
+
 @dataclass(frozen=True)
 class TilingSpec:
     """COG internal tiling and compression."""
@@ -29,7 +31,9 @@ class TilingSpec:
     compress: str = "deflate"
     predictor: int = 2
 
+
 # ── contract ─────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class Contract:
@@ -57,7 +61,9 @@ class Contract:
         """Return schema version as a string for ledger/STAC storage."""
         return str(self.schema_version)
 
+
 # ── factories ────────────────────────────────────────────────────────
+
 
 def contract_for_source(source: str) -> Contract:
     """Return the :class:`Contract` for a given sensor source key.
@@ -74,6 +80,7 @@ def contract_for_source(source: str) -> Contract:
         flag_mode="separate",
     )
 
+
 # ── per-source band lists ────────────────────────────────────────────
 
 _LANDSAT_BANDS = (
@@ -82,6 +89,8 @@ _LANDSAT_BANDS = (
         dtype="float32",
         nodata=_NAN,
         description="Surface Temperature derived from LWIR11; Kelvin",
+        unit="K",
+        valid_range=(150.0, 400.0),
     ),
 )
 
@@ -91,24 +100,32 @@ _S2_BANDS = (
         dtype="float32",
         nodata=_NAN,
         description="Sentinel-2 band 2 (blue); scaled reflectance 0-1",
+        unit="1",
+        valid_range=(0.0, 1.0),
     ),
     BandSpec(
         name="B03",
         dtype="float32",
         nodata=_NAN,
         description="Sentinel-2 band 3 (green); scaled reflectance 0-1",
+        unit="1",
+        valid_range=(0.0, 1.0),
     ),
     BandSpec(
         name="B04",
         dtype="float32",
         nodata=_NAN,
         description="Sentinel-2 band 4 (red); scaled reflectance 0-1",
+        unit="1",
+        valid_range=(0.0, 1.0),
     ),
     BandSpec(
         name="B08",
         dtype="float32",
         nodata=_NAN,
         description="Sentinel-2 band 8 (NIR); scaled reflectance 0-1",
+        unit="1",
+        valid_range=(0.0, 1.0),
     ),
 )
 
@@ -118,6 +135,8 @@ _ECOSTRESS_BANDS = (
         dtype="float32",
         nodata=_NAN,
         description="ECOSTRESS LST; Kelvin (ECO_L2T_LSTE.002 native).",
+        unit="K",
+        valid_range=(150.0, 400.0),
     ),
 )
 

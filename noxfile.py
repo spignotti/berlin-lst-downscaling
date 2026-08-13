@@ -678,3 +678,85 @@ def cloud_dynamic(session: nox.Session) -> None:
         external=True,
     )
 
+
+# ── Stage-1 raw-input QA gate ────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-qa-stage1")
+def smoke_qa_stage1(session: nox.Session) -> None:
+    """Run the Stage-1 raw QA gate on one deterministic pair (real GCS inputs).
+
+    Reads published inputs over GCS (requires ADC), writes only local
+    ephemeral output under ``data/smoke/qa-stage1/``, runs the gate twice,
+    asserts deterministic aggregate metrics, runs the independent report
+    validator on both runs, and removes the local smoke output in
+    ``finally`` (never uploaded).
+    """
+    import glob
+    import json
+    import os
+    import shutil
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    output_root = "data/smoke/qa-stage1"
+
+    def _run_dirs() -> list[str]:
+        if not os.path.isdir(output_root):
+            return []
+        out = []
+        for name in os.listdir(output_root):
+            path = os.path.join(output_root, name)
+            if os.path.isdir(path) and name != "logs":
+                out.append(path)
+        return sorted(out, key=lambda p: os.path.getmtime(p))
+
+    try:
+        for _ in range(2):
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/run_qa_stage1_raw.py",
+                "--config-name",
+                "stage1_raw_smoke",
+                external=True,
+            )
+
+        run_dirs = _run_dirs()
+        if len(run_dirs) != 2:
+            session.error(f"expected 2 smoke run dirs, found {len(run_dirs)}: {run_dirs}")
+
+        for run_dir in run_dirs:
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/validate_qa_stage1_raw.py",
+                f"--run-prefix={run_dir}",
+                external=True,
+            )
+
+        # Determinism: aggregate metrics must be identical across runs.
+        keys = ("target_valid_cells", "all_100_cells", "full_support_cells")
+        summaries = []
+        for run_dir in run_dirs:
+            with open(os.path.join(run_dir, "summary.json"), encoding="utf-8") as fh:
+                summaries.append(json.load(fh))
+        for key in keys:
+            vals = [s["aggregate"][key] for s in summaries]
+            if vals[0] != vals[1]:
+                session.error(f"non-deterministic aggregate {key}: {vals}")
+
+        # No-mask invariant: no raster artifact may be produced.
+        for run_dir in run_dirs:
+            masks = glob.glob(os.path.join(run_dir, "*.tif"))
+            if masks:
+                session.error(f"no-mask invariant violated under {run_dir}: {masks}")
+
+        print(f"smoke-qa-stage1 OK — run dirs: {run_dirs}")
+    finally:
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+            print(f"Removed local smoke output: {output_root}")
+

@@ -1,0 +1,27 @@
+# @package _global_
+# Shared base config for the Stage-1 raw-input QA gate.
+# Reads published inputs (manifest, ledgers, COGs) and writes the QA
+# evidence bundle under ``output_root/<run_id>/``.
+defaults:
+  - _self_
+
+manifest_uri: "gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet"
+ard_root: "gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z"
+static_sources_root: "gs://berlin-lst-data/static/sources/full"
+static_derived_root: "gs://berlin-lst-data/static/derived/full"
+dynamic_root: "gs://berlin-lst-data/dynamic/full"
+geometry_mapping_uri: "gs://berlin-lst-data/static/geometry_vintages/v1/geometry_mapping.json"
+output_root: "gs://berlin-lst-data/qa/wb2c-2/raw"
+logging_level: INFO
+
+# Optional smoke restriction (overridden by the smoke config).
+scene_ids: []
+bbox: null
+
+# Hydra overrides (suppress run dir and cwd changes).
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false

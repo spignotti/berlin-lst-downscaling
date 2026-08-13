@@ -216,6 +216,38 @@ or sampling patches.  Every patch inherits its scene's split.  One scene
 cannot occur in multiple splits.  Split policy and sampler enforcement
 belong to a future task (WB2c-4).
 
+### Stage-1 raw-input QA gate (WB2c-2)
+
+The Stage-1 gate (`scripts/run_qa_stage1_raw.py`, core in
+`data/qa/`) validates the published raw inputs of the training universe
+before feature engineering. Contract:
+
+- **Scope.** All 324 paired Landsat anchors with `role=anchor` dynamic
+  products (2017-2025). The 21 paired 2026 anchors are `role=inference`
+  scenes, outside the training universe, and are reported as explicit
+  exclusions in the QA report — never dropped silently.
+- **Checks.** COG/grid contracts (CRS EPSG:25833, canonical nested
+  10/100 m grids, band count, dtype, origin) without full-band reads;
+  ARD flag semantics (`flag == 0` is clear, `data/ard/aoi.py`); fixed
+  physical ranges (Landsat LST 150-400 K, S2 reflectance 0-1, ERA5
+  per-band ranges, shadows 0/1 with 255 nodata, static derived DSM/SVF
+  ranges).
+- **Joint support (diagnostic).** A 100 m target cell is counted as
+  *all-100 supported* when the Landsat LST cell is valid and all 100
+  corresponding 10 m subpixels of S2, static morphology (per-vintage
+  DSM/SVF), ERA5-Land, and both shadows are valid. Edge-truncated cells
+  (fewer than 100 present subpixels) can never be all-100. No
+  resampling and no invented subpixels.
+- **No mask policy.** The gate computes support as a statistic and
+  persists only `summary.json`, `scenes.parquet`, `scenes.csv`, and
+  logs under `qa/wb2c-2/raw/<run-id>/`. It never writes a validity or
+  selection mask. The final training-eligibility mask is a separate,
+  later artifact decided after feature computation and the Stage-2 gate
+  (user decision, planning session 2026-08-14).
+- **Fail closed.** Any contract/range/input finding inside the training
+  universe makes the run exit non-zero (hard finding blocks feature
+  computation). Exclusions and 2026 scenes are reported, not failures.
+
 ## Reproducibility boundary
 
 The pipeline is manifest-driven, idempotent, and deterministic in
