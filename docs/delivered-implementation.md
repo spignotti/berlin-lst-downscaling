@@ -162,27 +162,18 @@ uv run python scripts/run_dynamic_isolated.py \
     --config-name full --years 2017 2025 --resume
 ```
 
-## WB2c-2 S2 snow/ice repair (completed)
+## Completed QA repairs
 
-The WB2c-2 raw QA gate found SCL=11 (snow/ice) pixels in the published
-S2 ARD flags that predated the `FLAG_SNOW_ICE` bit (schema version 7).
-One-off repair `s2-snow-ice-20260811T215612` OR-ed bit 5 into the flag
-COGs of exactly the 75 affected scenes, updated their STAC/provenance
-and ledger rows, and was finalized on 2026-08-12 (completions
-published, post-audit zero unflagged, repair lock released).
+- WB2c-2 S2 snow/ice flag repair (2026-08-11): OR-ed bit 5 into the
+  flag COGs of the 75 affected scenes and re-published their
+  sidecars/ledger rows. Reflectance COGs were byte-identical before and
+  after. Evidence (backups, receipts, audits) lives at
+  `gs://berlin-lst-data/qa/repairs/s2-snow-ice-20260811T215612/`.
+- WB2c-1 data profiling (2026-08-10): 2,079 assets profiled, 0 hard
+  failures. Evidence at `gs://berlin-lst-data/profiling/wb2c-1/`.
 
-- Baseline audit `cbedd8db`: 158/158 S2 scenes, 75 with SCL=11,
-  1,065,660 of 2,116,536 SCL=11 pixels unflagged.
-- Post-repair audit: 158/158 compared, 0 failed, 0 unflagged SCL=11
-  pixels (all 2,116,536 flagged).
-- Reflectance COGs byte-identical before/after (generation, CRC32C,
-  and size unchanged for all 75 scenes).
-- Evidence (backups, receipts, audits):
-  `gs://berlin-lst-data/qa/repairs/s2-snow-ice-20260811T215612/`
-  (`backup/`, `post_audit/`, `logs/`, `recovery/`).
-- Future S2 masking sets bit 5 from SCL 11 natively
-  (`data/ard/masking.py`); the one-off repair and audit tooling was
-  removed after completion.
+Both one-off repair and profiling toolchains were removed after
+completion; future S2 masking sets bit 5 natively (`data/ard/masking.py`).
 
 ## Smoke gates
 

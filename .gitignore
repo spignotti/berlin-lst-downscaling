@@ -10,7 +10,7 @@ __pycache__/
 .env.*
 !.env.example
 
-# Pipeline run logs (JSONL — persisted beside output, see docs/run-logging.md)
+# Pipeline run logs (JSONL — persisted beside output, see AGENTS.md Runtime Logging)
 *.log
 logs/
 

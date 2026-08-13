@@ -217,7 +217,8 @@ for blob in bucket.list_blobs(max_results=5):
 | `ssh-vm.sh` fails with "Connection timed out" | No external IP or firewall rule missing | Check `status-vm.sh` for external IP. If absent, VM may need restart. |
 | `start-vm.sh` fails with "does not exist" | VM was deleted | Requires manual recreation — this script will NOT create one. |
 | `start-vm.sh` fails with "Unexpected state" | VM in PROVISIONING/STAGING/REPAIRING | Wait and retry. If persistent, investigate via GCP console. |
-| `stop-vm.sh` shows "auto-delete=true" warning | Boot disk would be destroyed on `gcloud compute instances delete` | Run `gcloud compute instances set-disk-auto-delete berlin-lst-vm --disk=persistent-disk-0 --no-auto-delete --zone=europe-west3-a` to fix. |
+| `stop-vm.sh` shows "auto-delete=true" warning | Boot disk would be destroyed on `gcloud compute instances delete` | Run `gcloud compute instances set-disk-auto-delete berlin-lst-vm --disk=berlin-lst-vm --no-auto-delete --zone=europe-west3-a` to fix. Note: `--disk` takes the disk resource name (`berlin-lst-vm`), not the device name (`persistent-disk-0`). |
+| Instance has no deletion protection | Instance can be deleted without a guard | Run `gcloud compute instances update berlin-lst-vm --deletion-protection --zone=europe-west3-a` |
 
 ### GCS / rclone
 
@@ -243,7 +244,8 @@ the VM uses VM ADC (no JSON key, no `GOOGLE_APPLICATION_CREDENTIALS`).
 | Zone | `europe-west3-a` |
 | Machine | `n2-highmem-2` (2 vCPU / 16 GB) |
 | Image | `debian-12` |
-| Disk | 50 GB `pd-balanced` (`persistent-disk-0`, retained between runs) |
+| Disk | 50 GB `pd-balanced` (resource name `berlin-lst-vm`, device name `persistent-disk-0`, retained between runs) |
+| Protection | Boot disk not auto-delete, instance deletion protection enabled |
 | Provisioning | On-Demand (no preemption) |
 | Service account | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
 | Required SA roles | `roles/compute.instanceAdmin.v1`, `roles/serviceusage.serviceUsageAdmin`, `roles/iam.serviceAccountUser` |

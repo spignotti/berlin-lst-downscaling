@@ -21,7 +21,9 @@ VM_NAME="berlin-lst-vm"
 VM_EXPECTED_ID="8456019039456721311"
 VM_SA="masterarbeit-vertex@${VM_PROJECT}.iam.gserviceaccount.com"
 VM_MACHINE="n2-highmem-2"
-VM_DISK_DEVICE="persistent-disk-0"
+VM_DISK_DEVICE="persistent-disk-0"  # attachment device name; disk resource name is ${VM_NAME}
+# Note: `gcloud compute instances set-disk-auto-delete` takes --disk=<resource name>
+# (berlin-lst-vm), while --device-name takes the device name above.
 
 # Known-hosts alias used by gcloud / OpenSSH
 VM_KNOWN_HOSTS_ALIAS="compute.${VM_EXPECTED_ID}"

@@ -90,6 +90,29 @@ Layout: `<output_root>/_raw/dwd/<run_id>/station_inventory.parquet`
 - `wandb` — experiment tracking
 - `pydantic-settings` — env-based config
 
+## Repository & Data Hygiene
+
+- Keep the repository and bucket in the exact state that reproduces the
+  current published data: current code, current docs, no legacy.
+- GCS buckets split into three kinds of prefixes:
+  - **Canonical products** (`ard/`, `manifests/`, `static/sources/full/`,
+    `static/derived/full/`, `dynamic/`, `boundaries/`, `lod_vintages/`,
+    `static/geometry_vintages/v1/`) — immutable, never delete.
+  - **Retained evidence** (`qa/`, `profiling/wb2c-1/`,
+    `dwd_validation/r3/`) — historical QA/repair records, keep as-is.
+  - **Ephemeral prefixes** (`*/smoke/`, `*/vm-smoke/`, `_staging/`,
+    `.tmp/`, accidental run outputs) — delete them in the task that
+    created them; never leave them for a later session.
+- Logs live only at `<output_root>/logs/<pipeline>/`; never at the repo
+  root or outside the run's output root.
+- Remove temporary/one-off scripts before closing a task. Promote a
+  script to a documented entrypoint only when it is part of the
+  reproducible pipeline.
+- Cleanup work must never start a pipeline, validator, or QA run; it
+  lists, verifies, and deletes only.
+- The VM stays stopped and protected (deletion protection on, boot disk
+  not auto-delete) when not actively running the Dynamic pipeline.
+
 ## Conventions
 
 - follow existing patterns before introducing new ones

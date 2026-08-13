@@ -79,9 +79,9 @@ half-published state.
 | 2022–2023 | 2022 | `dgm1-2021__lod2-2022__vh-2020` |
 | 2024–2026 | 2024 | `dgm1-2021__lod2-2024__vh-2020` (existing ATOM-feed product) |
 
-The Dynamic pipeline still uses the frozen 2024 geometry today; the
-carry-forward artefact is the integration point for a follow-up task
-that wires per-scene geometry selection into shadow computation.
+The Dynamic pipeline resolves each scene's LoD vintage from
+`geometry_mapping.json` per scene year and applies the matching
+building-shadow horizon (`data/dynamic/geometry.py`).
 
 #### Runner commands
 
@@ -198,7 +198,7 @@ Per-pipeline root shape:
 
 Each ARD scene carries a separate single-band uint8 flag COG
 (`<scene_id>.flag.tif`). Pixels are flagged, never silently deleted —
-downstream consumers (profiling, joint validity masks, QA) treat any
+downstream consumers (joint validity masks, QA) treat any
 non-zero flag as invalid. Bit layout (`data/ard/contract.py`, schema
 version 7):
 
@@ -240,6 +240,11 @@ Each `era5_land` COG contains exactly these float32/NaN bands:
 All temporal quantities are derived on the native ERA5 0.1° grid **before**
 bilinear reprojection to the canonical 10m grid.  The three precipitation
 bins are non-overlapping 24-hour intervals.
+
+Monthly NetCDF inputs are cached under
+`<output_root>/_raw/dynamic/era5_land/YYYY-MM/` (`data/dynamic/era5.py`).
+The cache is a required raw-input cache for the active Dynamic pipeline:
+re-runs reuse cached months, and each cache file is validated before use.
 
 ### Shadow products
 

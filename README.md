@@ -14,11 +14,12 @@ Storage, plus an independent DWD sanity check on the ERA5-Land channel.
 | Static sources (A) | `gs://berlin-lst-data/static/sources/...` | 4 source types · 8 ledger rows (imperviousness 2016/2021, vegetation_height 2020, terrain_height 2021, lod2_morphology 2017/2021/2022/2024) |
 | Static derived (B) | `gs://berlin-lst-data/static/derived/...` | building_dsm, vegetation_dsm, combined_dsm, horizon_building, horizon_vegetation, svf (per geometry vintage) |
 | Dynamic scenes (C) | `gs://berlin-lst-data/dynamic/...` | 972 training + 63 inference = 1 035 products (era5_land + shadow_building + shadow_vegetation per scene) |
-| DWD validation | `gs://berlin-lst-data/dwd_validation/...` | 345 anchors, 378 953 DWD observations, 1 508 matched pairs |
+| DWD validation | `gs://berlin-lst-data/dwd_validation/r3/` | Historical pre-rebuild check: 345 anchors, 1 508 matched pairs |
 
-DWD head-line metrics: bias −0.03 °C, MAE 0.77 °C, RMSE 0.98 °C
-(ERA5 `t2m_scene` minus DWD hourly 2 m temperature). DWD is
-**validation-only** — it never feeds into training or normalisation.
+DWD head-line metrics (r3, historical — validated the pre-rebuild scalar
+ERA5 products): bias −0.03 °C, MAE 0.77 °C, RMSE 0.98 °C. After the
+dynamic rebuild, a fresh DWD run is a QA task, not a pipeline step. DWD
+is **validation-only** — it never feeds into training or normalisation.
 
 ## Architecture
 
@@ -56,11 +57,12 @@ uv run nox -s lint typecheck
 uv run nox -s smoke-primary
 uv run nox -s smoke-static-sources
 uv run nox -s smoke-static-derived
+uv run nox -s smoke-selection-couple  # builds the local smoke manifest below
 uv run nox -s smoke-dynamic -- \
-    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+    data/manifest_build/v3/smoke/manifest.parquet
 uv run nox -s smoke-dwd-validation -- \
-    data/ard/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
-    gs://berlin-lst-data/dynamic/full/<run_id>
+    data/manifest_build/v3/smoke/manifest.parquet \
+    data/dynamic/smoke
 ```
 
 Cloud smokes live next to the local smokes in `noxfile.py` and assume
