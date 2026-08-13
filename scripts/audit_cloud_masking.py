@@ -359,11 +359,17 @@ def _s2_ard_comparison(flag_uri: str, scl_raw: np.ndarray) -> tuple[float | None
 
 
 def _risk_score(diag: PairDiagnostics) -> float:
-    """Composite residual-mask-risk score (higher = more candidates)."""
-    return float(
-        (diag.s2_ard_missed_frac if diag.s2_ard_missed_frac is not None else 0.0)
-        + diag.s2_extra_candidate_frac
-        + diag.ls_extra_candidate_frac
+    """Composite residual-mask-risk score (higher = more candidates).
+
+    Non-finite/None diagnostics (failed loads) count as 0.0 so failed
+    pairs rank last and never corrupt the JSON summary.
+    """
+
+    def _fin(value: float | None) -> float:
+        return float(value) if value is not None and np.isfinite(value) else 0.0
+
+    return _fin(diag.s2_ard_missed_frac) + _fin(diag.s2_extra_candidate_frac) + _fin(
+        diag.ls_extra_candidate_frac
     )
 
 
@@ -453,7 +459,7 @@ def _compose_png(rgb: np.ndarray, scl: np.ndarray, flag: np.ndarray) -> bytes:
 
     panels = [_downscale(_stretch_rgb(rgb)), _downscale(_scl_rgb(scl)), _downscale(_flag_rgb(flag))]
     width = max(p.shape[1] for p in panels)
-    height = sum(p.shape[0] for p in panels) + 20
+    height = sum(p.shape[0] for p in panels) + 3 * 14
     canvas = Image.new("RGB", (width, height), (10, 10, 10))
     draw = ImageDraw.Draw(canvas)
     y = 0
@@ -583,6 +589,11 @@ def _save_evidence(
     summary = {
         "probe": "cloud_masking_audit",
         "output_root": args.output_root,
+        "inputs": {
+            "manifest": args.manifest,
+            "pairings": args.pairings,
+            "ledger": args.ledger,
+        },
         "seed": args.seed,
         "n_pairs": len(diagnostics),
         "save_limit": limit,
@@ -606,7 +617,7 @@ def _save_evidence(
     }
     atomic_write(
         f"{args.output_root.rstrip('/')}/summary.json",
-        json.dumps(summary, indent=2),
+        json.dumps(summary, indent=2, allow_nan=False),
         overwrite=True,
     )
 
@@ -646,6 +657,18 @@ def main() -> int:
         help="pacing delay between scene loads (respects PC SAS rate limits)",
     )
     args = parser.parse_args()
+
+    # A run-scoped root must be empty — evidence is never merged into an
+    # existing run (prevents stale figures from a different sample).
+    from berlin_lst_downscaling.data.io import exists
+
+    if exists(f"{args.output_root.rstrip('/')}/index.csv"):
+        print(
+            f"Error: output root already contains evidence: {args.output_root} "
+            "(use a fresh run-id)",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         pairs, manifest_rows = _load_manifest(args)

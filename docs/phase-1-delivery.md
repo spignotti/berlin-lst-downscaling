@@ -125,8 +125,9 @@ uv run python scripts/validate_ecostress_scenes.py \
 #    Landsat→S2 pairs. Compares the published ARD mask against a
 #    conservative native-QA view (Landsat QA_PIXEL raw/dilated-cloud bits,
 #    S2 SCL class 7 as candidates) and saves bounded, risk-ranked visual
-#    evidence (PNG overlays for the top-risk pairs, plus index.csv and
-#    summary.json) under the run-scoped output root.
+#    evidence (PNG overlays for the top-`--save-limit` risk-ranked pairs,
+#    default 12, plus index.csv and summary.json) under the run-scoped
+#    output root.
 uv run python scripts/audit_cloud_masking.py \
     --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
     --pairings gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/pairings.parquet \

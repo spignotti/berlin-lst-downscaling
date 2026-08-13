@@ -155,7 +155,11 @@ def _check_artifacts(scene_id: str, path_cog: str, path_flag: str, path_stac: st
     # ── STAC contract: lst + flag assets declare the 70 m native grid ──
     import json
 
-    stac = json.loads(read_bytes(path_stac))
+    try:
+        stac = json.loads(read_bytes(path_stac))
+    except Exception as exc:
+        check.fail(f"STAC unreadable: {exc}")
+        return check
     for asset in ("lst", "flag"):
         bands = stac.get("assets", {}).get(asset, {}).get("raster:bands", [])
         if not bands:
