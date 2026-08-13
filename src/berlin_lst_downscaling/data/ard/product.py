@@ -8,9 +8,9 @@ Every published ARD scene produces four co-located files:
 - ``provenance.json``        — source/transform lineage
 - ``complete.json``          — written last, publication gate
 
-``finalize_ard_product`` is the single entry point that the pipeline and
-the maintenance repair tool both call.  It writes sidecars only — COGs
-and flags are assumed to have been written and validated beforehand.
+``finalize_ard_product`` is the single entry point the pipeline calls.
+It writes sidecars only — COGs and flags are assumed to have been
+written and validated beforehand.
 """
 
 from __future__ import annotations
@@ -163,8 +163,6 @@ def build_ard_provenance(
     contract: Contract,
     run_id: str,
     *,
-    repair: bool = False,
-    repair_commit: str | None = None,
     source_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the provenance payload for an ARD product."""
@@ -177,9 +175,6 @@ def build_ard_provenance(
         "completed_at": datetime.now(UTC).isoformat(),
         "output_bands": [s.name for s in contract.output_bands],
     }
-    if repair:
-        provenance["repair"] = True
-        provenance["repair_commit"] = repair_commit or "unknown"
     if source_metadata:
         provenance["source_metadata"] = source_metadata
     return provenance
@@ -210,11 +205,7 @@ def finalize_ard_product(
     cog_uri: str,
     flag_uri: str | None = None,
     target_resolution: int,
-    repair: bool = False,
-    repair_commit: str | None = None,
     source_metadata: dict[str, Any] | None = None,
-    write_completion: bool = True,
-    if_generation_match: int | None = None,
 ) -> ARDArtifacts:
     """Write ARD sidecars and return deterministic artifact URIs.
 
@@ -226,13 +217,6 @@ def finalize_ard_product(
     2. Write provenance.json (atomic).
     3. Write and validate STAC item (atomic).
     4. Write complete.json last (atomic) — publication gate.
-
-    Parameters
-    ----------
-    repair :
-        When True, provenance records a repair lineage.
-    write_completion :
-        Set to False for repair dry-runs.
     """
     from berlin_lst_downscaling.data.ard.paths import (
         completion_path as _completion_path,
@@ -251,11 +235,9 @@ def finalize_ard_product(
     # Write provenance
     provenance = build_ard_provenance(
         scene_id, source, year, contract, run_id,
-        repair=repair, repair_commit=repair_commit,
         source_metadata=source_metadata,
     )
-    atomic_write(prov_dst, json.dumps(provenance, indent=2), overwrite=True,
-                 if_generation_match=if_generation_match)
+    atomic_write(prov_dst, json.dumps(provenance, indent=2), overwrite=True)
 
     # Build STAC item (using relative provenance href within the scene dir)
     prov_href = "provenance.json"
@@ -268,18 +250,15 @@ def finalize_ard_product(
         provenance_href=prov_href,
     )
     json_bytes = json.dumps(stac_item, indent=2).encode("utf-8")
-    atomic_write(stac_dst, json_bytes, overwrite=True,
-                 if_generation_match=if_generation_match)
+    atomic_write(stac_dst, json_bytes, overwrite=True)
 
     # Write completion marker last
-    if write_completion:
-        completed_at = datetime.now(UTC).isoformat()
-        atomic_write(
-            comp_dst,
-            json.dumps({"published_at": completed_at, "run_id": run_id}, indent=2),
-            overwrite=True,
-            if_generation_match=if_generation_match,
-        )
+    completed_at = datetime.now(UTC).isoformat()
+    atomic_write(
+        comp_dst,
+        json.dumps({"published_at": completed_at, "run_id": run_id}, indent=2),
+        overwrite=True,
+    )
 
     return ARDArtifacts(
         scene_id=scene_id,

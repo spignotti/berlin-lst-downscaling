@@ -44,10 +44,6 @@ validate the new 8-band spatial ERA5 fields. DWD never feeds model training.
 uv run python scripts/run_ard.py --config-name full_all \
     manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
 
-# ARD metadata repair (dry-run default, --apply to write sidecars)
-uv run python scripts/finalize_ard.py \
-    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
-
 # ARD strict validation (exact manifest/ledger key-set, all four artifacts, STAC schemas)
 uv run python scripts/validate_ard.py \
     --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
@@ -165,26 +161,6 @@ uv run python scripts/run_dynamic_isolated.py \
     --output-root gs://berlin-lst-data/dynamic/full \
     --config-name full --years 2017 2025 --resume
 ```
-
-## WB2c-1 Data Profiling
-
-`scripts/run_profiling.py` profiles all published COGs for feature
-engineering readiness. Validates structural alignment, computes
-descriptive statistics, and emits a fixed artifact bundle.
-
-```bash
-# Full profiling on VM
-uv run python scripts/run_profiling.py --config-name full
-
-# Smoke profiling locally (bounded subset, against GCS)
-uv run python scripts/run_profiling.py --config-name smoke_gcs
-
-# Override output root
-uv run python scripts/run_profiling.py --config-name full \
-    output_root=gs://berlin-lst-data/profiling/wb2c-1
-```
-
-Output: `profiles.parquet`, `profiles.csv`, `summary.json`
 
 ## WB2c-2 S2 snow/ice repair (completed)
 

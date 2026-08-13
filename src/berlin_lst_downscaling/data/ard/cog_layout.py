@@ -41,14 +41,21 @@ class StrictCogResult:
         }
 
 
+def _gdal_uri(uri: str) -> str:
+    """Convert gs:// URI to /vsigs/ for GDAL/rasterio/rio-cogeo reads."""
+    if uri.startswith("gs://"):
+        path = uri[5:]  # remove gs://
+        bucket, _, key = path.partition("/")
+        return f"/vsigs/{bucket}/{key}"
+    return uri
+
+
 def validate_strict_cog(uri: str) -> StrictCogResult:
     """Validate COG layout using rio-cogeo in fail-closed strict mode."""
     from rio_cogeo.cogeo import cog_validate
 
-    from berlin_lst_downscaling.data.profiling.inspection import gdal_uri
-
     try:
-        valid, errors, warnings = cog_validate(gdal_uri(uri), strict=True, quiet=True)
+        valid, errors, warnings = cog_validate(_gdal_uri(uri), strict=True, quiet=True)
         return StrictCogResult(
             valid=valid,
             errors=tuple(f"COG strict: {e}" for e in errors),
