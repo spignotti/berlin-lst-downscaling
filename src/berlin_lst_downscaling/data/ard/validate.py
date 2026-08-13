@@ -175,27 +175,8 @@ def _check_nan(src: rasterio.DatasetReader, result: ValidationResult) -> None:
     except Exception as exc:
         result.fail(f"NaN check failed for band 1: {exc}")
 
-def format_validation_report(
-    results: list[ValidationResult],
-) -> str:
-    """Format a validation report for console output."""
-    total = len(results)
-    ok = sum(1 for r in results if r.ok)
-    lines = [
-        f"Validation report: {ok}/{total} passed",
-        "",
-    ]
-    for r in results:
-        label = "OK" if r.ok else "FAIL"
-        source_tag = f"[{r.source}]" if r.source else ""
-        lines.append(f"  {label:4s} {source_tag} {r.scene_id}")
-        for err in r.errors:
-            lines.append(f"         - {err}")
-    return "\n".join(lines)
-
 __all__ = [
     "ValidationResult",
     "validate_cog",
     "validate_flag_cog",
-    "format_validation_report",
 ]
