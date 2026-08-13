@@ -23,7 +23,7 @@ across all scenes (`geometry_temporal_mode: retrospective_static`):
 | LoD2 CityGML morphometry | 2024 | `https://gdi.berlin.de/data/a_lod2/atom/` (CityGML v2.0 ZIP per 1 km tile) |
 | DGM 1 m terrain height | 2021 | ALS acquisition Feb–Mar 2021 |
 | Vegetation height (DOM − DGM) | 2020 | Berlin opacity/WMS, derived |
-| Versiegelung (imperviousness) | 2021 | Hausumringe WMS, piece-wise constant per scene year |
+| Versiegelung (imperviousness) | 2016, 2021 | Hausumringe WMS, piece-wise constant per scene year |
 
 Each scene year maps to a fixed source vintage
 (`data/secondary/{lod2,dgm,vegetation_height,imperviousness}.py`).
@@ -85,55 +85,9 @@ building-shadow horizon (`data/dynamic/geometry.py`).
 
 #### Runner commands
 
-```bash
-# Full archive-backed backfill (VM, all three historical vintages).
-uv run python scripts/run_lod_vintages.py \
-    --source-root gs://berlin-lst-data/static/sources/full \
-    --derived-root gs://berlin-lst-data/static/derived/full \
-    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
-    --raw-root gs://berlin-lst-data \
-    --vintages 2017,2021,2022
-
-# Reconcile finalized artifacts into both Static ledgers.
-# Downloads no archives, computes no raster, derives no products.
-uv run python scripts/run_lod_vintages.py --reconcile-only \
-    --source-root gs://berlin-lst-data/static/sources/full \
-    --derived-root gs://berlin-lst-data/static/derived/full \
-    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
-    --vintages 2017,2021,2022
-
-# Derived-only repair — no archives, no morphology publishing, no raw
-# manifests, no geometry mapping. Rebuilds only the requested products
-# per vintage from existing finalised inputs (building DSMs, corrected
-# vegetation DSM). Currently supports combined_dsm,svf.
-# Ordering: run the full static-derived pipeline first so the corrected
-# vegetation_dsm rebuilds horizon_vegetation (and its provenance hash);
-# only then does the dynamic pipeline invalidate vegetation shadows.
-uv run python scripts/run_lod_vintages.py --derive-only \
-    --source-root gs://berlin-lst-data/static/sources/full \
-    --derived-root gs://berlin-lst-data/static/derived/full \
-    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
-    --raw-root gs://berlin-lst-data \
-    --vintages 2017,2021,2022 \
-    --derived-products combined_dsm,svf
-
-# Structural validation (fast, no archive download).
-uv run python scripts/validate_lod_vintages.py \
-    --source-root gs://berlin-lst-data/static/sources/full \
-    --derived-root gs://berlin-lst-data/static/derived/full \
-    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
-    --raw-root gs://berlin-lst-data \
-    --vintages 2017,2021,2022
-
-# Strict archive integrity (downloads ~4 GB sequentially).
-uv run python scripts/validate_lod_vintages.py \
-    --source-root gs://berlin-lst-data/static/sources/full \
-    --derived-root gs://berlin-lst-data/static/derived/full \
-    --metadata-root gs://berlin-lst-data/static/geometry_vintages/v1 \
-    --raw-root gs://berlin-lst-data \
-    --vintages 2017,2021,2022 \
-    --verify-archives
-```
+The full LoD-vintage runner, reconcile, and derive-only commands live in
+the README operations section (they are operational instructions, not
+contracts).
 
 ## Manifest bundle (v3)
 
@@ -141,7 +95,7 @@ The canonical bundle is the only accepted manifest contract.
 The reader fails fast on any other layout.
 
 ```
-gs://berlin-lst-data/manifests/v3/<bundle-id>/-r2/
+gs://berlin-lst-data/manifests/v3/<bundle-id>-r2/
     manifest.parquet       (schema_version 3)
     pairings.parquet       (schema_version 1)
     manifest_report.json   (publication gate)
@@ -187,12 +141,14 @@ Every product is published as four co-located files:
     complete.json          # written last — publication gate
 ```
 
-Per-pipeline root shape:
+Per-pipeline root shape (exact layout from `data/ard/paths.py`,
+`data/secondary/paths.py`, `data/dynamic/paths.py`):
 
-- Static sources `<source_root>/<source>/<vintage>/<name>.tif`
-- Static derived `<derived_root>/<product>/<geometry_id>/<name>.tif`
-- ARD `<output_root>/<source>/<scene_id>/<name>.tif`
-- Dynamic `<output_root>/<era5_land|shadow_building|shadow_vegetation>/<scene_id>/<name>.tif`
+- Static sources `<source_root>/ard/static/sources/<source>/<vintage>/<source>_<vintage>.tif`
+- Static derived `<derived_root>/ard/static/derived/<product>/<geometry_id>/<product>_<geometry_id>.tif`
+- ARD `<output_root>/<source>/<year>/<scene_id>/<scene_id>.tif`
+  (+ `<scene_id>.flag.tif`, `<scene_id>.stac.json`, `provenance.json`, `complete.json`)
+- Dynamic `<output_root>/ard/dynamic/<era5_land|shadow_building|shadow_vegetation>/<scene_id>/<source>_<scene_id>.tif`
 
 ### ARD flag band
 

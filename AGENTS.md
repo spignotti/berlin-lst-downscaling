@@ -47,8 +47,8 @@ scripts/                       # Entry points (run_ard.py, run_static_sources.py
                                #   build_manifest.py, validators)
 ```
 
-See `docs/delivered-implementation.md` for the canonical pipeline
-graph, published roots, and operations guide. See
+See `docs/phase-1-delivery.md` for the delivered products, metadata
+interface, and phase-2 handoff. See
 `docs/data-sources-and-contracts.md` for the data and ledger
 contracts.
 

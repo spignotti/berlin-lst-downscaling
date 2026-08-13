@@ -71,7 +71,7 @@ ADC + CDS API access + the published v3 manifest.
 ## Documentation
 
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest and ledger contracts.
-- `docs/delivered-implementation.md` — pipeline graph, published roots, commands, logging.
+- `docs/phase-1-delivery.md` — delivered data products, metadata interface, handoff state.
 
 ## Stack
 
