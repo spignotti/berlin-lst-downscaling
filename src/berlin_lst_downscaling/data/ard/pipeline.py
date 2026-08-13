@@ -130,14 +130,12 @@ def _run_ecostress_scene(
     ECO_L2T_LSTE layer COGs.
     """
     bbox = tuple(cfg.bbox) if cfg.get("bbox") else None
-    resolution = int(cfg.get("target_resolution_low", 70))
     raw_dir = ecostress_raw_dir or str(cfg.ecostress.raw_dir)
 
     ds, loaded_ids = load_ecostress_scene(
         granule_id=scene_id,
         raw_dir=raw_dir,
         bbox=bbox,
-        resolution=resolution,
     )
 
     if scene_id not in loaded_ids:
@@ -532,11 +530,15 @@ def _run_scene(
                 min_overlap_px=min_overlap,
             )
 
-        resolution = (
-            int(cfg.target_resolution_low)
-            if source in ("landsat-c2-l2", "ecostress")
-            else int(cfg.target_resolution_high)
-        )
+        if source == "ecostress":
+            # ECOSTRESS L2T native grid is fixed at 70 m (acquisition
+            # hardcodes canon_grid_70m) — never the configurable low/high
+            # resolutions of the other sensors.
+            resolution = 70
+        elif source == "landsat-c2-l2":
+            resolution = int(cfg.target_resolution_low)
+        else:
+            resolution = int(cfg.target_resolution_high)
         finalize_ard_product(
             scene_id=scene_id,
             source=source,

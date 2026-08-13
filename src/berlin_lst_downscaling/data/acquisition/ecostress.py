@@ -79,7 +79,6 @@ def load_ecostress_scene(
     granule_id: str,
     raw_dir: str,
     bbox: tuple[float, float, float, float] | None = None,
-    resolution: int = 70,
 ) -> tuple[xr.Dataset, list[str]]:
     """Load an ECOSTRESS L2T granule from local or GCS COGs.
 
@@ -97,9 +96,6 @@ def load_ecostress_scene(
         WGS84 bounding box ``(minx, miny, maxx, maxy)``. When provided,
         the granule is clipped to this extent (with a small buffer) before
         reprojection.  When ``None`` the full granule tile is loaded.
-    resolution :
-        Target resolution in metres for the EPSG:25833 reprojection.
-        Defaults to 70 m (ECOSTRESS L2T native).
 
     Returns
     -------
