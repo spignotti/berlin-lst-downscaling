@@ -10,33 +10,35 @@
 #     "planetary-computer>=1.0.0",
 #     "odc-stac>=0.4.0",
 #     "google-cloud-storage>=3.12.0",
+#     "pillow>=11.0.0",
 # ]
 # ///
 """Sampled cloud-masking audit — descriptive comparison, never a policy.
 
-Selects a deterministic, stratified sample of Landsat→S2 pairs from the
-canonical manifest and compares **four diagnostic views** of cloud/shadow
-handling without applying any of them:
+Selects a deterministic, cell-balanced sample of Landsat→S2 pairs from
+the canonical manifest (season × cloud-cover bins) and compares two
+diagnostic views of cloud/shadow handling without applying any of them:
 
-  1. current published ARD mask      — flag fractions from the published
-                                       ARD flag COGs (S2 at 10 m; Landsat
-                                       at native 100 m, reported separately)
-  2. conservative native-QA view     — Landsat low-confidence cloud/shadow/
-                                       cirrus + dilated-cloud bits and S2
-                                       SCL class 7, reported as *additional
-                                       candidate* pixels only
-  3. s2cloudless cloud probability   — `S2PixelCloudDetector` threshold
-                                       sweep on a supplied B10-capable L1C
-                                       source; printed as *unavailable* when
-                                       no such source is supplied
-  4. optional local overlays         — `--show` renders RGB/mask overlays
-                                       for manual residual-cloud inspection;
-                                       nothing is saved
+  1. current published ARD mask  — flag fractions from the published
+                                    ARD flag COGs (S2 at 10 m; Landsat
+                                    at native 100 m, reported separately)
+  2. conservative native-QA view — Landsat QA_PIXEL raw/dilated-cloud
+                                    bits and S2 SCL class 7, reported
+                                    as *additional candidate* pixels
+                                    only
 
-The probe prints a per-pair table and aggregate quantiles. It is
-explicitly descriptive: no pass/fail decision, no thresholds applied to
-production, no mask rewrite, and it never writes a file, GCS object, or
-figure.
+The probe saves bounded, descriptive QA evidence under a run-scoped
+``--output-root`` (local or ``gs://``):
+
+  - ``index.csv``       — one row per sampled pair with all diagnostics
+  - ``summary.json``    — inputs, aggregate quantiles, risk ranking
+  - ``<anchor>__<s2>.png`` — Pillow-rendered S2 RGB / SCL / ARD-flag
+    panels for the top-``--save-limit`` risk-ranked pairs (display only,
+    downsampled; diagnostics are never resampled)
+
+It is explicitly descriptive: no pass/fail decision, no thresholds
+applied to production, no mask rewrite, and nothing is written outside
+``--output-root``.
 
 Native QA bands are loaded on near-native canonical grids — Landsat
 QA_PIXEL at 30 m and S2 SCL at 20 m (both exact multiples of the 10 m
@@ -50,17 +52,15 @@ Usage
         --manifest gs://berlin-lst-data/manifests/v3/<bundle>-r2/manifest.parquet \
         --pairings gs://berlin-lst-data/manifests/v3/<bundle>-r2/pairings.parquet \
         --ledger gs://berlin-lst-data/ard/full/<cutoff>/ledger.parquet \
+        --output-root gs://berlin-lst-data/qa/cloud_masking/<run-id> \
         --seed 42 --n-pairs 24
-
-    # optional local overlay review (matplotlib, nothing saved):
-    uv run --with matplotlib python scripts/audit_cloud_masking.py \
-        --manifest ... --ledger ... --seed 42 --show
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -71,7 +71,7 @@ import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.acquisition.pc_client import resolve_item_from_href, stac_load
-from berlin_lst_downscaling.data.io import read_bytes
+from berlin_lst_downscaling.data.io import atomic_write, read_bytes
 
 _GRID_10M = canon_grid_10m()
 _GRID_LS = _GRID_10M.zoom_out(3)  # 30 m — Landsat QA_PIXEL near-native
@@ -85,6 +85,9 @@ _S2_NOT_CLEAR = {0, 1, 3, 8, 9, 10, 11}
 # Landsat QA_PIXEL raw-flag bits for the conservative view (bit indices).
 _QA_CLOUD_BIT = 3  # raw cloud flag, any confidence
 _QA_DILATED_BIT = 1  # USGS dilated-cloud buffer
+
+# Display size for saved PNG panels (diagnostics are never resampled).
+_PANEL_WIDTH = 800
 
 
 @dataclass
@@ -105,9 +108,8 @@ class PairDiagnostics:
     s2_ard_flag_clear_frac: float | None
     s2_ard_missed_frac: float | None
     s2_ard_extra_shadow_frac: float | None
-    s2cloudless_frac: float | None
-    s2cloudless_note: str = ""
     load_error: str = ""
+    figure: str = ""
 
 
 def _read_table(uri: str):
@@ -173,14 +175,14 @@ def _eligible_pairs(
     return eligible
 
 
-def _stratify(pair: tuple[str, str], manifest_rows: dict[str, dict]) -> tuple[str, ...]:
-    """Return a deterministic stratum key ``(platform, season, cloud)``."""
+def _bin_key(pair: tuple[str, str], manifest_rows: dict[str, dict]) -> tuple[str, ...]:
+    """Return a deterministic bin key ``(season, cloud)`` for sampling."""
     anchor = manifest_rows[pair[0]]
     month = int(anchor["acquisition_datetime"].month)
     season = "early" if month in (5, 6) else "peak" if month == 7 else "late"
     cloud = anchor["cloud_cover"] or 0.0
     cloud_bin = "low" if cloud < 10 else "mid" if cloud < 30 else "high"
-    return (str(anchor["source"]), season, cloud_bin)
+    return (season, cloud_bin)
 
 
 def _sample_pairs(
@@ -189,11 +191,11 @@ def _sample_pairs(
     seed: int,
     n_pairs: int,
 ) -> list[tuple[str, str]]:
-    """Deterministic stratified round-robin sample of ``n_pairs`` pairs.
+    """Deterministic cell-balanced sample of ``n_pairs`` pairs.
 
-    Strata are ``(platform, season-bin, cloud-cover-bin)``; each cell is
-    shuffled with a cell-seeded RNG and pairs are drawn round-robin so the
-    sample spreads across all cells. Unique S2 scene ids are enforced
+    Cells are ``(season-bin, cloud-cover-bin)``; each cell is shuffled
+    with a cell-seeded RNG and pairs are drawn round-robin so the sample
+    spreads across all cells. Unique S2 scene ids are enforced
     (deduplication across anchors), so re-running with the same seed
     yields exactly the same pairs.
     """
@@ -201,7 +203,7 @@ def _sample_pairs(
 
     cells: dict[tuple[str, ...], list[tuple[str, str]]] = {}
     for pair in eligible:
-        cells.setdefault(_stratify(pair, manifest_rows), []).append(pair)
+        cells.setdefault(_bin_key(pair, manifest_rows), []).append(pair)
     for key, items in cells.items():
         salt = zlib.crc32("|".join(key).encode("utf-8"))
         rng = np.random.default_rng((seed * 1000003 + salt) % (2**32))
@@ -353,111 +355,264 @@ def _s2_ard_comparison(flag_uri: str, scl_raw: np.ndarray) -> tuple[float | None
     return missed, extra_shadow
 
 
-def _s2cloudless_proba(
-    item,
-    bands: list[str],
-    l1c_root: str,
-) -> tuple[np.ndarray | None, str]:
-    """Run s2cloudless on a B10-capable source; return ``(proba, note)``.
+# ── saved evidence ──────────────────────────────────────────────────
 
-    s2cloudless requires the ordered ten-band reflectance tensor
-    ``[B01, B02, B04, B05, B08, B8A, B09, B10, B11, B12]`` (scaled
-    reflectance, ``DN / 10000``). The Planetary Computer ``sentinel-2-l2a``
-    collection does not expose B10 (live catalog probe), so the comparator
-    requires an exact-match L1C source per scene supplied via
-    ``--l1c-root``; without it the view is reported unavailable.
+
+def _risk_score(diag: PairDiagnostics) -> float:
+    """Composite residual-mask-risk score (higher = more candidates)."""
+    return float(
+        (diag.s2_ard_missed_frac if diag.s2_ard_missed_frac is not None else 0.0)
+        + diag.s2_extra_candidate_frac
+        + diag.ls_extra_candidate_frac
+    )
+
+
+def _rank_pairs(diagnostics: list[PairDiagnostics]) -> list[PairDiagnostics]:
+    """Deterministic risk ranking: score desc, then scene ids for tie-break."""
+    return sorted(
+        diagnostics,
+        key=lambda d: (-_risk_score(d), d.landsat_scene_id, d.sentinel2_scene_id),
+    )
+
+
+def _stretch_rgb(rgb: np.ndarray) -> np.ndarray:
+    """2-98 percentile stretch of a float reflectance stack to uint8."""
+    valid = rgb[np.isfinite(rgb)]
+    if valid.size == 0:
+        return np.zeros(rgb.shape[:2] + (3,), dtype=np.uint8)
+    lo, hi = np.percentile(valid, (2, 98))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return np.zeros(rgb.shape[:2] + (3,), dtype=np.uint8)
+    out = (rgb - lo) / (hi - lo)
+    out = np.clip(out, 0, 1) * 255
+    return np.nan_to_num(out, nan=0).astype(np.uint8)
+
+
+_SCL_COLORS = {
+    0: (20, 20, 20),  # no-data
+    1: (120, 120, 120),  # saturated
+    2: (35, 105, 35),  # dark features
+    3: (60, 60, 90),  # cloud shadow
+    4: (60, 120, 60),  # vegetation
+    5: (90, 90, 60),  # bare soil
+    6: (40, 100, 160),  # water
+    7: (200, 200, 200),  # unclassified
+    8: (200, 200, 200),  # cloud medium
+    9: (220, 220, 220),  # cloud high
+    10: (140, 180, 200),  # cirrus
+    11: (230, 240, 250),  # snow / ice
+}
+
+
+def _scl_rgb(scl: np.ndarray) -> np.ndarray:
+    """Map SCL classes to a fixed display palette."""
+    out = np.zeros(scl.shape + (3,), dtype=np.uint8)
+    for cls, color in _SCL_COLORS.items():
+        out[scl == cls] = color
+    return out
+
+
+def _flag_rgb(flag: np.ndarray) -> np.ndarray:
+    """Render the ARD flag bitmask as a coloured overlay.
+
+    Clear (flag==0) is dark; each flag bit gets its own colour, later
+    bits drawn on top of earlier ones.
     """
-    try:
-        from s2cloudless import S2PixelCloudDetector
-    except ImportError:
-        return None, "s2cloudless not installed"
+    from berlin_lst_downscaling.data.ard.contract import Contract
 
-    scene_id = item.id
-    b10_uri = f"{l1c_root.rstrip('/')}/{scene_id}/{scene_id}_B10.tif"
-    try:
-        import rasterio
+    base = np.full(flag.shape + (3,), 25, dtype=np.uint8)
+    layers = (
+        (Contract.FLAG_CLOUDY, (230, 60, 60)),
+        (Contract.FLAG_SHADOW, (240, 200, 40)),
+        (Contract.FLAG_CIRRUS, (200, 90, 220)),
+        (Contract.FLAG_SATURATED, (250, 140, 40)),
+        (Contract.FLAG_SNOW_ICE, (240, 245, 250)),
+        (Contract.FLAG_FILL, (70, 70, 70)),
+    )
+    out = base.copy()
+    for bit, color in layers:
+        mask = (flag & bit) != 0
+        out[mask] = color
+    return out
 
-        with rasterio.open(b10_uri) as src:
-            b10 = src.read(1).astype(np.float32)
-    except Exception:
-        return None, "s2cloudless: unavailable — B10 source not supplied"
-    # decision: mirror the historical s2cloudless integration (removed in
-    # d505104 after a DN-scaling bug) — load the nine STAC bands on the
-    # 10 m grid and divide by 10000 for scaled reflectance; B10 is inserted
-    # between B09 and B11 to match s2cloudless' required ordered tensor
-    # [B01, B02, B04, B05, B08, B8A, B09, B10, B11, B12]. This rerun is
-    # evidence gathering, not a production change.
+
+def _downscale(arr: np.ndarray, max_width: int = _PANEL_WIDTH) -> np.ndarray:
+    """Downscale a (H, W, 3) display array to *max_width* via PIL."""
+    from PIL import Image
+
+    h, w = arr.shape[:2]
+    scale = max_width / w
+    new_size = (max_width, max(1, int(round(h * scale))))
+    img = Image.fromarray(arr)
+    return np.asarray(img.resize(new_size, Image.LANCZOS))
+
+
+def _compose_png(rgb: np.ndarray, scl: np.ndarray, flag: np.ndarray) -> bytes:
+    """Compose three display panels (S2 RGB, SCL, ARD flag) into one PNG."""
+    from PIL import Image, ImageDraw
+
+    panels = [_downscale(_stretch_rgb(rgb)), _downscale(_scl_rgb(scl)), _downscale(_flag_rgb(flag))]
+    width = max(p.shape[1] for p in panels)
+    height = sum(p.shape[0] for p in panels) + 20
+    canvas = Image.new("RGB", (width, height), (10, 10, 10))
+    draw = ImageDraw.Draw(canvas)
+    y = 0
+    for label, panel in zip(("S2 RGB", "SCL", "ARD flag"), panels, strict=True):
+        draw.text((6, y + 2), label, fill=(255, 255, 255))
+        canvas.paste(Image.fromarray(panel), (0, y + 14))
+        y += panel.shape[0] + 14
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _load_s2_rgb(item) -> np.ndarray:
+    """Load the S2 true-colour stack (red/green/blue) on the 10 m grid."""
     ds = stac_load(
         items=[item],
-        bands=bands,
+        bands=["red", "green", "blue"],
         geobox=_GRID_10M,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
     )
-    if b10.shape != ds[bands[0]].values[0].shape:
-        return None, "s2cloudless: B10 source shape does not match S2 bands"
-
-    stack_bands = [ds[b].values[0].astype(np.float32) / 10000.0 for b in bands]
-    stack_bands.insert(7, b10 / 10000.0)  # B10 between B09 and B11
-    stack = np.stack(stack_bands, axis=-1)
-    stack[np.isnan(stack)] = 0.0
-    detector = S2PixelCloudDetector(threshold=0.4, average_over=1, dilation_size=1)
-    proba = detector.get_cloud_probability_maps(stack[np.newaxis, ...])[0]
-    return proba, ""
+    return np.stack([ds[b].values[0].astype(np.float32) for b in ("red", "green", "blue")], axis=-1)
 
 
-def _show_overlays(pairs: list[PairDiagnostics], manifest_rows: dict) -> None:
-    """Render RGB/mask overlays for manual inspection (nothing saved)."""
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:
-        print(
-            "  --show requires matplotlib: run with "
-            "`uv run --with matplotlib python scripts/audit_cloud_masking.py --show`"
-        )
-        print(f"  ({exc})")
-        return
+def _save_evidence(
+    diagnostics: list[PairDiagnostics],
+    manifest_rows: dict,
+    ard_flags: dict[str, str],
+    args,
+) -> None:
+    """Write index.csv, summary.json, and top-risk PNGs under output_root."""
+    from datetime import UTC, datetime
 
-    from berlin_lst_downscaling.data.acquisition.pc_client import resolve_item_from_href, stac_load
+    ranked = _rank_pairs(diagnostics)
+    limit = int(args.save_limit)
+    saved: list[str] = []
 
-    print("\n--show: rendering overlays for manual inspection (nothing saved)")
-    for diag in pairs[:6]:
+    for i, diag in enumerate(ranked):
+        if i >= limit:
+            break
         anchor = manifest_rows.get(diag.landsat_scene_id)
-        if anchor is None or not anchor["item_href"]:
+        s2 = manifest_rows.get(diag.sentinel2_scene_id)
+        if anchor is None or s2 is None or not anchor["item_href"] or not s2["item_href"]:
             continue
-        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         try:
-            item = resolve_item_from_href(anchor["item_href"])
-            ds = stac_load(
-                items=[item],
-                bands=["red", "green", "blue", "qa_pixel"],
-                geobox=_GRID_10M,
-                chunks={"x": 2048, "y": 2048},
-                groupby="solar_day",
+            s2_item = _with_retry(
+                lambda href=s2["item_href"]: resolve_item_from_href(str(href)),
+                base_delay=args.sleep,
             )
-            rgb = np.stack(
-                [ds[b].values[0].astype(np.float32) / 10000.0 for b in ("red", "green", "blue")],
-                axis=-1,
-            )
-            rgb = np.clip(rgb, 0, 1)
-            axes[0].imshow(rgb, interpolation="nearest")
-            axes[0].set_title(f"RGB {diag.landsat_scene_id}")
-            axes[1].imshow(ds["qa_pixel"].values[0], cmap="viridis", interpolation="nearest")
-            axes[1].set_title("QA_PIXEL")
-            axes[2].text(
-                0.5,
-                0.5,
-                f"native clear {diag.ls_native_clear_frac:.3f}\n"
-                f"extra candidates {diag.ls_extra_candidate_frac:.3f}",
-                ha="center",
-                va="center",
-                transform=axes[2].transAxes,
-            )
-            axes[2].set_title("summary")
+            rgb = _load_s2_rgb(s2_item)
+            scl_raw = _load_native_qa(s2_item, "SCL", _GRID_S2)
+            flag_uri = ard_flags.get(diag.sentinel2_scene_id)
+            if flag_uri is None:
+                continue
+            import rasterio
+
+            with rasterio.open(flag_uri) as src:
+                flag = src.read(1).astype(np.uint8)
+            png = _compose_png(rgb, _scl_array(scl_raw), flag)
         except Exception as exc:
-            axes[0].set_title(f"load failed: {exc}")
-        plt.show()
-        plt.close(fig)
+            print(f"  evidence render failed for {diag.landsat_scene_id}: {exc}")
+            continue
+        fname = f"{diag.landsat_scene_id}__{diag.sentinel2_scene_id}.png"
+        atomic_write(f"{args.output_root.rstrip('/')}/{fname}", png, overwrite=True)
+        diag.figure = fname
+        saved.append(fname)
+
+    # ── index.csv ────────────────────────────────────────────────────
+    import csv
+
+    columns = [
+        "landsat_scene_id",
+        "sentinel2_scene_id",
+        "joint_clear_frac",
+        "anchor_cloud_cover",
+        "ls_native_clear_frac",
+        "ls_extra_candidate_frac",
+        "ls_ard_flag_clear_frac",
+        "s2_native_clear_frac",
+        "s2_extra_candidate_frac",
+        "s2_ard_flag_clear_frac",
+        "s2_ard_missed_frac",
+        "s2_ard_extra_shadow_frac",
+        "risk_score",
+        "figure",
+        "load_error",
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns)
+    writer.writeheader()
+    for d in diagnostics:
+        writer.writerow(
+            {
+                "landsat_scene_id": d.landsat_scene_id,
+                "sentinel2_scene_id": d.sentinel2_scene_id,
+                "joint_clear_frac": _f(d.joint_clear_frac),
+                "anchor_cloud_cover": _f(d.anchor_cloud_cover),
+                "ls_native_clear_frac": f"{d.ls_native_clear_frac:.6f}",
+                "ls_extra_candidate_frac": f"{d.ls_extra_candidate_frac:.6f}",
+                "ls_ard_flag_clear_frac": _f(d.ls_ard_flag_clear_frac),
+                "s2_native_clear_frac": f"{d.s2_native_clear_frac:.6f}",
+                "s2_extra_candidate_frac": f"{d.s2_extra_candidate_frac:.6f}",
+                "s2_ard_flag_clear_frac": _f(d.s2_ard_flag_clear_frac),
+                "s2_ard_missed_frac": _f(d.s2_ard_missed_frac),
+                "s2_ard_extra_shadow_frac": _f(d.s2_ard_extra_shadow_frac),
+                "risk_score": f"{_risk_score(d):.6f}",
+                "figure": d.figure,
+                "load_error": d.load_error,
+            }
+        )
+    atomic_write(f"{args.output_root.rstrip('/')}/index.csv", buf.getvalue(), overwrite=True)
+
+    # ── summary.json ─────────────────────────────────────────────────
+    def qline(values: list[float]) -> dict:
+        finite = [v for v in values if np.isfinite(v)]
+        if len(finite) < 2:
+            return {"n": len(finite)}
+        qs = quantiles(finite, n=4, method="inclusive")
+        return {
+            "n": len(finite),
+            "min": round(min(finite), 6),
+            "p50": round(qs[1], 6),
+            "p75": round(qs[2], 6),
+            "max": round(max(finite), 6),
+        }
+
+    summary = {
+        "probe": "cloud_masking_audit",
+        "output_root": args.output_root,
+        "seed": args.seed,
+        "n_pairs": len(diagnostics),
+        "save_limit": limit,
+        "saved_figures": len(saved),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "quantiles": {
+            "ls_native_clear_frac": qline([d.ls_native_clear_frac for d in diagnostics]),
+            "ls_extra_candidate_frac": qline([d.ls_extra_candidate_frac for d in diagnostics]),
+            "s2_native_clear_frac": qline([d.s2_native_clear_frac for d in diagnostics]),
+            "s2_extra_candidate_frac": qline([d.s2_extra_candidate_frac for d in diagnostics]),
+        },
+        "ranked": [
+            {
+                "landsat_scene_id": d.landsat_scene_id,
+                "sentinel2_scene_id": d.sentinel2_scene_id,
+                "risk_score": round(_risk_score(d), 6),
+                "figure": d.figure,
+            }
+            for d in ranked
+        ],
+    }
+    atomic_write(
+        f"{args.output_root.rstrip('/')}/summary.json",
+        json.dumps(summary, indent=2),
+        overwrite=True,
+    )
+
+    print(f"\nSaved evidence under {args.output_root}:")
+    print(f"  index.csv ({len(diagnostics)} rows) + summary.json")
+    print(f"  {len(saved)} PNG figures: {', '.join(saved)}" if saved else "  no PNG figures saved")
 
 
 def _f(value: float | None) -> float:
@@ -480,19 +635,15 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, help="v3 manifest.parquet URI")
     parser.add_argument("--pairings", required=True, help="v3 pairings.parquet URI")
     parser.add_argument("--ledger", required=True, help="ARD ledger.parquet URI")
+    parser.add_argument("--output-root", required=True, help="run-scoped evidence root (local or gs://)")
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for the sample")
     parser.add_argument("--n-pairs", type=int, default=24, help="target sample size")
+    parser.add_argument("--save-limit", type=int, default=12, help="max PNG figures to save")
     parser.add_argument(
         "--sleep",
         type=float,
         default=3.0,
         help="pacing delay between scene loads (respects PC SAS rate limits)",
-    )
-    parser.add_argument("--show", action="store_true", help="render local overlays (no save)")
-    parser.add_argument(
-        "--l1c-root",
-        default=None,
-        help="root with per-scene B10 COGs for the s2cloudless comparator",
     )
     args = parser.parse_args()
 
@@ -512,10 +663,6 @@ def main() -> int:
     if len(sample) < 2:
         print("Error: sample too small", file=sys.stderr)
         return 1
-
-    # Nine bands loaded from STAC; B10 comes separately from --l1c-root and
-    # is inserted between B09 and B11 inside _s2cloudless_proba.
-    s2c_stac_bands = ["B01", "B02", "B04", "B05", "B08", "B8A", "B09", "B11", "B12"]
 
     diagnostics: list[PairDiagnostics] = []
     print(
@@ -542,7 +689,6 @@ def main() -> int:
             s2_ard_flag_clear_frac=None,
             s2_ard_missed_frac=None,
             s2_ard_extra_shadow_frac=None,
-            s2cloudless_frac=None,
         )
         print(f"  [{i}/{len(sample)}] {anchor_id[:21]} + {s2_id[:21]}", flush=True)
         try:
@@ -578,21 +724,6 @@ def main() -> int:
 
         diag.ls_ard_flag_clear_frac = _flag_clear_frac(ard_flags[anchor_id])
 
-        if args.l1c_root:
-            try:
-                s2_item = _with_retry(
-                    lambda href=s2["item_href"]: resolve_item_from_href(str(href)),
-                    base_delay=args.sleep,
-                )
-                proba, note = _s2cloudless_proba(s2_item, s2c_stac_bands, args.l1c_root)
-                if proba is not None:
-                    diag.s2cloudless_frac = float(np.sum(proba > 0.4)) / max(int(proba.size), 1)
-                diag.s2cloudless_note = note
-            except Exception as exc:
-                diag.s2cloudless_note = f"s2cloudless failed: {exc}"
-        else:
-            diag.s2cloudless_note = "s2cloudless: unavailable — B10 source not supplied"
-
         diagnostics.append(diag)
         if i < len(sample):
             time.sleep(args.sleep)
@@ -600,7 +731,7 @@ def main() -> int:
     # ── per-pair table ────────────────────────────────────────────────────
     header = (
         f"{'anchor':<22} {'ls.clear':>8} {'ls.extra':>8} {'ls.ard':>7} "
-        f"{'s2.clear':>8} {'s2.extra':>8} {'s2.ard':>7} {'missed':>7} {'shadow+':>7} {'s2c':>6}"
+        f"{'s2.clear':>8} {'s2.extra':>8} {'s2.ard':>7} {'missed':>7} {'shadow+':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -612,19 +743,23 @@ def main() -> int:
             f"{d.s2_native_clear_frac:>8.3f} {d.s2_extra_candidate_frac:>8.3f} "
             f"{_f(d.s2_ard_flag_clear_frac):>7.3f} "
             f"{_f(d.s2_ard_missed_frac):>7.3f} "
-            f"{_f(d.s2_ard_extra_shadow_frac):>7.3f} "
-            f"{_f(d.s2cloudless_frac):>6.3f}"
+            f"{_f(d.s2_ard_extra_shadow_frac):>7.3f}"
         )
     print()
     print("Quantiles across sampled pairs (fraction of grid pixels):")
-    ls_clear = [d.ls_native_clear_frac for d in diagnostics]
-    ls_extra = [d.ls_extra_candidate_frac for d in diagnostics]
-    s2_clear = [d.s2_native_clear_frac for d in diagnostics]
-    s2_extra = [d.s2_extra_candidate_frac for d in diagnostics]
-    print(_quantile_line("Landsat native clear", ls_clear))
-    print(_quantile_line("Landsat extra candidates", ls_extra))
-    print(_quantile_line("S2 native clear", s2_clear))
-    print(_quantile_line("S2 extra candidates (class 7)", s2_extra))
+    print(_quantile_line("Landsat native clear", [d.ls_native_clear_frac for d in diagnostics]))
+    print(
+        _quantile_line(
+            "Landsat extra candidates", [d.ls_extra_candidate_frac for d in diagnostics]
+        )
+    )
+    print(_quantile_line("S2 native clear", [d.s2_native_clear_frac for d in diagnostics]))
+    print(
+        _quantile_line(
+            "S2 extra candidates (class 7)",
+            [d.s2_extra_candidate_frac for d in diagnostics],
+        )
+    )
     s2_ard_clear = [
         d.s2_ard_flag_clear_frac for d in diagnostics if d.s2_ard_flag_clear_frac is not None
     ]
@@ -639,29 +774,18 @@ def main() -> int:
     if s2_extra_shadow:
         print(_quantile_line("S2 ARD-flagged but SCL clear (shadow+)", s2_extra_shadow))
 
-    # s2cloudless availability summary (descriptive, never a gate).
-    notes = [d.s2cloudless_note for d in diagnostics if d.s2cloudless_note]
     load_errors = [d.load_error for d in diagnostics if d.load_error]
-    if args.l1c_root:
-        ok = [d for d in diagnostics if d.s2cloudless_frac is not None]
-        print(f"\ns2cloudless: {len(ok)}/{len(diagnostics)} pairs computed (threshold 0.4)")
-        if ok:
-            print(_quantile_line("s2cloudless > 0.4", [d.s2cloudless_frac for d in ok]))
-    else:
-        print("\ns2cloudless: unavailable — B10 source not supplied (see --l1c-root)")
     if load_errors:
         print("load errors:")
         for err in sorted(set(load_errors)):
             print(f"  - {err}")
-    if notes:
-        print("notes:")
-        for n in sorted(set(notes)):
-            print(f"  - {n}")
 
-    if args.show:
-        _show_overlays(diagnostics, manifest_rows)
+    _save_evidence(diagnostics, manifest_rows, ard_flags, args)
 
-    print("\nProbe complete — descriptive only; no masks changed, nothing written.")
+    print(
+        "\nProbe complete — descriptive only; no masks changed, "
+        "nothing outside --output-root written."
+    )
     return 0
 
 
