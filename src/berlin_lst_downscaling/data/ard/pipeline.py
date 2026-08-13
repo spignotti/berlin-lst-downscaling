@@ -534,7 +534,7 @@ def _run_scene(
 
         resolution = (
             int(cfg.target_resolution_low)
-            if source == "landsat-c2-l2"
+            if source in ("landsat-c2-l2", "ecostress")
             else int(cfg.target_resolution_high)
         )
         finalize_ard_product(

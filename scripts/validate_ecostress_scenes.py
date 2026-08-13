@@ -17,6 +17,8 @@ checks each of the six ECOSTRESS validation granules end-to-end on the
   - COG readable, EPSG:25833, single float32 band, canonical 70 m grid
     (shape + origin via ``canon_grid_70m``)
   - flag COG readable, EPSG:25833, single uint8 band, same grid
+  - STAC item present and both ``lst``/``flag`` assets declare
+    ``spatial_resolution: 70``
   - LST NaN/flag consistency: a pixel is NaN if and only if the flag's
     fill bit is set (the ECOSTRESS mask contract — ``data/ard/masking.py``)
   - flag bit fractions (fill, cloudy, shadow, cirrus, saturated, snow/ice)
@@ -120,20 +122,24 @@ def _ledger_eco_rows(ledger_uri: str) -> dict[str, dict]:
             "status": str(cols["status"][i]),
             "path_cog": cols["path_cog"][i],
             "path_flag": cols["path_flag"][i],
+            "path_stac": cols["path_stac"][i],
             "aoi_clear_frac": cols.get("aoi_clear_frac", [None] * table.num_rows)[i],
         }
     return rows
 
 
-def _check_artifacts(scene_id: str, path_cog: str, path_flag: str) -> SceneCheck:
-    """Run the structural COG/flag checks plus the NaN/flag contract."""
+def _check_artifacts(scene_id: str, path_cog: str, path_flag: str, path_stac: str) -> SceneCheck:
+    """Run the structural COG/flag/STAC checks plus the NaN/flag contract."""
     check = SceneCheck(scene_id=scene_id)
     contract = contract_for_source("ecostress")
 
-    if not path_cog or not path_flag:
-        check.fail(f"ledger row missing path_cog/path_flag: cog={path_cog!r} flag={path_flag!r}")
+    if not path_cog or not path_flag or not path_stac:
+        check.fail(
+            f"ledger row missing artifact path: cog={path_cog!r} "
+            f"flag={path_flag!r} stac={path_stac!r}"
+        )
         return check
-    for label, uri in (("COG", path_cog), ("flag", path_flag)):
+    for label, uri in (("COG", path_cog), ("flag", path_flag), ("STAC", path_stac)):
         if not exists(uri):
             check.fail(f"missing {label}: {uri}")
     if not check.ok:
@@ -145,6 +151,19 @@ def _check_artifacts(scene_id: str, path_cog: str, path_flag: str) -> SceneCheck
     _merge(check, "flag", flag_result)
     if not check.ok:
         return check
+
+    # ── STAC contract: lst + flag assets declare the 70 m native grid ──
+    import json
+
+    stac = json.loads(read_bytes(path_stac))
+    for asset in ("lst", "flag"):
+        bands = stac.get("assets", {}).get(asset, {}).get("raster:bands", [])
+        if not bands:
+            check.fail(f"STAC {asset}: missing raster:bands")
+            continue
+        res = bands[0].get("spatial_resolution")
+        if res != 70:
+            check.fail(f"STAC {asset}: spatial_resolution={res!r}, expected 70")
 
     # ── pixel-level contract: dtype + NaN ⟺ fill bit ─────────────────────
     import rasterio
@@ -225,7 +244,9 @@ def main() -> int:
         if ledger["status"] != "done":
             failures.append(f"{scene_id}: ledger status={ledger['status']!r}, expected 'done'")
 
-        check = _check_artifacts(scene_id, ledger["path_cog"], ledger["path_flag"])
+        check = _check_artifacts(
+            scene_id, ledger["path_cog"], ledger["path_flag"], ledger["path_stac"]
+        )
         if not check.ok:
             failures.extend(check.errors)
 
