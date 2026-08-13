@@ -109,6 +109,56 @@ Known limits of the delivered state:
   mismatch in `data/dynamic/dwd_validation.py`; this could not be
   re-verified in the current bucket (only r3 exists) and must be
   reproduced and diagnosed before any DWD metric update.
+- **ECOSTRESS probe finding (2026-08-13):** the published ECOSTRESS
+  LST COGs carry a NaN halo (~15–40% of grid pixels, granule-dependent)
+  that the flag COG marks as clear — bilinear LST reprojection spreads
+  NaN beyond the nearest-classified fill region. Flag-clear pixels are
+  therefore not guaranteed usable; NaN pixels are excluded downstream
+  by completeness anyway. Documented, not repaired (probe is read-only).
+
+## Pre-training diagnostic probes
+
+Two read-only probes run before feature engineering. Neither writes any
+file, GCS object, mask, or figure — they print results only, and the
+cloud audit deliberately contains **no encoded pass/fail decision**; a
+human decides from the numbers whether additional cloud removal is worth
+a separate processing step.
+
+```bash
+# 1. Published ECOSTRESS validation scenes (six granules): structural +
+#    grid + NaN/flag contract checks and flag fractions.
+uv run python scripts/validate_ecostress_scenes.py \
+    --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
+    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
+
+# 2. Sampled cloud-masking comparison: 24 deterministic pairs stratified
+#    by platform × season × cloud cover. Compares the published ARD
+#    mask, a conservative native-QA view (Landsat low-confidence bits +
+#    S2 SCL class 7 as candidates), s2cloudless probabilities (needs a
+#    B10-capable L1C source via --l1c-root; otherwise reported
+#    unavailable), and optional local overlays (--show, nothing saved).
+uv run python scripts/audit_cloud_masking.py \
+    --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
+    --pairings gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/pairings.parquet \
+    --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
+    --seed 42 --n-pairs 24
+```
+
+Source semantics behind the probes:
+
+- **ECOSTRESS v002 cloud state** lives in the product's `cloud` layer,
+  not in the QC bits (NASA LP DAAC). The published ARD flag COG already
+  folds cloud, water, and QC-fill into the fill/cloudy bits, which is
+  sufficient for the fast structural probe; a separate water-vs-QC split
+  is not recoverable from the published flag artefact.
+- **s2cloudless** (audit-only dependency, `scripts/audit_cloud_masking.py`)
+  requires the ten-band reflectance tensor including **B10**, which the
+  Planetary Computer `sentinel-2-l2a` collection does not expose. The
+  comparator therefore needs an exact-match L1C/B10-capable source per
+  sampled scene; without one the view is reported as unavailable and the
+  other three diagnostics still run. Historical note: commit `d505104`
+  removed an earlier s2cloudless integration after a DN-scaling bug; this
+  rerun is evidence gathering, not a presumed improvement.
 
 ## Documentation map
 

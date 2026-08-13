@@ -34,6 +34,9 @@ dependencies = [
     "wetterdienst>=0.128.0,<0.129",
     "rio-cogeo>=7.0.2",
     "pandas>=2.3.3",
+    # audit-only cloud comparator (scripts/audit_cloud_masking.py) — not used
+    # in production ARD masking
+    "s2cloudless>=1.7.3",
 ]
 
 [build-system]
