@@ -230,9 +230,10 @@ It is **not** byte-exact reproducible from an empty bucket:
   run time; published provenance records no input asset hashes.
 - Ledger, provenance, STAC, and logs embed per-run `run_id` values and
   wall-clock timestamps.
-- The published ARD ledger is a deliberate mix of 434 v6 + 75 v7 rows;
-  current code writes schema v7, so a fresh full run rewrites the v6
-  rows deterministically.
+- The published ARD ledger is a deliberate mix of 428 v6 + 81 v7 rows
+  (v7 includes the six ECOSTRESS validation scenes republished in
+  2026-08-13); current code writes schema v7, so a fresh full run
+  rewrites the v6 rows deterministically.
 
 Validators and the pinned bundle/caches, not byte identity, are the
 reproducibility basis.

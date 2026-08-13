@@ -319,6 +319,11 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
 
     lst_arr[(flag & contract.FLAG_FILL) != 0] = float("nan")
 
+    # Close the NaN⟺fill invariant: bilinear LST reprojection spreads NaN
+    # beyond the nearest-reprojected fill/water/QC regions, so any NaN the
+    # mask left unclassified is treated as fill.
+    flag[np.isnan(lst_arr)] |= contract.FLAG_FILL
+
     coords = dict(ds.coords)
     dims = ds.dims
 

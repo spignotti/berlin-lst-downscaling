@@ -87,9 +87,10 @@ reproduce the published product set with the same structure. It is
 
 Known limits of the delivered state:
 
-- The published ARD ledger is a deliberate mix of 434 schema-v6 + 75
-  schema-v7 rows; current code writes v7, so a future full `run_ard`
-  deterministically rewrites the v6 rows.
+- The published ARD ledger is a deliberate mix of 428 schema-v6 + 81
+  schema-v7 rows (the six ECOSTRESS validation scenes were republished
+  at v7 in 2026-08-13); current code writes v7, so a future full
+  `run_ard` deterministically rewrites the v6 rows.
 - DWD r3 is **historical**: it validated the pre-rebuild scalar ERA5
   products (run `dyn-20260721T092945-4a4de9`). It is not evidence for
   the current 8-band spatial ERA5 fields.
@@ -107,12 +108,14 @@ Known limits of the delivered state:
   while the DWD timestamps are timezone-aware, so every anchor/station
   pair mismatches (0 / 2070 matched pairs under current code, vs 1 508
   in r3). r3 remains the historical pre-rebuild check.
-- **ECOSTRESS probe finding (2026-08-13):** the published ECOSTRESS
-  LST COGs carry a NaN halo (~15–40% of grid pixels, granule-dependent)
-  that the flag COG marks as clear — bilinear LST reprojection spreads
-  NaN beyond the nearest-classified fill region. Flag-clear pixels are
-  therefore not guaranteed usable; NaN pixels are excluded downstream
-  by completeness anyway. Documented, not repaired (probe is read-only).
+- **ECOSTRESS NaN/fill invariant repaired (2026-08-13):** the published
+  ECOSTRESS LST COGs carried a NaN halo (~15–40% of grid pixels,
+  granule-dependent) that the flag COG marked as clear — bilinear LST
+  reprojection spread NaN beyond the nearest-classified fill region.
+  `mask_ecostress` now closes the invariant (any NaN LST also sets
+  `FLAG_FILL`), and the six validation scenes were republished
+  (`ard/full/2017-2026-cutoff-20260717T235959Z`, run `3822b6d0`).
+  `scripts/validate_ecostress_scenes.py` now passes all six scenes.
 
 ## Pre-training diagnostic probes
 
