@@ -16,82 +16,92 @@ def lint(session: nox.Session) -> None:
 # ── shared helpers ────────────────────────────────────────────────────
 
 
-_SMOKE_ROWS = [
-    {
+def _write_smoke_bundle(manifest_path: str) -> None:
+    """Write the full 8-row smoke bundle (1 Landsat + 1 S2 + 6 ECOSTRESS).
+
+    Uses the project's own :func:`write_bundle` so the smoke fixture
+    satisfies the same three-artifact manifest contract as production
+    (manifest.parquet + pairings.parquet + manifest_report.json).
+    """
+    import os
+    from datetime import UTC, datetime
+
+    from berlin_lst_downscaling.data.acquisition.ecostress import parse_granule_datetime
+    from berlin_lst_downscaling.data.selection.manifest import write_bundle
+    from berlin_lst_downscaling.data.selection.schema import ECOSTRESS_VALIDATION_IDS
+
+    bundle_dir = os.path.dirname(manifest_path)
+    os.makedirs(bundle_dir, exist_ok=True)
+
+    anchor = {
         "scene_id": "LC09_L2SP_193024_20240629_02_T1",
-        "source": "landsat-c2-l2",
-        "role": "anchor",
-        "platform": "landsat-9",
         "year": 2024,
-        "item_href": "https://planetarycomputer.microsoft.com/api/stac/data/landsat-c2-l2/items/LC09_L2SP_193024_20240629_02_T1",
+        "datetime": datetime(2024, 6, 29, 10, 20, 0, tzinfo=UTC),
+        "item_href": (
+            "https://planetarycomputer.microsoft.com/api/stac/v1/collections/"
+            "landsat-c2-l2/items/LC09_L2SP_193024_20240629_02_T1"
+        ),
         "aoi_clear_px": 5000,
         "aoi_total_px": 10000,
         "aoi_clear_frac": 0.5,
-    },
-    {
+        "cloud_cover": None,
+        "sun_azimuth": None,
+        "sun_elevation": None,
+    }
+    s2 = {
         "scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
-        "source": "sentinel-2-l2a",
-        "role": "predictor",
-        "platform": "sentinel-2",
         "year": 2024,
-        "item_href": "https://planetarycomputer.microsoft.com/api/stac/data/sentinel-2-l2a/items/S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
+        "datetime": datetime(2024, 6, 29, 11, 20, 0, tzinfo=UTC),
+        "item_href": (
+            "https://planetarycomputer.microsoft.com/api/stac/v1/collections/"
+            "sentinel-2-l2a/items/S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907"
+        ),
         "aoi_clear_px": 6000,
         "aoi_total_px": 10000,
         "aoi_clear_frac": 0.6,
-    },
-    {
-        "scene_id": "ECOv002_L2T_LSTE_00373_003_33UUU_20180730T193555_0712_01",
-        "source": "ecostress",
-        "role": "validation",
-        "platform": "ecostress",
-        "year": 2018,
-        "item_href": None,
-        "aoi_clear_px": None,
-        "aoi_total_px": None,
-        "aoi_clear_frac": None,
-    },
-]
+        "cloud_cover": None,
+    }
+    coupled = [
+        {
+            "anchor": anchor,
+            "s2": s2,
+            "landsat_clear_px": 5000,
+            "joint_clear_px": 4000,
+            "joint_clear_frac": 0.8,
+            "score": 0.7,
+        }
+    ]
+    eco_granules = []
+    for eco_id in sorted(ECOSTRESS_VALIDATION_IDS):
+        acq = parse_granule_datetime(eco_id)
+        eco_granules.append({"granule_id": eco_id, "year": acq.year, "datetime": acq})
 
-_SMOKE_PAIRINGS = [
-    {
-        "landsat_scene_id": "LC09_L2SP_193024_20240629_02_T1",
-        "sentinel2_scene_id": "S2A_MSIL2A_20240629T102021_R065_T33UVU_20240629T161907",
-        "dt_seconds": 3600,
-        "landsat_clear_px": 5000,
-        "joint_clear_px": 4000,
-        "joint_clear_frac": 0.8,
-        "score": 0.7,
-    },
-]
-
-
-def _write_smoke_manifest(manifest_path: str) -> None:
-    """Write the 3-row v3 smoke manifest to *manifest_path* (Parquet)."""
-    import os
-
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    from berlin_lst_downscaling.data.selection.schema import MANIFEST_SCHEMA
-
-    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-
-    # Add missing datetime field (required by schema)
-    from datetime import UTC, datetime
-
-    for row in _SMOKE_ROWS:
-        if "acquisition_datetime" not in row:
-            row["acquisition_datetime"] = datetime(2024, 6, 29, 10, 20, 0, tzinfo=UTC)
-        if "cloud_cover" not in row:
-            row["cloud_cover"] = None
-        if "solar_azimuth" not in row:
-            row["solar_azimuth"] = None
-        if "solar_elevation" not in row:
-            row["solar_elevation"] = None
-
-    table = pa.Table.from_pylist(_SMOKE_ROWS, schema=MANIFEST_SCHEMA)
-    pq.write_table(table, manifest_path)
-    print(f"Manifest written: {manifest_path}")
+    # Selection-policy fingerprint — used only for bundle metadata, not a gate.
+    smoke_cfg = {
+        "platforms": ["landsat-8", "landsat-9"],
+        "years": [2024],
+        "months": [6],
+        "bbox": [13.08, 52.34, 13.76, 52.68],
+        "landsat": {"collection": "landsat-c2-l2", "anchor": {"min_clear_frac": 0.05}},
+        "sentinel2": {
+            "collection": "sentinel-2-l2a",
+            "min_clear_frac": 0.05,
+            "window_days": 3,
+            "score": {"lambda": 0.1},
+        },
+        "cutoff_utc": "2024-07-31T23:59:59Z",
+    }
+    write_bundle(
+        coupled,
+        [],
+        eco_granules,
+        manifest_path=manifest_path,
+        pairings_path=f"{bundle_dir}/pairings.parquet",
+        report_path=f"{bundle_dir}/manifest_report.json",
+        cutoff_utc="2024-07-31T23:59:59Z",
+        cfg=smoke_cfg,
+    )
+    print(f"Smoke bundle written: {bundle_dir}/")
 
 
 @nox.session(venv_backend="none")
@@ -117,16 +127,16 @@ def typecheck(session: nox.Session) -> None:
 def smoke_primary(session: nox.Session) -> None:
     """Run manifest-driven smoke test for all 3 sources locally.
 
-    Builds a 3-row manifest (1 Landsat, 1 S2, 1 ECOSTRESS), runs the ARD
-    pipeline twice to confirm ledger idempotency, then asserts that the
-    ledger contains three rows in status ``done`` and runs the
+    Builds the 8-row smoke bundle (1 Landsat, 1 S2, 6 ECOSTRESS), runs
+    the ARD pipeline twice to confirm ledger idempotency, then asserts
+    that the ledger contains eight rows in status ``done`` and runs the
     standalone validator.
     """
     manifest_dir = "data/smoke/primary"
     manifest_path = f"{manifest_dir}/manifest.parquet"
     output_root = f"{manifest_dir}/ard"
 
-    _write_smoke_manifest(manifest_path)
+    _write_smoke_bundle(manifest_path)
 
     for _ in range(2):
         # Run the unified ARD pipeline — ECOSTRESS is downloaded+staged
@@ -144,15 +154,16 @@ def smoke_primary(session: nox.Session) -> None:
         )
 
     print(f"\nSmoke-primary output: {output_root}/ledger.parquet")
-    print("Expected: 3 scenes with status=done")
+    print("Expected: 8 scenes with status=done")
 
-    _assert_ard_done(session, output_root, expected=3)
+    _assert_ard_done(session, output_root, expected=8)
     session.run(
         "uv",
         "run",
         "python",
         "scripts/validate_ard.py",
         f"--ledger={output_root}/ledger.parquet",
+        f"--manifest={manifest_path}",
         external=True,
     )
 
@@ -221,117 +232,6 @@ def smoke_selection_couple(session: nox.Session) -> None:
         "years=[2017]",
         "months=[5]",
         "cutoff_utc=2024-07-31T23:59:59Z",
-        external=True,
-    )
-
-
-# ── cloud pilot ──────────────────────────────────────────────────────
-
-
-@nox.session(venv_backend="none", name="cloud-pilot")
-def cloud_pilot(session: nox.Session) -> None:
-    """Run smoke-primary targeting GCS (requires ADC / Workload Identity).
-
-    Requires ``GOOGLE_APPLICATION_CREDENTIALS`` to be set, or runs under
-    a GCP Workload Identity in Cloud Run.
-    """
-    import uuid
-    from datetime import UTC, datetime
-
-    # uv ≥0.11 requires explicit opt-in to auto-load .env via UV_ENV_FILE.
-    # Set it here so the cloud-pilot works on both uv 0.7 (auto) and ≥0.11 (opt-in).
-    session.env.setdefault("UV_ENV_FILE", ".env")
-
-    run_id = f"cp-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    stage_base = "gs://berlin-lst-data/_staging/ecostress"
-    eco_stage = f"{stage_base}/{run_id}"
-    manifest_path = f"data/smoke/cloud_pilot_{run_id}/manifest.parquet"
-    output_root = "gs://berlin-lst-data/ard/smoke"
-
-    # ── pre-flight: GCS reachable ─────────────────────────────────────
-    session.run(
-        "uv",
-        "run",
-        "python",
-        "-c",
-        (
-            "from google.cloud import storage; "
-            "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-data'); "
-            "print('Bucket reachable:', bucket.name)"
-        ),
-        external=True,
-    )
-
-    # Step 1: Build 3-row smoke manifest
-    _write_smoke_manifest(manifest_path)
-
-    # Step 2: Stage ECOSTRESS fixture to GCS
-    session.run(
-        "uv",
-        "run",
-        "python",
-        "scripts/download_ecostress_fixture.py",
-        "--tile",
-        "33UUU",
-        "--date",
-        "2018-07-30",
-        "--stage-dir",
-        stage_base,
-        "--run-id",
-        run_id,
-        external=True,
-    )
-
-    # Step 3: Run the unified ARD pipeline (reads ECOSTRESS from GCS stage,
-    # AOI from GCS — exercises the full cloud-read path)
-    session.run(
-        "uv",
-        "run",
-        "python",
-        "scripts/run_ard.py",
-        "--config-name",
-        "smoke_primary",
-        f"manifest_uri={manifest_path}",
-        f"output_root={output_root}/smoke_primary",
-        f"ecostress.raw_dir={eco_stage}",
-        "aoi.mask_base=gs://berlin-lst-data/boundaries",
-        external=True,
-    )
-
-    # Step 4: Clean up ECOSTRESS GCS stage
-    session.run(
-        "uv",
-        "run",
-        "python",
-        "-c",
-        f"""
-import sys; sys.path.insert(0, 'src')
-from berlin_lst_downscaling.data.io.staging import StageSession
-with StageSession('{stage_base}', run_id='{run_id}', persist=False) as stage:
-    print(f'Stage cleaned up: {{stage.uri}}')
-""",
-        external=True,
-    )
-
-    # Step 5: Verify final COGs landed in GCS
-    session.run(
-        "uv",
-        "run",
-        "python",
-        "-c",
-        (
-            "import sys\n"
-            "from google.cloud import storage\n"
-            "client = storage.Client()\n"
-            "bucket = client.get_bucket('berlin-lst-data')\n"
-            "prefix = 'ard/smoke/smoke_primary/'\n"
-            "blobs = list(bucket.list_blobs(prefix=prefix))\n"
-            "print(f'Final COGs: {len(blobs)} blob(s) under gs://berlin-lst-data/{prefix}')\n"
-            "for b in blobs[:6]:\n"
-            "    print(' ', b.name)\n"
-            "sys.exit(0 if blobs else 1)\n"
-        ),
         external=True,
     )
 

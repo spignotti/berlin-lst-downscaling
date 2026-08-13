@@ -1,6 +1,7 @@
 # @package _global_
 # Manifest-driven smoke test — all 3 sources, output to local tmp.
-# Builds a 3-row manifest then runs mode=full through it.
+# Builds the full 8-row smoke bundle (1 Landsat + 1 S2 + 6 ECOSTRESS)
+# then runs mode=full through it.
 defaults:
   - _base
   - _self_
