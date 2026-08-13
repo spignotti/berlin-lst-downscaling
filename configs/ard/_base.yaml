@@ -8,7 +8,7 @@ mode: full
 scene_date: null                    # ISO date string (smoke overrides with specific date)
 bbox: [13.08, 52.34, 13.76, 52.68] # WGS84 Berlin bbox
 target_crs: "EPSG:25833"
-target_resolution_low: 100          # Landsat LST native; ECOSTRESS uses 70m (overridden per source)
+target_resolution_low: 100          # Landsat LST native
 target_resolution_high: 10          # S2 and other bands
 
 # Cloud masking

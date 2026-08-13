@@ -6,6 +6,6 @@ defaults:
 
 sources: ["ecostress"]
 output_root: "data/ard/ecostress"
-target_resolution_low: 70          # ECOSTRESS L2T native 70 m
+target_resolution_low: 70          # unused — ECOSTRESS grid is fixed at 70 m in the pipeline
 ecostress:
   raw_dir: "data/ecostress/raw"    # full-mode: AppEEARS-exported L2T COGs
