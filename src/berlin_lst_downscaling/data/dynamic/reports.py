@@ -1,10 +1,9 @@
-"""Dynamic QA report — coverage, vintage distribution, DWD comparison.
+"""Dynamic QA report — coverage and vintage distribution.
 
 The report is persisted to ``qa/dynamic/{run_id}/report.json`` and summarizes:
 - Expected vs completed scene products
 - Per-year coverage
 - ERA5 channel ranges
-- DWD validation comparison
 - Geometry vintage distribution
 """
 
@@ -28,7 +27,7 @@ def dynamic_qa_report(
     """Generate a QA report for the dynamic pipeline run.
 
     Returns a dict with per-source counts, artifact completeness,
-    vintage distribution, and DWD comparison results.
+    and geometry vintage distribution.
     """
     sources = ["era5_land", "shadow_building", "shadow_vegetation"]
 

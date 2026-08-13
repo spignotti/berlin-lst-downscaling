@@ -9,8 +9,7 @@ artefact contracts live in `data-sources-and-contracts.md`.
 ## Purpose and scope
 
 Phase 1 turns a manifest of Landsat, Sentinel-2, and ECOSTRESS scenes
-into a training-ready COG stack on Google Cloud Storage, plus an
-independent DWD sanity check on the ERA5-Land channel. All production
+into a training-ready COG stack on Google Cloud Storage. All production
 paths are in `gs://berlin-lst-data/`; the VM runs the pipelines, the
 bucket is the source of truth.
 
@@ -21,7 +20,6 @@ Selection (build_manifest → publish_manifest)
   └─ manifests/v3/<bundle>-r2/
        ├── ARD (run_ard)                  → ard/full/<cutoff>/
        └── Dynamic (run_dynamic_isolated) → dynamic/full/, dynamic/inference/2026/
-              └── DWD validation (run_dwd_validation)  → dwd_validation/r3/ (external check only)
 
 Static sources (run_static_sources)   → static/sources/full/
   └─ Static derived (run_static_derived) → static/derived/full/
@@ -103,12 +101,12 @@ Known limits of the delivered state:
 - DWD r3 metrics (historical): bias −0.03 °C, MAE 0.77 °C,
   RMSE 0.98 °C across 1 508 matched pairs (562 DWD-missing, 0
   ERA5-missing).
-- **Open QA point (phase 2, not fixed here):** a post-rebuild DWD
-  rerun against the current dynamic products is still required. The
-  previous session's handoff reported a suspected UTC/timezone join
-  mismatch in `data/dynamic/dwd_validation.py`; this could not be
-  re-verified in the current bucket (only r3 exists) and must be
-  reproduced and diagnosed before any DWD metric update.
+- **DWD validation retired (2026-08-13):** the active subsystem was
+  removed. The post-rebuild ERA5-Land `t2m_scene` channel cannot be
+  re-validated with it — `normalize_acquisition_hour` returns naive UTC
+  while the DWD timestamps are timezone-aware, so every anchor/station
+  pair mismatches (0 / 2070 matched pairs under current code, vs 1 508
+  in r3). r3 remains the historical pre-rebuild check.
 - **ECOSTRESS probe finding (2026-08-13):** the published ECOSTRESS
   LST COGs carry a NaN halo (~15–40% of grid pixels, granule-dependent)
   that the flag COG marks as clear — bilinear LST reprojection spreads

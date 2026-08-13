@@ -3,7 +3,7 @@
 Cloud-native land-surface-temperature downscaling pipeline for Berlin.
 The preprocessing phase turns a published manifest of Landsat, Sentinel-2,
 and ECOSTRESS scenes into a training-ready COG stack on Google Cloud
-Storage, plus an independent DWD sanity check on the ERA5-Land channel.
+Storage.
 
 ## What ships in this phase
 
@@ -20,14 +20,17 @@ Details on the delivered products, their exact paths, and the phase-2
 handoff: [`docs/phase-1-delivery.md`](docs/phase-1-delivery.md).
 
 DWD head-line metrics (r3, historical — validated the pre-rebuild scalar
-ERA5 products): bias −0.03 °C, MAE 0.77 °C, RMSE 0.98 °C. After the
-dynamic rebuild, a fresh DWD run is a QA task, not a pipeline step. DWD
-is **validation-only** — it never feeds into training or normalisation.
+ERA5 products): bias −0.03 °C, MAE 0.77 °C, RMSE 0.98 °C. The DWD
+validation subsystem is **retired**: the post-rebuild ERA5 fields cannot
+be re-validated with it (a timezone join defect in the anchor-hour
+comparison yields zero matches), so r3 stays as the historical record.
+DWD was **validation-only** — it never fed into training or
+normalisation.
 
 ## Architecture
 
 ```
-v3 manifest (PC STAC + ECOSTRESS CMR + DWD)
+v3 manifest (PC STAC + ECOSTRESS CMR)
    │
    ▼
 ARD — Landsat/S2/ECOSTRESS Analysis-Ready Data (10–100 m, NaN-NoData)
@@ -40,9 +43,6 @@ Pipeline B — DSM + horizons + SVF (10 m derived geometry)
    │
    ▼
 Pipeline C — ERA5-Land + shadows per Landsat anchor
-   │
-   ▼
-DWD validation — independent sanity check on ERA5 t2m_scene
 ```
 
 Every product publishes four artifacts in its product directory: the
@@ -59,8 +59,8 @@ uv run nox -s lint typecheck
 
 ## Operations
 
-Run order: selection → ARD (parallel to static) → dynamic → DWD
-validation. Production paths below point at the canonical bundle
+Run order: selection → ARD (parallel to static) → dynamic. Production
+paths below point at the canonical bundle
 `manifests/v3/2017-2026-cutoff-20260717T235959Z-r2`; the VM runs the
 heavy pipelines, GCS is the source of truth.
 
@@ -182,17 +182,6 @@ uv run python scripts/run_dynamic_isolated.py \
     --config-name inference_2026 --years 2026 --dataset-role inference --resume
 ```
 
-### DWD validation (external sanity check)
-
-```bash
-uv run python scripts/run_dwd_validation.py --config-name default \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
-    dynamic_full_root=gs://berlin-lst-data/dynamic/full \
-    dynamic_inference_root=gs://berlin-lst-data/dynamic/inference/2026 \
-    output_root=gs://berlin-lst-data/dwd_validation/<run-id> \
-    aoi_uri=gs://berlin-lst-data/boundaries/berlin_landesgrenze.geojson
-```
-
 ### Validators
 
 ```bash
@@ -219,9 +208,6 @@ uv run nox -s smoke-static-derived
 uv run nox -s smoke-selection-couple  # builds the local smoke manifest below
 uv run nox -s smoke-dynamic -- \
     data/manifest_build/v3/smoke/manifest.parquet
-uv run nox -s smoke-dwd-validation -- \
-    data/manifest_build/v3/smoke/manifest.parquet \
-    data/dynamic/smoke
 ```
 
 Cloud variants (`cloud-smoke-*`) mirror the local smokes and assume ADC
@@ -237,7 +223,6 @@ Cloud variants (`cloud-smoke-*`) mirror the local smokes and assume ADC
 - Python 3.12, `uv` (lockfile committed)
 - `pystac-client`, `odc-stac`, `rioxarray` for STAC + EO data
 - `cdsapi`, `netcdf4` for ERA5-Land
-- `wetterdienst` for DWD station access (validation only)
 - `pydantic-settings`, `hydra-core` for config
 - `pyarrow` for ledger + Parquet IO
 - `google-cloud-storage` for GCS access

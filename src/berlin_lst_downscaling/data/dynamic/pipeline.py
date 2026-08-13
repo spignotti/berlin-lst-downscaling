@@ -6,7 +6,7 @@ Orchestrates the full lifecycle for each Landsat anchor scene:
 3. For each scene: prepare ERA5 meteorology COG (8 bands)
 4. For each scene: prepare building + vegetation shadow COGs
 5. Publish through shared finalizer (COG + STAC + provenance + complete)
-6. Produce dynamic QA report with coverage, vintage distribution, DWD validation
+6. Produce dynamic QA report with coverage and vintage distribution
 """
 
 from __future__ import annotations

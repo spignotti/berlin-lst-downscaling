@@ -35,15 +35,15 @@ src/berlin_lst_downscaling/    # main package
     data/acquisition/          # PC STAC loaders + ECOSTRESS CMR
     data/ard/                  # ARD pipeline (COG write, masking, ledger, STAC)
     data/secondary/            # Static A + B (sources + derived geometry)
-    data/dynamic/              # ERA5-Land + shadows + DWD validation
+    data/dynamic/              # ERA5-Land + shadows
     data/selection/            # v3 manifest selection & coupling
     data/io/                   # Storage (local + GCS), run logger, ephemeral staging
     common/                    # Canonical 10 m grid, env config
 configs/                       # Hydra configs (ARD + selection + static_sources
-                               #   + static_derived + dynamic + dwd_validation)
+                               #   + static_derived + dynamic)
 scripts/                       # Entry points (run_ard.py, run_static_sources.py,
                                #   run_static_derived.py, run_dynamic.py,
-                               #   run_dynamic_isolated.py, run_dwd_validation.py,
+                               #   run_dynamic_isolated.py,
                                #   build_manifest.py, validators)
 ```
 
@@ -52,27 +52,14 @@ interface, and phase-2 handoff. See
 `docs/data-sources-and-contracts.md` for the data and ledger
 contracts.
 
-### DWD-vs-ERA5 validation
+### DWD-vs-ERA5 validation (retired)
 
-Read-only sanity check on the published ERA5-Land `t2m_scene` channel
-at Landsat anchor times. Acquires DWD hourly 2 m air temperature for
-stations inside the Berlin AOI via `wetterdienst` and joins it to the
-published COG provenance. Never feeds DWD into training or
-normalisation.
-
-```bash
-uv run python scripts/run_dwd_validation.py \
-    manifest_uri=gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet \
-    dynamic_full_root=gs://berlin-lst-data/dynamic/full \
-    dynamic_inference_root=gs://berlin-lst-data/dynamic/inference/2026 \
-    output_root=gs://berlin-lst-data/dwd_validation \
-    aoi_uri=gs://berlin-lst-data/boundaries/berlin_landesgrenze.geojson
-```
-
-Layout: `<output_root>/_raw/dwd/<run_id>/station_inventory.parquet`
-+ `dwd_hourly_observations.parquet`,
-`<output_root>/runs/dwd/<run_id>/anchor_comparison.parquet`
-+ `report.json` + `provenance.json` + `complete.json`.
+The DWD validation subsystem was retired: the post-rebuild ERA5-Land
+`t2m_scene` channel cannot be re-validated with it (a timezone join
+defect in the anchor-hour comparison yields zero matched pairs).
+`gs://berlin-lst-data/dwd_validation/r3/` remains as **historical
+retained evidence** — it validated the pre-rebuild scalar ERA5 products.
+DWD never fed into training or normalisation.
 
 ## Validation
 
