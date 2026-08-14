@@ -232,6 +232,10 @@ def _validate_s2_six_bands(cog_uri: str, res: SceneResult) -> None:
                 arr = src.read(i + 1, out_shape=(out_h, out_w)).astype(np.float64)
                 valid = arr[np.isfinite(arr)]
                 if valid.size == 0:
+                    res.fail(
+                        f"S2 band {src.descriptions[i]} is entirely NaN "
+                        f"(sampled overview)"
+                    )
                     continue
                 if valid.min() < 0.0 or valid.max() > 1.0:
                     res.fail(
