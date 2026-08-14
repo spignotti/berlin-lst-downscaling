@@ -79,13 +79,13 @@ MARKER_JSON
 "
 
 echo "Launching Stage-1 QA on VM..."
+# The detached wrapper writes the pipeline's real exit code to STATUS_FILE
+# from inside the process (wait on a sibling subshell would return 127).
 ssh_cmd "
   cd $APP_DIR && \
-  nohup uv run python scripts/run_qa_stage1_raw.py \
-    --config-name stage1_raw_full \
-    > '$REMOTE_LOG' 2>&1 &
-  PID=\$! && echo \$PID > '$REMOTE_PID_FILE' && \
-  ( wait \$PID; echo \$? > '$STATUS_FILE' ) &
+  nohup sh -c 'uv run python scripts/run_qa_stage1_raw.py --config-name stage1_raw_full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+    > $REMOTE_LOG 2>&1 &
+  PID=\$! && echo \$PID > $REMOTE_PID_FILE
 "
 
 REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
