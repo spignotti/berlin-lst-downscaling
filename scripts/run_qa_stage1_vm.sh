@@ -84,7 +84,8 @@ ssh_cmd "
   nohup uv run python scripts/run_qa_stage1_raw.py \
     --config-name stage1_raw_full \
     > '$REMOTE_LOG' 2>&1 &
-  echo \$! > '$REMOTE_PID_FILE'
+  PID=\$! && echo \$PID > '$REMOTE_PID_FILE' && \
+  ( wait \$PID; echo \$? > '$STATUS_FILE' ) &
 "
 
 REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
@@ -93,12 +94,6 @@ echo "Remote PID: $REMOTE_PID"
 ssh_cmd "
   sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
 " 2>/dev/null || true
-
-echo "Registering terminal status writer..."
-ssh_cmd "
-  ( while kill -0 $REMOTE_PID 2>/dev/null; do sleep 5; done; \
-    echo \$? > '$STATUS_FILE' ) &
-"
 
 # ── poll for completion ──────────────────────────────────────────────
 

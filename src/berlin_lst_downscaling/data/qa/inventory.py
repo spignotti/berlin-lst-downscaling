@@ -21,11 +21,12 @@ import pyarrow.parquet as pq
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.dynamic.geometry import load_geometry_mapping
 from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.qa.contracts import (
+    STATIC_DERIVED_MORPHOLOGY_PRODUCTS,
+    STATIC_DERIVED_OPTIONAL_PRODUCTS,
+)
 from berlin_lst_downscaling.data.selection.validate import load_bundle
 
-# Static derived products that carry morphology into the feature stack.
-_MORPHOLOGY_PRODUCTS = ("building_dsm", "combined_dsm", "svf")
-_OPTIONAL_MORPHOLOGY_PRODUCTS = ("vegetation_dsm",)
 # Metadata-only derived products (upstream of the shadow computation).
 _METADATA_DERIVED_PRODUCTS = ("horizon_building", "horizon_vegetation")
 
@@ -313,7 +314,7 @@ def _resolve_scene(
     static_derived: dict[str, str] = {}
     static_derived_meta: dict[str, str] = {}
     if geometry_id:
-        for product in (*_MORPHOLOGY_PRODUCTS, *_OPTIONAL_MORPHOLOGY_PRODUCTS):
+        for product in (*STATIC_DERIVED_MORPHOLOGY_PRODUCTS, *STATIC_DERIVED_OPTIONAL_PRODUCTS):
             row = derived_rows.get((product, geometry_id))
             if row is not None and row["status"] == "done" and row.get("output_uri"):
                 static_derived[product] = str(row["output_uri"])

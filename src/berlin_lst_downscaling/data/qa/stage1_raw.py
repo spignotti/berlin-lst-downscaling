@@ -67,7 +67,7 @@ _SAMPLE_FACTOR = 32  # overview sampling for coarse range checks
 # prevents assessment of a paired anchor is a hard finding.
 _EXPECTED_EXCLUSIONS = frozenset({"dynamic role=inference (2026)"})
 
-_SUPPORT_BINS = (0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0000001)
+_SUPPORT_BINS = (0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0)
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")
 
 _STATIC_RANGES: dict[str, tuple[float, float]] = {
@@ -129,8 +129,10 @@ def analysis_grid_10m(bbox_wgs84: tuple[float, float, float, float] | None) -> G
     """Return the 10 m analysis grid, optionally a canonical-aligned subset.
 
     ``None`` returns the full canonical Berlin grid. A bbox is snapped to
-    the canonical 10 m origin so window mapping to published COGs stays
-    pixel-exact.
+    the canonical **100 m lattice** (a multiple of both 10 m and 100 m) so
+    that ``zoom_out(10)`` yields a 100 m analysis grid whose origin maps
+    pixel-exactly onto the published 100 m Landsat COGs as well as the
+    10 m layers.
     """
     if bbox_wgs84 is None:
         return canon_grid_10m()
@@ -139,10 +141,11 @@ def analysis_grid_10m(bbox_wgs84: tuple[float, float, float, float] | None) -> G
     origin = canon_grid_10m().transform
     ox, oy = origin.xoff, origin.yoff
     minx, miny, maxx, maxy = transform_bounds("EPSG:4326", _GRID_CRS, *bbox_wgs84)
-    x0 = ox + 10.0 * math.floor((minx - ox) / 10.0)
-    y1 = oy - 10.0 * math.ceil((oy - maxy) / 10.0)
-    x1 = ox + 10.0 * math.ceil((maxx - ox) / 10.0)
-    y0 = oy - 10.0 * math.floor((oy - miny) / 10.0)
+    step = 100.0
+    x0 = ox + step * math.floor((minx - ox) / step)
+    y1 = oy - step * math.ceil((oy - maxy) / step)
+    x1 = ox + step * math.ceil((maxx - ox) / step)
+    y0 = oy - step * math.floor((oy - miny) / step)
     return GeoBox.from_bbox((x0, y0, x1, y1), crs=_GRID_CRS, resolution=10)
 
 
@@ -511,7 +514,8 @@ def write_report(report: Stage1Report, output_root: str) -> dict[str, str]:
     uris: dict[str, str] = {}
 
     summary_uri = f"{prefix}/summary.json"
-    atomic_write(summary_uri, json_dumps(_summary_dict(report)), overwrite=True)
+    atomic_write(summary_uri, json_dumps(_summary_dict(report)), overwrite=True,
+                 if_generation_match=0)
     uris["summary"] = summary_uri
 
     rows = [
@@ -535,7 +539,8 @@ def write_report(report: Stage1Report, output_root: str) -> dict[str, str]:
     parquet_uri = f"{prefix}/scenes.parquet"
     buf = pa.BufferOutputStream()
     pq.write_table(table, buf)
-    atomic_write(parquet_uri, buf.getvalue().to_pybytes(), overwrite=True)
+    atomic_write(parquet_uri, buf.getvalue().to_pybytes(), overwrite=True,
+                 if_generation_match=0)
     uris["scenes_parquet"] = parquet_uri
 
     csv_uri = f"{prefix}/scenes.csv"
@@ -561,7 +566,8 @@ def write_report(report: Stage1Report, output_root: str) -> dict[str, str]:
     writer = _csv.DictWriter(csv_buf, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
-    atomic_write(csv_uri, csv_buf.getvalue().encode("utf-8"), overwrite=True)
+    atomic_write(csv_uri, csv_buf.getvalue().encode("utf-8"), overwrite=True,
+                 if_generation_match=0)
     uris["scenes_csv"] = csv_uri
     return uris
 
@@ -673,6 +679,10 @@ def run_stage1_raw(cfg, *, run_id: str) -> Stage1Report:
                 scene, analysis_10, analysis_100, static_masks, era5_ranges
             )
             findings.extend(scene_findings)
+            # Surface precise inventory-level diagnosis (e.g. missing
+            # COG/flag path in the ARD ledger) alongside the scan findings.
+            if scene.errors:
+                findings.extend(f"{scene.scene_id}: {e}" for e in scene.errors)
             scenes_out.append(metrics)
 
             if metrics.assessed:
@@ -684,16 +694,21 @@ def run_stage1_raw(cfg, *, run_id: str) -> Stage1Report:
                 for layer, count in layer_invalid.items():
                     agg_layers[layer] = agg_layers.get(layer, 0) + count
 
-    # ── aggregate layer fractions (over the analysis grid) ─────────────
+    # ── aggregate layer fractions ──────────────────────────────────────
+    # ``invalid_px`` is the sum over all assessed scenes of the invalid
+    # 10 m pixels of that layer, each scene scanned once over the analysis
+    # grid. The fraction is normalized by the total scanned pixels
+    # (assessed scenes x one grid) so it stays in [0, 1] on the full run.
+    assessed_scenes = [s for s in scenes_out if s.assessed]
     total_10m_px = analysis_10.shape.y * analysis_10.shape.x
+    scanned_px = max(len(assessed_scenes), 1) * total_10m_px
     layers: dict[str, dict] = {}
     for layer, count in sorted(agg_layers.items()):
         layers[layer] = {
             "invalid_px": count,
-            "invalid_frac": round(count / total_10m_px, 6),
+            "invalid_frac": round(count / scanned_px, 6),
         }
 
-    assessed_scenes = [s for s in scenes_out if s.assessed]
     aggregate = {
         "analysis_grid": {
             "crs": _GRID_CRS,

@@ -47,6 +47,16 @@ SHADOW_NODATA: int = 255
 
 # ── layer registry ────────────────────────────────────────────────────
 
+# Static derived morphology products that enter the pixel-level support
+# scan. Single source of truth — consumed by the inventory resolver and
+# the scan core so the roster cannot drift.
+STATIC_DERIVED_MORPHOLOGY_PRODUCTS: tuple[str, ...] = (
+    "building_dsm",
+    "combined_dsm",
+    "svf",
+)
+STATIC_DERIVED_OPTIONAL_PRODUCTS: tuple[str, ...] = ("vegetation_dsm",)
+
 
 @dataclass(frozen=True)
 class RawLayer:
@@ -155,8 +165,8 @@ class RawInputContract:
     against the static derived ledger at inventory time.
     """
 
-    static_derived_keys: tuple[str, ...] = ("building_dsm", "combined_dsm", "svf")
-    static_derived_optional_keys: tuple[str, ...] = ("vegetation_dsm",)
+    static_derived_keys: tuple[str, ...] = STATIC_DERIVED_MORPHOLOGY_PRODUCTS
+    static_derived_optional_keys: tuple[str, ...] = STATIC_DERIVED_OPTIONAL_PRODUCTS
 
     def in_support_layers(self) -> list[RawLayer]:
         layers = [
@@ -238,6 +248,8 @@ __all__ = [
     "S2_REFLECTANCE_RANGE",
     "SHADOW_NODATA",
     "SHADOW_VALID_VALUES",
+    "STATIC_DERIVED_MORPHOLOGY_PRODUCTS",
+    "STATIC_DERIVED_OPTIONAL_PRODUCTS",
     "SVF_RANGE",
     "raw_input_contract",
 ]
