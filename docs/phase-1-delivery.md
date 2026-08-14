@@ -39,7 +39,7 @@ at the time of this record.
 | Pipeline | GCS root | Grain / layout | Counts | Role semantics |
 |----------|----------|----------------|-------:|----------------|
 | Manifest bundle (canonical) | `manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/` | one row per scene, three Parquet/JSON artefacts | 509 rows, 345 pairings | `anchor` (345 Landsat), `predictor` (158 S2), `validation` (6 ECOSTRESS) |
-| ARD | `ard/full/2017-2026-cutoff-20260717T235959Z/<source>/<year>/<scene_id>/` | one scene dir with COG + flag + STAC + provenance + complete | 509 done | same as manifest |
+| ARD | `ard/full/2017-2026-cutoff-20260717T235959Z/<source>/<year>/<scene_id>/` | one scene dir with COG + flag + STAC + provenance + complete (S2: six-band COG) | 509 done | same as manifest |
 | Static sources (A) | `static/sources/full/ard/static/sources/<source>/<revision>/` | one dir per (source, vintage) | 8 ledger rows | — |
 | Static derived (B) | `static/derived/full/ard/static/derived/<product>/<geometry_id>/` | one dir per (product, geometry_id) | 18 ledger rows | — |
 | Geometry mapping | `static/geometry_vintages/v1/geometry_mapping.json` | year → geometry_id | 10 year entries | — |
@@ -87,9 +87,13 @@ reproduce the published product set with the same structure. It is
 
 Known limits of the delivered state:
 
-- The published ARD ledger is a deliberate mix of 428 schema-v6 + 81
-  schema-v7 rows; current code writes v7, so a future full `run_ard`
-  deterministically rewrites the v6 rows.
+- The published ARD ledger holds per-source schema versions: 345
+  Landsat rows at v6, 6 ECOSTRESS rows at v7, 158 Sentinel-2 rows at
+  v8 (six-band spectral contract). A future full `run_ard`
+  deterministically rewrites the older rows.
+- Sentinel-2 ARD carries six bands (B02/B03/B04/B08/B11/B12); B11/B12
+  are masked at native 20 m before bilinear resampling to 10 m (see
+  `data-sources-and-contracts.md`).
 - DWD r3 is **historical**: it validated the pre-rebuild scalar ERA5
   products (run `dyn-20260721T092945-4a4de9`). It is not evidence for
   the current 8-band spatial ERA5 fields.

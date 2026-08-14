@@ -9,7 +9,7 @@ pipeline stage must respect.
 | Source | Adapter | Resolution | Role |
 |--------|---------|-----------:|------|
 | Landsat-8/9 (PC `landsat-c2-l2`) | `data/acquisition/landsat.py` | 100 m (target_low) | anchor (`landsat-c2-l2` + `role=anchor`) |
-| Sentinel-2 L2A (PC `sentinel-2-l2a`) | `data/acquisition/sentinel2.py` | 10 m | predictor (`role=predictor`) |
+| Sentinel-2 L2A (PC `sentinel-2-l2a`) | `data/acquisition/sentinel2.py` | 10 m (SWIR 20 m native) | predictor (`role=predictor`) |
 | ECOSTRESS L2T LSTE v002 (NASA CMR) | `data/acquisition/ecostress.py` | 70 m | validation (`role=validation`) |
 
 **Spatial grid.** Canonical 10 m EPSG:25833 over Berlin bbox
@@ -155,8 +155,9 @@ Per-pipeline root shape (exact layout from `data/ard/paths.py`,
 Each ARD scene carries a separate single-band uint8 flag COG
 (`<scene_id>.flag.tif`). Pixels are flagged, never silently deleted —
 downstream consumers (joint validity masks, QA) treat any
-non-zero flag as invalid. Bit layout (`data/ard/contract.py`, schema
-version 7):
+non-zero flag as invalid. Bit layout (`data/ard/contract.py`).
+Schema versions are per-source: Landsat/ECOSTRESS v7, Sentinel-2 v8
+(six-band spectral contract, see below):
 
 | Bit | Value | Flag | Sources |
 |-----|------:|------|---------|
@@ -177,6 +178,31 @@ Land/Imperviousness products accept exact COG contracts via
 consolidated into the ARD contract layer); each `BandSpec` carries
 `valid_range` enforced by `validate_secondary_cog`. Dynamic products
 embed scene `role` on the ledger row that publishes them.
+
+### Sentinel-2 spectral group (6 bands)
+
+Each `sentinel-2-l2a` data COG contains exactly these float32/NaN
+bands in this order:
+
+| Band | Native res. | Published res. | Notes |
+|------|------------:|---------------:|-------|
+| `B02` (blue), `B03` (green), `B04` (red), `B08` (NIR) | 10 m | 10 m | scaled reflectance [0,1] |
+| `B11` (SWIR1), `B12` (SWIR2) | 20 m | 10 m | masked at 20 m, bilinearly resampled to 10 m |
+
+SWIR handling: B11/B12 are masked at their native 20 m resolution
+(any non-zero SCL flag → NaN) **before** the bilinear 20→10 m
+resampling. NaN is declared as nodata, so invalid SWIR samples are
+excluded from the interpolation kernel and NaN appears in exactly the
+invalid cell's 2×2 10 m footprint; valid neighbours interpolate
+cleanly. Unlike the 10 m bands (NaN only on fill), SWIR is NaN for
+every flagged class — this prevents cloudy/fill reflectance from
+entering the interpolation. STAC `spatial_resolution` reports 10 m
+for all bands; the native 20 m origin of B11/B12 is carried in the
+BandSpec description and provenance, not in the raster metadata.
+
+The S2 schema version is 8; `full_sentinel2_swir` reprocesses exactly
+the Sentinel-2 rows (schema change) and leaves Landsat/ECOSTRESS rows
+at their published versions.
 
 ### ERA5-Land weather group (8 bands)
 
@@ -262,9 +288,9 @@ It is **not** byte-exact reproducible from an empty bucket:
   run time; published provenance records no input asset hashes.
 - Ledger, provenance, STAC, and logs embed per-run `run_id` values and
   wall-clock timestamps.
-- The published ARD ledger is a deliberate mix of 428 v6 + 81 v7 rows;
-  current code writes schema v7, so a fresh full run rewrites the v6
-  rows deterministically.
+- The published ARD ledger holds per-source schema versions: 345
+  Landsat rows at v6, 6 ECOSTRESS rows at v7, 158 Sentinel-2 rows at
+  v8. A fresh full run rewrites the older rows deterministically.
 
 Validators and the pinned bundle/caches, not byte identity, are the
 reproducibility basis.

@@ -95,6 +95,12 @@ uv run python scripts/run_ard.py --config-name full_all \
 uv run python scripts/validate_ard.py \
     --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \
     --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+
+# S2-only republish (six-band contract) — reprocesses exactly the 158
+# Sentinel-2 scenes whose schema version changed; Landsat/ECOSTRESS rows
+# are untouched.
+uv run python scripts/run_ard.py --config-name full_sentinel2_swir \
+    manifest_uri=gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
 ```
 
 ### Static sources (A)
