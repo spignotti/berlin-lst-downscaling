@@ -42,11 +42,35 @@ The cloud-masking audit saves bounded, descriptive evidence under
 top-risk pairs, plus `index.csv` and `summary.json`). It applies no
 pass/fail decision and changes no published mask.
 
+## Stage-1 raw-input QA gate (completed)
+
+The Stage-1 raw-input gate (`scripts/run_qa_stage1_raw.py`,
+`data/qa/`) ran over the full training universe on the VM
+(2026-08-14, run `71fab30d`):
+
+- 345 pairings: 324 assessed, 21 excluded (2026 `role=inference`
+  scenes, outside the training universe).
+- **0 findings** — no contract/range/input faults; the gate passed
+  clean and feature computation is unblocked.
+- Diagnostic support: 20,169,061 target-valid 100 m cells, of which
+  5,914,125 are fully supported (valid Landsat target plus all 100
+  10 m subpixels valid across S2, static morphology, ERA5-Land, and
+  shadows). Per-scene counts and the support histogram are in the
+  report bundle.
+- The gate is mask-free by design: only `summary.json`,
+  `scenes.parquet`, `scenes.csv`, and logs are published under
+  `gs://berlin-lst-data/qa/wb2c-2/raw/71fab30d/`. No validity or
+  training-selection mask exists yet — the final
+  `training_eligible@100m` mask is decided after feature computation
+  and the Stage-2 gate (user decision).
+
 ## Next steps (separate sessions)
 
-- Stage-1 QA gate on raw values (`WB2c-2` QA-Gate Rohwerte Stufe 1) —
-  explicitly deferred, not part of this preparation.
-- Scene feature-stack derivation (`WB2c-3`) and its QA gate
-  (`WB2c-2` QA-Gate Feature-Stacks Stufe 2).
+- Scene feature-stack derivation (`WB2c-3`) — consume the Stage-1
+  evidence as the diagnostic baseline; the feature stack re-runs the
+  same gate logic in Stage 2.
+- `WB2c-2` QA-Gate Feature-Stacks Stufe 2 — identical gate logic on
+  the derived feature stacks, plus channel-level range checks; Stage 2
+  owns the sole authority to publish the training-eligibility mask.
 
 Both are planned in Notion and scheduled as their own sessions.
