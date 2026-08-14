@@ -50,7 +50,7 @@ def load_s2_scene(
         Band asset keys to load. Defaults to ``_S2_BANDS``
         (native S2 names: ``B02``, ``B03``, ``B04``, ``B08``, ``SCL``).
         The SWIR bands ``B11``/``B12`` (native 20m) plus ``SCL`` are
-        available via ``_S2_SWIR_BANDS``; load them separately on the
+        available via ``S2_SWIR_BANDS``; load them separately on the
         canonical 20m grid (``resolution=20``).
     resolution :
         Target resolution in meters.  Defaults to

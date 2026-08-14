@@ -12,6 +12,7 @@ import rasterio
 import rioxarray  # noqa: F401  — registers rio accessor with xr
 import xarray as xr
 from omegaconf import DictConfig
+from rasterio.warp import Resampling
 from scipy.ndimage import binary_dilation
 
 from berlin_lst_downscaling.data.ard.contract import contract_for_source
@@ -119,6 +120,9 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
 # ── Sentinel-2 ───────────────────────────────────────────────────────##
 
 _S2_DN_SCALE = 1.0 / 10000.0  # Baseline 04.00 scaled reflectance
+
+# Native 20m SWIR bands, masked at 20m before bilinear 20→10m resampling.
+_S2_SWIR_BAND_NAMES = ("B11", "B12")
 
 def _s2_flag(
     scl: np.ndarray,
@@ -235,7 +239,7 @@ def mask_s2(
     flag_20m = _s2_flag(scl_20m, contract)
 
     swir_scaled: dict[str, np.ndarray] = {}
-    for b in ("B11", "B12"):
+    for b in _S2_SWIR_BAND_NAMES:
         arr = ds_20m[b].values.squeeze().astype(np.float32)
         arr = arr * _S2_DN_SCALE
         arr = np.clip(arr, 0.0, 1.0)
@@ -266,13 +270,12 @@ def mask_s2(
         )
 
     # bilinear 20m → 10m for the masked SWIR bands
-    from rasterio.warp import Resampling
 
     # 2D 10m match target (odc loads may carry a size-1 ``time`` dim;
     # the reproject is purely spatial).
     target_10m = ds_10m["B08"] if "time" not in dims else ds_10m["B08"].isel(time=0)
 
-    for b in ("B11", "B12"):
+    for b in _S2_SWIR_BAND_NAMES:
         swir_da = xr.DataArray(
             swir_scaled[b],
             dims=("y", "x"),

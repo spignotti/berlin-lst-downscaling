@@ -64,10 +64,12 @@ class Contract:
 
 # ── factories ────────────────────────────────────────────────────────
 
-# Per-source schema versions. Bumping only ``sentinel-2-l2a`` (six-band
-# contract, WB2c-3 preparation) forces exactly the 158 S2 scenes to
-# reprocess via ``reconcile`` (schema_changed) while Landsat/ECOSTRESS
-# rows keep their current version and remain untouched.
+# Per-source schema versions. Bumping ``sentinel-2-l2a`` (six-band
+# contract) forces exactly the 158 S2 scenes to reprocess via
+# ``reconcile`` (schema_changed) on a source-restricted run. The
+# published Landsat rows are v6 (content unchanged since); a future
+# full ``run_ard`` rewrites them to the current Landsat contract
+# version deterministically.
 _SCHEMA_VERSIONS: dict[str, int] = {
     "landsat-c2-l2": 7,
     "sentinel-2-l2a": 8,
