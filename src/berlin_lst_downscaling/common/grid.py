@@ -36,8 +36,12 @@ def canon_grid_10m() -> GeoBox:
 def canon_grid_20m() -> GeoBox:
     """Return the canonical 20m EPSG:25833 GeoBox (2× nested from 10m).
 
-    Native grid of Sentinel-2 SWIR (B11/B12) and SCL. Nested from the
-    10m base so all origins match exactly.
+    Native grid of Sentinel-2 SWIR (B11/B12) and SCL. Shares the 10m
+    grid's origin (all origins match exactly). Note: the 10m grid has
+    an odd pixel width (4699), so the 20m grid overshoots the 10m
+    extent by one half-pixel on the east edge — benign, since the 20m
+    source fully covers the 10m target and the extra column is
+    discarded during reprojection.
     """
     return canon_grid_10m().zoom_out(2)
 
