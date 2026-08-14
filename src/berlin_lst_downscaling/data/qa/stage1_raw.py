@@ -142,10 +142,13 @@ def analysis_grid_10m(bbox_wgs84: tuple[float, float, float, float] | None) -> G
     ox, oy = origin.xoff, origin.yoff
     minx, miny, maxx, maxy = transform_bounds("EPSG:4326", _GRID_CRS, *bbox_wgs84)
     step = 100.0
+    # Snap outward on every edge so the subset fully contains the bbox
+    # and stays on the canonical 100 m lattice (x grows east, y grows
+    # south, so top/north uses floor, bottom/south uses ceil).
     x0 = ox + step * math.floor((minx - ox) / step)
-    y1 = oy - step * math.ceil((oy - maxy) / step)
     x1 = ox + step * math.ceil((maxx - ox) / step)
-    y0 = oy - step * math.floor((oy - miny) / step)
+    y1 = oy - step * math.floor((oy - maxy) / step)
+    y0 = oy - step * math.ceil((oy - miny) / step)
     return GeoBox.from_bbox((x0, y0, x1, y1), crs=_GRID_CRS, resolution=10)
 
 
@@ -639,6 +642,7 @@ def run_stage1_raw(cfg, *, run_id: str) -> Stage1Report:
     agg_target = agg_all100 = agg_full = 0
     agg_hist: dict[str, int] = {}
     agg_layers: dict[str, int] = {}
+    layer_scenes: dict[str, int] = {}
 
     with tempfile.TemporaryDirectory(prefix="qa-stage1-static-") as tmp_str:
         tmp_dir = Path(tmp_str)
@@ -693,20 +697,24 @@ def run_stage1_raw(cfg, *, run_id: str) -> Stage1Report:
                     agg_hist[label] = agg_hist.get(label, 0) + count
                 for layer, count in layer_invalid.items():
                     agg_layers[layer] = agg_layers.get(layer, 0) + count
+                    layer_scenes[layer] = layer_scenes.get(layer, 0) + 1
 
     # ── aggregate layer fractions ──────────────────────────────────────
-    # ``invalid_px`` is the sum over all assessed scenes of the invalid
+    # ``invalid_px`` is the sum over all scanned scenes of the invalid
     # 10 m pixels of that layer, each scene scanned once over the analysis
-    # grid. The fraction is normalized by the total scanned pixels
-    # (assessed scenes x one grid) so it stays in [0, 1] on the full run.
+    # grid. The fraction is normalized by the number of scenes where the
+    # layer was actually scanned (optional morphology layers such as
+    # vegetation_dsm exist only for the 2024 vintage), so it stays in
+    # [0, 1] and is comparable across layers.
     assessed_scenes = [s for s in scenes_out if s.assessed]
     total_10m_px = analysis_10.shape.y * analysis_10.shape.x
-    scanned_px = max(len(assessed_scenes), 1) * total_10m_px
     layers: dict[str, dict] = {}
     for layer, count in sorted(agg_layers.items()):
+        scanned = max(layer_scenes.get(layer, 0), 1)
         layers[layer] = {
             "invalid_px": count,
-            "invalid_frac": round(count / scanned_px, 6),
+            "invalid_frac": round(count / (scanned * total_10m_px), 6),
+            "scanned_scenes": layer_scenes.get(layer, 0),
         }
 
     aggregate = {

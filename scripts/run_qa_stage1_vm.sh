@@ -94,9 +94,11 @@ ssh_cmd "
 REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
 echo "Remote PID: $REMOTE_PID"
 
-ssh_cmd "
-  sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
-" 2>/dev/null || true
+if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]]; then
+  ssh_cmd "
+    sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
+  " 2>/dev/null || true
+fi
 
 # ── poll for completion ──────────────────────────────────────────────
 
