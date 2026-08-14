@@ -4,7 +4,7 @@ The contract declares every published raw input the Stage-1 gate
 validates, which of them participate in the pixel-level joint-support
 scan, and the fixed physical bounds applied per channel.
 
-Scope decisions (mirrored from the WB2c-2 Stage-1 brief and the
+Scope decisions (mirrored from the Stage-1 raw QA brief and the
 planning session):
 
 - **In-support layers** (pixel validity drives the 100 m support

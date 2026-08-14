@@ -1,7 +1,7 @@
 # @package _global_
 # Full Stage-1 raw QA gate: the published 2017-2025 training universe
 # (324 assessable pairs), writing immutable evidence to GCS under
-# qa/wb2c-2/raw/<run-id>/. Invoke on the VM via
+# qa/stage1_raw/<run-id>/. Invoke on the VM via
 # scripts/run_qa_stage1_vm.sh.
 defaults:
   - _base

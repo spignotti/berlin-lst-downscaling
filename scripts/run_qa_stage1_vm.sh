@@ -20,7 +20,7 @@ VM_SCRIPTS="$(cd "$(dirname "$0")/../.opencode/skills/google-access/scripts" && 
 source "$VM_SCRIPTS/vm-identity.sh"
 
 APP_DIR="/workspace/app"
-QA_OUTPUT_ROOT="gs://berlin-lst-data/qa/wb2c-2/raw"
+QA_OUTPUT_ROOT="gs://berlin-lst-data/qa/stage1_raw"
 
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30

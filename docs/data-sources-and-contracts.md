@@ -216,7 +216,7 @@ or sampling patches.  Every patch inherits its scene's split.  One scene
 cannot occur in multiple splits.  Split policy and sampler enforcement
 belong to a future task (WB2c-4).
 
-### Stage-1 raw-input QA gate (WB2c-2)
+### Stage-1 raw-input QA gate
 
 The Stage-1 gate (`scripts/run_qa_stage1_raw.py`, core in
 `data/qa/`) validates the published raw inputs of the training universe
@@ -240,7 +240,7 @@ before feature engineering. Contract:
   resampling and no invented subpixels.
 - **No mask policy.** The gate computes support as a statistic and
   persists only `summary.json`, `scenes.parquet`, `scenes.csv`, and
-  logs under `qa/wb2c-2/raw/<run-id>/`. It never writes a validity or
+  logs under `qa/stage1_raw/<run-id>/`. It never writes a validity or
   selection mask. The final training-eligibility mask is a separate,
   later artifact decided after feature computation and the Stage-2 gate
   (user decision, planning session 2026-08-14).

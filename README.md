@@ -204,14 +204,14 @@ uv run python scripts/run_qa_stage1_raw.py --config-name stage1_raw_full
 
 # Independent report validation (schema, counts, fingerprints, no-mask invariant).
 uv run python scripts/validate_qa_stage1_raw.py \
-    --run-prefix gs://berlin-lst-data/qa/wb2c-2/raw/<run-id>
+    --run-prefix gs://berlin-lst-data/qa/stage1_raw/<run-id>
 
 # Full run on the VM (start → deploy → run → validate → stop).
 scripts/run_qa_stage1_vm.sh main
 ```
 
 Evidence (summary.json, scenes.parquet, scenes.csv, logs) lands under
-`gs://berlin-lst-data/qa/wb2c-2/raw/<run-id>/`. The gate exits non-zero
+`gs://berlin-lst-data/qa/stage1_raw/<run-id>/`. The gate exits non-zero
 on any contract/range/input finding within the training universe; 2026
 inference scenes are reported as exclusions, never failures.
 

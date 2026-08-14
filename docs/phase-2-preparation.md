@@ -58,19 +58,23 @@ The Stage-1 raw-input gate (`scripts/run_qa_stage1_raw.py`,
   shadows). Per-scene counts and the support histogram are in the
   report bundle.
 - The gate is mask-free by design: only `summary.json`,
-  `scenes.parquet`, `scenes.csv`, and logs are published under
-  `gs://berlin-lst-data/qa/wb2c-2/raw/71fab30d/`. No validity or
-  training-selection mask exists yet — the final
+  `scenes.parquet`, `scenes.csv`, and logs are published. This first
+  run (2026-08-14) was published before the evidence paths were
+  decoupled from planning task ids, so it lives under the historical
+  prefix `gs://berlin-lst-data/qa/wb2c-2/raw/71fab30d/`; all newer
+  runs write to `gs://berlin-lst-data/qa/stage1_raw/<run-id>/`. No
+  validity or training-selection mask exists yet — the final
   `training_eligible@100m` mask is decided after feature computation
   and the Stage-2 gate (user decision).
 
 ## Next steps (separate sessions)
 
-- Scene feature-stack derivation (`WB2c-3`) — consume the Stage-1
-  evidence as the diagnostic baseline; the feature stack re-runs the
-  same gate logic in Stage 2.
-- `WB2c-2` QA-Gate Feature-Stacks Stufe 2 — identical gate logic on
-  the derived feature stacks, plus channel-level range checks; Stage 2
-  owns the sole authority to publish the training-eligibility mask.
+- Scene feature-stack derivation (`WB2c-3` in Notion) — consume the
+  Stage-1 evidence as the diagnostic baseline; the feature stack
+  re-runs the same gate logic in Stage 2.
+- Stage-2 feature-stack QA gate (Notion `WB2c-2`, Stufe 2) — identical
+  gate logic on the derived feature stacks, plus channel-level range
+  checks; Stage 2 owns the sole authority to publish the
+  training-eligibility mask.
 
 Both are planned in Notion and scheduled as their own sessions.
