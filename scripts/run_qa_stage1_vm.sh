@@ -161,7 +161,7 @@ echo "  Run ID:      $WRAP_RUN_ID"
 
 # The pipeline prints the evidence URIs; extract the run prefix.
 RUN_PREFIX=$(ssh_cmd "
-  grep -o 'gs://berlin-lst-data/qa/wb2c-2/raw/[0-9a-f]\\{8\\}' '$REMOTE_LOG' 2>/dev/null \
+  grep -o '$QA_OUTPUT_ROOT/[0-9a-f]\\{8\\}' '$REMOTE_LOG' 2>/dev/null \
     | tail -1
 " 2>/dev/null || echo "")
 
