@@ -43,6 +43,7 @@ from odc.geo.geobox import GeoBox
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m, canon_grid_100m
+from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.dynamic.era5 import contract_for_era5_scene
 from berlin_lst_downscaling.data.io import atomic_write, log_event
 from berlin_lst_downscaling.data.qa.contracts import (
@@ -62,6 +63,10 @@ _logger = logging.getLogger(__name__)
 _TILE = 2560  # 10 m tile size (512 x 5, 10 x 256)
 _GRID_CRS = "EPSG:25833"
 _SAMPLE_FACTOR = 32  # overview sampling for coarse range checks
+
+# Sentinel-2 spectral band count, derived from the ARD contract so the
+# Stage-1 gate cannot drift from the published S2 schema.
+_S2_N_BANDS = len(contract_for_source("sentinel-2-l2a").output_bands)
 
 # Expected exclusions: reported, never findings. Anything else that
 # prevents assessment of a paired anchor is a hard finding.
@@ -317,7 +322,7 @@ def _scan_scene(
     # ── metadata checks (canonical grids, no pixel reads) ──────────────
     errors += _check_metadata_100m(scene.landsat_cog, n_bands=1, dtype="float32")
     errors += _check_metadata_100m(scene.landsat_flag, n_bands=1, dtype="uint8")
-    errors += _check_metadata_10m(scene.s2_cog, n_bands=6, dtype="float32")
+    errors += _check_metadata_10m(scene.s2_cog, n_bands=_S2_N_BANDS, dtype="float32")
     errors += _check_metadata_10m(scene.s2_flag, n_bands=1, dtype="uint8")
     era5_cog = scene.dynamic.get("era5_land", "")
     if era5_cog:
@@ -352,7 +357,7 @@ def _scan_scene(
         )
 
     # ── S2 coarse reflectance range sanity (overview sample) ───────────
-    for band in range(1, 7):
+    for band in range(1, _S2_N_BANDS + 1):
         rng = _sample_band_range(scene.s2_cog, band)
         if rng is not None and not (
             S2_REFLECTANCE_RANGE[0] <= rng[0] <= S2_REFLECTANCE_RANGE[1]

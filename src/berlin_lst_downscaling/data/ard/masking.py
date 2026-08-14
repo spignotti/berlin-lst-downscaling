@@ -209,11 +209,11 @@ def mask_s2(
     SWIR handling: B11/B12 are masked at their native 20m resolution
     (any non-zero SCL flag → NaN) **before** the bilinear 20→10m
     resampling, so cloudy/fill SWIR samples never contribute to the
-    10m product. NaN is declared as nodata on the source, so GDAL
-    excludes invalid samples from the bilinear kernel (verified
-    empirically: a NaN 20m sample yields NaN in exactly its 2×2 10m
-    footprint, valid neighbours interpolate cleanly). After upsampling
-    the 10m fill bit is applied like the other four bands.
+    10m product. NaN is declared as nodata on the source, so it
+    propagates through the bilinear kernel (verified empirically: a
+    NaN 20m sample yields NaN in its 2×2 10m footprint, valid
+    neighbours interpolate cleanly). After upsampling the 10m fill
+    bit is applied like the other four bands.
     """
     contract = contract_for_source("sentinel-2-l2a")
 

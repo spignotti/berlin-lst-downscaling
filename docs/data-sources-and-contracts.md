@@ -156,7 +156,7 @@ Each ARD scene carries a separate single-band uint8 flag COG
 (`<scene_id>.flag.tif`). Pixels are flagged, never silently deleted —
 downstream consumers (joint validity masks, QA) treat any
 non-zero flag as invalid. Bit layout (`data/ard/contract.py`).
-Schema versions are per-source: Landsat/ECOSTRESS v7, Sentinel-2 v8
+Schema versions are per-source: Landsat v6, ECOSTRESS v7, Sentinel-2 v8
 (six-band spectral contract, see below):
 
 | Bit | Value | Flag | Sources |
