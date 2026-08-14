@@ -53,10 +53,13 @@ echo "Pushing branch $BRANCH to origin..."
 git push origin "$BRANCH" --quiet
 
 echo "Deploying code on VM..."
+# ``git checkout`` alone does not move a stale local branch; fast-forward
+# the VM workspace to the pushed origin ref so the new code actually runs.
 ssh_cmd "
   cd $APP_DIR && \
   git fetch origin && \
   git checkout $BRANCH && \
+  git reset --hard origin/$BRANCH && \
   uv sync --frozen --quiet
 "
 
