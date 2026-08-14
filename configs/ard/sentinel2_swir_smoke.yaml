@@ -3,6 +3,11 @@
 # Runs one S2 scene from the smoke bundle (written by the VM wrapper)
 # to local VM output so the masked-bilinear B11/B12 path is exercised
 # before any canonical product is rewritten.
+#
+# NOTE: this config is a one-off VM smoke record. It requires an
+# external smoke bundle (the nox `_write_smoke_bundle` fixture) and a
+# `manifest_uri` override; it is not independently reproducible from
+# the repo alone.
 defaults:
   - _base
   - _self_

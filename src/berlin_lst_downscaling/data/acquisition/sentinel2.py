@@ -20,7 +20,7 @@ _S2_COLLECTION = "sentinel-2-l2a"
 _S2_BANDS = ["B02", "B03", "B04", "B08", "SCL"]
 # Native 20m SWIR + SCL band set — loaded on the canonical 20m grid so
 # the SWIR bands can be masked at native resolution before resampling.
-_S2_SWIR_BANDS = ["B11", "B12", "SCL"]
+S2_SWIR_BANDS = ["B11", "B12", "SCL"]
 
 def load_s2_scene(
     date: str | None = None,

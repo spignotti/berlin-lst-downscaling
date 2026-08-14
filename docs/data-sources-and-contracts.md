@@ -192,13 +192,18 @@ bands in this order:
 SWIR handling: B11/B12 are masked at their native 20 m resolution
 (any non-zero SCL flag → NaN) **before** the bilinear 20→10 m
 resampling. NaN is declared as nodata, so invalid SWIR samples are
-excluded from the interpolation kernel and NaN appears in exactly the
-invalid cell's 2×2 10 m footprint; valid neighbours interpolate
-cleanly. Unlike the 10 m bands (NaN only on fill), SWIR is NaN for
-every flagged class — this prevents cloudy/fill reflectance from
-entering the interpolation. STAC `spatial_resolution` reports 10 m
-for all bands; the native 20 m origin of B11/B12 is carried in the
-BandSpec description and provenance, not in the raster metadata.
+excluded from the interpolation kernel: NaN propagates through the
+bilinear kernel from invalid 20 m samples (roughly the cell's 2×2 10 m
+footprint, irregular at adjacent invalid cells), and valid neighbours
+interpolate cleanly. Unlike the 10 m bands (NaN only on fill), SWIR
+is NaN for every flagged class — this prevents cloudy/fill reflectance
+from entering the interpolation. The 20 m mask uses the direct SCL
+classes only; the directional cloud-shadow projection is a 10 m-only
+enhancement. Consumers that need shadow-clean SWIR must consult the
+flag band (`flag == 0`), which already excludes projected shadows.
+STAC `spatial_resolution` reports 10 m for all bands; the native 20 m
+origin of B11/B12 is carried in the BandSpec description and
+provenance, not in the raster metadata.
 
 The S2 schema version is 8; `full_sentinel2_swir` reprocesses exactly
 the Sentinel-2 rows (schema change) and leaves Landsat/ECOSTRESS rows

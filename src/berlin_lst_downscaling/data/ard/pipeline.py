@@ -29,7 +29,7 @@ from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.acquisition.ecostress import load_ecostress_scene
 from berlin_lst_downscaling.data.acquisition.landsat import load_landsat_scene
 from berlin_lst_downscaling.data.acquisition.sentinel2 import (
-    _S2_SWIR_BANDS,
+    S2_SWIR_BANDS,
     load_s2_scene,
 )
 from berlin_lst_downscaling.data.ard.aoi import compute_aoi_metrics
@@ -110,7 +110,7 @@ def _run_sentinel2_scene(
         date=effective_date,
         bbox=bbox,
         resolution=20,
-        bands=list(_S2_SWIR_BANDS),
+        bands=list(S2_SWIR_BANDS),
         items=items,
     )
     if scene_id not in loaded_ids:
