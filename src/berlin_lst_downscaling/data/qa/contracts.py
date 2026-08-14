@@ -74,6 +74,8 @@ class RawLayer:
 
 
 def _s2_bands() -> list[RawLayer]:
+    # B11/B12 enter the ARD product at 10m (masked at native 20m,
+    # bilinearly resampled) — same in-support role as the 10m bands.
     return [
         RawLayer(
             key=f"s2_{b}",
@@ -84,7 +86,7 @@ def _s2_bands() -> list[RawLayer]:
             dtype="float32",
             description=f"Sentinel-2 {b} scaled reflectance [0,1]",
         )
-        for b in ("B02", "B03", "B04", "B08")
+        for b in ("B02", "B03", "B04", "B08", "B11", "B12")
     ]
 
 

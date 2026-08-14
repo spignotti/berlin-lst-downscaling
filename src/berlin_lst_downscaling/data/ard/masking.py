@@ -120,35 +120,24 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
 
 _S2_DN_SCALE = 1.0 / 10000.0  # Baseline 04.00 scaled reflectance
 
-def mask_s2(
-    ds: xr.Dataset,
-    cfg: DictConfig,
-    sun_azimuth_deg: float,
-    sun_elevation_deg: float,
-) -> xr.Dataset:
-    """Apply S2 ARD masking: scaled reflectance + flag band.
+def _s2_flag(
+    scl: np.ndarray,
+    contract,
+    *,
+    cloud_mask: np.ndarray | None = None,
+    transform: rasterio.Affine | None = None,
+    cfg: DictConfig | None = None,
+    sun_azimuth_deg: float = 0.0,
+    sun_elevation_deg: float = 0.0,
+) -> np.ndarray:
+    """Derive the ARD flag bitmask from SCL classes.
 
-    Parameters
-    ----------
-    ds :
-        Dataset from :func:`~berlin_lst_downscaling.data.acquisition.load_s2_scene`
-        containing ``B02, B03, B04, B08`` (float32 raw DN) and
-        ``SCL`` (float32).
-    cfg :
-        Hydra config (uses ``cloud_base_height_m``).
-    sun_azimuth_deg, sun_elevation_deg :
-        Solar position for cloud-shadow projection.
-
-    Returns
-    -------
-    xr.Dataset with bands ``B02, B03, B04, B08`` (float32 0-1) and
-    ``flag`` (uint8).
+    ``scl`` is the rounded uint8 SCL array.  When ``cloud_mask`` and
+    ``transform`` are given, the directional cloud-shadow projection is
+    OR'd onto the shadow bit (used at 10m, matching the pre-SWIR
+    behaviour).  Without them, only the direct SCL classes are used
+    (used at 20m to mask SWIR before resampling).
     """
-    contract = contract_for_source("sentinel-2-l2a")
-
-    # SCL comes as float32 from odc.stac.load; round to int for class values
-    scl_raw = ds["SCL"].values.squeeze()
-    scl = np.round(scl_raw).astype(np.uint8)
     flag = np.zeros(scl.shape, dtype=np.uint8)
 
     # fill
@@ -170,9 +159,13 @@ def mask_s2(
     # selection layer, which treats SCL 11 as not-clear)
     flag[scl == 11] |= contract.FLAG_SNOW_ICE
 
-    cloud_mask = (scl == 8) | (scl == 9)
-    if cloud_mask.any() and sun_elevation_deg > 0.5:
-        transform = ds.rio.transform()
+    if (
+        cloud_mask is not None
+        and cloud_mask.any()
+        and transform is not None
+        and cfg is not None
+        and sun_elevation_deg > 0.5
+    ):
         proj_mask = _project_cloud_shadow(
             cloud_mask,
             sun_azimuth_deg,
@@ -182,35 +175,135 @@ def mask_s2(
         )
         flag[proj_mask] |= contract.FLAG_SHADOW
 
+    return flag
+
+
+def mask_s2(
+    ds_10m: xr.Dataset,
+    ds_20m: xr.Dataset,
+    cfg: DictConfig,
+    sun_azimuth_deg: float,
+    sun_elevation_deg: float,
+) -> xr.Dataset:
+    """Apply S2 ARD masking: six scaled-reflectance bands + flag band.
+
+    Parameters
+    ----------
+    ds_10m :
+        Dataset from :func:`~berlin_lst_downscaling.data.acquisition.load_s2_scene`
+        on the canonical 10m grid, containing ``B02, B03, B04, B08``
+        (float32 raw DN) and ``SCL``.
+    ds_20m :
+        Same source, loaded on the canonical 20m grid with
+        ``B11, B12`` (float32 raw DN) and ``SCL``.
+    cfg :
+        Hydra config (uses ``cloud_base_height_m``).
+    sun_azimuth_deg, sun_elevation_deg :
+        Solar position for cloud-shadow projection.
+
+    Returns
+    -------
+    xr.Dataset with bands ``B02, B03, B04, B08, B11, B12`` (float32 0-1)
+    and ``flag`` (uint8, 10m).
+
+    SWIR handling: B11/B12 are masked at their native 20m resolution
+    (any non-zero SCL flag → NaN) **before** the bilinear 20→10m
+    resampling, so cloudy/fill SWIR samples never contribute to the
+    10m product. NaN is declared as nodata on the source, so GDAL
+    excludes invalid samples from the bilinear kernel (verified
+    empirically: a NaN 20m sample yields NaN in exactly its 2×2 10m
+    footprint, valid neighbours interpolate cleanly). After upsampling
+    the 10m fill bit is applied like the other four bands.
+    """
+    contract = contract_for_source("sentinel-2-l2a")
+
+    # ── 10m flag (existing behaviour, incl. shadow projection) ──────
+    scl_10m = np.round(ds_10m["SCL"].values.squeeze()).astype(np.uint8)
+    cloud_mask = (scl_10m == 8) | (scl_10m == 9)
+    flag = _s2_flag(
+        scl_10m,
+        contract,
+        cloud_mask=cloud_mask,
+        transform=ds_10m.rio.transform(),
+        cfg=cfg,
+        sun_azimuth_deg=sun_azimuth_deg,
+        sun_elevation_deg=sun_elevation_deg,
+    )
+
+    # ── 20m SWIR: mask at native resolution before resampling ───────
+    scl_20m = np.round(ds_20m["SCL"].values.squeeze()).astype(np.uint8)
+    flag_20m = _s2_flag(scl_20m, contract)
+
+    swir_scaled: dict[str, np.ndarray] = {}
+    for b in ("B11", "B12"):
+        arr = ds_20m[b].values.squeeze().astype(np.float32)
+        arr = arr * _S2_DN_SCALE
+        arr = np.clip(arr, 0.0, 1.0)
+        # any non-zero flag → invalid SWIR sample, excluded from the
+        # bilinear kernel (NaN propagates; see docstring)
+        arr[flag_20m != 0] = float("nan")
+        swir_scaled[b] = arr
+
+    # ── assemble output on the 10m grid ─────────────────────────────
     bands_10m = ["B02", "B03", "B04", "B08"]
-    scaled = {}
+    scaled: dict[str, np.ndarray] = {}
     for b in bands_10m:
-        arr = ds[b].values.squeeze().astype(np.float32)
+        arr = ds_10m[b].values.squeeze().astype(np.float32)
         arr = arr * _S2_DN_SCALE
         arr = np.clip(arr, 0.0, 1.0)
         # propagate fill NaN
         arr[(flag & contract.FLAG_FILL) != 0] = float("nan")
         scaled[b] = arr
 
-    coords = dict(ds.coords)
-    dims = ds.dims
-    out_vars = {}
+    coords = dict(ds_10m.coords)
+    dims = ds_10m.dims
+    out_vars: dict[str, xr.DataArray] = {}
     for b in bands_10m:
         out_vars[b] = xr.DataArray(
             scaled[b][np.newaxis, ...] if "time" in dims else scaled[b],
-            dims=ds[b].dims,
+            dims=ds_10m[b].dims,
             attrs={"long_name": f"S2 {b}", "units": "1"},
         )
+
+    # bilinear 20m → 10m for the masked SWIR bands
+    from rasterio.warp import Resampling
+
+    # 2D 10m match target (odc loads may carry a size-1 ``time`` dim;
+    # the reproject is purely spatial).
+    target_10m = ds_10m["B08"] if "time" not in dims else ds_10m["B08"].isel(time=0)
+
+    for b in ("B11", "B12"):
+        swir_da = xr.DataArray(
+            swir_scaled[b],
+            dims=("y", "x"),
+            attrs={"long_name": f"S2 {b}", "units": "1"},
+        ).rio.write_crs(ds_20m.rio.crs).rio.write_transform(ds_20m.rio.transform())
+        # Declare NaN as nodata so GDAL excludes invalid SWIR samples
+        # from the bilinear kernel instead of smearing them (see docstring).
+        swir_da = swir_da.rio.write_nodata(float("nan"), encoded=False)
+        # Match the loaded 10m grid (rioxarray requires rio metadata on
+        # the target; ds_10m bands carry it from the odc load).
+        swir_10m = swir_da.rio.reproject_match(
+            target_10m, resampling=Resampling.bilinear
+        )
+        arr_10m = np.asarray(swir_10m.values.squeeze(), dtype=np.float32)
+        arr_10m[(flag & contract.FLAG_FILL) != 0] = float("nan")
+        out_vars[b] = xr.DataArray(
+            arr_10m[np.newaxis, ...] if "time" in dims else arr_10m,
+            dims=ds_10m["B08"].dims,
+            attrs={"long_name": f"S2 {b}", "units": "1"},
+        )
+
     out_vars["flag"] = xr.DataArray(
         flag[np.newaxis, ...] if "time" in dims else flag,
-        dims=ds[bands_10m[0]].dims,
+        dims=ds_10m[bands_10m[0]].dims,
         attrs={"long_name": "Quality flag", "flags": _FLAG_DOC},
     )
 
     out = xr.Dataset(out_vars, coords=coords)
     for var in out.data_vars:
-        out[var].rio.write_crs(ds.rio.crs, inplace=True)
-        out[var].rio.write_transform(ds.rio.transform(), inplace=True)
+        out[var].rio.write_crs(ds_10m.rio.crs, inplace=True)
+        out[var].rio.write_transform(ds_10m.rio.transform(), inplace=True)
 
     return out
 

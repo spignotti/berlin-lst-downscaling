@@ -2,8 +2,9 @@
 
 All three sources (Landsat 100m, Sentinel-2 10m, ECOSTRESS 70m) write COGs
 on the same canonical grid to ensure pixel-level alignment for downstream
-stacking.  The 10m grid is the base; 70m and 100m are derived by
-``zoom_out``, which guarantees all origins match exactly.
+stacking.  The 10m grid is the base; 20m (S2 SWIR/SCL native), 70m and
+100m are derived by ``zoom_out``, which guarantees all origins match
+exactly.
 
 Grid origin (EPSG:25833, Berlin bbox):
     (369190, 5838410)
@@ -32,6 +33,15 @@ def canon_grid_10m() -> GeoBox:
     return GeoBox.from_bbox(bbox_25833, crs=TARGET_CRS, resolution=10)
 
 @lru_cache(maxsize=1)
+def canon_grid_20m() -> GeoBox:
+    """Return the canonical 20m EPSG:25833 GeoBox (2× nested from 10m).
+
+    Native grid of Sentinel-2 SWIR (B11/B12) and SCL. Nested from the
+    10m base so all origins match exactly.
+    """
+    return canon_grid_10m().zoom_out(2)
+
+@lru_cache(maxsize=1)
 def canon_grid_70m() -> GeoBox:
     """Return the canonical 70m EPSG:25833 GeoBox (7× nested from 10m)."""
     return canon_grid_10m().zoom_out(7)
@@ -47,7 +57,7 @@ def canon_grid_for_resolution(res: int) -> GeoBox:
     Parameters
     ----------
     res : int
-        Target resolution in metres.  One of ``10``, ``70``, ``100``.
+        Target resolution in metres.  One of ``10``, ``20``, ``70``, ``100``.
 
     Returns
     -------
@@ -55,7 +65,7 @@ def canon_grid_for_resolution(res: int) -> GeoBox:
         The canonical grid at *res*, guaranteed to share the same origin
         as all other resolutions.
     """
-    return {10: canon_grid_10m, 70: canon_grid_70m, 100: canon_grid_100m}[res]()
+    return {10: canon_grid_10m, 20: canon_grid_20m, 70: canon_grid_70m, 100: canon_grid_100m}[res]()
 
 def smoke_grid(bbox_wgs84: tuple[float, float, float, float]) -> GeoBox:
     """Return a 10 m canonical-aligned subset grid for a WGS84 bbox.
@@ -89,6 +99,7 @@ def grid_from_cog(uri: str) -> GeoBox:
 
 __all__ = [
     "canon_grid_10m",
+    "canon_grid_20m",
     "canon_grid_70m",
     "canon_grid_100m",
     "canon_grid_for_resolution",

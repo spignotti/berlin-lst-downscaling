@@ -93,11 +93,21 @@ def _run_sentinel2_scene(
     """Load + mask a Sentinel-2 L2A scene."""
     effective_date = scene_date or cfg.scene_date
     bbox = tuple(cfg.bbox)
-    ds, loaded_ids = load_s2_scene(
+    ds_10m, loaded_ids = load_s2_scene(
         date=effective_date,
         bbox=bbox,
         resolution=int(cfg.target_resolution_high),
         bands=["B02", "B03", "B04", "B08", "SCL"],
+        items=items,
+    )
+    # SWIR bands + SCL are loaded natively on the 20m grid so B11/B12
+    # can be masked at native resolution before the bilinear 20→10m
+    # resampling inside mask_s2.
+    ds_20m, _ = load_s2_scene(
+        date=effective_date,
+        bbox=bbox,
+        resolution=20,
+        bands=["B11", "B12", "SCL"],
         items=items,
     )
     if scene_id not in loaded_ids:
@@ -106,8 +116,8 @@ def _run_sentinel2_scene(
             f"Date {effective_date!r} or bbox may not cover the requested scene."
         )
     # S2 uses NOAA computation (PC items lack view:sun_*)
-    az, el = _solar_for_scene(ds, cfg)
-    masked = mask_s2(ds, cfg, az, el)
+    az, el = _solar_for_scene(ds_10m, cfg)
+    masked = mask_s2(ds_10m, ds_20m, cfg, az, el)
     return masked
 
 def _run_ecostress_scene(

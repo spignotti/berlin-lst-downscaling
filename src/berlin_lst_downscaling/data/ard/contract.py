@@ -64,6 +64,16 @@ class Contract:
 
 # ── factories ────────────────────────────────────────────────────────
 
+# Per-source schema versions. Bumping only ``sentinel-2-l2a`` (six-band
+# contract, WB2c-3 preparation) forces exactly the 158 S2 scenes to
+# reprocess via ``reconcile`` (schema_changed) while Landsat/ECOSTRESS
+# rows keep their current version and remain untouched.
+_SCHEMA_VERSIONS: dict[str, int] = {
+    "landsat-c2-l2": 7,
+    "sentinel-2-l2a": 8,
+    "ecostress": 7,
+}
+
 
 def contract_for_source(source: str) -> Contract:
     """Return the :class:`Contract` for a given sensor source key.
@@ -76,7 +86,7 @@ def contract_for_source(source: str) -> Contract:
         target_crs="EPSG:25833",
         output_bands=_bands,  # flag band is separate (own uint8 COG)
         tiling=TilingSpec(),
-        schema_version=7,
+        schema_version=_SCHEMA_VERSIONS[source],
         flag_mode="separate",
     )
 
@@ -124,6 +134,30 @@ _S2_BANDS = (
         dtype="float32",
         nodata=_NAN,
         description="Sentinel-2 band 8 (NIR); scaled reflectance 0-1",
+        unit="1",
+        valid_range=(0.0, 1.0),
+    ),
+    BandSpec(
+        name="B11",
+        dtype="float32",
+        nodata=_NAN,
+        description=(
+            "Sentinel-2 band 11 (SWIR1); scaled reflectance 0-1. "
+            "Native 20m, masked at 20m then bilinearly resampled to 10m "
+            "(no 10m detail claim)."
+        ),
+        unit="1",
+        valid_range=(0.0, 1.0),
+    ),
+    BandSpec(
+        name="B12",
+        dtype="float32",
+        nodata=_NAN,
+        description=(
+            "Sentinel-2 band 12 (SWIR2); scaled reflectance 0-1. "
+            "Native 20m, masked at 20m then bilinearly resampled to 10m "
+            "(no 10m detail claim)."
+        ),
         unit="1",
         valid_range=(0.0, 1.0),
     ),

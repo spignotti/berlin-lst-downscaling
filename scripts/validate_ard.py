@@ -170,6 +170,10 @@ def main() -> int:
         if path_stac and exists(path_stac):
             _validate_stac(path_stac, res, schema_version)
 
+        # S2 six-band contract: count + band order + reflectance range
+        if source == "sentinel-2-l2a" and path_cog and exists(path_cog):
+            _validate_s2_six_bands(path_cog, res)
+
         # Validate provenance content
         if exists(prov_path):
             _validate_provenance(prov_path, source, scene_id, res, schema_version)
@@ -197,6 +201,45 @@ def main() -> int:
 
     print("\nAll checks passed.")
     return 0
+
+
+_S2_BAND_ORDER = ("B02", "B03", "B04", "B08", "B11", "B12")
+
+
+def _validate_s2_six_bands(cog_uri: str, res: SceneResult) -> None:
+    """Validate the six-band Sentinel-2 ARD COG contract.
+
+    Checks band count, band description order, and a sampled
+    reflectance range of [0, 1] per band (overviews).
+    """
+    try:
+        import numpy as np
+        import rasterio
+
+        with rasterio.open(cog_uri) as src:
+            if src.count != len(_S2_BAND_ORDER):
+                res.fail(
+                    f"S2 band count: got {src.count}, expected {len(_S2_BAND_ORDER)} "
+                    f"{list(_S2_BAND_ORDER)}"
+                )
+            descriptions = [src.descriptions[i] for i in range(src.count)]
+            if descriptions != list(_S2_BAND_ORDER):
+                res.fail(f"S2 band order: got {descriptions}, expected {list(_S2_BAND_ORDER)}")
+
+            for i in range(src.count):
+                out_h = max(1, src.height // 32)
+                out_w = max(1, src.width // 32)
+                arr = src.read(i + 1, out_shape=(out_h, out_w)).astype(np.float64)
+                valid = arr[np.isfinite(arr)]
+                if valid.size == 0:
+                    continue
+                if valid.min() < 0.0 or valid.max() > 1.0:
+                    res.fail(
+                        f"S2 band {src.descriptions[i]} sampled range "
+                        f"{valid.min():.3f}..{valid.max():.3f} outside [0, 1]"
+                    )
+    except Exception as exc:
+        res.fail(f"Cannot validate S2 six-band COG: {exc}")
 
 
 def _validate_stac(stac_uri: str, res: SceneResult, schema_version: int | None = None) -> None:

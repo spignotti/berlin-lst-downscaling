@@ -1,0 +1,13 @@
+# @package _global_
+# Manifest-driven smoke test — Sentinel-2 only, six-band SWIR contract.
+# Runs one S2 scene from the smoke bundle (written by the VM wrapper)
+# to local VM output so the masked-bilinear B11/B12 path is exercised
+# before any canonical product is rewritten.
+defaults:
+  - _base
+  - _self_
+
+sources: ["sentinel-2-l2a"]
+mode: full
+manifest_uri: null            # provided by the VM wrapper (smoke bundle)
+output_root: "data/smoke/s2-swir/ard"  # VM-local, removed after validation

@@ -317,7 +317,7 @@ def _scan_scene(
     # ── metadata checks (canonical grids, no pixel reads) ──────────────
     errors += _check_metadata_100m(scene.landsat_cog, n_bands=1, dtype="float32")
     errors += _check_metadata_100m(scene.landsat_flag, n_bands=1, dtype="uint8")
-    errors += _check_metadata_10m(scene.s2_cog, n_bands=4, dtype="float32")
+    errors += _check_metadata_10m(scene.s2_cog, n_bands=6, dtype="float32")
     errors += _check_metadata_10m(scene.s2_flag, n_bands=1, dtype="uint8")
     era5_cog = scene.dynamic.get("era5_land", "")
     if era5_cog:
@@ -352,7 +352,7 @@ def _scan_scene(
         )
 
     # ── S2 coarse reflectance range sanity (overview sample) ───────────
-    for band in range(1, 5):
+    for band in range(1, 7):
         rng = _sample_band_range(scene.s2_cog, band)
         if rng is not None and not (
             S2_REFLECTANCE_RANGE[0] <= rng[0] <= S2_REFLECTANCE_RANGE[1]
