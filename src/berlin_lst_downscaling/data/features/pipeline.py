@@ -194,6 +194,9 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     # ── 1. vegetation carry-forward + AOI ────────────────────────────
     veg_dsm_uri = _resolve_vegetation_carry_forward(static_derived_root, veg_geometry_id)
     aoi_fingerprint = sha256_bytes(read_bytes(aoi_uri))[:16]
+    vegetation_policy = (
+        f"carry_forward_vintage_{carry_forward_vintage}_geometry_{veg_geometry_id}"
+    )
     log_event(
         _logger,
         logging.INFO,
@@ -256,6 +259,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
             aoi=aoi,
             config_hash=config_hash,
             veg_dsm_uri=veg_dsm_uri,
+            vegetation_policy=vegetation_policy,
             aoi_uri=aoi_uri,
             aoi_fingerprint=aoi_fingerprint,
             acquisition_datetime=s2_datetimes.get(scene.s2_scene_id, ""),
@@ -333,6 +337,7 @@ def _process_scene(
     aoi,
     config_hash: str,
     veg_dsm_uri: str,
+    vegetation_policy: str,
     aoi_uri: str,
     aoi_fingerprint: str,
     acquisition_datetime: str,
@@ -405,9 +410,7 @@ def _process_scene(
             source_metadata={
                 "aoi_uri": aoi_uri,
                 "aoi_fingerprint": aoi_fingerprint,
-                "vegetation_dsm_policy": (
-                    f"carry_forward_vintage_{scene.year}:{morphology['vegetation_dsm']}"
-                ),
+                "vegetation_dsm_policy": vegetation_policy,
                 "inputs": {
                     "s2_cog": scene.s2_cog,
                     "s2_flag": scene.s2_flag,
@@ -451,7 +454,7 @@ def _process_scene(
             config_hash=config_hash,
             coverage=composed.coverage,
         )
-    except Exception as exc:  # noqa: BLE001 — per-scene failure, never crash the run
+    except Exception as exc:  # per-scene failure, never crash the run
         log_event(
             _logger,
             logging.ERROR,
@@ -488,7 +491,7 @@ def _existing_coverage(
 
         prov = json.loads(read_bytes(row.provenance_uri))
         return dict(prov.get("coverage", {}))
-    except Exception:  # noqa: BLE001 — best-effort skip metadata
+    except Exception:  # best-effort skip metadata
         return {}
 
 
@@ -504,7 +507,9 @@ def _manifest_datetimes(manifest_uri: str) -> dict[str, str]:
     for i in range(table.num_rows):
         value = dt_col[i]
         if value is not None:
-            out[str(ids[i])] = str(value)
+            # pa.timestamp values carry a datetime; isoformat() yields the
+            # RFC 3339 'T' separator STAC 1.0.0 requires (str() uses a space).
+            out[str(ids[i])] = value.isoformat() if hasattr(value, "isoformat") else str(value)
     return out
 
 

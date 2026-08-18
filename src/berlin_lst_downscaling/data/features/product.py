@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
+import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.transform import array_bounds
@@ -30,7 +31,10 @@ from rasterio.warp import transform_bounds
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
 from berlin_lst_downscaling.data.ard.validate import validate_cog
 from berlin_lst_downscaling.data.ard.writer import write_cog_atomic, write_flag_cog_atomic
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNELS
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_CHANNELS,
+    FEATURE_SCHEMA_VERSION,
+)
 from berlin_lst_downscaling.data.io import atomic_write
 
 # STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0) — pinned
@@ -137,7 +141,7 @@ def finalize_feature_product(
         "completed_at": completed_at,
         "acquisition_datetime": prepared.acquisition_datetime,
         "channel_order": [ch.name for ch in FEATURE_CHANNELS],
-        "schema_version": 1,
+        "schema_version": FEATURE_SCHEMA_VERSION,
         "vegetation_dsm_policy": prepared.source_metadata["vegetation_dsm_policy"],
         "aoi_uri": prepared.source_metadata["aoi_uri"],
         "aoi_fingerprint": prepared.source_metadata["aoi_fingerprint"],

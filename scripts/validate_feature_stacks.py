@@ -105,7 +105,7 @@ def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]) -> GeoBox | 
                     f"{cog_uri}: channel order {names} != contract {FEATURE_CHANNEL_NAMES}"
                 )
             grid = GeoBox.from_rio(src)
-    except Exception as exc:  # noqa: BLE001 — read-only probe
+    except Exception as exc:  # read-only probe
         errors.append(f"{cog_uri}: cannot open: {exc}")
         return None
 
@@ -122,7 +122,7 @@ def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]) -> GeoBox | 
                     f"{mask_uri}: shape ({src.height}, {src.width}) != COG "
                     f"({grid.shape.y}, {grid.shape.x})"
                 )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         errors.append(f"{mask_uri}: cannot open: {exc}")
     return grid
 
@@ -212,6 +212,9 @@ def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, c
         )
 
     stac = _read_json(stac_uri)
+    dt = stac.get("properties", {}).get("datetime")
+    if not dt or "T" not in str(dt):
+        errors.append(f"{scene_id}: STAC datetime missing or not RFC 3339: {dt!r}")
     assets = stac.get("assets", {})
     if "data" not in assets or "feature_valid" not in assets:
         errors.append(f"{scene_id}: STAC missing data/feature_valid assets")

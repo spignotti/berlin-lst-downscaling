@@ -13,7 +13,9 @@ import json
 from hashlib import sha256
 
 from berlin_lst_downscaling.data.features.contracts import (
+    ALBEDO_WEIGHTS,
     FEATURE_CHANNEL_NAMES,
+    FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
 )
 
@@ -32,14 +34,25 @@ def config_hash_for_features(
 
     Covers everything that changes the stack output: upstream ledger
     identities, the exact AOI mask, the vegetation carry-forward target,
-    and the channel schema (names + formula version). The vegetation
-    policy is encoded by its geometry id so changing the carry-forward
-    vintage reprocesses every scene.
+    and the full channel schema (names, formulas, weights, and ranges —
+    so a formula or range edit reprocesses every scene even without a
+    manual schema-version bump). The vegetation policy is encoded by its
+    geometry id so changing the carry-forward vintage reprocesses every
+    scene.
     """
+    channel_schema = [
+        {
+            "name": ch.name,
+            "valid_range": list(ch.valid_range) if ch.valid_range else None,
+        }
+        for ch in FEATURE_CHANNELS
+    ]
     payload = json.dumps(
         {
             "channel_order": list(FEATURE_CHANNEL_NAMES),
             "schema_version": FEATURE_SCHEMA_VERSION,
+            "albedo_weights": list(ALBEDO_WEIGHTS),
+            "channel_schema": channel_schema,
             "manifest_hash": manifest_hash,
             "geometry_mapping_hash": geometry_mapping_hash,
             "ard_ledger_hash": ard_ledger_hash,

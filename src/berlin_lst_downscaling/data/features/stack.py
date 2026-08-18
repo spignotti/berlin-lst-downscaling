@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 import rasterio
 import rasterio.warp as rwarp
+import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.windows import Window

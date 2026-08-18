@@ -176,12 +176,23 @@ def _morphology_channels() -> list[FeatureChannel]:
 
 
 def _era5_channels() -> list[FeatureChannel]:
+    # Units mirror the upstream ERA5 contract (data/dynamic/era5.py).
+    units = {
+        "t2m_scene": "K",
+        "ssrd_scene": "W/m²",
+        "ssrd_antecedent_72h_mean": "W/m²",
+        "vpd_scene": "kPa",
+        "wind_speed_10m_scene": "m/s",
+        "tp_0_24h": "mm",
+        "tp_24_48h": "mm",
+        "tp_48_72h": "mm",
+    }
     return [
         FeatureChannel(
             name=n,
             family="era5",
             description=f"ERA5-Land {n} at acquisition",
-            unit="K" if n == "t2m_scene" else ("W/m²" if n.startswith("ssrd") else "1"),
+            unit=units[n],
             valid_range=_ERA5_RANGES[n],
         )
         for n in _ERA5_BAND_NAMES
@@ -219,26 +230,10 @@ if _N_CHANNELS != 24:  # pragma: no cover — module invariant
     raise AssertionError(f"Feature stack must have 24 channels, got {_N_CHANNELS}")
 
 
-@dataclass(frozen=True)
-class FeatureContract:
-    """Immutable description of the feature-stack output product."""
-
-    channel_order: tuple[str, ...] = FEATURE_CHANNEL_NAMES
-    schema_version: int = FEATURE_SCHEMA_VERSION
-    albedo_weights: tuple[float, ...] = ALBEDO_WEIGHTS
-
-    def channel_spec(self, name: str) -> FeatureChannel:
-        for ch in FEATURE_CHANNELS:
-            if ch.name == name:
-                return ch
-        raise KeyError(f"Unknown feature channel: {name}")
-
-
 __all__ = [
     "ALBEDO_WEIGHTS",
     "FEATURE_CHANNELS",
     "FEATURE_CHANNEL_NAMES",
     "FEATURE_SCHEMA_VERSION",
     "FeatureChannel",
-    "FeatureContract",
 ]
