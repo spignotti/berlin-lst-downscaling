@@ -760,3 +760,91 @@ def smoke_qa_stage1(session: nox.Session) -> None:
             shutil.rmtree(output_root)
             print(f"Removed local smoke output: {output_root}")
 
+
+# ── Scene feature stacks ─────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-features")
+def smoke_features(session: nox.Session) -> None:
+    """Run the feature-stack smoke on one deterministic pair (real GCS inputs).
+
+    Reads published inputs over GCS (requires ADC) and the local Berlin
+    AOI mask; writes only local ephemeral output under
+    ``data/smoke/features/``. Runs the pipeline twice, asserts
+    deterministic aggregate metrics across both run reports, runs the
+    independent feature-stack validator, and removes the local smoke
+    output in ``finally`` (never uploaded).
+    """
+    import glob
+    import json
+    import os
+    import shutil
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    output_root = "data/smoke/features"
+
+    def _run_dirs() -> list[str]:
+        qa_root = os.path.join(output_root, "qa", "features")
+        if not os.path.isdir(qa_root):
+            return []
+        out = []
+        for name in os.listdir(qa_root):
+            path = os.path.join(qa_root, name)
+            if os.path.isdir(path) and name != "logs":
+                out.append(path)
+        return sorted(out, key=lambda p: os.path.getmtime(p))
+
+    try:
+        for _ in range(2):
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/run_features.py",
+                "--config-name",
+                "smoke",
+                external=True,
+            )
+
+        run_dirs = _run_dirs()
+        if len(run_dirs) != 2:
+            session.error(f"expected 2 smoke run dirs, found {len(run_dirs)}: {run_dirs}")
+
+        # Determinism: run-level aggregates must be identical across runs.
+        keys = ("feature_valid_px", "inside_aoi_px", "outside_aoi_px")
+        summaries = []
+        for run_dir in run_dirs:
+            with open(os.path.join(run_dir, "report.json"), encoding="utf-8") as fh:
+                summaries.append(json.load(fh))
+        for key in keys:
+            vals = [s["aggregate_coverage"][key] for s in summaries]
+            if vals[0] != vals[1]:
+                session.error(f"non-deterministic aggregate {key}: {vals}")
+        counts = [s["scenes"] for s in summaries]
+        for field in ("processed", "failed", "excluded"):
+            vals = [c[field] for c in counts]
+            if vals[0] != vals[1]:
+                session.error(f"non-deterministic scene count {field}: {vals}")
+
+        # Independent validator over the published (ledger-resolved) products.
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_feature_stacks.py",
+            f"--root={output_root}",
+            external=True,
+        )
+
+        # Exactly one published stack (one scene dir) after both runs.
+        scene_dirs = glob.glob(os.path.join(output_root, "LC08*"))
+        if len(scene_dirs) != 1:
+            session.error(f"expected 1 feature-stack scene dir, found {len(scene_dirs)}")
+
+        print(f"smoke-features OK — run dirs: {run_dirs}")
+    finally:
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+            print(f"Removed local smoke output: {output_root}")
+
