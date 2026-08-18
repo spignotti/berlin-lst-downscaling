@@ -43,6 +43,7 @@ def config_hash_for_features(
     channel_schema = [
         {
             "name": ch.name,
+            "description": ch.description,
             "valid_range": list(ch.valid_range) if ch.valid_range else None,
         }
         for ch in FEATURE_CHANNELS
