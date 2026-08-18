@@ -60,6 +60,24 @@ echo "Canonical root $FEATURES_ROOT — existing ledger: $REMOTE_HAS_ROOT"
 echo "Starting VM..."
 "$VM_SCRIPTS/start-vm.sh"
 
+# sshd may still be booting after the instance reaches RUNNING — wait for
+# the first connection instead of failing the whole run on a race.
+echo "Waiting for SSH readiness..."
+SSH_READY=0
+for attempt in $(seq 1 10); do
+  if ssh_cmd "echo ready" >/dev/null 2>&1; then
+    SSH_READY=1
+    break
+  fi
+  echo "  [$(date +%H:%M:%S)] SSH not ready (attempt $attempt/10). Retrying in 15s..."
+  sleep 15
+done
+if [[ "$SSH_READY" -ne 1 ]]; then
+  echo "ERROR: SSH never became ready. Stopping VM."
+  "$VM_SCRIPTS/stop-vm.sh"
+  exit 1
+fi
+
 echo "Pushing branch $BRANCH to origin..."
 git push origin "$BRANCH" --quiet
 
