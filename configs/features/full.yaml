@@ -1,0 +1,10 @@
+# @package _global_
+# Full feature-stack run: the published 2017-2025 training universe
+# (324 assessable anchors), writing canonical products to GCS under
+# features/v1/. Invoke on the VM via scripts/run_features_vm.sh.
+defaults:
+  - _base
+  - _self_
+
+scene_ids: []
+bbox: null

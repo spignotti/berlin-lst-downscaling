@@ -1,0 +1,256 @@
+"""Feature-stack finalisation — data COG, validity-mask COG, sidecars.
+
+Each scene publishes five co-located artifacts under its product directory
+(in this exact order, because GCS cannot publish multiple blobs
+atomically — the completion marker is the final visibility gate):
+
+1. ``<scene_id>.tif``                 — 24-band float32 feature COG
+2. ``<scene_id>.feature_valid.tif``   — uint8 0/1 validity-mask COG
+3. ``provenance.json``                — inputs, policy, coverage
+4. ``<scene_id>.stac.json``           — STAC Item (data + mask assets)
+5. ``complete.json``                  — written last
+
+The data COG is validated against the canonical grid before any sidecar
+is written; the mask COG is validated structurally by the writer's strict
+COG check.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+import numpy as np
+import xarray as xr
+from odc.geo.geobox import GeoBox
+from rasterio.transform import array_bounds
+from rasterio.warp import transform_bounds
+
+from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.ard.validate import validate_cog
+from berlin_lst_downscaling.data.ard.writer import write_cog_atomic, write_flag_cog_atomic
+from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNELS
+from berlin_lst_downscaling.data.io import atomic_write
+
+# STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0) — pinned
+# like the secondary product builder (data/secondary/product.py).
+_PROJ_EXT = "https://stac-extensions.github.io/projection/v2.0.0/schema.json"
+_RASTER_EXT = "https://stac-extensions.github.io/raster/v1.1.0/schema.json"
+_STAC_VERSION = "1.0.0"
+
+
+@dataclass
+class PreparedFeatureProduct:
+    """Payload produced by the composer and handed to finalisation."""
+
+    scene_id: str
+    dataset: xr.Dataset  # 24 float32 bands on the canonical grid
+    mask: np.ndarray  # uint8 (H, W), 1 = valid
+    config_hash: str
+    acquisition_datetime: str  # RFC 3339 (S2 acquisition)
+    source_metadata: dict  # resolved input URIs + policy
+    coverage: dict  # composer coverage metrics
+
+
+@dataclass
+class FeatureArtifacts:
+    """The five URIs emitted by finalisation."""
+
+    cog_uri: str
+    mask_uri: str
+    provenance_uri: str
+    stac_uri: str
+    completion_uri: str
+
+
+# The feature stack is a first-class output contract: one BandSpec per
+# channel, so ``validate_cog`` checks band count, dtypes are float32, and
+# valid_range is carried for downstream QA.
+def _feature_ard_contract() -> Contract:
+    bands = tuple(
+        BandSpec(
+            name=ch.name,
+            dtype="float32",
+            nodata=float("nan"),
+            description=ch.description,
+            unit=ch.unit,
+            valid_range=ch.valid_range,
+        )
+        for ch in FEATURE_CHANNELS
+    )
+    return Contract(
+        source="feature_stack",
+        target_crs="EPSG:25833",
+        output_bands=bands,
+        tiling=TilingSpec(),
+        schema_version=1,
+    )
+
+
+_FEATURE_CONTRACT = _feature_ard_contract()
+
+
+def finalize_feature_product(
+    prepared: PreparedFeatureProduct,
+    grid: GeoBox,
+    product_dir: str,
+    run_id: str,
+) -> FeatureArtifacts:
+    """Write the five final artifacts for one feature stack."""
+    completed_at = datetime.now(UTC).isoformat()
+    base = product_dir.rstrip("/")
+    cog_uri = f"{base}/{prepared.scene_id}.tif"
+    mask_uri = f"{base}/{prepared.scene_id}.feature_valid.tif"
+    provenance_uri = f"{base}/provenance.json"
+    stac_uri = f"{base}/{prepared.scene_id}.stac.json"
+    completion_uri = f"{base}/complete.json"
+
+    # ── 1. data COG ────────────────────────────────────────────────────
+    write_cog_atomic(prepared.dataset, cog_uri, _FEATURE_CONTRACT, overwrite=True)
+
+    vig = validate_cog(cog_uri, _FEATURE_CONTRACT, grid)
+    if not vig.ok:
+        raise ValueError(
+            f"COG validation failed for {prepared.scene_id}: {'; '.join(vig.errors)}"
+        )
+
+    # ── 2. validity-mask COG ───────────────────────────────────────────
+    mask_da = xr.DataArray(
+        prepared.mask,
+        dims=["y", "x"],
+        coords={
+            "x": prepared.dataset.x,
+            "y": prepared.dataset.y,
+        },
+    )
+    mask_da = mask_da.rio.write_crs(str(grid.crs))
+    mask_da = mask_da.rio.write_transform(grid.transform)
+    write_flag_cog_atomic(mask_da, mask_uri, _FEATURE_CONTRACT, overwrite=True)
+
+    # ── 3. provenance ──────────────────────────────────────────────────
+    provenance = {
+        "pipeline": "features",
+        "scene_id": prepared.scene_id,
+        "config_hash": prepared.config_hash,
+        "run_id": run_id,
+        "completed_at": completed_at,
+        "acquisition_datetime": prepared.acquisition_datetime,
+        "channel_order": [ch.name for ch in FEATURE_CHANNELS],
+        "schema_version": 1,
+        "vegetation_dsm_policy": prepared.source_metadata["vegetation_dsm_policy"],
+        "aoi_uri": prepared.source_metadata["aoi_uri"],
+        "aoi_fingerprint": prepared.source_metadata["aoi_fingerprint"],
+        "coverage": prepared.coverage,
+        "inputs": prepared.source_metadata["inputs"],
+        "mask_semantics": (
+            "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all 24 "
+            "channels finite and in-range; invalid pixels are NaN in all channels"
+        ),
+    }
+    atomic_write(provenance_uri, json.dumps(provenance, indent=2), overwrite=True)
+
+    # ── 4. STAC Item ───────────────────────────────────────────────────
+    stac_item = _build_feature_stac_item(prepared, grid, cog_uri, mask_uri, provenance_uri)
+    atomic_write(stac_uri, json.dumps(stac_item, indent=2), overwrite=True)
+
+    # ── 5. completion marker (last) ────────────────────────────────────
+    atomic_write(
+        completion_uri,
+        json.dumps({"published_at": completed_at, "run_id": run_id}, indent=2),
+        overwrite=True,
+    )
+
+    return FeatureArtifacts(
+        cog_uri=cog_uri,
+        mask_uri=mask_uri,
+        provenance_uri=provenance_uri,
+        stac_uri=stac_uri,
+        completion_uri=completion_uri,
+    )
+
+
+def _build_feature_stac_item(
+    prepared: PreparedFeatureProduct,
+    grid: GeoBox,
+    cog_uri: str,
+    mask_uri: str,
+    provenance_uri: str,
+) -> dict:
+    """Build the STAC 1.0.0 Item with data + mask assets and 24 raster bands."""
+    height, width = grid.shape.y, grid.shape.x
+    transform = grid.transform
+    bounds_native = array_bounds(height, width, transform)
+    bbox_4326 = transform_bounds(str(grid.crs), "EPSG:4326", *bounds_native)
+
+    raster_bands = []
+    for spec in FEATURE_CHANNELS:
+        band_entry: dict = {
+            "data_type": "float32",
+            "nodata": "nan",
+            "spatial_resolution": abs(transform.a),
+        }
+        if spec.unit and spec.unit != "1":
+            band_entry["unit"] = spec.unit
+        raster_bands.append(band_entry)
+
+    item: dict = {
+        "stac_version": _STAC_VERSION,
+        "stac_extensions": [_PROJ_EXT, _RASTER_EXT],
+        "type": "Feature",
+        "id": f"feature_stack-{prepared.scene_id}",
+        "bbox": list(bbox_4326),
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [bbox_4326[0], bbox_4326[1]],
+                    [bbox_4326[2], bbox_4326[1]],
+                    [bbox_4326[2], bbox_4326[3]],
+                    [bbox_4326[0], bbox_4326[3]],
+                    [bbox_4326[0], bbox_4326[1]],
+                ]
+            ],
+        },
+        "properties": {
+            "datetime": prepared.acquisition_datetime,
+            "proj:code": str(grid.crs),
+            "proj:shape": [height, width],
+            "proj:transform": list(transform),
+            "features:config_hash": prepared.config_hash,
+            "features:channel_order": [ch.name for ch in FEATURE_CHANNELS],
+        },
+        "assets": {
+            "data": {
+                "href": cog_uri,
+                "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+                "title": "24-band scene feature stack",
+                "roles": ["data"],
+                "raster:bands": raster_bands,
+            },
+            "feature_valid": {
+                "href": mask_uri,
+                "type": "image/tiff; application=geotiff; profile=cloud-optimized",
+                "title": "Feature validity mask (1 = all channels valid)",
+                "roles": ["mask"],
+                "raster:bands": [
+                    {"data_type": "uint8", "nodata": None, "spatial_resolution": abs(transform.a)}
+                ],
+            },
+            "provenance": {
+                "href": provenance_uri,
+                "type": "application/json",
+                "title": "Feature-stack provenance",
+                "roles": ["metadata"],
+            },
+        },
+        "links": [],
+    }
+    return item
+
+
+__all__ = [
+    "FeatureArtifacts",
+    "PreparedFeatureProduct",
+    "finalize_feature_product",
+]
