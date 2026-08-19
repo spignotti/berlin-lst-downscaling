@@ -40,6 +40,8 @@ def validate_cog(
     uri: str,
     contract: Contract,
     expected_grid: GeoBox,
+    *,
+    require_min_valid_fraction: bool = True,
 ) -> ValidationResult:
     """Validate a main-data COG at *uri* against *contract* and *expected_grid*.
 
@@ -48,7 +50,10 @@ def validate_cog(
     1. File is openable by ``rasterio.open``
     2. CRS is ``EPSG:25833``
     3. Band count matches ``len(contract.output_bands)``
-    4. At least ``_MIN_VALID_FRAC`` pixels are not NaN
+    4. At least ``_MIN_VALID_FRAC`` pixels are not NaN — skipped when
+       ``require_min_valid_fraction`` is ``False`` (opt-out for products
+       that legitimately hold sparse or all-NaN stacks, e.g. feature
+       stacks whose validity is governed by a companion mask)
     5. Width / height match *expected_grid.shape*
     6. Transform origin (upper-left corner) matches *expected_grid.transform*
     """
@@ -63,7 +68,7 @@ def validate_cog(
             height = src.height
             transform = src.transform
             # Sample check for all-NaN — read a few blocks
-            _check_nan(src, result)
+            _check_nan(src, result, require_min_valid_fraction=require_min_valid_fraction)
     except Exception as exc:
         result.fail(f"Could not open or read COG: {exc}")
         return result
@@ -153,17 +158,25 @@ def validate_flag_cog(
 
 # ── internal helpers ──────────────────────────────────────────────────
 
-def _check_nan(src: rasterio.DatasetReader, result: ValidationResult) -> None:
+def _check_nan(
+    src: rasterio.DatasetReader,
+    result: ValidationResult,
+    *,
+    require_min_valid_fraction: bool,
+) -> None:
     """Check that the first band is not completely NaN.
 
     Reads the full first band into memory (COGs are clipped to Berlin,
-    typically < 2k × 2k pixels at 100m).
+    typically < 2k × 2k pixels at 100m). The minimum-valid-fraction gate is
+    skipped when ``require_min_valid_fraction`` is ``False``.
     """
     try:
         band = src.read(1)
         total = band.size
         if total == 0:
             result.fail("Band 1 has zero pixels")
+            return
+        if not require_min_valid_fraction:
             return
         n_valid = int(np.sum(~np.isnan(band)))
         if n_valid / total < _MIN_VALID_FRAC:

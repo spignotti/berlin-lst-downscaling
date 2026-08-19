@@ -113,7 +113,16 @@ def finalize_feature_product(
     # ── 1. data COG ────────────────────────────────────────────────────
     write_cog_atomic(prepared.dataset, cog_uri, _FEATURE_CONTRACT, overwrite=True)
 
-    vig = validate_cog(cog_uri, _FEATURE_CONTRACT, grid)
+    # The generic minimum-valid-fraction gate is disabled: sparse or all-zero
+    # stacks are structurally valid (their validity is governed by the
+    # companion mask, not by bulk non-NaN density). All other COG checks
+    # (CRS, grid, band count, dtype, strict-COG) still apply.
+    vig = validate_cog(
+        cog_uri,
+        _FEATURE_CONTRACT,
+        grid,
+        require_min_valid_fraction=False,
+    )
     if not vig.ok:
         raise ValueError(
             f"COG validation failed for {prepared.scene_id}: {'; '.join(vig.errors)}"
@@ -131,6 +140,12 @@ def finalize_feature_product(
     mask_da = mask_da.rio.write_crs(str(grid.crs))
     mask_da = mask_da.rio.write_transform(grid.transform)
     write_flag_cog_atomic(mask_da, mask_uri, _FEATURE_CONTRACT, overwrite=True)
+
+    # ── 2b. pair validation ────────────────────────────────────────────
+    # mask is uint8 {0,1} and mask == 1 ⇔ all 24 data bands finite.
+    # An all-zero mask is valid (a fully sparse stack is still a coherent
+    # product). Runs after both COGs are written, before any sidecar.
+    _validate_mask_pair(prepared, mask_uri, cog_uri)
 
     # ── 3. provenance ──────────────────────────────────────────────────
     provenance = {
@@ -172,6 +187,50 @@ def finalize_feature_product(
         stac_uri=stac_uri,
         completion_uri=completion_uri,
     )
+
+
+def _validate_mask_pair(
+    prepared: PreparedFeatureProduct,
+    mask_uri: str,
+    cog_uri: str,
+) -> None:
+    """Verify mask semantics on the written COGs before any sidecar.
+
+    Checks that the mask COG holds uint8 values in {0, 1} and that, pixelwise,
+    ``mask == 1 ⇔ all 24 data bands are finite``. An all-zero mask is valid.
+    Raises ``ValueError`` on any violation so a bad pair never reaches the
+    completion marker.
+    """
+    import rasterio
+
+    with rasterio.open(cog_uri) as src:
+        if src.count != 24:
+            raise ValueError(f"pair validation: expected 24 data bands, got {src.count}")
+        data = src.read()
+    with rasterio.open(mask_uri) as src:
+        if src.dtypes[0] != "uint8":
+            raise ValueError(f"pair validation: mask dtype {src.dtypes[0]!r}, expected 'uint8'")
+        mask = src.read(1)
+    if data.shape[1:] != mask.shape:
+        raise ValueError(
+            f"pair validation: shape mismatch data {data.shape[1:]} vs mask {mask.shape}"
+        )
+
+    mask_values = np.unique(mask)
+    if not np.all(np.isin(mask_values, [0, 1])):
+        raise ValueError(
+            f"pair validation: mask has unexpected values {mask_values.tolist()}, "
+            "expected only 0/1"
+        )
+
+    all_finite = np.all(np.isfinite(data), axis=0)
+    mismatch = mask != all_finite.astype(np.uint8)
+    n_mismatch = int(np.sum(mismatch))
+    if n_mismatch:
+        raise ValueError(
+            f"pair validation: mask disagrees with data finiteness on {n_mismatch} "
+            f"pixels for {prepared.scene_id} (mask==1 must equal all-24-finite)"
+        )
 
 
 def _build_feature_stac_item(
