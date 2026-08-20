@@ -14,6 +14,7 @@ Storage.
 | Static sources (A) | `gs://berlin-lst-data/static/sources/...` | 4 source types · 8 ledger rows (imperviousness 2016/2021, vegetation_height 2020, terrain_height 2021, lod2_morphology 2017/2021/2022/2024) |
 | Static derived (B) | `gs://berlin-lst-data/static/derived/...` | building_dsm, vegetation_dsm, combined_dsm, horizon_building, horizon_vegetation, svf (per geometry vintage) |
 | Dynamic scenes (C) | `gs://berlin-lst-data/dynamic/...` | 972 training + 63 inference = 1 035 products (era5_land + shadow_building + shadow_vegetation per scene) |
+| Feature stacks | `gs://berlin-lst-data/features/v1/` | 324 per-anchor 24-band 10 m stacks + feature_valid masks (S2, indices, morphology, ERA5, shadows) |
 | DWD validation | `gs://berlin-lst-data/dwd_validation/r3/` | Historical pre-rebuild check: 345 anchors, 1 508 matched pairs |
 
 Details on the delivered products, their exact paths, and the phase-2
@@ -221,6 +222,49 @@ Evidence (summary.json, scenes.parquet, scenes.csv, logs) lands under
 on any contract/range/input finding within the training universe; 2026
 inference scenes are reported as exclusions, never failures.
 
+### Scene feature stacks
+
+Per paired Landsat anchor (2017-2025, 324 scenes): a 24-band 10 m
+feature stack COG plus a co-registered `feature_valid` mask on the
+canonical EPSG:25833 grid. Channels: six S2 ARD bands, four spectral
+indices (NDVI, McFeeters NDWI, NDBI, six-band albedo proxy), four
+morphology layers (building/vegetation/combined DSM + SVF, with the fixed
+vegetation_height-2020 carry-forward), eight ERA5-Land bands, and two
+shadow masks. A pixel is `feature_valid` only inside the exact Berlin
+AOI with a clear S2 flag and all 24 channels finite and in-range;
+invalid pixels are NaN in every channel. The mask is **not** a
+training-eligibility mask — `training_eligible@100m` is a Stage-2
+decision. The full channel contract and mask semantics live in
+`docs/data-sources-and-contracts.md`.
+
+```bash
+# Smoke: one deterministic pair on a bounded bbox, local ephemeral output
+# (requires ADC). Output is removed after the run.
+uv run nox -s smoke-features
+
+# Full: per-scene subprocess isolation (one child per scene; a full-grid
+# scene peaks at ~7-8 GB RAM), canonical output to GCS.
+uv run python scripts/run_features_isolated.py --config-name full
+
+# Resume a previous full run (skips scenes already done + complete).
+uv run python scripts/run_features_isolated.py --config-name full --resume
+
+# Independent validation (ledger completeness against the expected
+# 324 scenes, 24-band order, mask semantics, AOI, per-channel ranges,
+# sidecars, coverage cross-check). Fails on any non-done/incomplete row.
+uv run python scripts/validate_feature_stacks.py \
+    --root gs://berlin-lst-data/features/v1 \
+    --expected-scenes 324
+
+# Full run on the VM (start → deploy → run → validate → stop).
+scripts/run_features_vm.sh main
+```
+
+Products (COG, mask, STAC, provenance, `complete.json`) land under
+`gs://berlin-lst-data/features/v1/<scene_id>/`; the ledger is at
+`<root>/_state/features/ledger.parquet`; run reports at
+`<root>/qa/features/<run-id>/report.json`.
+
 ### Validators
 
 ```bash
@@ -248,6 +292,7 @@ uv run nox -s smoke-selection-couple  # builds the local smoke manifest below
 uv run nox -s smoke-dynamic -- \
     data/manifest_build/v3/smoke/manifest.parquet
 uv run nox -s smoke-qa-stage1         # Stage-1 QA gate, one real pair
+uv run nox -s smoke-features          # Feature stacks, one real pair
 ```
 
 Cloud variants (`cloud-smoke-*`) mirror the local smokes and assume ADC

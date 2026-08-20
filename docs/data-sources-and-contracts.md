@@ -279,6 +279,89 @@ before feature engineering. Contract:
   universe makes the run exit non-zero (hard finding blocks feature
   computation). Exclusions and 2026 scenes are reported, not failures.
 
+### Scene feature stacks (24-band, 10 m)
+
+Per paired Landsat anchor (2017-2025, 324 scenes), the features pipeline
+(`scripts/run_features.py`, core in `data/features/`) publishes one
+canonical-grid 10 m stack plus a co-registered validity mask:
+
+```
+<root>/<scene_id>/                         (root = gs://berlin-lst-data/features/v1)
+    ├─ <scene_id>.tif                     # 24-band float32 COG
+    ├─ <scene_id>.feature_valid.tif       # uint8 0/1 validity-mask COG
+    ├─ <scene_id>.stac.json               # STAC Item (data + mask assets)
+    ├─ provenance.json                    # inputs, policy, coverage
+    └─ complete.json                      # publication marker (written last)
+```
+
+**Fixed 24-channel order** (the model input interface; reordering is a
+breaking schema change → new URI version):
+
+| # | Channel | Family | Unit | Range |
+|---|---------|--------|------|-------|
+| 1-6 | `B02`, `B03`, `B04`, `B08`, `B11`, `B12` | S2 ARD reflectance | 1 | [0, 1] |
+| 7 | `ndvi` = (B08−B04)/(B08+B04) | index | 1 | [−1, 1] |
+| 8 | `ndwi_mcfeeters` = (B03−B08)/(B03+B08) | index | 1 | [−1, 1] |
+| 9 | `ndbi` = (B11−B08)/(B11+B08) | index | 1 | [−1, 1] |
+| 10 | `s2_broadband_albedo` = 0.2266·B02+0.1236·B03+0.1573·B04+0.3417·B08+0.1170·B11+0.0338·B12 | index | 1 | [0, 1] |
+| 11-14 | `building_dsm`, `vegetation_dsm`, `combined_dsm`, `svf` | morphology | m / 1 | [−10, 600] / [−0.01, 1.01] |
+| 15-22 | `t2m_scene`, `ssrd_scene`, `ssrd_antecedent_72h_mean`, `vpd_scene`, `wind_speed_10m_scene`, `tp_0_24h`, `tp_24_48h`, `tp_48_72h` | ERA5-Land | K / W/m² / kPa / m/s / mm | per-band |
+| 23-24 | `shadow_building`, `shadow_vegetation` | shadow | 1 | {0, 1} |
+
+- The albedo channel is a **six-band shortwave-reflectance proxy**
+  (Bonafoni & Sekertekin 2020, IEEE GRSL 17(9):1618-1622; coefficients as
+  published in the ALBEDO implementation, Zenodo 10.5281/zenodo.21111867),
+  not a BRDF-corrected physical albedo. Applied to ARD reflectance
+  already scaled to [0, 1]; the coefficients sum to 1.
+- `vegetation_dsm` is the **fixed vegetation_height/2020 carry-forward**:
+  the derived product of the 2024 geometry profile is used for every
+  scene year (the published `combined_dsm` provenance of the older
+  vintages already references that same COG). The policy is recorded in
+  provenance as `vegetation_dsm_policy`.
+- Shadows enter the stack as float 0/1; the uint8 nodata value 255 is
+  cast to NaN.
+
+**Validity mask.** `feature_valid == 1` iff the pixel is inside the exact
+Berlin AOI (`data/boundaries/aoi_10m.tif`, reprojected onto the canonical
+grid with nearest resampling — its own 10 m window is offset from the
+canonical lattice), the S2 ARD flag band is `0` (clear), and all 24
+channels are finite and within their declared ranges. Where the mask is
+0, **all 24 channels are NaN**. The mask is *not* a training-eligibility
+mask: it excludes the Landsat target validity and cannot authorize
+training selection — `training_eligible@100m` is a Stage-2 decision.
+Landsat LST (100 m) and ECOSTRESS (70 m) never enter the stack.
+
+**Sparse-support retention.** Structurally valid stacks are published even
+when sparse or nearly empty. The generic ARD minimum-non-NaN check is
+disabled for feature stacks (their validity is governed by the companion
+mask, not by bulk non-NaN density); the mask/data pair is still validated
+pixelwise (`mask == 1 ⇔ all 24 channels finite`, an all-zero mask is
+valid). Scenes with low S2 clear-sky coverage produce few valid pixels and
+are retained as diagnostic evidence, not excluded. Sparse support is
+reported (non-gating) in the isolated-run summary as
+`sparse_support_below_1pct` (fraction `feature_valid_px / inside_aoi_px
+< 1%`) and does not by itself disqualify a stack — the training-eligibility
+decision belongs to Stage 2.
+
+**Provenance and coverage.** Each `provenance.json` records the channel
+order, config hash, AOI URI + fingerprint, the vegetation carry-forward
+policy, and per-scene coverage: `total_px`, `inside_aoi_px`,
+`outside_aoi_px`, `feature_valid_px`, `aoi_frac`, and
+`feature_valid_frac_of_aoi`. The run report (`<root>/qa/features/<run-id>/report.json`)
+aggregates these across scenes. The config hash covers the manifest,
+geometry-mapping, and ledger fingerprints plus the AOI fingerprint, the
+vegetation carry-forward geometry, and the full channel schema (names,
+formulas, weights, ranges) — any change invalidates published stacks via
+`config_changed` reconcile.
+
+**Ledger and idempotency.** Rows live in
+`<root>/_state/features/ledger.parquet` (keyed `feature_stack` +
+`period_or_vintage = scene_id`) with the same `complete.json` visibility
+gate as every other product. The full run uses per-scene subprocess
+isolation (`scripts/run_features_isolated.py`) because one full-grid
+scene peaks at ~7-8 GB of RAM; a fresh interpreter per scene bounds
+memory and makes the run resume-safe.
+
 ## Reproducibility boundary
 
 The pipeline is manifest-driven, idempotent, and deterministic in

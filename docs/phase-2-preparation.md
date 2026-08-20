@@ -75,15 +75,45 @@ The Stage-1 raw-input gate (`scripts/run_qa_stage1_raw.py`,
   mask is decided after feature computation and the Stage-2 gate
   (user decision).
 
+## Scene feature stacks (WB2c-3, delivered)
+
+Per paired Landsat anchor (2017-2025) the features pipeline publishes a
+24-band 10 m stack + `feature_valid` mask on the canonical grid under
+`gs://berlin-lst-data/features/v1/<scene_id>/` (ledger
+`_state/features/ledger.parquet`). Contract details (channel order,
+formulas, albedo proxy, mask semantics, AOI handling, vegetation
+carry-forward) live in `data-sources-and-contracts.md`.
+
+- Runs: initial full run `features-20260818T101155Z` (2026-08-18, VM,
+  isolated per-scene subprocesses; 321 stacks published). A resume run
+  (wrapper `features-20260820T083740Z`, isolated summary
+  `isolated_summary_20260820T101101.json`) re-processed the three scenes
+  that had been blocked by a transient GCS read-after-write miss and
+  completed all 324. Final ledger: **324 done, 0 failed**;
+  `scripts/validate_feature_stacks.py --root gs://berlin-lst-data/features/v1
+  --expected-scenes 324` passes **324/324**. VM stopped (`TERMINATED`).
+- Sparse-support diagnostics: the isolated summary emits a non-gating
+  `sparse_support_below_1pct` list (fraction `feature_valid_px /
+  inside_aoi_px < 1%`). It flags `194023_20170929` (79 feature-valid px,
+  ~0.0009%). `193023_20170821` and `193024_20170821` sit just above the
+  threshold at ~1.40 % (124,708 px each) and are retained as sparse
+  support regardless. All three are structurally valid published stacks;
+  sparse support is diagnostic evidence, not a feature-stage exclusion —
+  Stage 2 alone decides `training_eligible@100m`.
+- The Stage-1 evidence (`qa/stage1_raw/9518fe0c/`) is the diagnostic
+  baseline the feature stacks build on; the feature mask is AOI-aware
+  (outside-Berlin pixels are masked, not counted as data gaps) and the
+  per-scene coverage metrics split inside/outside AOI.
+- The 51.9 % `valid_frac` of the morphology products is explained by the
+  AOI: the canonical bbox rectangle is ~51.5 % inside the exact Berlin
+  polygon; the feature_valid mask applies the polygon, so no
+  outside-Berlin pixel is ever valid.
+
 ## Next steps (separate sessions)
 
-- Scene feature-stack derivation (`WB2c-3` in Notion) — consume the
-  Stage-1 evidence (`qa/stage1_raw/9518fe0c/`) as the diagnostic
-  baseline; the feature stack re-runs the same gate logic in Stage 2.
-  The six-band S2 ARD (B11/B12 included) is the spectral input basis.
 - Stage-2 feature-stack QA gate (Notion `WB2c-2`, Stufe 2) — identical
   gate logic on the derived feature stacks, plus channel-level range
   checks; Stage 2 owns the sole authority to publish the
-  training-eligibility mask.
+  training-eligibility mask (`training_eligible@100m`).
 
 Both are planned in Notion and scheduled as their own sessions.
