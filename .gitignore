@@ -39,6 +39,7 @@ data/ard/
 data/static/
 data/dynamic/
 data/LoD2/
+data/diag/
 .tmp/
 
 # ECOSTRESS raw inputs (AppEEARS export for full-mode)

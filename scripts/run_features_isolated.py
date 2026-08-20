@@ -254,6 +254,10 @@ def main() -> int:
     print(f"[isolated] Loading assessable scenes from {cfg.manifest_uri}", flush=True)
     scene_ids = assessable_scene_ids(cfg)
     print(f"[isolated] {len(scene_ids)} assessable scenes", flush=True)
+    # Full assessable list: coverage summary always reflects all published
+    # provenance coverage, not only the (possibly resume-filtered) subset
+    # reprocessed this run.
+    all_assessable = list(scene_ids)
 
     if args.dry_run:
         for sid in scene_ids:
@@ -324,7 +328,7 @@ def main() -> int:
     summary_dir = f"{output_root.rstrip('/')}/logs/features"
 
     # ── published-provenance coverage summary (all assessable scenes) ──
-    coverage = _coverage_summary(output_root, scene_ids)
+    coverage = _coverage_summary(output_root, all_assessable)
     agg = coverage["aggregate"]
     print(f"\n[isolated] COVERAGE SUMMARY ({len(coverage['per_scene'])} published)", flush=True)
     for key in ("total_px", "inside_aoi_px", "outside_aoi_px", "feature_valid_px"):

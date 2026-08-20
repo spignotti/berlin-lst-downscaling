@@ -200,32 +200,45 @@ def _validate_mask_pair(
     ``mask == 1 ⇔ all 24 data bands are finite``. An all-zero mask is valid.
     Raises ``ValueError`` on any violation so a bad pair never reaches the
     completion marker.
+
+    Scanned blockwise (1024 px tiles) so the peak memory stays bounded
+    inside the per-scene subprocess — a full 24-band read would re-introduce
+    the large in-memory footprint the per-scene isolation exists to avoid.
     """
     import rasterio
+    from rasterio.windows import Window
 
+    _TILE = 1024
     with rasterio.open(cog_uri) as src:
         if src.count != 24:
             raise ValueError(f"pair validation: expected 24 data bands, got {src.count}")
-        data = src.read()
+        h, w = src.height, src.width
     with rasterio.open(mask_uri) as src:
         if src.dtypes[0] != "uint8":
             raise ValueError(f"pair validation: mask dtype {src.dtypes[0]!r}, expected 'uint8'")
-        mask = src.read(1)
-    if data.shape[1:] != mask.shape:
-        raise ValueError(
-            f"pair validation: shape mismatch data {data.shape[1:]} vs mask {mask.shape}"
-        )
+        if (src.height, src.width) != (h, w):
+            raise ValueError(f"pair validation: shape mismatch mask {(src.height, src.width)} "
+                             f"vs data {(h, w)}")
 
-    mask_values = np.unique(mask)
-    if not np.all(np.isin(mask_values, [0, 1])):
+    seen_values: set[int] = set()
+    n_mismatch = 0
+    with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
+        for r0 in range(0, h, _TILE):
+            r1 = min(r0 + _TILE, h)
+            for c0 in range(0, w, _TILE):
+                c1 = min(c0 + _TILE, w)
+                win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
+                data = cog.read(window=win)  # (24, bh, bw)
+                mask = msk.read(1, window=win)
+                seen_values.update(np.unique(mask).tolist())
+                all_finite = np.all(np.isfinite(data), axis=0)
+                n_mismatch += int(np.sum(mask != all_finite.astype(np.uint8)))
+
+    if not seen_values.issubset({0, 1}):
         raise ValueError(
-            f"pair validation: mask has unexpected values {mask_values.tolist()}, "
+            f"pair validation: mask has unexpected values {sorted(seen_values)}, "
             "expected only 0/1"
         )
-
-    all_finite = np.all(np.isfinite(data), axis=0)
-    mismatch = mask != all_finite.astype(np.uint8)
-    n_mismatch = int(np.sum(mismatch))
     if n_mismatch:
         raise ValueError(
             f"pair validation: mask disagrees with data finiteness on {n_mismatch} "
