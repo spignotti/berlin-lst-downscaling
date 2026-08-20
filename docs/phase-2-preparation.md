@@ -85,11 +85,18 @@ formulas, albedo proxy, mask semantics, AOI handling, vegetation
 carry-forward) live in `data-sources-and-contracts.md`.
 
 - Runs: initial full run `features-20260818T101155Z` (2026-08-18, VM,
-  isolated per-scene subprocesses; 321 stacks published). A resume run
-  (wrapper `features-20260820T083740Z`, isolated summary
-  `isolated_summary_20260820T101101.json`) re-processed the three scenes
-  that had been blocked by a transient GCS read-after-write miss and
-  completed all 324. Final ledger: **324 done, 0 failed**;
+  isolated per-scene subprocesses) published 321 stacks. A first resume
+  attempt (2026-08-20, isolated summary `isolated_summary_20260820T084920.json`,
+  run reports `5266fef2`/`8c00a543`/`42073cee`) still failed the three
+  blocked scenes: the child process reported success while the ledger row
+  was not done, because a transient GCS read-after-write miss on the fresh
+  mask COG failed pair validation and Hydra 1.3 discarded the runner's
+  non-zero exit code. After hardening publication (bounded retry for the
+  transient remote read miss + an explicit `SystemExit(1)` on a failed
+  report), a second resume (isolated summary
+  `isolated_summary_20260820T101101.json`, run reports
+  `6d46e476`/`e9a7eb9a`/`4b6301ef`) completed all three. Final ledger:
+  **324 done, 0 failed**;
   `scripts/validate_feature_stacks.py --root gs://berlin-lst-data/features/v1
   --expected-scenes 324` passes **324/324**. VM stopped (`TERMINATED`).
 - Sparse-support diagnostics: the isolated summary emits a non-gating
@@ -104,10 +111,12 @@ carry-forward) live in `data-sources-and-contracts.md`.
   baseline the feature stacks build on; the feature mask is AOI-aware
   (outside-Berlin pixels are masked, not counted as data gaps) and the
   per-scene coverage metrics split inside/outside AOI.
-- The 51.9 % `valid_frac` of the morphology products is explained by the
-  AOI: the canonical bbox rectangle is ~51.5 % inside the exact Berlin
-  polygon; the feature_valid mask applies the polygon, so no
-  outside-Berlin pixel is ever valid.
+- Coverage vs. the AOI: provenance `aoi_frac` is 0.488874 — the canonical
+  bbox rectangle is ~48.9 % inside the exact Berlin polygon. The 51.9 %
+  `valid_frac` reported by the morphology products is their data-coverage
+  extent (the DSM COGs cover the rectangle plus a small buffer beyond the
+  polygon), not the polygon share. The `feature_valid` mask applies the
+  polygon, so no outside-Berlin pixel is ever valid.
 
 ## Next steps (separate sessions)
 
