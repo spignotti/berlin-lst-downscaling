@@ -118,11 +118,32 @@ carry-forward) live in `data-sources-and-contracts.md`.
   ~51.9 % of the rectangle), not the polygon share. The `feature_valid`
   mask applies the polygon, so no outside-Berlin pixel is ever valid.
 
-## Next steps (separate sessions)
+## Stage-2 feature-stack QA gate (WB2c-2, delivered)
 
-- Stage-2 feature-stack QA gate (Notion `WB2c-2`, Stufe 2) — identical
-  gate logic on the derived feature stacks, plus channel-level range
-  checks; Stage 2 owns the sole authority to publish the
-  training-eligibility mask (`training_eligible@100m`).
+The reusable QA gate was applied to the published feature stacks (identical
+logic to Stage-1, on the derived channels). Read-only over `features/v1`;
+evidence written to `qa/stage2_features/<run-id>/`. No validity or
+selection mask is produced — `training_eligible@100m` is a WB2c-4
+(training-data preparation) decision.
 
-Both are planned in Notion and scheduled as their own sessions.
+- Run: `qa-stage2-20260820T183548Z` (2026-08-20, VM), evidence
+  `gs://berlin-lst-data/qa/stage2_features/0c8c8144/` —
+  `summary.json`, `scenes.parquet/csv`, `profiles.parquet/csv`.
+- Result: **345 pairings, 324 assessed, 21 excluded** (all
+  `dynamic role=inference (2026)`), **0 findings**, `ok: true`.
+- Aggregate (canonical EPSG:25833 grid): `feature_valid_px` 1,628,157,599;
+  target-valid 100 m cells 20,169,061; full-support cells 5,650,759
+  (all-100 == full-support).
+- Independent validator (`scripts/validate_qa_stage2_features.py`) green:
+  all source fingerprints verified, no `.tif` artifact under the prefix.
+- Per-scene-channel profiles (fixed-bin histograms + count/min/max/mean/std)
+  are the diagnostic record for WB2c-4; no values were filtered or removed.
+- VM stopped (`TERMINATED`).
+
+## Next steps (separate session)
+
+- WB2c-4 training-data preparation: define and publish the
+  `training_eligible@100m` selection mask (feature support threshold,
+  flagged-value handling, splits) from the Stage-2 evidence.
+
+Planned in Notion and scheduled as its own session.

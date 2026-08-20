@@ -328,8 +328,9 @@ canonical lattice), the S2 ARD flag band is `0` (clear), and all 24
 channels are finite and within their declared ranges. Where the mask is
 0, **all 24 channels are NaN**. The mask is *not* a training-eligibility
 mask: it excludes the Landsat target validity and cannot authorize
-training selection — `training_eligible@100m` is a Stage-2 decision.
-Landsat LST (100 m) and ECOSTRESS (70 m) never enter the stack.
+training selection — publication of `training_eligible@100m` is a WB2c-4
+(training-data preparation) decision. Landsat LST (100 m) and ECOSTRESS
+(70 m) never enter the stack.
 
 **Sparse-support retention.** Structurally valid stacks are published even
 when sparse or nearly empty. The generic ARD minimum-non-NaN check is
@@ -341,7 +342,7 @@ are retained as diagnostic evidence, not excluded. Sparse support is
 reported (non-gating) in the isolated-run summary as
 `sparse_support_below_1pct` (fraction `feature_valid_px / inside_aoi_px
 < 1%`) and does not by itself disqualify a stack — the training-eligibility
-decision belongs to Stage 2.
+decision belongs to WB2c-4 (training-data preparation).
 
 **Provenance and coverage.** Each `provenance.json` records the channel
 order, config hash, AOI URI + fingerprint, the vegetation carry-forward

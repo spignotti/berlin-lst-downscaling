@@ -49,9 +49,9 @@ basis; the uv lockfile and per-run config fingerprints pin the environment.
 ## Status
 
 Preprocessing is complete: manifest selection, ARD, static and dynamic
-context, and the per-anchor feature stacks are delivered and validated.
-Training-data preparation, the Stage-2 eligibility gate, and model training
-are in progress.
+context, the per-anchor feature stacks, and the Stage-2 feature-stack QA
+gate are delivered and validated. Training-data preparation (including the
+`training_eligible@100m` selection mask) and model training are next.
 
 ## Setup
 
