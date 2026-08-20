@@ -191,16 +191,15 @@ def finalize_feature_product(
 
 
 def _open_raster_with_retry(uri: str) -> rasterio.DatasetReader:
-    """Open a raster with bounded retries for transient GCS visibility misses.
+    """Open a raster with bounded retries for transient GCS read misses.
 
-    GCS is eventually consistent for a freshly uploaded object: a raster
-    read a few milliseconds after the write can transiently fail with a
-    GDAL ``RasterioIOError`` "does not exist" even though the object is
-    present. This is surfaced by ``rasterio.open`` on a ``gs://`` path
-    (mapped to ``/vsigs/``). Retry only that narrow remote fresh-object
-    case with bounded exponential backoff; any other open failure is
-    raised immediately so a malformed or genuinely missing COG never
-    becomes a silent success.
+    A raster read moments after its upload can transiently fail with a GDAL
+    ``RasterioIOError`` even though the object is present (a stale ``/vsigs/``
+    stat or transient backend error). The error surfaces as either
+    "'...' does not exist in the file system" or "'HTTP response code: 404'".
+    Retry only that narrow remote fresh-object case with bounded exponential
+    backoff; any other open failure is raised immediately so a malformed or
+    genuinely missing COG never becomes a silent success.
 
     The returned reader must be closed by the caller (context manager).
     """
@@ -216,7 +215,7 @@ def _open_raster_with_retry(uri: str) -> rasterio.DatasetReader:
         return (
             uri.startswith("gs://")
             and isinstance(exc, RasterioIOError)
-            and "does not exist" in str(exc)
+            and ("does not exist" in str(exc) or "HTTP response code: 404" in str(exc))
         )
 
     @retry(
