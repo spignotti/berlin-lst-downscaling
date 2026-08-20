@@ -27,6 +27,22 @@ QA_OUTPUT_ROOT="gs://berlin-lst-data/qa/stage2_features"
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
 
+# ── fail-safe VM cleanup ─────────────────────────────────────────────
+# After a successful start, any later setup/deploy/launch failure must
+# stop the VM (AGENTS.md: VM stays stopped when not actively running).
+# The connection-loss path deliberately leaves it running and disarms this.
+vm_started=0
+leave_running=0
+
+cleanup() {
+  local rc=$?
+  if [[ "$vm_started" -eq 1 && "$leave_running" -eq 0 ]]; then
+    echo "Stopping VM (cleanup on abnormal exit)..."
+    "$VM_SCRIPTS/stop-vm.sh" >/dev/null 2>&1 || true
+  fi
+  exit "$rc"
+}
+
 # ── args ─────────────────────────────────────────────────────────────
 
 BRANCH="${1:-main}"
@@ -50,6 +66,8 @@ ssh_cmd() {
 
 echo "Starting VM..."
 "$VM_SCRIPTS/start-vm.sh"
+vm_started=1
+trap cleanup EXIT
 
 echo "Pushing branch $BRANCH to origin..."
 git push origin "$BRANCH" --quiet
@@ -133,6 +151,7 @@ while true; do
       echo "  Remote PID: $REMOTE_PID"
       echo "  Marker:     $MARKER"
       echo "The VM will NOT be stopped automatically."
+      leave_running=1
       exit 2
     fi
     echo "  [$(date +%H:%M:%S)] Connection lost (attempt $POLL_FAILURES/$CONNECTION_RETRIES). Retrying in ${CONNECTION_RETRY_WAIT}s..."
@@ -192,6 +211,7 @@ fi
 # ── stop VM ──────────────────────────────────────────────────────────
 
 echo "Stopping VM..."
+vm_started=0
 "$VM_SCRIPTS/stop-vm.sh"
 
 # ── report ───────────────────────────────────────────────────────────

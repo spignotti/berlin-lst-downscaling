@@ -9,7 +9,9 @@
 #
 # Every remote command uses ssh-vm.sh (strict host-key verification) and
 # the fail-closed lifecycle scripts from .opencode/skills/google-access/.
-# The VM is always stopped in this script — including on pipeline failure.
+# The VM is stopped on completion, failure, or discovery failure — except
+# on connection loss, where it is intentionally left running until an
+# operator confirms the remote job state (see the exit-2 path).
 #
 # Usage:
 #   scripts/run_features_vm.sh [branch]
@@ -17,7 +19,6 @@
 
 set -euo pipefail
 
-SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM_SCRIPTS="$(cd "$(dirname "$0")/../.opencode/skills/google-access/scripts" && pwd)"
 source "$VM_SCRIPTS/vm-identity.sh"
 
@@ -26,6 +27,22 @@ FEATURES_ROOT="gs://berlin-lst-data/features/v1"
 
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
+
+# ── fail-safe VM cleanup ─────────────────────────────────────────────
+# After a successful start, any later setup/deploy/launch failure must
+# stop the VM (AGENTS.md: VM stays stopped when not actively running).
+# The connection-loss path deliberately leaves it running and disarms this.
+vm_started=0
+leave_running=0
+
+cleanup() {
+  local rc=$?
+  if [[ "$vm_started" -eq 1 && "$leave_running" -eq 0 ]]; then
+    echo "Stopping VM (cleanup on abnormal exit)..."
+    "$VM_SCRIPTS/stop-vm.sh" >/dev/null 2>&1 || true
+  fi
+  exit "$rc"
+}
 
 # ── args ─────────────────────────────────────────────────────────────
 
@@ -59,6 +76,8 @@ echo "Canonical root $FEATURES_ROOT — existing ledger: $REMOTE_HAS_ROOT"
 
 echo "Starting VM..."
 "$VM_SCRIPTS/start-vm.sh"
+vm_started=1
+trap cleanup EXIT
 
 # sshd may still be booting after the instance reaches RUNNING — wait for
 # the first connection instead of failing the whole run on a race.
@@ -74,6 +93,7 @@ for attempt in $(seq 1 10); do
 done
 if [[ "$SSH_READY" -ne 1 ]]; then
   echo "ERROR: SSH never became ready. Stopping VM."
+  vm_started=0
   "$VM_SCRIPTS/stop-vm.sh"
   exit 1
 fi
@@ -163,6 +183,7 @@ while true; do
       echo "  Remote PID: $REMOTE_PID"
       echo "  Marker:     $MARKER"
       echo "The VM will NOT be stopped automatically."
+      leave_running=1
       exit 2
     fi
     echo "  [$(date +%H:%M:%S)] Connection lost (attempt $POLL_FAILURES/$CONNECTION_RETRIES). Retrying in ${CONNECTION_RETRY_WAIT}s..."
@@ -217,9 +238,10 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 
-# ── stop VM (always) ─────────────────────────────────────────────────
+# ── stop VM (normal completion) ──────────────────────────────────────
 
 echo "Stopping VM..."
+vm_started=0
 "$VM_SCRIPTS/stop-vm.sh"
 
 # ── report ───────────────────────────────────────────────────────────
