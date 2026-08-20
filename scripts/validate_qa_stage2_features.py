@@ -105,6 +105,10 @@ def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[
         ("manifest", inputs.get("manifest_uri")),
         ("ard_ledger", f"{inputs.get('ard_root', '').rstrip('/')}/ledger.parquet"),
         (
+            "static_sources_ledger",
+            f"{inputs.get('static_sources_root', '').rstrip('/')}/ledger.parquet",
+        ),
+        (
             "static_derived_ledger",
             f"{inputs.get('static_derived_root', '').rstrip('/')}"
             "/_state/static/derived/ledger.parquet",

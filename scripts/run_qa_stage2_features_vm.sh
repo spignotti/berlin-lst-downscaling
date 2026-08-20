@@ -5,7 +5,9 @@
 # Lifecycle: start VM → deploy committed branch → launch full QA →
 # poll the run marker → validate the published report bundle locally →
 # stop VM. Evidence (QA report) lives in GCS, not on the VM disk. The VM
-# is always stopped in this script — including on pipeline failure.
+# is stopped on completion, failure, or discovery failure — except on
+# connection loss, where it is intentionally left running until an
+# operator confirms the remote job state (see the exit-2 path).
 #
 # Every remote command uses ssh-vm.sh (strict host-key verification) and
 # the fail-closed lifecycle scripts from .opencode/skills/google-access/.
