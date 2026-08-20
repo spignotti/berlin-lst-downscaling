@@ -31,8 +31,13 @@ _logger = logging.getLogger(__name__)
 
 
 @hydra.main(config_path="../configs/features", config_name="full", version_base=None)
-def main(cfg: DictConfig) -> int:
-    """Dispatch to the feature-stack pipeline and persist the run report."""
+def main(cfg: DictConfig) -> None:
+    """Dispatch to the feature-stack pipeline and persist the run report.
+
+    Hydra 1.3 discards a decorated task's return value in CLI mode, so a
+    failed report is signalled with an explicit ``SystemExit(1)`` rather
+    than a returned exit code (which would silently become process exit 0).
+    """
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
@@ -67,8 +72,9 @@ def main(cfg: DictConfig) -> int:
                 print(f"    ✗ {result.scene_id}: {result.error}")
         print(f"Report: {report_uri}")
 
-        return 0 if report.ok else 1
+        if not report.ok:
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

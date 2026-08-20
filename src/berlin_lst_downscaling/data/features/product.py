@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import numpy as np
+import rasterio
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 import xarray as xr
 from odc.geo.geobox import GeoBox
@@ -189,6 +190,47 @@ def finalize_feature_product(
     )
 
 
+def _open_raster_with_retry(uri: str) -> rasterio.DatasetReader:
+    """Open a raster with bounded retries for transient GCS visibility misses.
+
+    GCS is eventually consistent for a freshly uploaded object: a raster
+    read a few milliseconds after the write can transiently fail with a
+    GDAL ``RasterioIOError`` "does not exist" even though the object is
+    present. This is surfaced by ``rasterio.open`` on a ``gs://`` path
+    (mapped to ``/vsigs/``). Retry only that narrow remote fresh-object
+    case with bounded exponential backoff; any other open failure is
+    raised immediately so a malformed or genuinely missing COG never
+    becomes a silent success.
+
+    The returned reader must be closed by the caller (context manager).
+    """
+    from rasterio.errors import RasterioIOError
+    from tenacity import (
+        retry,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    def _is_transient_miss(exc: BaseException) -> bool:
+        return (
+            uri.startswith("gs://")
+            and isinstance(exc, RasterioIOError)
+            and "does not exist" in str(exc)
+        )
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=1, max=60),
+        retry=retry_if_exception(_is_transient_miss),
+        reraise=True,
+    )
+    def _open() -> rasterio.DatasetReader:
+        return rasterio.open(uri)
+
+    return _open()
+
+
 def _validate_mask_pair(
     prepared: PreparedFeatureProduct,
     mask_uri: str,
@@ -205,15 +247,14 @@ def _validate_mask_pair(
     inside the per-scene subprocess — a full 24-band read would re-introduce
     the large in-memory footprint the per-scene isolation exists to avoid.
     """
-    import rasterio
     from rasterio.windows import Window
 
     _TILE = 1024
-    with rasterio.open(cog_uri) as src:
+    with _open_raster_with_retry(cog_uri) as src:
         if src.count != 24:
             raise ValueError(f"pair validation: expected 24 data bands, got {src.count}")
         h, w = src.height, src.width
-    with rasterio.open(mask_uri) as src:
+    with _open_raster_with_retry(mask_uri) as src:
         if src.dtypes[0] != "uint8":
             raise ValueError(f"pair validation: mask dtype {src.dtypes[0]!r}, expected 'uint8'")
         if (src.height, src.width) != (h, w):
@@ -222,7 +263,7 @@ def _validate_mask_pair(
 
     seen_values: set[int] = set()
     n_mismatch = 0
-    with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
+    with _open_raster_with_retry(cog_uri) as cog, _open_raster_with_retry(mask_uri) as msk:
         for r0 in range(0, h, _TILE):
             r1 = min(r0 + _TILE, h)
             for c0 in range(0, w, _TILE):
