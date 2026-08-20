@@ -47,9 +47,10 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNELS,
 )
 from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.qa.inventory import INFERENCE_EXCLUSION_REASON
 
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")
-_EXPECTED_EXCLUSIONS = frozenset({"dynamic role=inference (2026)"})
+_EXPECTED_EXCLUSIONS = frozenset({INFERENCE_EXCLUSION_REASON})
 
 _N_CHANNELS = len(FEATURE_CHANNELS)
 
@@ -98,7 +99,11 @@ def _check_no_raster(prefix: str, errors: list[str]) -> None:
 
 
 def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[str]) -> None:
-    """Recompute source fingerprints from the declared inputs section."""
+    """Recompute source fingerprints from the declared inputs section.
+
+    ``geometry_mapping`` is a JSON file whose fingerprint is the raw
+    SHA-256 prefix, matching ``load_geometry_mapping`` semantics.
+    """
     inputs = summary.get("inputs", {})
     expected = summary.get("fingerprints", {})
     for label, uri in (
@@ -121,8 +126,9 @@ def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[
             "features_ledger",
             f"{inputs.get('features_root', '').rstrip('/')}/_state/features/ledger.parquet",
         ),
+        ("geometry_mapping", inputs.get("geometry_mapping_uri")),
     ):
-        if not uri or not uri.endswith(".parquet"):
+        if not uri or not uri.endswith((".parquet", ".json")):
             warnings.append(f"source {label}: no verifiable URI in report inputs")
             continue
         try:
@@ -405,7 +411,8 @@ def main() -> int:
     _check_scenes_table(summary, scenes_parquet, scenes_csv, errors)
     _check_profiles_table(summary, profiles_parquet, profiles_csv, scenes_parquet, errors)
 
-    if not args.skip_source_verify:
+    sources_verified = not args.skip_source_verify
+    if sources_verified:
         _check_source_fingerprints(summary, errors, warnings)
 
     # ── report ─────────────────────────────────────────────────────────
@@ -420,10 +427,16 @@ def main() -> int:
     if errors:
         return 1
 
-    print(
-        f"OK: {total} pairings ({assessed} assessed, {excluded} excluded), "
-        f"{len(findings)} findings, no raster artifacts, sources verified."
-    )
+    if sources_verified:
+        print(
+            f"OK: {total} pairings ({assessed} assessed, {excluded} excluded), "
+            f"{len(findings)} findings, no raster artifacts, sources verified."
+        )
+    else:
+        print(
+            f"OK: {total} pairings ({assessed} assessed, {excluded} excluded), "
+            f"{len(findings)} findings, no raster artifacts (source verification skipped)."
+        )
     return 0
 
 

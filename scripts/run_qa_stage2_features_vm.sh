@@ -18,7 +18,6 @@
 
 set -euo pipefail
 
-SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM_SCRIPTS="$(cd "$(dirname "$0")/../.opencode/skills/google-access/scripts" && pwd)"
 source "$VM_SCRIPTS/vm-identity.sh"
 

@@ -27,6 +27,10 @@ from berlin_lst_downscaling.data.qa.contracts import (
 )
 from berlin_lst_downscaling.data.selection.validate import load_bundle
 
+# 2026 anchors are inference scenes, outside the training universe. They
+# are reported as a single, expected exclusion across every QA gate.
+INFERENCE_EXCLUSION_REASON = "dynamic role=inference (2026)"
+
 # Metadata-only derived products (upstream of the shadow computation).
 _METADATA_DERIVED_PRODUCTS = ("horizon_building", "horizon_vegetation")
 
@@ -259,7 +263,7 @@ def _resolve_scene(
             scene_id=ls_id, year=year, s2_scene_id=s2_id, geometry_id="",
             landsat_cog="", landsat_flag="", s2_cog="", s2_flag="",
             dynamic={}, static_derived={}, static_derived_meta={},
-            exclusion_reason="dynamic role=inference (2026)", errors=errors,
+            exclusion_reason=INFERENCE_EXCLUSION_REASON, errors=errors,
         )
 
     # ── Landsat ARD row ────────────────────────────────────────────────
@@ -333,7 +337,7 @@ def _resolve_scene(
             continue
         if row.get("role") == "inference":
             if exclusion is None:
-                exclusion = "dynamic role=inference (2026)"
+                exclusion = INFERENCE_EXCLUSION_REASON
             continue
         dynamic[source] = str(row["output_uri"])
 
@@ -355,6 +359,7 @@ def _resolve_scene(
 
 
 __all__ = [
+    "INFERENCE_EXCLUSION_REASON",
     "InventoryReport",
     "ResolvedScene",
     "build_inventory",

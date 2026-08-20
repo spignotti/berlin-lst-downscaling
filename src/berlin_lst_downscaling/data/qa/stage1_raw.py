@@ -54,6 +54,7 @@ from berlin_lst_downscaling.data.qa.contracts import (
     SVF_RANGE,
 )
 from berlin_lst_downscaling.data.qa.inventory import (
+    INFERENCE_EXCLUSION_REASON,
     ResolvedScene,
     build_inventory,
 )
@@ -70,7 +71,7 @@ _S2_N_BANDS = len(contract_for_source("sentinel-2-l2a").output_bands)
 
 # Expected exclusions: reported, never findings. Anything else that
 # prevents assessment of a paired anchor is a hard finding.
-_EXPECTED_EXCLUSIONS = frozenset({"dynamic role=inference (2026)"})
+_EXPECTED_EXCLUSIONS = frozenset({INFERENCE_EXCLUSION_REASON})
 
 _SUPPORT_BINS = (0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0)
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")

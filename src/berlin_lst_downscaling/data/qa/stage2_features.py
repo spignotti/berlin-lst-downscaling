@@ -8,10 +8,8 @@ artifact, and no resampling is produced — the report bundle is the only
 output. Publication of the ``training_eligible@100m`` selection mask is a
 WB2c-4 (training-data preparation) decision.
 
-Same gate logic as Stage-1 (``data/qa/stage1_raw.py``): inventory
-resolution, canonical-grid metadata checks, blockwise 2560x2560 10 m
-tiles, exact nested 10x10 aggregation to 100 m, fail-closed findings.
-Range semantics derive from the feature-stack contract
+Reuses the Stage-1 grid/window/inventory primitives (see the ``# decision:``
+comment at import). Range semantics derive from the feature-stack contract
 (``data/features/contracts.py``), never re-derived.
 
 Performance design:
@@ -56,7 +54,11 @@ from berlin_lst_downscaling.data.features.paths import (
 )
 from berlin_lst_downscaling.data.io import atomic_write, log_event, read_bytes
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
-from berlin_lst_downscaling.data.qa.inventory import ResolvedScene, build_inventory
+from berlin_lst_downscaling.data.qa.inventory import (
+    INFERENCE_EXCLUSION_REASON,
+    ResolvedScene,
+    build_inventory,
+)
 
 # decision: reuse the Stage-1 gate's grid/window primitives directly instead of
 # re-implementing them — the Stage-2 brief mandates identical gate logic, and
@@ -71,12 +73,9 @@ from berlin_lst_downscaling.data.qa.stage1_raw import (
 
 _logger = logging.getLogger(__name__)
 
-_TILE = 2560  # 10 m tile size (512 x 5, 10 x 256)
 _GRID_CRS = "EPSG:25833"
 
-# Expected exclusions: reported, never findings. Anything else that
-# prevents assessment of a paired anchor is a hard finding.
-_EXPECTED_EXCLUSIONS = frozenset({"dynamic role=inference (2026)"})
+_EXPECTED_EXCLUSIONS = frozenset({INFERENCE_EXCLUSION_REASON})
 
 _SUPPORT_BINS = (0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0)
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")
@@ -151,7 +150,6 @@ class Stage2Report:
 def _check_sidecars(
     scene_id: str,
     cog_uri: str,
-    mask_uri: str,
     stac_uri: str,
     prov_uri: str,
     comp_uri: str,
@@ -249,7 +247,7 @@ def _scan_stack(
     errors += _check_metadata_10m(cog_uri, n_bands=len(FEATURE_CHANNELS), dtype="float32")
     errors += _check_metadata_10m(mask_uri, n_bands=1, dtype="uint8")
     sidecar_errors, coverage = _check_sidecars(
-        scene_id, cog_uri, mask_uri, stac_uri, prov_uri, comp_uri
+        scene_id, cog_uri, stac_uri, prov_uri, comp_uri
     )
     errors += sidecar_errors
 
