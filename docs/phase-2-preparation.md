@@ -114,9 +114,9 @@ carry-forward) live in `data-sources-and-contracts.md`.
 - Coverage vs. the AOI: provenance `aoi_frac` is 0.488874 — the canonical
   bbox rectangle is ~48.9 % inside the exact Berlin polygon. The 51.9 %
   `valid_frac` reported by the morphology products is their data-coverage
-  extent (the DSM COGs cover the rectangle plus a small buffer beyond the
-  polygon), not the polygon share. The `feature_valid` mask applies the
-  polygon, so no outside-Berlin pixel is ever valid.
+  extent (the DSM data covers the polygon plus a small buffer beyond it,
+  ~51.9 % of the rectangle), not the polygon share. The `feature_valid`
+  mask applies the polygon, so no outside-Berlin pixel is ever valid.
 
 ## Next steps (separate sessions)
 
