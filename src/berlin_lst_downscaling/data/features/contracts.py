@@ -15,8 +15,10 @@ A pixel is ``feature_valid`` only when **all** of the following hold:
 
 Where ``feature_valid == 0``, all 24 channels are published as NaN.
 The mask is *not* a training-eligibility mask: it excludes the Landsat
-target validity and cannot authorize training selection —
-``training_eligible@100m`` is a Stage-2 decision.
+target validity and cannot authorize training selection. The Stage-2 QA
+gate verifies the stacks and reports feature support against valid
+targets; publication of the ``training_eligible@100m`` selection mask is
+a WB2c-4 (training-data preparation) decision.
 
 vegetation_dsm carry-forward
 ----------------------------

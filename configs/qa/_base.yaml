@@ -1,7 +1,7 @@
 # @package _global_
-# Shared base config for the Stage-1 raw-input QA gate.
-# Reads published inputs (manifest, ledgers, COGs) and writes the QA
-# evidence bundle under ``output_root/<run_id>/``.
+# Shared base config for the reusable QA gates (Stage-1 raw inputs,
+# Stage-2 feature stacks). Reads published inputs (manifest, ledgers,
+# COGs) and writes the QA evidence bundle under ``output_root/<run_id>/``.
 defaults:
   - _self_
 
@@ -11,6 +11,17 @@ static_sources_root: "gs://berlin-lst-data/static/sources/full"
 static_derived_root: "gs://berlin-lst-data/static/derived/full"
 dynamic_root: "gs://berlin-lst-data/dynamic/full"
 geometry_mapping_uri: "gs://berlin-lst-data/static/geometry_vintages/v1/geometry_mapping.json"
+
+# Canonical feature-stack root (Stage-2 gate input).
+features_root: "gs://berlin-lst-data/features/v1"
+
+# Stage-2 invariant: the published training universe (2017-2025).
+# Skipped when scene_ids restrict the run (smoke).
+expected_scene_count: 324
+
+# Fixed equal-width histogram bin count per profile channel.
+profile_bins: 16
+
 output_root: "gs://berlin-lst-data/qa/stage1_raw"
 logging_level: INFO
 

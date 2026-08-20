@@ -1,0 +1,16 @@
+# @package _global_
+# Smoke: one deterministic 2017 Landsat-S2 pair on a bounded,
+# canonical-aligned bbox. Reads real published GCS feature stacks; writes
+# only local ephemeral output under data/smoke/qa-stage2/ (removed after
+# the nox smoke session, never uploaded).
+defaults:
+  - _base
+  - _self_
+
+scene_ids:
+  - "LC08_L2SP_192023_20170526_02_T1"
+
+# Bounded subset inside the Berlin bbox (~1.4k x 1.0k 10m px).
+bbox: [13.35, 52.45, 13.55, 52.60]
+
+output_root: "data/smoke/qa-stage2"
