@@ -834,6 +834,8 @@ def smoke_features(session: nox.Session) -> None:
             "python",
             "scripts/validate_feature_stacks.py",
             f"--root={output_root}",
+            "--expected-scenes",
+            "1",
             external=True,
         )
 

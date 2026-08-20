@@ -118,7 +118,7 @@ echo "Launching feature-stack run on VM..."
 # in-process run OOM-killed the 16 GB VM at scene 4).
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full --resume; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
 "
@@ -213,6 +213,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
   uv run python scripts/validate_feature_stacks.py \
     --root "$FEATURES_ROOT" \
     --aoi data/boundaries/aoi_10m.tif \
+    --expected-scenes 324 \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

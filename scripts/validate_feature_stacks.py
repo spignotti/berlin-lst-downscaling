@@ -238,6 +238,13 @@ def main() -> int:
     parser.add_argument("--aoi", default="data/boundaries/aoi_10m.tif",
                         help="Berlin AOI mask (10 m, EPSG:25833)")
     parser.add_argument("--scene-ids", nargs="*", default=[], help="Restrict to these scene IDs")
+    parser.add_argument(
+        "--expected-scenes",
+        type=int,
+        default=None,
+        help="Require exactly this many ledger rows, all done + complete; "
+             "fail on any failed/exporting/incomplete/absent row",
+    )
     args = parser.parse_args()
 
     root = args.root.rstrip("/")
@@ -248,6 +255,33 @@ def main() -> int:
 
     table = _read_table(ledger_uri)
     cols = table.to_pydict()
+
+    if args.expected_scenes is not None:
+        n_rows = table.num_rows
+        bad: list[str] = []
+        for i in range(n_rows):
+            scene_id = str(cols["period_or_vintage"][i])
+            status = str(cols["status"][i])
+            if status != "done":
+                bad.append(f"{scene_id}: status {status!r} (expected 'done')")
+                continue
+            for label, key in (("output_uri", "output_uri"), ("stac_uri", "stac_uri"),
+                               ("provenance_uri", "provenance_uri"),
+                               ("completion_uri", "completion_uri")):
+                if not cols[key][i]:
+                    bad.append(f"{scene_id}: missing {label}")
+        if n_rows != args.expected_scenes:
+            print(
+                f"FAILURE: expected exactly {args.expected_scenes} ledger rows, "
+                f"found {n_rows}"
+            )
+            return 1
+        if bad:
+            print("FAILURE: ledger has non-done / incomplete rows:")
+            for b in bad:
+                print(f"  ✗ {b}")
+            return 1
+
     rows = []
     for i in range(table.num_rows):
         if str(cols["status"][i]) != "done":

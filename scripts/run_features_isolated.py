@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -45,6 +46,8 @@ from berlin_lst_downscaling.data.qa.inventory import build_inventory
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPT_DIR.parent
 _CONFIG_DIR = _REPO_ROOT / "configs" / "features"
+
+_logger = logging.getLogger("features.isolated")
 
 
 @dataclass
@@ -101,14 +104,68 @@ def _scene_done(output_root: str, scene_id: str) -> bool:
     return output_ok and completion_ok
 
 
+def _coverage_summary(output_root: str, scene_ids: list[str]) -> dict:
+    """Aggregate published-provenance coverage across done scenes.
+
+    Reads each scene's provenance ``coverage`` dict; scenes without a
+    published provenance are skipped (their status is already surfaced by
+    the per-scene ledger check). Returns ``{total_px, inside_aoi_px,
+    outside_aoi_px, feature_valid_px}`` plus per-scene rows for the
+    sparse-support diagnostic.
+    """
+    from berlin_lst_downscaling.data.features.paths import ledger_path
+    from berlin_lst_downscaling.data.io import read_bytes
+    from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
+
+    led = SecondaryLedger.open(ledger_path(output_root))
+    agg = {"total_px": 0, "inside_aoi_px": 0, "outside_aoi_px": 0, "feature_valid_px": 0}
+    per_scene: list[dict] = []
+    for scene_id in scene_ids:
+        row = led.get(f"feature_{scene_id}", "feature_stack", scene_id)
+        if row is None or row.status != "done" or not row.provenance_uri:
+            continue
+        try:
+            prov = json.loads(read_bytes(row.provenance_uri))
+        except Exception as exc:  # coverage summary is best-effort, never fatal
+            _logger.warning("coverage summary: could not read provenance for %s: %s",
+                            scene_id, exc)
+            continue
+        cov = prov.get("coverage", {})
+        for key in agg:
+            agg[key] += int(cov.get(key, 0))
+        inside = int(cov.get("inside_aoi_px", 0))
+        valid = int(cov.get("feature_valid_px", 0))
+        fraction = (valid / inside) if inside else 0.0
+        per_scene.append(
+            {
+                "scene_id": scene_id,
+                "feature_valid_px": valid,
+                "inside_aoi_px": inside,
+                "fraction": round(fraction, 6),
+            }
+        )
+    return {"aggregate": agg, "per_scene": per_scene}
+
+
+_SPARSE_FRAC = 0.01  # non-gating diagnostic threshold: <1% of AOI valid
+
+
 def run_single_scene(
     scene_id: str,
     cfg: OmegaConf,
     config_name: str,
     *,
+    output_root: str,
     timeout_s: int = 3600,
 ) -> SceneResult:
-    """Run exactly one scene through run_features.py as a subprocess."""
+    """Run exactly one scene through run_features.py as a subprocess.
+
+    A child exit code of 0 is necessary but not sufficient: the scene is
+    only reported successful when the shared ledger row is ``done`` with a
+    COG and completion marker present. A child that exits 0 without
+    publishing is treated as a failure (prevents a false-positive success
+    when finalisation is skipped or incomplete).
+    """
     shared_overrides = [
         f"manifest_uri={cfg.manifest_uri}",
         f"ard_root={cfg.ard_root}",
@@ -140,7 +197,14 @@ def run_single_scene(
         )
         duration = time.perf_counter() - t0
         if result.returncode == 0:
-            return SceneResult(scene_id=scene_id, ok=True, duration_s=duration)
+            if _scene_done(output_root, scene_id):
+                return SceneResult(scene_id=scene_id, ok=True, duration_s=duration)
+            return SceneResult(
+                scene_id=scene_id,
+                ok=False,
+                duration_s=duration,
+                error="child exited 0 but ledger row not done with COG + complete marker",
+            )
         err_tail = "\n".join(result.stderr.strip().splitlines()[-5:])
         return SceneResult(
             scene_id=scene_id,
@@ -216,7 +280,13 @@ def main() -> int:
     t_start = time.perf_counter()
     for i, scene_id in enumerate(scene_ids, 1):
         print(f"\n[isolated] [{i}/{len(scene_ids)}] {scene_id}", flush=True)
-        result = run_single_scene(scene_id, cfg, args.config_name, timeout_s=args.timeout_seconds)
+        result = run_single_scene(
+            scene_id,
+            cfg,
+            args.config_name,
+            output_root=output_root,
+            timeout_s=args.timeout_seconds,
+        )
         summary.results.append(result)
         if result.ok:
             summary.succeeded += 1
@@ -252,6 +322,25 @@ def main() -> int:
 
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     summary_dir = f"{output_root.rstrip('/')}/logs/features"
+
+    # ── published-provenance coverage summary (all assessable scenes) ──
+    coverage = _coverage_summary(output_root, scene_ids)
+    agg = coverage["aggregate"]
+    print(f"\n[isolated] COVERAGE SUMMARY ({len(coverage['per_scene'])} published)", flush=True)
+    for key in ("total_px", "inside_aoi_px", "outside_aoi_px", "feature_valid_px"):
+        print(f"  {key}: {agg[key]}", flush=True)
+
+    # ── non-gating sparse-support diagnostic ────────────────────────────
+    sparse = [r for r in coverage["per_scene"] if r["fraction"] < _SPARSE_FRAC]
+    print(f"\n[isolated] SPARSE SUPPORT BELOW {_SPARSE_FRAC:.0%} "
+          f"({len(sparse)} scenes, non-gating diagnostic)", flush=True)
+    for r in sparse:
+        print(
+            f"  {r['scene_id']}: feature_valid_px={r['feature_valid_px']} "
+            f"inside_aoi_px={r['inside_aoi_px']} fraction={r['fraction']:.4%}",
+            flush=True,
+        )
+
     summary_uri = f"{summary_dir}/isolated_summary_{ts}.json"
     summary_data = {
         "output_root": output_root,
@@ -265,6 +354,8 @@ def main() -> int:
             for r in summary.results
             if not r.ok
         ],
+        "coverage": agg,
+        "sparse_support_below_1pct": sparse,
     }
     from berlin_lst_downscaling.data.io.storage import atomic_write
 
