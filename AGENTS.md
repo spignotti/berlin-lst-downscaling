@@ -63,7 +63,7 @@ Context7 MCP is available in this project. When working with any external librar
 
 ## Documentation
 
-- `README.md` — operations, smoke gates, data-safety rules.
+- `README.md` — public project overview: architecture, status, minimal setup.
 - `docs/phase-1-delivery.md` — delivered data products and phase-2 handoff.
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger contracts.
 - `docs/phase-2-preparation.md` — phase-2 preparation state.
