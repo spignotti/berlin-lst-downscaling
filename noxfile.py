@@ -850,3 +850,99 @@ def smoke_features(session: nox.Session) -> None:
             shutil.rmtree(output_root)
             print(f"Removed local smoke output: {output_root}")
 
+
+# ── Stage-2 feature-stack QA gate ────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-qa-stage2")
+def smoke_qa_stage2(session: nox.Session) -> None:
+    """Run the Stage-2 feature QA gate on one deterministic pair (real GCS).
+
+    Reads published feature stacks over GCS (requires ADC), writes only
+    local ephemeral output under ``data/smoke/qa-stage2/``, runs the gate
+    twice, asserts deterministic support and profile metrics, runs the
+    independent bundle validator on both runs, and removes the local smoke
+    output in ``finally`` (never uploaded).
+    """
+    import glob
+    import json
+    import os
+    import shutil
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    output_root = "data/smoke/qa-stage2"
+
+    def _run_dirs() -> list[str]:
+        if not os.path.isdir(output_root):
+            return []
+        out = []
+        for name in os.listdir(output_root):
+            path = os.path.join(output_root, name)
+            if os.path.isdir(path) and name != "logs":
+                out.append(path)
+        return sorted(out, key=lambda p: os.path.getmtime(p))
+
+    try:
+        for _ in range(2):
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/run_qa_stage2_features.py",
+                "--config-name",
+                "stage2_features_smoke",
+                external=True,
+            )
+
+        run_dirs = _run_dirs()
+        if len(run_dirs) != 2:
+            session.error(f"expected 2 smoke run dirs, found {len(run_dirs)}: {run_dirs}")
+
+        for run_dir in run_dirs:
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/validate_qa_stage2_features.py",
+                f"--run-prefix={run_dir}",
+                external=True,
+            )
+
+        # Determinism: support + profile metrics must be identical across runs.
+        keys = (
+            "feature_valid_px",
+            "target_valid_cells",
+            "all_100_cells",
+            "full_support_cells",
+            "support_histogram",
+        )
+        summaries = []
+        for run_dir in run_dirs:
+            with open(os.path.join(run_dir, "summary.json"), encoding="utf-8") as fh:
+                summaries.append(json.load(fh))
+        for key in keys:
+            vals = [s["aggregate"][key] for s in summaries]
+            if vals[0] != vals[1]:
+                session.error(f"non-deterministic aggregate {key}: {vals}")
+
+        # Profile totals: every assessed scene has exactly 24 profile rows.
+        for run_dir in run_dirs:
+            import pyarrow.parquet as pq
+
+            table = pq.read_table(os.path.join(run_dir, "profiles.parquet"))
+            if table.num_rows != 24:
+                session.error(f"expected 24 profile rows, found {table.num_rows}")
+
+        # No-raster invariant: no .tif artifact under the run prefix.
+        for run_dir in run_dirs:
+            masks = glob.glob(os.path.join(run_dir, "*.tif"))
+            if masks:
+                session.error(f"no-raster invariant violated under {run_dir}: {masks}")
+
+        print(f"smoke-qa-stage2 OK — run dirs: {run_dirs}")
+    finally:
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+            print(f"Removed local smoke output: {output_root}")
+
