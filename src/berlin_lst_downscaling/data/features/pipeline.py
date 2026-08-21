@@ -8,7 +8,7 @@ For every assessable paired Landsat anchor (2017-2025, role=anchor):
    AOI mask.
 2. Reconcile against the features ledger (config-hash + completion-marker
    gated idempotency).
-3. Compose the 24-band stack + feature_valid mask, finalise the five
+3. Compose the 28-band stack + feature_valid mask, finalise the five
    artifacts (data COG, mask COG, provenance, STAC, complete), and record
    the ledger row.
 
@@ -383,11 +383,20 @@ def _process_scene(
     )
 
     try:
+        # Each morphology channel maps to (COG URI, band number).
+        # Multi-band source COGs: lod2_morphology (bands 1-4), vegetation_height (bands 1-2).
+        # Single-band: imperviousness (band 1), svf (band 1).
+        lod_uri = scene.static_sources["lod2_morphology"]
+        vh_uri = scene.static_sources["vegetation_height"]
         morphology = {
-            "building_dsm": scene.static_derived["building_dsm"],
-            "vegetation_dsm": veg_dsm_uri,
-            "combined_dsm": scene.static_derived["combined_dsm"],
-            "svf": scene.static_derived["svf"],
+            "building_height_mean": (lod_uri, 1),
+            "building_height_std": (lod_uri, 2),
+            "building_coverage_ratio": (lod_uri, 3),
+            "building_height_max": (lod_uri, 4),
+            "vegetation_height_mean": (vh_uri, 1),
+            "vegetation_height_max": (vh_uri, 2),
+            "imperviousness": (scene.static_sources["imperviousness"], 1),
+            "svf": (scene.static_derived["svf"], 1),
         }
         inputs = FeatureInputs(
             s2_cog=scene.s2_cog,
@@ -410,7 +419,7 @@ def _process_scene(
             source_metadata={
                 "aoi_uri": aoi_uri,
                 "aoi_fingerprint": aoi_fingerprint,
-                "vegetation_dsm_policy": vegetation_policy,
+                "vegetation_height_policy": vegetation_policy,
                 "inputs": {
                     "s2_cog": scene.s2_cog,
                     "s2_flag": scene.s2_flag,

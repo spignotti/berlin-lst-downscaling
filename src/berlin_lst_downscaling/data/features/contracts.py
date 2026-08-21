@@ -1,6 +1,6 @@
-"""Feature-stack contract — 24-channel roster, formulas, and mask semantics.
+"""Feature-stack contract — 28-channel roster, formulas, and mask semantics.
 
-The scene feature stack is the model input interface: exactly 24 float32
+The scene feature stack is the model input interface: exactly 28 float32
 channels in a fixed order, published per Landsat anchor scene on the
 canonical 10 m grid, plus a co-registered ``feature_valid`` uint8 mask.
 
@@ -11,23 +11,21 @@ A pixel is ``feature_valid`` only when **all** of the following hold:
 - inside the exact Berlin AOI (``aoi_10m.tif``, reprojected onto the
   canonical grid with nearest resampling),
 - the Sentinel-2 ARD flag band is ``0`` (clear pixel; ``data/ard/contract.py``),
-- all 24 channels are finite and within their declared ``valid_range``.
+- all 28 channels are finite and within their declared ``valid_range``.
 
-Where ``feature_valid == 0``, all 24 channels are published as NaN.
+Where ``feature_valid == 0``, all 28 channels are published as NaN.
 The mask is *not* a training-eligibility mask: it excludes the Landsat
 target validity and cannot authorize training selection. The Stage-2 QA
 gate verifies the stacks and reports feature support against valid
 targets; publication of the ``training_eligible@100m`` selection mask is
 a WB2c-4 (training-data preparation) decision.
 
-vegetation_dsm carry-forward
-----------------------------
-``vegetation_height/2020`` is the only vegetation source. The derived
-``vegetation_dsm`` exists in the static derived ledger only for the 2024
-geometry profile; it is carried forward to every scene year. The published
-``combined_dsm`` provenance of the older vintages already references the
-same COG (verified 2026-08-18), so this policy matches the existing
-publication state.
+vegetation_height carry-forward
+-------------------------------
+``vegetation_height/2020`` is the only vegetation source. It is read
+directly from the static source COG (bands: vegetation_height_mean,
+vegetation_height_max) and carried forward to every scene year via the
+2024 geometry profile.
 
 Albedo proxy
 ------------
@@ -48,7 +46,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class FeatureChannel:
-    """One channel of the fixed 24-band feature stack."""
+    """One channel of the fixed 28-band feature stack."""
 
     name: str
     family: str  # spectral | index | morphology | era5 | shadow
@@ -64,7 +62,7 @@ ALBEDO_WEIGHTS: tuple[float, ...] = (0.2266, 0.1236, 0.1573, 0.3417, 0.1170, 0.0
 # Formulas + channel schema version. Bump when index math or the channel
 # roster changes — the value feeds the config hash and invalidates every
 # published stack (model interface contract).
-FEATURE_SCHEMA_VERSION: int = 1
+FEATURE_SCHEMA_VERSION: int = 2
 
 # Sentinel-2 ARD band names, in published COG order (data/ard/contract.py).
 _S2_BAND_NAMES = ("B02", "B03", "B04", "B08", "B11", "B12")
@@ -81,7 +79,6 @@ _ERA5_BAND_NAMES = (
     "tp_48_72h",
 )
 
-_MORPHOLOGY_RANGE = (-10.0, 600.0)  # mirrors data/qa/contracts.py DSM_RANGE_M
 _SVF_RANGE = (-0.01, 1.01)  # mirrors data/qa/contracts.py SVF_RANGE
 _INDEX_RANGE = (-1.0, 1.0)
 _SHADOW_RANGE = (0.0, 1.0)  # shadows cast to float 0/1; 255 nodata becomes NaN
@@ -145,28 +142,58 @@ def _index_channels() -> list[FeatureChannel]:
 def _morphology_channels() -> list[FeatureChannel]:
     return [
         FeatureChannel(
-            name="building_dsm",
+            name="building_height_mean",
             family="morphology",
-            description="Terrain + max LoD2 building height (m a.s.l.)",
+            description="Mean building height in metres above ground (LoD2)",
             unit="m",
-            valid_range=_MORPHOLOGY_RANGE,
+            valid_range=(0.0, 200.0),
         ),
         FeatureChannel(
-            name="vegetation_dsm",
+            name="building_height_std",
+            family="morphology",
+            description="Standard deviation of building heights within cell (LoD2)",
+            unit="m",
+            valid_range=(0.0, 100.0),
+        ),
+        FeatureChannel(
+            name="building_coverage_ratio",
+            family="morphology",
+            description="Fraction of cell area covered by building footprints (LoD2)",
+            valid_range=(-0.01, 1.01),
+        ),
+        FeatureChannel(
+            name="building_height_max",
+            family="morphology",
+            description="Maximum building height in cell (LoD2)",
+            unit="m",
+            valid_range=(0.0, 200.0),
+        ),
+        FeatureChannel(
+            name="vegetation_height_mean",
             family="morphology",
             description=(
-                "Terrain + max canopy height (m a.s.l.); fixed vegetation_height/2020 "
-                "carried forward to every scene year"
+                "Mean vegetation height in metres above ground; "
+                "fixed vegetation_height/2020 carried forward to every scene year"
             ),
             unit="m",
-            valid_range=_MORPHOLOGY_RANGE,
+            valid_range=(-0.01, 400.01),
         ),
         FeatureChannel(
-            name="combined_dsm",
+            name="vegetation_height_max",
             family="morphology",
-            description="Max of building and vegetation DSM (m a.s.l.)",
+            description=(
+                "Maximum vegetation height in metres above ground; "
+                "fixed vegetation_height/2020 carried forward to every scene year"
+            ),
             unit="m",
-            valid_range=_MORPHOLOGY_RANGE,
+            valid_range=(-0.01, 400.01),
+        ),
+        FeatureChannel(
+            name="imperviousness",
+            family="morphology",
+            description="Sealing degree in percent (Versiegelung)",
+            unit="%",
+            valid_range=(-0.01, 100.01),
         ),
         FeatureChannel(
             name="svf",
@@ -213,7 +240,7 @@ def _shadow_channels() -> list[FeatureChannel]:
     ]
 
 
-# Fixed 24-channel order — the model input interface. Never reorder without
+# Fixed 28-channel order — the model input interface. Never reorder without
 # bumping FEATURE_SCHEMA_VERSION and publishing under a new features URI version.
 FEATURE_CHANNELS: tuple[FeatureChannel, ...] = tuple(
     [
@@ -228,8 +255,8 @@ FEATURE_CHANNELS: tuple[FeatureChannel, ...] = tuple(
 FEATURE_CHANNEL_NAMES: tuple[str, ...] = tuple(ch.name for ch in FEATURE_CHANNELS)
 
 _N_CHANNELS = len(FEATURE_CHANNELS)
-if _N_CHANNELS != 24:  # pragma: no cover — module invariant
-    raise AssertionError(f"Feature stack must have 24 channels, got {_N_CHANNELS}")
+if _N_CHANNELS != 28:  # pragma: no cover — module invariant
+    raise AssertionError(f"Feature stack must have 28 channels, got {_N_CHANNELS}")
 
 
 __all__ = [

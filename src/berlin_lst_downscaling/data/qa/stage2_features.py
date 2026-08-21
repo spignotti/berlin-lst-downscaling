@@ -1,6 +1,6 @@
 """Stage-2 feature-stack QA core — blockwise verification of published stacks.
 
-Verifies every published 24-band feature stack of the training universe
+Verifies every published 28-band feature stack of the training universe
 against the feature-stack contract and computes a **diagnostic** feature
 support statistic at 100 m (valid Landsat target cell plus its
 ``feature_valid`` 10 m subpixels). No validity mask, no selection
@@ -15,10 +15,10 @@ comment at import). Range semantics derive from the feature-stack contract
 Performance design:
 
 - Pixel scans use 2560x2560 10 m tiles — an exact multiple of both the
-  COG 512 px block size and the 10x10 aggregation factor. The 24-band
-  float32 feature COG is read per tile (~630 MB peak for one tile).
+  COG 512 px block size and the 10x10 aggregation factor. The 28-band
+  float32 feature COG is read per tile (~730 MB peak for one tile).
 - The ``feature_valid`` mask is read once per tile and checked for
-  ``mask == 1 ⇔ all 24 channels finite and in declared range``.
+  ``mask == 1 ⇔ all 28 channels finite and in declared range``.
 - Landsat target/flag are read once per scene at 100 m (tiny).
 """
 
@@ -168,7 +168,7 @@ def _check_sidecars(
         prov = json.loads(read_bytes(prov_uri))
         if tuple(prov.get("channel_order", ())) != FEATURE_CHANNEL_NAMES:
             errors.append(f"{scene_id}: provenance channel_order mismatch")
-        for key in ("config_hash", "coverage", "mask_semantics", "vegetation_dsm_policy"):
+        for key in ("config_hash", "coverage", "mask_semantics", "vegetation_height_policy"):
             if key not in prov:
                 errors.append(f"{scene_id}: provenance missing {key!r}")
         coverage = prov.get("coverage", {})
@@ -292,7 +292,7 @@ def _scan_stack(
             for (r0, c0, r1, c1), _ in _tile_windows(analysis_10):
                 bh, bw = r1 - r0, c1 - c0
                 w_cog = Window(c0 + cog_off[0], r0 + cog_off[1], bw, bh)  # type: ignore[call-arg]
-                bands = cog.read(window=w_cog)  # (24, bh, bw) float32
+                bands = cog.read(window=w_cog)  # (28, bh, bw) float32
                 w_msk = Window(c0 + mask_off[0], r0 + mask_off[1], bw, bh)  # type: ignore[call-arg]
                 mask = msk.read(1, window=w_msk)
 
@@ -302,7 +302,7 @@ def _scan_stack(
                         f"(tile {r0},{c0})"
                     )
 
-                # validity equivalence: mask == 1 ⇔ all 24 finite + in range
+                # validity equivalence: mask == 1 ⇔ all 28 finite + in range
                 finite_all = np.all(np.isfinite(bands), axis=0)
                 in_range = np.ones((bh, bw), dtype=bool)
                 for i, spec in enumerate(FEATURE_CHANNELS):

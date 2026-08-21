@@ -1,13 +1,13 @@
-"""Feature-stack composer — 24-band stack + feature_valid mask.
+"""Feature-stack composer — 28-band stack + feature_valid mask.
 
-Reads the resolved per-scene inputs (S2 ARD + flag, morphology COGs,
+Reads the resolved per-scene inputs (S2 ARD + flag, morphology source COGs,
 ERA5-Land, shadows) plus the exact Berlin AOI mask and produces one
-canonical-grid dataset of 24 float32 channels plus the uint8
+canonical-grid dataset of 28 float32 channels plus the uint8
 ``feature_valid`` mask.
 
 Mask semantics (data/features/contracts.py): a pixel is valid only when
 it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and all
-24 channels are finite and within their declared ranges. Where invalid,
+28 channels are finite and within their declared ranges. Where invalid,
 every channel is set to NaN. The Landsat target and ECOSTRESS never enter
 this stack.
 
@@ -49,7 +49,7 @@ class FeatureInputs:
 
     s2_cog: str
     s2_flag: str
-    morphology: dict[str, str]  # building_dsm, vegetation_dsm, combined_dsm, svf
+    morphology: dict[str, tuple[str, int]]  # channel -> (COG URI, band number)
     era5_cog: str
     shadows: dict[str, str]  # shadow_building, shadow_vegetation
 
@@ -117,9 +117,9 @@ def _read_shadow(uri: str, grid: GeoBox) -> np.ndarray:
 
 @dataclass
 class ComposedFeatureStack:
-    """The 24-band dataset plus the validity mask and coverage metrics."""
+    """The 28-band dataset plus the validity mask and coverage metrics."""
 
-    dataset: xr.Dataset  # 24 float32 bands on the analysis grid
+    dataset: xr.Dataset  # 28 float32 bands on the analysis grid
     mask: np.ndarray  # uint8 (grid.shape), 1 = valid
     coverage: dict  # total/inside/outside/feature-valid pixel counts
 
@@ -129,7 +129,7 @@ def compose_feature_stack(
     aoi: np.ndarray,
     grid: GeoBox,
 ) -> ComposedFeatureStack:
-    """Compose the 24-band feature stack for one scene.
+    """Compose the 28-band feature stack for one scene.
 
     *aoi* must already be a bool mask on *grid* (see
     :func:`load_aoi_mask_on_grid`).
@@ -150,9 +150,11 @@ def compose_feature_stack(
     for w, b in zip(ALBEDO_WEIGHTS, s2, strict=True):
         albedo += w * b
 
-    # ── morphology (vegetation_dsm resolved via carry-forward) ─────────
+    # ── morphology (semantic predictors from source COGs) ─────────────
+    # Each entry is (uri, band_number). Multi-band source COGs (lod2, vh)
+    # are read at the specified band; single-band sources (imp, svf) at 1.
     morphology = {
-        name: _read_band(uri, 1, grid) for name, uri in sorted(inputs.morphology.items())
+        name: _read_band(uri, band, grid) for name, (uri, band) in sorted(inputs.morphology.items())
     }
 
     # ── ERA5-Land (8 bands) + shadows ─────────────────────────────────
@@ -171,16 +173,20 @@ def compose_feature_stack(
         ndwi,
         ndbi,
         albedo,
-        morphology["building_dsm"],
-        morphology["vegetation_dsm"],
-        morphology["combined_dsm"],
+        morphology["building_height_mean"],
+        morphology["building_height_std"],
+        morphology["building_coverage_ratio"],
+        morphology["building_height_max"],
+        morphology["vegetation_height_mean"],
+        morphology["vegetation_height_max"],
+        morphology["imperviousness"],
         morphology["svf"],
         *era5,
         shadows["shadow_building"],
         shadows["shadow_vegetation"],
     ]
-    if len(channels) != 24:  # pragma: no cover — contract guard
-        raise AssertionError(f"composed {len(channels)} channels, expected 24")
+    if len(channels) != 28:  # pragma: no cover — contract guard
+        raise AssertionError(f"composed {len(channels)} channels, expected 28")
 
     # ── validity: AOI ∩ S2-clear ∩ finite ∩ in-range ──────────────────
     valid = aoi & s2_clear

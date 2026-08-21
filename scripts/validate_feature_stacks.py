@@ -9,15 +9,15 @@ the features ledger and every done scene's artifacts and verifies
 
 - ledger completeness and artifact existence (COG, mask, provenance,
   STAC, complete),
-- 24-band COG contract: band count, dtype, CRS, grid, channel order,
+- 28-band COG contract: band count, dtype, CRS, grid, channel order,
 - mask COG: uint8, single band, same grid, values in {0, 1},
-- mask semantics (blockwise): ``mask == 1`` iff all 24 channels are
+- mask semantics (blockwise): ``mask == 1`` iff all 28 channels are
   finite; ``mask == 0`` implies all channels NaN,
 - AOI semantics: outside the exact Berlin AOI the mask is 0 and every
   channel is NaN,
 - per-channel value ranges on valid pixels only,
 - sidecar content: provenance channel order / coverage / mask semantics,
-  STAC data + feature_valid assets with 24 raster bands,
+  STAC data + feature_valid assets with 28 raster bands,
 - provenance coverage numbers against independently recomputed counts.
 
 The validator imports only the channel contract (names/ranges) — never
@@ -26,7 +26,7 @@ the composer or pipeline implementation. It writes nothing.
 Usage
 -----
     uv run python scripts/validate_feature_stacks.py \
-        --root gs://berlin-lst-data/features/v1
+        --root gs://berlin-lst-data/features/v2
     uv run python scripts/validate_feature_stacks.py --root data/smoke/features
 """
 
@@ -46,7 +46,7 @@ from rasterio.windows import Window
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES, FEATURE_CHANNELS
 from berlin_lst_downscaling.data.io import exists, read_bytes
 
-_N_EXPECTED_BANDS = 24
+_N_EXPECTED_BANDS = 28
 _TILE = 1024  # blockwise scan tile (multiple of COG 512px blocks)
 
 
@@ -144,7 +144,7 @@ def _check_pixels(
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
                 win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                bands = cog.read(window=win)  # (24, bh, bw)
+                bands = cog.read(window=win)  # (28, bh, bw)
                 mask = msk.read(1, window=win)
                 aoi_t = aoi[r0:r1, c0:c1]
 
@@ -198,7 +198,7 @@ def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, c
     prov = _read_json(prov_uri)
     if tuple(prov.get("channel_order", ())) != FEATURE_CHANNEL_NAMES:
         errors.append(f"{scene_id}: provenance channel_order mismatch")
-    for key in ("config_hash", "coverage", "mask_semantics", "vegetation_dsm_policy"):
+    for key in ("config_hash", "coverage", "mask_semantics", "vegetation_height_policy"):
         if key not in prov:
             errors.append(f"{scene_id}: provenance missing {key!r}")
     cov = prov.get("coverage", {})
@@ -221,7 +221,7 @@ def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, c
         return
     raster_bands = assets["data"].get("raster:bands", [])
     if len(raster_bands) != _N_EXPECTED_BANDS:
-        errors.append(f"{scene_id}: STAC data raster:bands {len(raster_bands)}, expected 24")
+        errors.append(f"{scene_id}: STAC data raster:bands {len(raster_bands)}, expected 28")
     fv_bands = assets["feature_valid"].get("raster:bands", [])
     if not fv_bands or fv_bands[0].get("data_type") != "uint8":
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")

@@ -4,7 +4,7 @@ Each scene publishes five co-located artifacts under its product directory
 (in this exact order, because GCS cannot publish multiple blobs
 atomically — the completion marker is the final visibility gate):
 
-1. ``<scene_id>.tif``                 — 24-band float32 feature COG
+1. ``<scene_id>.tif``                 — 28-band float32 feature COG
 2. ``<scene_id>.feature_valid.tif``   — uint8 0/1 validity-mask COG
 3. ``provenance.json``                — inputs, policy, coverage
 4. ``<scene_id>.stac.json``           — STAC Item (data + mask assets)
@@ -158,13 +158,13 @@ def finalize_feature_product(
         "acquisition_datetime": prepared.acquisition_datetime,
         "channel_order": [ch.name for ch in FEATURE_CHANNELS],
         "schema_version": FEATURE_SCHEMA_VERSION,
-        "vegetation_dsm_policy": prepared.source_metadata["vegetation_dsm_policy"],
+        "vegetation_height_policy": prepared.source_metadata["vegetation_height_policy"],
         "aoi_uri": prepared.source_metadata["aoi_uri"],
         "aoi_fingerprint": prepared.source_metadata["aoi_fingerprint"],
         "coverage": prepared.coverage,
         "inputs": prepared.source_metadata["inputs"],
         "mask_semantics": (
-            "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all 24 "
+            "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all 28 "
             "channels finite and in-range; invalid pixels are NaN in all channels"
         ),
     }
@@ -243,7 +243,7 @@ def _validate_mask_pair(
     completion marker.
 
     Scanned blockwise (1024 px tiles) so the peak memory stays bounded
-    inside the per-scene subprocess — a full 24-band read would re-introduce
+    inside the per-scene subprocess — a full 28-band read would re-introduce
     the large in-memory footprint the per-scene isolation exists to avoid.
     """
     from rasterio.windows import Window
@@ -340,7 +340,7 @@ def _build_feature_stac_item(
             "data": {
                 "href": cog_uri,
                 "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-                "title": "24-band scene feature stack",
+                "title": "28-band scene feature stack",
                 "roles": ["data"],
                 "raster:bands": raster_bands,
             },

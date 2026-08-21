@@ -1,7 +1,7 @@
 # @package _global_
 # Base config for the scene feature-stack pipeline.
 # Reads published inputs (manifest, ledgers, ARD, static derived, dynamic,
-# AOI) and writes per-anchor 24-band feature COGs + feature_valid masks
+# AOI) and writes per-anchor 28-band feature COGs + feature_valid masks
 # under ``output_root/<scene_id>/`` plus a run report under
 # ``output_root/qa/features/<run_id>/report.json``.
 defaults:

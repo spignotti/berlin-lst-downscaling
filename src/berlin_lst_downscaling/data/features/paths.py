@@ -3,7 +3,7 @@
 Layout (published under the canonical root, e.g. ``features/v1``)::
 
     <root>/<scene_id>/
-        ├─ <scene_id>.tif                 # 24-band float32 feature COG
+        ├─ <scene_id>.tif                 # 28-band float32 feature COG
         ├─ <scene_id>.feature_valid.tif   # uint8 0/1 validity mask COG
         ├─ <scene_id>.stac.json           # STAC Item (data + mask assets)
         ├─ provenance.json                # source/transform provenance
@@ -31,7 +31,7 @@ def scene_product_dir(root: str, scene_id: str) -> str:
 
 
 def feature_cog(root: str, scene_id: str) -> str:
-    """Return the 24-band feature COG URI."""
+    """Return the 28-band feature COG URI."""
     return f"{scene_product_dir(root, scene_id)}/{scene_id}.tif"
 
 

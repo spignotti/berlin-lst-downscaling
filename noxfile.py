@@ -926,13 +926,13 @@ def smoke_qa_stage2(session: nox.Session) -> None:
             if vals[0] != vals[1]:
                 session.error(f"non-deterministic aggregate {key}: {vals}")
 
-        # Profile totals: every assessed scene has exactly 24 profile rows.
+        # Profile totals: every assessed scene has exactly 28 profile rows.
         for run_dir in run_dirs:
             import pyarrow.parquet as pq
 
             table = pq.read_table(os.path.join(run_dir, "profiles.parquet"))
-            if table.num_rows != 24:
-                session.error(f"expected 24 profile rows, found {table.num_rows}")
+            if table.num_rows != 28:
+                session.error(f"expected 28 profile rows, found {table.num_rows}")
 
         # No-raster invariant: no .tif artifact under the run prefix.
         for run_dir in run_dirs:
