@@ -300,20 +300,26 @@ def _delete_gcs_prefix(prefix: str) -> None:
     """Delete every blob under a GCS prefix (best-effort smoke cleanup).
 
     A cleanup failure is reported but never masks the session result —
-    the smoke prefix is ephemeral and must not fail a green gate.
+    the smoke prefix is ephemeral and must not fail a green gate. The
+    discovery and deletion are wrapped together so a listing failure is
+    reported the same way as a deletion failure.
     """
+    from google.api_core.exceptions import GoogleAPIError
     from google.cloud import storage
 
     client = storage.Client()
     bucket = client.get_bucket("berlin-lst-data")
-    blobs = list(bucket.list_blobs(prefix=prefix))
-    if not blobs:
-        print(f"  No blobs to clean under {prefix}")
-        return
     try:
+        blobs = list(bucket.list_blobs(prefix=prefix))
+        if not blobs:
+            print(f"  No blobs to clean under {prefix}")
+            return
         bucket.delete_blobs(blobs)
         print(f"  Removed {len(blobs)} blobs under {prefix}")
-    except Exception as exc:  # noqa: BLE001 — cleanup must not mask the result
+    except GoogleAPIError as exc:
+        # Cleanup is best-effort for an ephemeral smoke prefix; report but
+        # never fail the green gate. The concrete API error is caught so a
+        # genuinely unexpected failure is not silently swallowed.
         print(f"  WARNING: smoke cleanup failed under {prefix}: {exc}")
 
 
