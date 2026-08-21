@@ -114,39 +114,47 @@ def finalize_feature_product(
     # ── 1. data COG ────────────────────────────────────────────────────
     write_cog_atomic(prepared.dataset, cog_uri, _FEATURE_CONTRACT, overwrite=True)
 
-    # The generic minimum-valid-fraction gate is disabled: sparse or all-zero
-    # stacks are structurally valid (their validity is governed by the
-    # companion mask, not by bulk non-NaN density). All other COG checks
-    # (CRS, grid, band count, dtype, strict-COG) still apply.
-    vig = validate_cog(
-        cog_uri,
-        _FEATURE_CONTRACT,
-        grid,
-        require_min_valid_fraction=False,
-    )
-    if not vig.ok:
-        raise ValueError(
-            f"COG validation failed for {prepared.scene_id}: {'; '.join(vig.errors)}"
+    # Remote validation reads (data COG validation + mask pair scan) run
+    # with the GDAL directory listing disabled. GDAL caches a process-wide
+    # listing of a scene folder when the data COG is first opened; the mask
+    # COG is uploaded into that same folder afterwards, so a subsequent open
+    # would consult the stale listing and report "does not exist" even though
+    # the object is present (GCS is strongly consistent). See
+    # https://github.com/OSGeo/gdal/issues/11351.
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
+        # The generic minimum-valid-fraction gate is disabled: sparse or all-zero
+        # stacks are structurally valid (their validity is governed by the
+        # companion mask, not by bulk non-NaN density). All other COG checks
+        # (CRS, grid, band count, dtype, strict-COG) still apply.
+        vig = validate_cog(
+            cog_uri,
+            _FEATURE_CONTRACT,
+            grid,
+            require_min_valid_fraction=False,
         )
+        if not vig.ok:
+            raise ValueError(
+                f"COG validation failed for {prepared.scene_id}: {'; '.join(vig.errors)}"
+            )
 
-    # ── 2. validity-mask COG ───────────────────────────────────────────
-    mask_da = xr.DataArray(
-        prepared.mask,
-        dims=["y", "x"],
-        coords={
-            "x": prepared.dataset.x,
-            "y": prepared.dataset.y,
-        },
-    )
-    mask_da = mask_da.rio.write_crs(str(grid.crs))
-    mask_da = mask_da.rio.write_transform(grid.transform)
-    write_flag_cog_atomic(mask_da, mask_uri, _FEATURE_CONTRACT, overwrite=True)
+        # ── 2. validity-mask COG ───────────────────────────────────────────
+        mask_da = xr.DataArray(
+            prepared.mask,
+            dims=["y", "x"],
+            coords={
+                "x": prepared.dataset.x,
+                "y": prepared.dataset.y,
+            },
+        )
+        mask_da = mask_da.rio.write_crs(str(grid.crs))
+        mask_da = mask_da.rio.write_transform(grid.transform)
+        write_flag_cog_atomic(mask_da, mask_uri, _FEATURE_CONTRACT, overwrite=True)
 
-    # ── 2b. pair validation ────────────────────────────────────────────
-    # mask is uint8 {0,1} and mask == 1 ⇔ all 28 data bands finite.
-    # An all-zero mask is valid (a fully sparse stack is still a coherent
-    # product). Runs after both COGs are written, before any sidecar.
-    _validate_mask_pair(prepared, mask_uri, cog_uri)
+        # ── 2b. pair validation ────────────────────────────────────────────
+        # mask is uint8 {0,1} and mask == 1 ⇔ all 28 data bands finite.
+        # An all-zero mask is valid (a fully sparse stack is still a coherent
+        # product). Runs after both COGs are written, before any sidecar.
+        _validate_mask_pair(prepared, mask_uri, cog_uri)
 
     # ── 3. provenance ──────────────────────────────────────────────────
     provenance = {
@@ -190,46 +198,6 @@ def finalize_feature_product(
     )
 
 
-def _open_raster_with_retry(uri: str) -> rasterio.DatasetReader:
-    """Open a raster with bounded retries for transient GCS read misses.
-
-    A raster read moments after its upload can transiently fail with a GDAL
-    ``RasterioIOError`` even though the object is present (a stale ``/vsigs/``
-    stat or transient backend error). The error surfaces as either
-    "'...' does not exist in the file system" or "'HTTP response code: 404'".
-    Retry only that narrow remote fresh-object case with bounded exponential
-    backoff; any other open failure is raised immediately so a malformed or
-    genuinely missing COG never becomes a silent success.
-
-    The returned reader must be closed by the caller (context manager).
-    """
-    from rasterio.errors import RasterioIOError
-    from tenacity import (
-        retry,
-        retry_if_exception,
-        stop_after_attempt,
-        wait_exponential,
-    )
-
-    def _is_transient_miss(exc: BaseException) -> bool:
-        return (
-            uri.startswith("gs://")
-            and isinstance(exc, RasterioIOError)
-            and ("does not exist" in str(exc) or "HTTP response code: 404" in str(exc))
-        )
-
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=1, max=60),
-        retry=retry_if_exception(_is_transient_miss),
-        reraise=True,
-    )
-    def _open() -> rasterio.DatasetReader:
-        return rasterio.open(uri)
-
-    return _open()
-
-
 def _validate_mask_pair(
     prepared: PreparedFeatureProduct,
     mask_uri: str,
@@ -245,16 +213,20 @@ def _validate_mask_pair(
     Scanned blockwise (1024 px tiles) so the peak memory stays bounded
     inside the per-scene subprocess — a full 28-band read would re-introduce
     the large in-memory footprint the per-scene isolation exists to avoid.
+
+    Callers must wrap remote reads in
+    ``rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR")`` so a freshly
+    uploaded sibling COG is not hidden by GDAL's cached folder listing.
     """
     from rasterio.windows import Window
 
     _TILE = 1024
     n_expected = len(FEATURE_CHANNELS)
-    with _open_raster_with_retry(cog_uri) as src:
+    with rasterio.open(cog_uri) as src:
         if src.count != n_expected:
             raise ValueError(f"pair validation: expected {n_expected} data bands, got {src.count}")
         h, w = src.height, src.width
-    with _open_raster_with_retry(mask_uri) as src:
+    with rasterio.open(mask_uri) as src:
         if src.dtypes[0] != "uint8":
             raise ValueError(f"pair validation: mask dtype {src.dtypes[0]!r}, expected 'uint8'")
         if (src.height, src.width) != (h, w):
@@ -263,7 +235,7 @@ def _validate_mask_pair(
 
     seen_values: set[int] = set()
     n_mismatch = 0
-    with _open_raster_with_retry(cog_uri) as cog, _open_raster_with_retry(mask_uri) as msk:
+    with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
         for r0 in range(0, h, _TILE):
             r1 = min(r0 + _TILE, h)
             for c0 in range(0, w, _TILE):

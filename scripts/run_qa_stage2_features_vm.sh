@@ -73,13 +73,14 @@ echo "Pushing branch $BRANCH to origin..."
 git push origin "$BRANCH" --quiet
 
 echo "Deploying code on VM..."
-# ``git checkout`` alone does not move a stale local branch; fast-forward
-# the VM workspace to the pushed origin ref so the new code actually runs.
+# A never-deployed feature branch needs an explicit fetch refspec (the
+# default fetch may only track main); create/reset the local branch from
+# that ref so the new code actually runs.
 ssh_cmd "
   cd $APP_DIR && \
-  git fetch origin && \
-  git checkout $BRANCH && \
-  git reset --hard origin/$BRANCH && \
+  git fetch origin $BRANCH:refs/remotes/origin/$BRANCH && \
+  git checkout -B $BRANCH refs/remotes/origin/$BRANCH && \
+  git reset --hard refs/remotes/origin/$BRANCH && \
   uv sync --frozen --quiet
 "
 
