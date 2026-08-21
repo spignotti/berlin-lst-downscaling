@@ -296,6 +296,27 @@ def _preflight_gcs(session: nox.Session) -> None:
     )
 
 
+def _delete_gcs_prefix(prefix: str) -> None:
+    """Delete every blob under a GCS prefix (best-effort smoke cleanup).
+
+    A cleanup failure is reported but never masks the session result —
+    the smoke prefix is ephemeral and must not fail a green gate.
+    """
+    from google.cloud import storage
+
+    client = storage.Client()
+    bucket = client.get_bucket("berlin-lst-data")
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    if not blobs:
+        print(f"  No blobs to clean under {prefix}")
+        return
+    try:
+        bucket.delete_blobs(blobs)
+        print(f"  Removed {len(blobs)} blobs under {prefix}")
+    except Exception as exc:  # noqa: BLE001 — cleanup must not mask the result
+        print(f"  WARNING: smoke cleanup failed under {prefix}: {exc}")
+
+
 def _verify_gcs_artifacts(
     session: nox.Session,
     run_id: str,
@@ -849,6 +870,56 @@ def smoke_features(session: nox.Session) -> None:
         if os.path.isdir(output_root):
             shutil.rmtree(output_root)
             print(f"Removed local smoke output: {output_root}")
+
+
+@nox.session(venv_backend="none", name="cloud-smoke-features")
+def cloud_smoke_features(session: nox.Session) -> None:
+    """Publish one bounded 28-band feature stack to a unique GCS prefix.
+
+    Runs the feature pipeline against real GCS inputs with the output
+    rooted at a unique ``gs://berlin-lst-data/features/smoke/<run-id>/``
+    prefix, then validates the published stack with the independent
+    validator. Exercises the exact GCS/GDAL runtime path: data COG write,
+    mask COG write into the same folder, and the same-process mask read
+    (the GDAL directory-cache failure this gate guards against).
+
+    The smoke prefix is deleted in ``finally`` on success and failure.
+    """
+    import uuid
+    from datetime import UTC, datetime
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    run_id = f"feat-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    output_root = f"gs://berlin-lst-data/features/smoke/{run_id}"
+    prefix = f"features/smoke/{run_id}/"
+
+    _preflight_gcs(session)
+
+    try:
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_features.py",
+            "--config-name",
+            "smoke",
+            f"output_root={output_root}",
+            external=True,
+        )
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_feature_stacks.py",
+            f"--root={output_root}",
+            "--expected-scenes",
+            "1",
+            external=True,
+        )
+        print(f"cloud-smoke-features OK — {output_root}")
+    finally:
+        _delete_gcs_prefix(prefix)
 
 
 # ── Stage-2 feature-stack QA gate ────────────────────────────────────
