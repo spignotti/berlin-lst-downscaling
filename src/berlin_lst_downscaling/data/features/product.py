@@ -50,7 +50,7 @@ class PreparedFeatureProduct:
     """Payload produced by the composer and handed to finalisation."""
 
     scene_id: str
-    dataset: xr.Dataset  # 24 float32 bands on the canonical grid
+    dataset: xr.Dataset  # 28 float32 bands on the canonical grid
     mask: np.ndarray  # uint8 (H, W), 1 = valid
     config_hash: str
     acquisition_datetime: str  # RFC 3339 (S2 acquisition)
@@ -143,7 +143,7 @@ def finalize_feature_product(
     write_flag_cog_atomic(mask_da, mask_uri, _FEATURE_CONTRACT, overwrite=True)
 
     # ── 2b. pair validation ────────────────────────────────────────────
-    # mask is uint8 {0,1} and mask == 1 ⇔ all 24 data bands finite.
+    # mask is uint8 {0,1} and mask == 1 ⇔ all 28 data bands finite.
     # An all-zero mask is valid (a fully sparse stack is still a coherent
     # product). Runs after both COGs are written, before any sidecar.
     _validate_mask_pair(prepared, mask_uri, cog_uri)
@@ -238,7 +238,7 @@ def _validate_mask_pair(
     """Verify mask semantics on the written COGs before any sidecar.
 
     Checks that the mask COG holds uint8 values in {0, 1} and that, pixelwise,
-    ``mask == 1 ⇔ all 24 data bands are finite``. An all-zero mask is valid.
+    ``mask == 1 ⇔ all 28 data bands are finite``. An all-zero mask is valid.
     Raises ``ValueError`` on any violation so a bad pair never reaches the
     completion marker.
 
@@ -249,9 +249,10 @@ def _validate_mask_pair(
     from rasterio.windows import Window
 
     _TILE = 1024
+    n_expected = len(FEATURE_CHANNELS)
     with _open_raster_with_retry(cog_uri) as src:
-        if src.count != 24:
-            raise ValueError(f"pair validation: expected 24 data bands, got {src.count}")
+        if src.count != n_expected:
+            raise ValueError(f"pair validation: expected {n_expected} data bands, got {src.count}")
         h, w = src.height, src.width
     with _open_raster_with_retry(mask_uri) as src:
         if src.dtypes[0] != "uint8":
@@ -268,7 +269,7 @@ def _validate_mask_pair(
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
                 win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                data = cog.read(window=win)  # (24, bh, bw)
+                data = cog.read(window=win)  # (28, bh, bw)
                 mask = msk.read(1, window=win)
                 seen_values.update(np.unique(mask).tolist())
                 all_finite = np.all(np.isfinite(data), axis=0)
@@ -282,7 +283,8 @@ def _validate_mask_pair(
     if n_mismatch:
         raise ValueError(
             f"pair validation: mask disagrees with data finiteness on {n_mismatch} "
-            f"pixels for {prepared.scene_id} (mask==1 must equal all-24-finite)"
+            f"pixels for {prepared.scene_id} "
+            f"(mask==1 must equal all-{len(FEATURE_CHANNELS)}-finite)"
         )
 
 
@@ -293,7 +295,7 @@ def _build_feature_stac_item(
     mask_uri: str,
     provenance_uri: str,
 ) -> dict:
-    """Build the STAC 1.0.0 Item with data + mask assets and 24 raster bands."""
+    """Build the STAC 1.0.0 Item with data + mask assets and 28 raster bands."""
     height, width = grid.shape.y, grid.shape.x
     transform = grid.transform
     bounds_native = array_bounds(height, width, transform)
