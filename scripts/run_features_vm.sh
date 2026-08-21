@@ -4,8 +4,8 @@
 #
 # Lifecycle: start VM → deploy committed branch → launch full run →
 # poll the run marker → validate the published feature stacks locally →
-# stop VM. Products (24-band COGs, masks, sidecars, ledger) live in GCS
-# under gs://berlin-lst-data/features/v1/, not on the VM disk.
+# stop VM. Products (28-band COGs, masks, sidecars, ledger) live in GCS
+# under gs://berlin-lst-data/features/v2/, not on the VM disk.
 #
 # Every remote command uses ssh-vm.sh (strict host-key verification) and
 # the fail-closed lifecycle scripts from .opencode/skills/google-access/.
@@ -23,7 +23,7 @@ VM_SCRIPTS="$(cd "$(dirname "$0")/../.opencode/skills/google-access/scripts" && 
 source "$VM_SCRIPTS/vm-identity.sh"
 
 APP_DIR="/workspace/app"
-FEATURES_ROOT="gs://berlin-lst-data/features/v1"
+FEATURES_ROOT="gs://berlin-lst-data/features/v2"
 
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30

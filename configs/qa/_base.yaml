@@ -13,7 +13,7 @@ dynamic_root: "gs://berlin-lst-data/dynamic/full"
 geometry_mapping_uri: "gs://berlin-lst-data/static/geometry_vintages/v1/geometry_mapping.json"
 
 # Canonical feature-stack root (Stage-2 gate input).
-features_root: "gs://berlin-lst-data/features/v1"
+features_root: "gs://berlin-lst-data/features/v2"
 
 # Stage-2 invariant: the published training universe (2017-2025).
 # Skipped when scene_ids restrict the run (smoke).
