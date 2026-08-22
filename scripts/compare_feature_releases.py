@@ -109,9 +109,9 @@ def compare_scene(
             r1 = min(r0 + _TILE, h)
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
-                cwin = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                bwin = Window(  # type: ignore[call-arg]
-                    c0 + col_off, r0 + row_off, c1 - c0, r1 - r0
+                cwin = Window.from_slices((r0, r1), (c0, c1))
+                bwin = Window.from_slices(
+                    (r0 + row_off, r1 + row_off), (c0 + col_off, c1 + col_off)
                 )
                 if (
                     bwin.col_off < 0

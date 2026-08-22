@@ -109,19 +109,41 @@ def _load_aoi(uri: str, grid: GeoBox) -> np.ndarray | None:
     return dst == 1
 
 
+def _provenance_tile_count(root: str, vintage: int) -> int | None:
+    """Return the published provenance tile_count for a vintage (or None)."""
+    try:
+        prov = json.loads(
+            read_bytes(f"{root}/ard/static/sources/lod2_morphology/{vintage}/provenance.json")
+        )
+    except Exception:
+        return None
+    sm = prov.get("source_metadata") or {}
+    qa = prov.get("qa_stats") or {}
+    return sm.get("tile_count") or qa.get("tile_count")
+
+
 def _check_vintage(
     vintage: int,
     tile_keys: set[str],
     cog_uri: str,
     grid: GeoBox,
     aoi: np.ndarray | None,
+    receipt_tile_count: int | None,
     findings: list[str],
 ) -> dict:
     """Check one LoD source COG against its reconstructed coverage."""
+    # The coverage roster must match the processing receipt: a manifest
+    # naming a tile the run never processed would otherwise let the
+    # composer publish zeros over a true data gap.
+    if receipt_tile_count is not None and receipt_tile_count != len(tile_keys):
+        findings.append(
+            f"vintage {vintage}: provenance tile_count {receipt_tile_count} != "
+            f"coverage keys {len(tile_keys)}"
+        )
     cov = _coverage_mask(tile_keys, grid)
     with rasterio.open(cog_uri) as src:
         off = _window_offset(src, grid, 10.0)
-        win = Window(off[0], off[1], grid.shape.x, grid.shape.y)  # type: ignore[call-arg]
+        win = Window.from_slices((off[1], off[1] + grid.shape.y), (off[0], off[0] + grid.shape.x))
         bands = src.read(_LOD_BANDS, window=win).astype(np.float32)  # (4, H, W)
 
     nan = np.isnan(bands)
@@ -197,7 +219,9 @@ def main() -> int:
             )
         keys = {_tile_key(m, lod1=False) for m in members}
         cog = f"{root}/ard/static/sources/lod2_morphology/{vintage}/lod2_morphology_{vintage}.tif"
-        all_counts[vintage] = _check_vintage(vintage, keys, cog, grid, aoi, findings)
+        all_counts[vintage] = _check_vintage(
+            vintage, keys, cog, grid, aoi, _provenance_tile_count(root, vintage), findings
+        )
 
     # ── 2017: LoD1 ∩ LoD2 ────────────────────────────────────────────
     lod1_uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_2017.json"
@@ -216,7 +240,9 @@ def main() -> int:
     if not keys_2017:
         findings.append("2017: empty LoD1 ∩ LoD2 tile intersection")
     cog = f"{root}/ard/static/sources/lod2_morphology/2017/lod2_morphology_2017.tif"
-    all_counts[2017] = _check_vintage(2017, keys_2017, cog, grid, aoi, findings)
+    all_counts[2017] = _check_vintage(
+        2017, keys_2017, cog, grid, aoi, _provenance_tile_count(root, 2017), findings
+    )
 
     # ── 2024: provenance tile receipts ───────────────────────────────
     prov_uri = f"{root}/ard/static/sources/lod2_morphology/2024/provenance.json"
@@ -233,7 +259,9 @@ def main() -> int:
                 f"expected {_EXPECTED_TILES_2024}"
             )
     cog = f"{root}/ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif"
-    all_counts[2024] = _check_vintage(2024, keys_2024, cog, grid, aoi, findings)
+    all_counts[2024] = _check_vintage(
+        2024, keys_2024, cog, grid, aoi, _provenance_tile_count(root, 2024), findings
+    )
 
     if findings:
         print("FINDINGS:")

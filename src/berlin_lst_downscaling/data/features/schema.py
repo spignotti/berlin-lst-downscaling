@@ -31,6 +31,7 @@ def config_hash_for_features(
     aoi_fingerprint: str,
     vegetation_carry_forward_geometry_id: str,
     lod_coverage_fingerprints: dict[str, str],
+    lod_cog_fingerprints: dict[str, str],
 ) -> str:
     """Return a stable SHA-256 fingerprint of the feature-stack config.
 
@@ -66,6 +67,7 @@ def config_hash_for_features(
             "aoi_fingerprint": aoi_fingerprint,
             "vegetation_carry_forward_geometry_id": vegetation_carry_forward_geometry_id,
             "lod_coverage_fingerprints": lod_coverage_fingerprints,
+            "lod_cog_fingerprints": lod_cog_fingerprints,
         },
         sort_keys=True,
     )

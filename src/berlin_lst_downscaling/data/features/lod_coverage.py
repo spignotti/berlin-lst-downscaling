@@ -20,6 +20,7 @@ coverage mask is only consulted where all four LoD bands are NaN.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -52,6 +53,8 @@ class LoDCoverageArtifact:
     uris: tuple[str, ...]  # artifact URIs hashed into ``fingerprint``
     fingerprint: str  # sha256[:16] over the artifact bytes (stable order)
     tile_keys: tuple[str, ...]  # sorted, de-duplicated "E_N" 1 km tile keys
+    cog_uri: str  # published lod2_morphology source COG for this vintage
+    cog_fingerprint: str  # sha256[:16] over the COG bytes (content identity)
 
 
 def _tile_key(member: str, *, lod1: bool) -> str:
@@ -77,6 +80,41 @@ def _fingerprint(uris: tuple[str, ...]) -> str:
     return sha256_bytes(b"\0".join(read_bytes(u) for u in uris))[:16]
 
 
+def _cog_fingerprint(uri: str) -> str:
+    """Streamed short SHA-256 over the published LoD COG bytes.
+
+    Content identity of the actual source raster: an in-place COG
+    replacement with unchanged manifests/provenance would otherwise go
+    undetected by the feature config hash (the static-source ledger rows
+    carry no checksum).
+    """
+    if uri.startswith("gs://"):
+        from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
+
+        bucket_name, key = _parse_gs_uri(uri)
+        blob = _gcs_client().bucket(bucket_name).blob(key)
+        h = hashlib.sha256()
+        with blob.open("rb") as f:
+            while True:
+                chunk = f.read(1 << 16)
+                if not chunk:
+                    break
+                h.update(chunk.encode() if isinstance(chunk, str) else chunk)
+        return h.hexdigest()[:16]
+    h = hashlib.sha256()
+    with open(uri, "rb") as f:
+        while True:
+            chunk = f.read(1 << 16)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
+def _cog_uri(root: str, vintage: int) -> str:
+    return f"{root}/ard/static/sources/lod2_morphology/{vintage}/lod2_morphology_{vintage}.tif"
+
+
 def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCoverageArtifact]:
     """Resolve the per-vintage LoD coverage artifacts from published evidence.
 
@@ -98,8 +136,14 @@ def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCov
         keys = tuple(sorted({_tile_key(m, lod1=False) for m in members}))
         if len(keys) != _EXPECTED_MEMBERS[vintage]:
             raise ValueError(f"raw manifest {uri}: {len(keys)} unique tile keys")
+        cog = _cog_uri(root, vintage)
         out[vintage] = LoDCoverageArtifact(
-            vintage=vintage, uris=(uri,), fingerprint=_fingerprint((uri,)), tile_keys=keys
+            vintage=vintage,
+            uris=(uri,),
+            fingerprint=_fingerprint((uri,)),
+            tile_keys=keys,
+            cog_uri=cog,
+            cog_fingerprint=_cog_fingerprint(cog),
         )
 
     # ── 2017: LoD1-2017 stock ∩ LoD2-2021 geometry ────────────────────
@@ -115,11 +159,14 @@ def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCov
     keys_2017 = tuple(sorted(lod1_keys & set(lod2_2021.tile_keys)))
     if not keys_2017:
         raise ValueError("2017 LoD coverage: empty LoD1 ∩ LoD2 tile intersection")
+    cog_2017 = _cog_uri(root, 2017)
     out[2017] = LoDCoverageArtifact(
         vintage=2017,
         uris=(lod1_uri, lod2_2021.uris[0]),
         fingerprint=_fingerprint((lod1_uri, lod2_2021.uris[0])),
         tile_keys=keys_2017,
+        cog_uri=cog_2017,
+        cog_fingerprint=_cog_fingerprint(cog_2017),
     )
 
     # ── 2024: published LoD provenance tile receipts ──────────────────
@@ -141,8 +188,14 @@ def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCov
             f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, "
             f"expected {_EXPECTED_TILES_2024}"
         )
+    cog_2024 = _cog_uri(root, 2024)
     out[2024] = LoDCoverageArtifact(
-        vintage=2024, uris=(prov_uri,), fingerprint=_fingerprint((prov_uri,)), tile_keys=keys_2024
+        vintage=2024,
+        uris=(prov_uri,),
+        fingerprint=_fingerprint((prov_uri,)),
+        tile_keys=keys_2024,
+        cog_uri=cog_2024,
+        cog_fingerprint=_cog_fingerprint(cog_2024),
     )
 
     return out

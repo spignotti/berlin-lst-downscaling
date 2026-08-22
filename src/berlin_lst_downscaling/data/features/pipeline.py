@@ -230,8 +230,14 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     # analysis grid, then selected per scene by its LoD vintage.
     lod_artifacts = resolve_lod_coverage_artifacts(static_sources_root)
     lod_coverage_fingerprints = {str(v): a.fingerprint for v, a in lod_artifacts.items()}
+    lod_cog_fingerprints = {str(v): a.cog_fingerprint for v, a in lod_artifacts.items()}
     lod_coverage_evidence = {
-        v: {"uris": list(a.uris), "fingerprint": a.fingerprint}
+        v: {
+            "uris": list(a.uris),
+            "fingerprint": a.fingerprint,
+            "cog_uri": a.cog_uri,
+            "cog_fingerprint": a.cog_fingerprint,
+        }
         for v, a in lod_artifacts.items()
     }
     coverage_masks = {
@@ -249,6 +255,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         aoi_fingerprint=aoi_fingerprint,
         vegetation_carry_forward_geometry_id=veg_geometry_id,
         lod_coverage_fingerprints=lod_coverage_fingerprints,
+        lod_cog_fingerprints=lod_cog_fingerprints,
     )
 
     # S2 acquisition datetimes from the manifest (STAC datetime per stack).
@@ -313,6 +320,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         fingerprints={
             **inventory.fingerprints,
             "lod_coverage": lod_coverage_fingerprints,
+            "lod_cog": lod_cog_fingerprints,
         },
         grid={
             "crs": str(grid.crs),

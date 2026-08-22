@@ -330,7 +330,10 @@ def _scan_stack(
                 bands = cog.read(window=w_cog)  # (28, bh, bw) float32
                 w_msk = Window(c0 + mask_off[0], r0 + mask_off[1], bw, bh)  # type: ignore[call-arg]
                 mask = msk.read(1, window=w_msk)
-                w_flag = Window(c0 + flag_off[0], r0 + flag_off[1], bw, bh)  # type: ignore[call-arg]
+                w_flag = Window.from_slices(
+                    (r0 + flag_off[1], r0 + flag_off[1] + bh),
+                    (c0 + flag_off[0], c0 + flag_off[0] + bw),
+                )
                 s2_flag_t = flag_src.read(1, window=w_flag)
                 aoi_t = aoi[r0:r1, c0:c1]
 
