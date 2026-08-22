@@ -286,7 +286,7 @@ Per paired Landsat anchor (2017-2025, 324 scenes), the features pipeline
 canonical-grid 10 m stack plus a co-registered validity mask:
 
 ```
-<root>/<scene_id>/                         (root = gs://berlin-lst-data/features/v2)
+<root>/<scene_id>/                         (root = gs://berlin-lst-data/features/v3)
     ├─ <scene_id>.tif                     # 28-band float32 COG
     ├─ <scene_id>.feature_valid.tif       # uint8 0/1 validity-mask COG
     ├─ <scene_id>.stac.json               # STAC Item (data + mask assets)
@@ -339,12 +339,28 @@ breaking schema change → new URI version):
 Berlin AOI (`data/boundaries/aoi_10m.tif`, reprojected onto the canonical
 grid with nearest resampling — its own 10 m window is offset from the
 canonical lattice), the S2 ARD flag band is `0` (clear), and all 28
-channels are finite and within their declared ranges. Where the mask is
-0, **all 28 channels are NaN**. The mask is *not* a training-eligibility
-mask: it excludes the Landsat target validity and cannot authorize
-training selection — publication of `training_eligible@100m` is a WB2c-4
-(training-data preparation) decision. Landsat LST (100 m) and ECOSTRESS
-(70 m) never enter the stack.
+channels are finite and within their declared ranges. Availability is
+**per channel**: an unavailable channel is NaN in that band only — e.g.
+the S2 bands and their derived indices under a non-clear flag, or a
+genuine source-data gap in a morphology product — while the independently
+known values of the other channels are preserved in the stack. Only
+outside the AOI are all 28 channels NaN. The mask is the aggregate
+"complete 28-channel vector" availability and is *not* a
+training-eligibility mask: it excludes the Landsat target validity and
+cannot authorize training selection — publication of
+`training_eligible@100m` is a WB2c-4 (training-data preparation) decision.
+Landsat LST (100 m) and ECOSTRESS (70 m) never enter the stack.
+
+**LoD2 no-building semantics.** The four LoD2 channels
+(`building_height_mean/std/max`, `building_coverage_ratio`) are `0` in
+source-covered cells without a building and `NaN` in cells outside the
+LoD2 source-tile coverage. Coverage is reconstructed at composition time
+from the immutable raw archive manifests (2017/2021/2022) and the LoD
+provenance tile receipts (2024) — see `data/features/lod_coverage.py`;
+finite source values always win over the coverage classification. The
+feature config hash includes the static-sources ledger fingerprint and
+the per-vintage coverage-evidence fingerprints, so any change to these
+inputs invalidates the published stacks.
 
 **Sparse-support retention.** Structurally valid stacks are published even
 when sparse or nearly empty. The generic ARD minimum-non-NaN check is

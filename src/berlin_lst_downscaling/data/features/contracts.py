@@ -13,12 +13,26 @@ A pixel is ``feature_valid`` only when **all** of the following hold:
 - the Sentinel-2 ARD flag band is ``0`` (clear pixel; ``data/ard/contract.py``),
 - all 28 channels are finite and within their declared ``valid_range``.
 
-Where ``feature_valid == 0``, all 28 channels are published as NaN.
-The mask is *not* a training-eligibility mask: it excludes the Landsat
-target validity and cannot authorize training selection. The Stage-2 QA
-gate verifies the stacks and reports feature support against valid
-targets; publication of the ``training_eligible@100m`` selection mask is
-a WB2c-4 (training-data preparation) decision.
+Availability is per channel: where a channel is unavailable (e.g. the
+S2 bands and their derived indices under a non-clear flag, or a genuine
+source-data gap in a morphology product) that band alone is NaN — the
+independently known values of the other channels are preserved in the
+stack. Only outside the AOI are all 28 channels published as NaN. The
+``feature_valid`` mask is the aggregate "complete 28-channel vector"
+availability and is *not* a training-eligibility mask: it excludes the
+Landsat target validity and cannot authorize training selection. The
+Stage-2 QA gate verifies the stacks and reports feature support against
+valid targets; publication of the ``training_eligible@100m`` selection
+mask is a WB2c-4 (training-data preparation) decision.
+
+LoD2 no-building semantics
+--------------------------
+``building_height_mean/std/max`` and ``building_coverage_ratio`` are
+``0`` in source-covered cells without a building (a known value), and
+``NaN`` in cells outside the LoD2 source-tile coverage (a true data gap).
+Coverage is reconstructed at composition time from the immutable raw
+archive manifests / LoD provenance (``data/features/lod_coverage.py``);
+finite source values always win over the coverage classification.
 
 vegetation_height carry-forward
 -------------------------------
@@ -62,7 +76,7 @@ ALBEDO_WEIGHTS: tuple[float, ...] = (0.2266, 0.1236, 0.1573, 0.3417, 0.1170, 0.0
 # Formulas + channel schema version. Bump when index math or the channel
 # roster changes — the value feeds the config hash and invalidates every
 # published stack (model interface contract).
-FEATURE_SCHEMA_VERSION: int = 2
+FEATURE_SCHEMA_VERSION: int = 3
 
 # Sentinel-2 ARD band names, in published COG order (data/ard/contract.py).
 _S2_BAND_NAMES = ("B02", "B03", "B04", "B08", "B11", "B12")

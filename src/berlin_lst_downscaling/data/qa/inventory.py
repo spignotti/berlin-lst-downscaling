@@ -60,6 +60,7 @@ class ResolvedScene:
     static_derived: dict[str, str]  # product -> COG URI (morphology, in-support)
     static_derived_meta: dict[str, str]  # product -> COG URI (horizons, metadata-only)
     static_sources: dict[str, str]  # source -> COG URI (lod2, vh, imperv — feature inputs)
+    lod_vintage: int | None = None  # LoD2 morphology vintage for this scene year
     exclusion_reason: str | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -310,6 +311,7 @@ def _resolve_scene(
 
     # ── geometry profile ───────────────────────────────────────────────
     geometry_id = ""
+    lod_vintage: int | None = None
     if year is None or mapping is None:
         if exclusion is None:
             exclusion = "missing geometry mapping"
@@ -321,6 +323,7 @@ def _resolve_scene(
         else:
             vdata = mapping.vintages.get(vintage, {})
             geometry_id = str(vdata.get("geometry_id", ""))
+            lod_vintage = int(vintage)
 
     # ── static derived morphology (in-support) ─────────────────────────
     static_derived: dict[str, str] = {}
@@ -387,6 +390,7 @@ def _resolve_scene(
         static_derived=static_derived,
         static_derived_meta=static_derived_meta,
         static_sources=static_src,
+        lod_vintage=lod_vintage,
         exclusion_reason=exclusion,
         errors=errors,
     )

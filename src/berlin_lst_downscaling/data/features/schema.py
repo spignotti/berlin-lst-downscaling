@@ -25,15 +25,18 @@ def config_hash_for_features(
     manifest_hash: str,
     geometry_mapping_hash: str,
     ard_ledger_hash: str,
+    static_sources_ledger_hash: str,
     static_derived_ledger_hash: str,
     dynamic_ledger_hash: str,
     aoi_fingerprint: str,
     vegetation_carry_forward_geometry_id: str,
+    lod_coverage_fingerprints: dict[str, str],
 ) -> str:
     """Return a stable SHA-256 fingerprint of the feature-stack config.
 
     Covers everything that changes the stack output: upstream ledger
     identities, the exact AOI mask, the vegetation carry-forward target,
+    the LoD source-coverage evidence (raw archive manifests / provenance),
     and the full channel schema (names, formulas, weights, and ranges —
     so a formula or range edit reprocesses every scene even without a
     manual schema-version bump). The vegetation policy is encoded by its
@@ -57,10 +60,12 @@ def config_hash_for_features(
             "manifest_hash": manifest_hash,
             "geometry_mapping_hash": geometry_mapping_hash,
             "ard_ledger_hash": ard_ledger_hash,
+            "static_sources_ledger_hash": static_sources_ledger_hash,
             "static_derived_ledger_hash": static_derived_ledger_hash,
             "dynamic_ledger_hash": dynamic_ledger_hash,
             "aoi_fingerprint": aoi_fingerprint,
             "vegetation_carry_forward_geometry_id": vegetation_carry_forward_geometry_id,
+            "lod_coverage_fingerprints": lod_coverage_fingerprints,
         },
         sort_keys=True,
     )
