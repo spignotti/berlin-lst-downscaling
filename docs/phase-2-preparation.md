@@ -75,30 +75,35 @@ The Stage-1 raw-input gate (`scripts/run_qa_stage1_raw.py`,
   mask is decided after feature computation and the Stage-2 gate
   (user decision).
 
-## Scene feature stacks (WB2c-3, delivered)
+## Scene feature stacks (WB2c-3, delivered as V2)
 
 Per paired Landsat anchor (2017-2025) the features pipeline publishes a
-24-band 10 m stack + `feature_valid` mask on the canonical grid under
-`gs://berlin-lst-data/features/v1/<scene_id>/` (ledger
+28-band 10 m stack + `feature_valid` mask on the canonical grid under
+`gs://berlin-lst-data/features/v2/<scene_id>/` (ledger
 `_state/features/ledger.parquet`). Contract details (channel order,
-formulas, albedo proxy, mask semantics, AOI handling, vegetation
+formulas, albedo proxy, mask semantics, AOI handling, vegetation-height
 carry-forward) live in `data-sources-and-contracts.md`.
 
-- Runs: initial full run `features-20260818T101155Z` (2026-08-18, VM,
-  isolated per-scene subprocesses) published 321 stacks. A first resume
-  attempt (2026-08-20, isolated summary `isolated_summary_20260820T084920.json`,
-  run reports `5266fef2`/`8c00a543`/`42073cee`) still failed the three
-  blocked scenes: the child process reported success while the ledger row
-  was not done, because a transient GCS read-after-write miss on the fresh
-  mask COG failed pair validation and Hydra 1.3 discarded the runner's
-  non-zero exit code. After hardening publication (bounded retry for the
-  transient remote read miss + an explicit `SystemExit(1)` on a failed
-  report), a second resume (isolated summary
-  `isolated_summary_20260820T101101.json`, run reports
-  `6d46e476`/`e9a7eb9a`/`4b6301ef`) completed all three. Final ledger:
-  **324 done, 0 failed**;
-  `scripts/validate_feature_stacks.py --root gs://berlin-lst-data/features/v1
-  --expected-scenes 324` passes **324/324**. VM stopped (`TERMINATED`).
+- **Corrected morphology contract (schema v2).** The initial 24-band
+  contract mistakenly included the DSM auxiliaries (`building_dsm`,
+  `vegetation_dsm`, `combined_dsm`) as model channels. Schema v2 replaces
+  them with the eight semantic morphology predictors: 4 LoD2 bands
+  (`building_height_mean/std/max`, `building_coverage_ratio`, per-scene
+  vintage), 2 vegetation-height bands (`vegetation_height/2020`
+  carry-forward), `imperviousness` (per scene year: 2016 for 2017-2019,
+  2021 for 2020-2025), and `svf`. The DSMs remain internal auxiliaries
+  for SVF/horizon/shadow computation only.
+- Run: full 324-scene publication (2026-08-21/22, VM,
+  `run_features_vm.sh`, isolated per-scene subprocesses with `--resume`;
+  interrupted twice by SSH connection loss and resumed cleanly — the
+  atomic `complete.json` visibility gate kept every published scene
+  intact). Final ledger: **324 done, 0 failed**;
+  `scripts/validate_feature_stacks.py --root gs://berlin-lst-data/features/v2
+  --expected-scenes 324` passes **324/324** with **88,282,271**
+  feature-valid px. VM stopped (`TERMINATED`). A bounded cloud smoke gate
+  (`nox -s cloud-smoke-features`) guards the same-process GCS/GDAL
+  read-after-write path; the GDAL directory-cache root cause is documented
+  in `data/features/product.py`.
 - Sparse-support diagnostics: the isolated summary emits a non-gating
   `sparse_support_below_1pct` list (fraction `feature_valid_px /
   inside_aoi_px < 1%`). It flags `194023_20170929` (79 feature-valid px,
@@ -114,31 +119,37 @@ carry-forward) live in `data-sources-and-contracts.md`.
 - Coverage vs. the AOI: provenance `aoi_frac` is 0.488874 — the canonical
   bbox rectangle is ~48.9 % inside the exact Berlin polygon. The 51.9 %
   `valid_frac` reported by the morphology products is their data-coverage
-  extent (the DSM data covers the polygon plus a small buffer beyond it,
+  extent (the source data covers the polygon plus a small buffer beyond it,
   ~51.9 % of the rectangle), not the polygon share. The `feature_valid`
   mask applies the polygon, so no outside-Berlin pixel is ever valid.
+- The superseded 24-band V1 stacks were deleted from GCS after V2 passed
+  both gates (`features/v1` prefix empty); historical QA evidence under
+  `qa/` is retained.
 
 ## Stage-2 feature-stack QA gate (WB2c-2, delivered)
 
 The reusable QA gate was applied to the published feature stacks (identical
-logic to Stage-1, on the derived channels). Read-only over `features/v1`;
+logic to Stage-1, on all stack channels). Read-only over `features/v2`;
 evidence written to `qa/stage2_features/<run-id>/`. No validity or
 selection mask is produced — `training_eligible@100m` is a WB2c-4
 (training-data preparation) decision.
 
-- Run: `qa-stage2-20260820T183548Z` (2026-08-20, VM), evidence
-  `gs://berlin-lst-data/qa/stage2_features/0c8c8144/` —
+- Run: `qa-stage2-20260822T152539Z` (2026-08-22, VM), evidence
+  `gs://berlin-lst-data/qa/stage2_features/35eb283e/` —
   `summary.json`, `scenes.parquet/csv`, `profiles.parquet/csv`.
 - Result: **345 pairings, 324 assessed, 21 excluded** (all
   `dynamic role=inference (2026)`), **0 findings**, `ok: true`.
-- Aggregate (canonical EPSG:25833 grid): `feature_valid_px` 1,628,157,599;
-  target-valid 100 m cells 20,169,061; full-support cells 5,650,759
+- Aggregate (canonical EPSG:25833 grid): `feature_valid_px` 88,282,271;
+  target-valid 100 m cells 20,169,061; full-support cells 742
   (all-100 == full-support).
 - Independent validator (`scripts/validate_qa_stage2_features.py`) green:
   all source fingerprints verified, no `.tif` artifact under the prefix.
 - Per-scene-channel profiles (fixed-bin histograms + count/min/max/mean/std)
   are the diagnostic record for WB2c-4; no values were filtered or removed.
-- VM stopped (`TERMINATED`).
+- VM stopped (`TERMINATED`). The earlier v1-era run
+  (`qa-stage2-20260820T183548Z`, evidence `0c8c8144`) remains under
+  `qa/stage2_features/` as historical evidence but refers to the retired
+  V1 stacks.
 
 ## Next steps (separate session)
 

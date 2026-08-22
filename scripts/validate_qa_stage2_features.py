@@ -17,7 +17,7 @@ bundle at ``--run-prefix`` and verifies
   Stage-2 must not produce or modify any validity/selection mask),
 - source fingerprints recomputed from the ``inputs`` section, including
   the features ledger,
-- profile-table consistency (per-scene 24-channel coverage, valid-pixel
+- profile-table consistency (per-scene 28-channel coverage, valid-pixel
   counts, fixed-bin histogram totals).
 
 The validator never writes anything and never re-scans COG pixels; it is

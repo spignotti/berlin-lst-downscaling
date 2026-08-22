@@ -279,22 +279,22 @@ before feature engineering. Contract:
   universe makes the run exit non-zero (hard finding blocks feature
   computation). Exclusions and 2026 scenes are reported, not failures.
 
-### Scene feature stacks (24-band, 10 m)
+### Scene feature stacks (28-band, 10 m)
 
 Per paired Landsat anchor (2017-2025, 324 scenes), the features pipeline
 (`scripts/run_features.py`, core in `data/features/`) publishes one
 canonical-grid 10 m stack plus a co-registered validity mask:
 
 ```
-<root>/<scene_id>/                         (root = gs://berlin-lst-data/features/v1)
-    ├─ <scene_id>.tif                     # 24-band float32 COG
+<root>/<scene_id>/                         (root = gs://berlin-lst-data/features/v2)
+    ├─ <scene_id>.tif                     # 28-band float32 COG
     ├─ <scene_id>.feature_valid.tif       # uint8 0/1 validity-mask COG
     ├─ <scene_id>.stac.json               # STAC Item (data + mask assets)
     ├─ provenance.json                    # inputs, policy, coverage
     └─ complete.json                      # publication marker (written last)
 ```
 
-**Fixed 24-channel order** (the model input interface; reordering is a
+**Fixed 28-channel order** (the model input interface; reordering is a
 breaking schema change → new URI version):
 
 | # | Channel | Family | Unit | Range |
@@ -304,29 +304,43 @@ breaking schema change → new URI version):
 | 8 | `ndwi_mcfeeters` = (B03−B08)/(B03+B08) | index | 1 | [−1, 1] |
 | 9 | `ndbi` = (B11−B08)/(B11+B08) | index | 1 | [−1, 1] |
 | 10 | `s2_broadband_albedo` = 0.2266·B02+0.1236·B03+0.1573·B04+0.3417·B08+0.1170·B11+0.0338·B12 | index | 1 | [0, 1] |
-| 11-14 | `building_dsm`, `vegetation_dsm`, `combined_dsm`, `svf` | morphology | m / 1 | [−10, 600] / [−0.01, 1.01] |
-| 15-22 | `t2m_scene`, `ssrd_scene`, `ssrd_antecedent_72h_mean`, `vpd_scene`, `wind_speed_10m_scene`, `tp_0_24h`, `tp_24_48h`, `tp_48_72h` | ERA5-Land | K / W/m² / kPa / m/s / mm | per-band |
-| 23-24 | `shadow_building`, `shadow_vegetation` | shadow | 1 | {0, 1} |
+| 11 | `building_height_mean` | morphology (LoD2) | m | [0, 200] |
+| 12 | `building_height_std` | morphology (LoD2) | m | [0, 100] |
+| 13 | `building_coverage_ratio` | morphology (LoD2) | 1 | [−0.01, 1.01] |
+| 14 | `building_height_max` | morphology (LoD2) | m | [0, 200] |
+| 15 | `vegetation_height_mean` | morphology (VH 2020) | m | [−0.01, 400.01] |
+| 16 | `vegetation_height_max` | morphology (VH 2020) | m | [−0.01, 400.01] |
+| 17 | `imperviousness` | morphology (Versiegelung) | % | [−0.01, 100.01] |
+| 18 | `svf` | morphology (derived) | 1 | [−0.01, 1.01] |
+| 19-26 | `t2m_scene`, `ssrd_scene`, `ssrd_antecedent_72h_mean`, `vpd_scene`, `wind_speed_10m_scene`, `tp_0_24h`, `tp_24_48h`, `tp_48_72h` | ERA5-Land | K / W/m² / kPa / m/s / mm | per-band |
+| 27-28 | `shadow_building`, `shadow_vegetation` | shadow | 1 | {0, 1} |
 
 - The albedo channel is a **six-band shortwave-reflectance proxy**
   (Bonafoni & Sekertekin 2020, IEEE GRSL 17(9):1618-1622; coefficients as
   published in the ALBEDO implementation, Zenodo 10.5281/zenodo.21111867),
   not a BRDF-corrected physical albedo. Applied to ARD reflectance
   already scaled to [0, 1]; the coefficients sum to 1.
-- `vegetation_dsm` is the **fixed vegetation_height/2020 carry-forward**:
-  the derived product of the 2024 geometry profile is used for every
-  scene year (the published `combined_dsm` provenance of the older
-  vintages already references that same COG). The policy is recorded in
-  provenance as `vegetation_dsm_policy`.
+- **Morphology channels are semantic predictors read directly from the
+  static source products** (`lod2_morphology` bands 1-4 per the scene's
+  LoD vintage via `geometry_mapping.json`, `vegetation_height/2020`
+  bands 1-2, and `imperviousness` band 1 per scene year: 2017-2019 →
+  vintage 2016, 2020-2025 → vintage 2021); only `svf` remains a derived
+  product. The DSMs (`building_dsm`, `vegetation_dsm`, `combined_dsm`)
+  are **not model inputs** — they remain internal auxiliaries for SVF,
+  horizon, and shadow computation.
+- The two vegetation-height bands use the **fixed vegetation_height/2020
+  carry-forward**: the source COG of the 2024 geometry profile applies to
+  every scene year. The policy is recorded in provenance as
+  `vegetation_height_policy`.
 - Shadows enter the stack as float 0/1; the uint8 nodata value 255 is
   cast to NaN.
 
 **Validity mask.** `feature_valid == 1` iff the pixel is inside the exact
 Berlin AOI (`data/boundaries/aoi_10m.tif`, reprojected onto the canonical
 grid with nearest resampling — its own 10 m window is offset from the
-canonical lattice), the S2 ARD flag band is `0` (clear), and all 24
+canonical lattice), the S2 ARD flag band is `0` (clear), and all 28
 channels are finite and within their declared ranges. Where the mask is
-0, **all 24 channels are NaN**. The mask is *not* a training-eligibility
+0, **all 28 channels are NaN**. The mask is *not* a training-eligibility
 mask: it excludes the Landsat target validity and cannot authorize
 training selection — publication of `training_eligible@100m` is a WB2c-4
 (training-data preparation) decision. Landsat LST (100 m) and ECOSTRESS
@@ -336,7 +350,7 @@ training selection — publication of `training_eligible@100m` is a WB2c-4
 when sparse or nearly empty. The generic ARD minimum-non-NaN check is
 disabled for feature stacks (their validity is governed by the companion
 mask, not by bulk non-NaN density); the mask/data pair is still validated
-pixelwise (`mask == 1 ⇔ all 24 channels finite`, an all-zero mask is
+pixelwise (`mask == 1 ⇔ all 28 channels finite`, an all-zero mask is
 valid). Scenes with low S2 clear-sky coverage produce few valid pixels and
 are retained as diagnostic evidence, not excluded. Sparse support is
 reported (non-gating) in the isolated-run summary as

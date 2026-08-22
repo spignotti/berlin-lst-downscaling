@@ -1,6 +1,6 @@
 """Deterministic output paths for scene feature stacks.
 
-Layout (published under the canonical root, e.g. ``features/v1``)::
+Layout (published under the canonical root, e.g. ``features/v2``)::
 
     <root>/<scene_id>/
         ├─ <scene_id>.tif                 # 28-band float32 feature COG

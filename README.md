@@ -35,9 +35,9 @@ Manifest + ARD ──► Static / dynamic context ──► Feature stacks ─�
   geometry vintage.
 - **Dynamic context.** Per-anchor ERA5-Land fields and building/vegetation
   shadow masks.
-- **Feature stacks.** Per-anchor 24-band 10 m stacks (spectral indices,
-  morphology, meteorology, shadows) with co-registered validity masks, ready
-  for the training stage.
+- **Feature stacks.** Per-anchor 28-band 10 m stacks (spectral indices,
+  semantic morphology predictors, meteorology, shadows) with co-registered
+  validity masks, ready for the training stage.
 - **QA gates.** Read-only, mask-free validation of every published input,
   plus independent validators per pipeline stage.
 
