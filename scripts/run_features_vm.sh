@@ -150,25 +150,42 @@ echo "Launching feature-stack run on VM..."
 # released between scenes (a full-grid scene peaks at ~7-8 GB; the
 # in-process run OOM-killed the 16 GB VM at scene 4).
 #
-# ``< /dev/null`` detaches stdin: without it the background process can
-# hold the SSH session open, ssh hangs for hours until TCP kills it, and
-# set -e aborts the wrapper on this unguarded call (observed 2026-08-21).
-if ! ssh_cmd "
+# stdin of the detached process comes from /dev/null, yet launch sessions
+# through sshd can STILL hang after the remote command has finished
+# (observed 2026-08-21/22). Bound the wait locally: if the session has not
+# returned within LAUNCH_WAIT_SECONDS, kill ONLY the local ssh client —
+# the remote job is nohup-detached and unaffected — then verify the launch
+# via the pid file before marking the VM as occupied.
+LAUNCH_WAIT_SECONDS=60
+ssh_cmd "
   cd $APP_DIR && \
   nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full --resume; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
-"; then
-  # Ambiguous failure: the pipeline may have been launched before the
-  # connection died — never stop a possibly-running job.
-  echo "ERROR: launch command failed ambiguously — leaving VM RUNNING."
-  leave_running=1
-  exit 2
-fi
-pipeline_launched=1
+" &
+LAUNCH_SSH_PID=$!
 
+for _ in $(seq 1 "$LAUNCH_WAIT_SECONDS"); do
+  kill -0 "$LAUNCH_SSH_PID" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "$LAUNCH_SSH_PID" 2>/dev/null; then
+  echo "  [$(date +%H:%M:%S)] Launch session did not return within ${LAUNCH_WAIT_SECONDS}s — killing local ssh client only."
+  kill "$LAUNCH_SSH_PID" 2>/dev/null || true
+  wait "$LAUNCH_SSH_PID" 2>/dev/null || true
+fi
+
+sleep 5
 REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
-echo "Remote PID: $REMOTE_PID"
+if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]] && ssh_cmd "kill -0 $REMOTE_PID" 2>/dev/null; then
+  pipeline_launched=1
+  echo "Remote PID: $REMOTE_PID (launch verified)"
+else
+  # Unverified launch: either nothing started or it died instantly. Treat
+  # as pre-launch failure so cleanup stops the VM.
+  echo "ERROR: could not confirm the remote pipeline is running."
+  exit 1
+fi
 
 if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]]; then
   ssh_cmd "
