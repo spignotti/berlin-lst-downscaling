@@ -75,6 +75,20 @@ ssh_cmd() {
   "$VM_SCRIPTS/ssh-vm.sh" -- "$@"
 }
 
+# sshd can briefly refuse connections right after boot even after an initial
+# successful probe (observed 2026-08-22). Pre-launch calls therefore retry.
+ssh_cmd_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    if ssh_cmd "$@"; then
+      return 0
+    fi
+    echo "  [$(date +%H:%M:%S)] ssh attempt $attempt/3 failed. Retrying in 15s..."
+    sleep 15
+  done
+  return 1
+}
+
 # ── preflight: canonical root must be empty or reconcileable ──────────
 # A pre-existing ledger is legitimate only if the config hash matches
 # (reconcile skips done rows); a foreign schema would be caught by the
@@ -117,7 +131,7 @@ echo "Deploying code on VM..."
 # A never-deployed feature branch needs an explicit fetch refspec (the
 # default fetch may only track main); create/reset the local branch from
 # that ref so the new code actually runs.
-ssh_cmd "
+ssh_cmd_retry "
   cd $APP_DIR && \
   git fetch origin $BRANCH:refs/remotes/origin/$BRANCH && \
   git checkout -B $BRANCH refs/remotes/origin/$BRANCH && \
@@ -128,7 +142,7 @@ ssh_cmd "
 # ── marker + launch ──────────────────────────────────────────────────
 
 echo "Creating run marker: $WRAP_RUN_ID"
-ssh_cmd "
+ssh_cmd_retry "
   mkdir -p '$LOG_DIR' && \
   cat > '$MARKER' <<MARKER_JSON
 {
