@@ -253,6 +253,7 @@ fi
 
 echo "Stopping VM..."
 vm_started=0
+pipeline_launched=0
 "$VM_SCRIPTS/stop-vm.sh"
 
 # ── report ───────────────────────────────────────────────────────────
