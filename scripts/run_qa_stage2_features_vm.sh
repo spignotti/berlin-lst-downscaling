@@ -39,13 +39,16 @@ pipeline_launched=0
 
 cleanup() {
   local rc=$?
+  # leave_running is authoritative: any path that sets it (connection loss
+  # before or after launch) must never trigger an automatic VM stop.
+  if [[ "$leave_running" -eq 1 ]]; then
+    exit "$rc"
+  fi
   if [[ "$pipeline_launched" -eq 1 ]]; then
-    if [[ "$leave_running" -eq 0 ]]; then
-      echo "WARNING: abnormal exit after QA launch — VM left RUNNING."
-      echo "  Inspect the marker/log under $APP_DIR/logs/runs/$WRAP_RUN_ID/"
-      echo "  (status-dynamic-vm.sh or direct ssh), then stop manually:"
-      echo "  $VM_SCRIPTS/stop-vm.sh"
-    fi
+    echo "WARNING: abnormal exit after QA launch — VM left RUNNING."
+    echo "  Inspect the marker/log under $APP_DIR/logs/runs/$WRAP_RUN_ID/"
+    echo "  (status-dynamic-vm.sh or direct ssh), then stop manually:"
+    echo "  $VM_SCRIPTS/stop-vm.sh"
     exit "$rc"
   fi
   if [[ "$vm_started" -eq 1 ]]; then
