@@ -158,13 +158,29 @@ if kill -0 "$LAUNCH_SSH_PID" 2>/dev/null; then
 fi
 
 sleep 5
-REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
+REMOTE_PID=""
+REACHABLE=0
+# A failed ssh here is indistinguishable from a connection blip while the
+# detached job runs — only a successful readback may prove "not launched".
+if VERIFY=$(ssh_cmd "cat '$REMOTE_PID_FILE' 2>/dev/null || true" 2>/dev/null); then
+  REMOTE_PID="$VERIFY"
+  REACHABLE=1
+fi
+
+if [[ "$REACHABLE" -eq 0 ]]; then
+  # Cannot verify because contact was lost — the QA run may be running.
+  # Never stop a possibly-running job.
+  echo "WARNING: launch verification lost contact — leaving VM RUNNING for inspection."
+  leave_running=1
+  exit 2
+fi
+
 if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]] && ssh_cmd "kill -0 $REMOTE_PID" 2>/dev/null; then
   pipeline_launched=1
   echo "Remote PID: $REMOTE_PID (launch verified)"
 else
-  # Unverified launch: either nothing started or it died instantly. Treat
-  # as pre-launch failure so cleanup stops the VM.
+  # Reachable but no live process behind the pid file: nothing was
+  # launched or it died instantly — safe pre-launch failure.
   echo "ERROR: could not confirm the remote QA run is running."
   exit 1
 fi
@@ -222,8 +238,12 @@ while true; do
     if [[ -n "$TERMINAL" ]]; then
       break
     fi
-    echo "  [$(date +%H:%M:%S)] No exit status written. Check logs manually."
-    break
+    # The process is gone without writing its exit status — ambiguous
+    # (crash, interrupted write, or delayed publication). Never stop a
+    # possibly-active job; leave the VM for operator inspection.
+    echo "No exit status written — leaving VM RUNNING for manual inspection."
+    leave_running=1
+    exit 2
   fi
 
   LAST_LOG=$(ssh_cmd "
