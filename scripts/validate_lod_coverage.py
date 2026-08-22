@@ -42,9 +42,11 @@ import rasterio
 from odc.geo.geobox import GeoBox
 from rasterio.warp import Resampling
 from rasterio.warp import reproject as rwarp_reproject
+from rasterio.windows import Window
 
-from berlin_lst_downscaling.common.grid import canon_grid_10m, smoke_grid
+from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.io import read_bytes
+from berlin_lst_downscaling.data.qa.stage1_raw import _window_offset, analysis_grid_10m
 
 _LOD1_TILE_RE = re.compile(r"LoD1_(\d{3})_(\d{4})_")
 _LOD2_TILE_RE = re.compile(r"LoD2_(?:\d+_)?(\d{3})_(\d{4})_")
@@ -118,7 +120,9 @@ def _check_vintage(
     """Check one LoD source COG against its reconstructed coverage."""
     cov = _coverage_mask(tile_keys, grid)
     with rasterio.open(cog_uri) as src:
-        bands = src.read(_LOD_BANDS).astype(np.float32)  # (4, H, W)
+        off = _window_offset(src, grid, 10.0)
+        win = Window(off[0], off[1], grid.shape.x, grid.shape.y)  # type: ignore[call-arg]
+        bands = src.read(_LOD_BANDS, window=win).astype(np.float32)  # (4, H, W)
 
     nan = np.isnan(bands)
     all_nan = np.all(nan, axis=0)
@@ -175,7 +179,7 @@ def main() -> int:
 
     root = args.static_sources_root.rstrip("/")
     if args.bbox:
-        grid = smoke_grid(tuple(float(v) for v in args.bbox.split(",")))
+        grid = analysis_grid_10m(tuple(float(v) for v in args.bbox.split(",")))
     else:
         grid = canon_grid_10m()
     aoi = _load_aoi(args.aoi, grid)

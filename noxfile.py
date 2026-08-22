@@ -296,13 +296,14 @@ def _preflight_gcs(session: nox.Session) -> None:
     )
 
 
-def _delete_gcs_prefix(prefix: str) -> None:
-    """Delete every blob under a GCS prefix (best-effort smoke cleanup).
+def _delete_gcs_prefix(prefix: str) -> bool:
+    """Delete every blob under a GCS prefix; return True on full cleanup.
 
-    A cleanup failure is reported but never masks the session result —
-    the smoke prefix is ephemeral and must not fail a green gate. The
-    discovery and deletion are wrapped together so a listing failure is
-    reported the same way as a deletion failure.
+    A cleanup failure is reported by the caller — smoke prefixes are
+    ephemeral and a leftover prefix must fail the session so the operator
+    notices and removes it. The discovery and deletion are wrapped
+    together so a listing failure is reported the same way as a deletion
+    failure.
     """
     from google.api_core.exceptions import GoogleAPIError
     from google.cloud import storage
@@ -313,14 +314,24 @@ def _delete_gcs_prefix(prefix: str) -> None:
         blobs = list(bucket.list_blobs(prefix=prefix))
         if not blobs:
             print(f"  No blobs to clean under {prefix}")
-            return
+            return True
         bucket.delete_blobs(blobs)
         print(f"  Removed {len(blobs)} blobs under {prefix}")
+        return True
     except GoogleAPIError as exc:
-        # Cleanup is best-effort for an ephemeral smoke prefix; report but
-        # never fail the green gate. The concrete API error is caught so a
-        # genuinely unexpected failure is not silently swallowed.
-        print(f"  WARNING: smoke cleanup failed under {prefix}: {exc}")
+        print(f"  ERROR: smoke cleanup failed under {prefix}: {exc}")
+        return False
+
+
+def _list_gcs_subdirs(prefix: str) -> list[str]:
+    """Return the immediate child names under a GCS prefix (run dirs)."""
+    from google.cloud import storage
+
+    client = storage.Client()
+    bucket = client.get_bucket("berlin-lst-data")
+    it = bucket.list_blobs(prefix=prefix, delimiter="/")
+    list(it)  # consume the iterator so .prefixes is populated
+    return sorted(str(p).rstrip("/").split("/")[-1] for p in it.prefixes)
 
 
 def _verify_gcs_artifacts(
@@ -793,23 +804,38 @@ def smoke_qa_stage1(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none", name="smoke-features")
 def smoke_features(session: nox.Session) -> None:
-    """Run the feature-stack smoke on one deterministic pair (real GCS inputs).
+    """Run the V3 feature-stack smoke on four deterministic scenes (real GCS).
 
+    One scene per LoD vintage (2017, 2021, 2022, 2024) on a bounded
+    canonical-aligned bbox that provably contains every semantic case
+    (building, covered no-building, source gap, S2-clear, S2-flagged).
     Reads published inputs over GCS (requires ADC) and the local Berlin
     AOI mask; writes only local ephemeral output under
     ``data/smoke/features/``. Runs the pipeline twice, asserts
-    deterministic aggregate metrics across both run reports, runs the
-    independent feature-stack validator, and removes the local smoke
-    output in ``finally`` (never uploaded).
+    deterministic aggregate metrics across both run reports, then runs
+    the independent validators — feature stacks, LoD coverage, V2→V3
+    release comparison — and the Stage-2 gate against the freshly
+    produced stacks. Removes all local smoke output in ``finally``
+    (never uploaded).
     """
     import glob
     import json
     import os
     import shutil
 
+    import pyarrow.parquet as pq
+
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     output_root = "data/smoke/features"
+    stage2_root = "data/smoke/qa-stage2-v3"
+    bbox = "13.4602832,52.4041766,13.6691668,52.4965573"
+    scene_ids = [
+        "LC08_L2SP_193023_20170720_02_T1",  # 2017
+        "LC08_L2SP_192024_20210910_02_T1",  # 2021
+        "LC09_L2SP_193023_20220624_02_T1",  # 2022
+        "LC09_L2SP_193023_20240629_02_T1",  # 2024
+    ]
 
     def _run_dirs() -> list[str]:
         qa_root = os.path.join(output_root, "qa", "features")
@@ -854,7 +880,7 @@ def smoke_features(session: nox.Session) -> None:
             if vals[0] != vals[1]:
                 session.error(f"non-deterministic scene count {field}: {vals}")
 
-        # Independent validator over the published (ledger-resolved) products.
+        # Independent feature-stack validator over the published products.
         session.run(
             "uv",
             "run",
@@ -862,34 +888,98 @@ def smoke_features(session: nox.Session) -> None:
             "scripts/validate_feature_stacks.py",
             f"--root={output_root}",
             "--expected-scenes",
-            "1",
+            "4",
             external=True,
         )
 
-        # Exactly one published stack (one scene dir) after both runs.
-        scene_dirs = glob.glob(os.path.join(output_root, "LC08*"))
-        if len(scene_dirs) != 1:
-            session.error(f"expected 1 feature-stack scene dir, found {len(scene_dirs)}")
+        # Independent LoD source-coverage validator on the same window.
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_lod_coverage.py",
+            f"--bbox={bbox}",
+            external=True,
+        )
 
-        print(f"smoke-features OK — run dirs: {run_dirs}")
+        # V2 → V3 comparison: V2-valid pixels unchanged, newly valid
+        # pixels have zero LoD bands.
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/compare_feature_releases.py",
+            "--baseline-root",
+            "gs://berlin-lst-data/features/v2",
+            "--candidate-root",
+            output_root,
+            "--scene-ids",
+            ",".join(scene_ids),
+            external=True,
+        )
+
+        # Exactly four published stacks (one scene dir per vintage).
+        scene_dirs = glob.glob(os.path.join(output_root, "LC08*")) + glob.glob(
+            os.path.join(output_root, "LC09*")
+        )
+        if len(scene_dirs) != 4:
+            session.error(f"expected 4 feature-stack scene dirs, found {len(scene_dirs)}")
+
+        # Stage-2 gate against the freshly produced local V3 stacks.
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_qa_stage2_features.py",
+            "--config-name",
+            "stage2_features_smoke",
+            f"features_root={output_root}",
+            f"output_root={stage2_root}",
+            external=True,
+        )
+        stage2_dirs = [
+            os.path.join(stage2_root, name)
+            for name in os.listdir(stage2_root)
+            if os.path.isdir(os.path.join(stage2_root, name)) and name != "logs"
+        ]
+        if len(stage2_dirs) != 1:
+            session.error(f"expected 1 Stage-2 smoke run dir, found {len(stage2_dirs)}")
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_qa_stage2_features.py",
+            f"--run-prefix={stage2_dirs[0]}",
+            external=True,
+        )
+
+        # Profile totals: 4 assessed scenes × 28 channels.
+        table = pq.read_table(os.path.join(stage2_dirs[0], "profiles.parquet"))
+        if table.num_rows != 112:
+            session.error(f"expected 112 profile rows, found {table.num_rows}")
+
+        print(f"smoke-features OK — run dirs: {run_dirs}, Stage-2: {stage2_dirs[0]}")
     finally:
-        if os.path.isdir(output_root):
-            shutil.rmtree(output_root)
-            print(f"Removed local smoke output: {output_root}")
+        for path in (output_root, stage2_root):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+                print(f"Removed local smoke output: {path}")
 
 
 @nox.session(venv_backend="none", name="cloud-smoke-features")
 def cloud_smoke_features(session: nox.Session) -> None:
-    """Publish one bounded 28-band feature stack to a unique GCS prefix.
+    """Publish the four-vintage V3 smoke stacks to a unique GCS prefix.
 
     Runs the feature pipeline against real GCS inputs with the output
     rooted at a unique ``gs://berlin-lst-data/features/smoke/<run-id>/``
-    prefix, then validates the published stack with the independent
-    validator. Exercises the exact GCS/GDAL runtime path: data COG write,
-    mask COG write into the same folder, and the same-process mask read
-    (the GDAL directory-cache failure this gate guards against).
+    prefix, then validates the published stacks with the independent
+    validator, the LoD coverage validator, the V2→V3 comparison, and a
+    bounded Stage-2 gate. Exercises the exact GCS/GDAL runtime path: data
+    COG write, mask COG write into the same folder, and the same-process
+    mask read (the GDAL directory-cache failure this gate guards against).
 
-    The smoke prefix is deleted in ``finally`` on success and failure.
+    The smoke prefixes are deleted in ``finally`` on success and failure;
+    a leftover prefix fails the session.
     """
     import uuid
     from datetime import UTC, datetime
@@ -899,6 +989,15 @@ def cloud_smoke_features(session: nox.Session) -> None:
     run_id = f"feat-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
     output_root = f"gs://berlin-lst-data/features/smoke/{run_id}"
     prefix = f"features/smoke/{run_id}/"
+    stage2_prefix = f"qa/smoke/stage2-v3/{run_id}/"
+    stage2_root = f"gs://berlin-lst-data/{stage2_prefix.rstrip('/')}"
+    bbox = "13.4602832,52.4041766,13.6691668,52.4965573"
+    scene_ids = [
+        "LC08_L2SP_193023_20170720_02_T1",  # 2017
+        "LC08_L2SP_192024_20210910_02_T1",  # 2021
+        "LC09_L2SP_193023_20220624_02_T1",  # 2022
+        "LC09_L2SP_193023_20240629_02_T1",  # 2024
+    ]
 
     _preflight_gcs(session)
 
@@ -920,12 +1019,61 @@ def cloud_smoke_features(session: nox.Session) -> None:
             "scripts/validate_feature_stacks.py",
             f"--root={output_root}",
             "--expected-scenes",
-            "1",
+            "4",
+            external=True,
+        )
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_lod_coverage.py",
+            f"--bbox={bbox}",
+            external=True,
+        )
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/compare_feature_releases.py",
+            "--baseline-root",
+            "gs://berlin-lst-data/features/v2",
+            "--candidate-root",
+            output_root,
+            "--scene-ids",
+            ",".join(scene_ids),
+            external=True,
+        )
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_qa_stage2_features.py",
+            "--config-name",
+            "stage2_features_smoke",
+            f"features_root={output_root}",
+            f"output_root={stage2_root}",
+            external=True,
+        )
+        stage2_dirs = [d for d in _list_gcs_subdirs(stage2_prefix) if d != "logs"]
+        if len(stage2_dirs) != 1:
+            session.error(f"expected 1 Stage-2 smoke run dir, found {stage2_dirs}")
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_qa_stage2_features.py",
+            f"--run-prefix={stage2_root}/{stage2_dirs[0]}",
             external=True,
         )
         print(f"cloud-smoke-features OK — {output_root}")
     finally:
-        _delete_gcs_prefix(prefix)
+        ok_features = _delete_gcs_prefix(prefix)
+        ok_stage2 = _delete_gcs_prefix(stage2_prefix)
+        if not (ok_features and ok_stage2):
+            session.error(
+                f"cloud smoke cleanup failed: features={ok_features} stage2={ok_stage2} — "
+                f"remove {prefix} and {stage2_prefix} manually"
+            )
 
 
 # ── Stage-2 feature-stack QA gate ────────────────────────────────────
@@ -1003,13 +1151,14 @@ def smoke_qa_stage2(session: nox.Session) -> None:
             if vals[0] != vals[1]:
                 session.error(f"non-deterministic aggregate {key}: {vals}")
 
-        # Profile totals: every assessed scene has exactly 28 profile rows.
+        # Profile totals: every assessed scene has exactly 28 profile rows
+        # (4 smoke scenes → 112).
         for run_dir in run_dirs:
             import pyarrow.parquet as pq
 
             table = pq.read_table(os.path.join(run_dir, "profiles.parquet"))
-            if table.num_rows != 28:
-                session.error(f"expected 28 profile rows, found {table.num_rows}")
+            if table.num_rows != 112:
+                session.error(f"expected 112 profile rows, found {table.num_rows}")
 
         # No-raster invariant: no .tif artifact under the run prefix.
         for run_dir in run_dirs:

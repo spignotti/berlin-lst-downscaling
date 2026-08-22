@@ -171,9 +171,12 @@ def finalize_feature_product(
         "aoi_fingerprint": prepared.source_metadata["aoi_fingerprint"],
         "coverage": prepared.coverage,
         "inputs": prepared.source_metadata["inputs"],
+        "lod_vintage": prepared.source_metadata.get("lod_vintage"),
+        "lod_coverage": prepared.source_metadata.get("lod_coverage", {}),
         "mask_semantics": (
             "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all 28 "
-            "channels finite and in-range; invalid pixels are NaN in all channels"
+            "channels finite and in-range; availability is per channel (only "
+            "unavailable bands are NaN), all channels are NaN only outside the AOI"
         ),
     }
     atomic_write(provenance_uri, json.dumps(provenance, indent=2), overwrite=True)
@@ -205,10 +208,14 @@ def _validate_mask_pair(
 ) -> None:
     """Verify mask semantics on the written COGs before any sidecar.
 
-    Checks that the mask COG holds uint8 values in {0, 1} and that, pixelwise,
-    ``mask == 1 ⇔ all 28 data bands are finite``. An all-zero mask is valid.
-    Raises ``ValueError`` on any violation so a bad pair never reaches the
-    completion marker.
+    Checks that the mask COG holds uint8 values in {0, 1}, matches the
+    composed in-memory mask, and that, pixelwise, ``mask == 1`` implies
+    all 28 bands are finite and within their declared ranges. The
+    converse is *not* required: availability is per channel, so
+    ``mask == 0`` may legitimately hold finite values in any channel
+    (only the unavailable bands are NaN). An all-zero mask is valid.
+    Raises ``ValueError`` on any violation so a bad pair never reaches
+    the completion marker.
 
     Scanned blockwise (1024 px tiles) so the peak memory stays bounded
     inside the per-scene subprocess — a full 28-band read would re-introduce
@@ -234,7 +241,8 @@ def _validate_mask_pair(
                              f"vs data {(h, w)}")
 
     seen_values: set[int] = set()
-    n_mismatch = 0
+    n_bad_mask = 0  # mask==1 but not all-finite-and-in-range
+    n_written_mismatch = 0  # written COG mask differs from the composed mask
     with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
         for r0 in range(0, h, _TILE):
             r1 = min(r0 + _TILE, h)
@@ -244,19 +252,32 @@ def _validate_mask_pair(
                 data = cog.read(window=win)  # (28, bh, bw)
                 mask = msk.read(1, window=win)
                 seen_values.update(np.unique(mask).tolist())
-                all_finite = np.all(np.isfinite(data), axis=0)
-                n_mismatch += int(np.sum(mask != all_finite.astype(np.uint8)))
+                claim = mask == 1
+                finite = np.isfinite(data)
+                complete = np.all(finite, axis=0)
+                for i, spec in enumerate(FEATURE_CHANNELS):
+                    if spec.valid_range is None:
+                        continue
+                    lo, hi = spec.valid_range
+                    complete &= (data[i] >= lo) & (data[i] <= hi)
+                n_bad_mask += int(np.sum(claim & ~complete))
+                expected = prepared.mask[r0:r1, c0:c1].astype(np.uint8)
+                n_written_mismatch += int(np.sum(mask != expected))
 
     if not seen_values.issubset({0, 1}):
         raise ValueError(
             f"pair validation: mask has unexpected values {sorted(seen_values)}, "
             "expected only 0/1"
         )
-    if n_mismatch:
+    if n_bad_mask:
         raise ValueError(
-            f"pair validation: mask disagrees with data finiteness on {n_mismatch} "
-            f"pixels for {prepared.scene_id} "
-            f"(mask==1 must equal all-{len(FEATURE_CHANNELS)}-finite)"
+            f"pair validation: mask==1 with non-finite/out-of-range values on "
+            f"{n_bad_mask} pixels for {prepared.scene_id}"
+        )
+    if n_written_mismatch:
+        raise ValueError(
+            f"pair validation: written mask disagrees with composed mask on "
+            f"{n_written_mismatch} pixels for {prepared.scene_id}"
         )
 
 

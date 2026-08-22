@@ -1,16 +1,21 @@
 # @package _global_
-# Smoke: one deterministic 2017 Landsat-S2 pair on a bounded,
-# canonical-aligned bbox. Reads real published GCS feature stacks; writes
-# only local ephemeral output under data/smoke/qa-stage2/ (removed after
-# the nox smoke session, never uploaded).
+# Smoke: the same four deterministic scenes (one per LoD vintage) on the
+# bounded canonical-aligned bbox as the features smoke. Reads the
+# published or locally-produced feature stacks; writes only local
+# ephemeral output under data/smoke/qa-stage2/ (removed after the nox
+# smoke session, never uploaded).
 defaults:
   - _base
   - _self_
 
 scene_ids:
-  - "LC08_L2SP_192023_20170526_02_T1"
+  - "LC08_L2SP_193023_20170720_02_T1"  # 2017
+  - "LC08_L2SP_192024_20210910_02_T1"  # 2021
+  - "LC09_L2SP_193023_20220624_02_T1"  # 2022
+  - "LC09_L2SP_193023_20240629_02_T1"  # 2024
 
-# Bounded subset inside the Berlin bbox (~1.4k x 1.0k 10m px).
-bbox: [13.35, 52.45, 13.55, 52.60]
+# Bounded canonical-aligned subset inside the Berlin bbox (~1.45k x 1.06k
+# 10m px). Matches configs/features/smoke.yaml.
+bbox: [13.4602832, 52.4041766, 13.6691668, 52.4965573]
 
 output_root: "data/smoke/qa-stage2"
