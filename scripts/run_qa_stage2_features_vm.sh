@@ -28,16 +28,28 @@ CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
 
 # ── fail-safe VM cleanup ─────────────────────────────────────────────
-# After a successful start, any later setup/deploy/launch failure must
-# stop the VM (AGENTS.md: VM stays stopped when not actively running).
-# The connection-loss path deliberately leaves it running and disarms this.
+# After a successful start, any pre-launch setup/deploy failure must stop
+# the VM (AGENTS.md: VM stays stopped when not actively running). Once the
+# QA run is launched, every ambiguous exit leaves the VM RUNNING — a
+# possibly-still-running job must never be killed mid-write. The explicit
+# connection-loss path below also disarms stopping via leave_running.
 vm_started=0
 leave_running=0
+pipeline_launched=0
 
 cleanup() {
   local rc=$?
-  if [[ "$vm_started" -eq 1 && "$leave_running" -eq 0 ]]; then
-    echo "Stopping VM (cleanup on abnormal exit)..."
+  if [[ "$pipeline_launched" -eq 1 ]]; then
+    if [[ "$leave_running" -eq 0 ]]; then
+      echo "WARNING: abnormal exit after QA launch — VM left RUNNING."
+      echo "  Inspect the marker/log under $APP_DIR/logs/runs/$WRAP_RUN_ID/"
+      echo "  (status-dynamic-vm.sh or direct ssh), then stop manually:"
+      echo "  $VM_SCRIPTS/stop-vm.sh"
+    fi
+    exit "$rc"
+  fi
+  if [[ "$vm_started" -eq 1 ]]; then
+    echo "Stopping VM (cleanup on pre-launch failure)..."
     "$VM_SCRIPTS/stop-vm.sh" >/dev/null 2>&1 || true
   fi
   exit "$rc"
@@ -105,12 +117,23 @@ MARKER_JSON
 echo "Launching Stage-2 feature QA on VM..."
 # The detached wrapper writes the pipeline's real exit code to STATUS_FILE
 # from inside the process (wait on a sibling subshell would return 127).
-ssh_cmd "
+#
+# ``< /dev/null`` detaches stdin: without it the background process can
+# hold the SSH session open, ssh hangs for hours until TCP kills it, and
+# set -e aborts the wrapper on this unguarded call (observed 2026-08-21).
+if ! ssh_cmd "
   cd $APP_DIR && \
   nohup sh -c 'uv run python scripts/run_qa_stage2_features.py --config-name stage2_features_full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
-    > $REMOTE_LOG 2>&1 &
+    > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
-"
+"; then
+  # Ambiguous failure: the QA run may have been launched before the
+  # connection died — never stop a possibly-running job.
+  echo "ERROR: launch command failed ambiguously — leaving VM RUNNING."
+  leave_running=1
+  exit 2
+fi
+pipeline_launched=1
 
 REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
 echo "Remote PID: $REMOTE_PID"

@@ -29,16 +29,28 @@ CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
 
 # ── fail-safe VM cleanup ─────────────────────────────────────────────
-# After a successful start, any later setup/deploy/launch failure must
-# stop the VM (AGENTS.md: VM stays stopped when not actively running).
-# The connection-loss path deliberately leaves it running and disarms this.
+# After a successful start, any pre-launch setup/deploy failure must stop
+# the VM (AGENTS.md: VM stays stopped when not actively running). Once the
+# pipeline is launched, every ambiguous exit leaves the VM RUNNING — a
+# possibly-still-running job must never be killed mid-write. The explicit
+# connection-loss path below also disarms stopping via leave_running.
 vm_started=0
 leave_running=0
+pipeline_launched=0
 
 cleanup() {
   local rc=$?
-  if [[ "$vm_started" -eq 1 && "$leave_running" -eq 0 ]]; then
-    echo "Stopping VM (cleanup on abnormal exit)..."
+  if [[ "$pipeline_launched" -eq 1 ]]; then
+    if [[ "$leave_running" -eq 0 ]]; then
+      echo "WARNING: abnormal exit after pipeline launch — VM left RUNNING."
+      echo "  Inspect the marker/log under $APP_DIR/logs/runs/$WRAP_RUN_ID/"
+      echo "  (status-dynamic-vm.sh or direct ssh), then stop manually:"
+      echo "  $VM_SCRIPTS/stop-vm.sh"
+    fi
+    exit "$rc"
+  fi
+  if [[ "$vm_started" -eq 1 ]]; then
+    echo "Stopping VM (cleanup on pre-launch failure)..."
     "$VM_SCRIPTS/stop-vm.sh" >/dev/null 2>&1 || true
   fi
   exit "$rc"
@@ -137,12 +149,23 @@ echo "Launching feature-stack run on VM..."
 # The isolated runner spawns one subprocess per scene so memory is
 # released between scenes (a full-grid scene peaks at ~7-8 GB; the
 # in-process run OOM-killed the 16 GB VM at scene 4).
-ssh_cmd "
+#
+# ``< /dev/null`` detaches stdin: without it the background process can
+# hold the SSH session open, ssh hangs for hours until TCP kills it, and
+# set -e aborts the wrapper on this unguarded call (observed 2026-08-21).
+if ! ssh_cmd "
   cd $APP_DIR && \
   nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full --resume; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
-    > $REMOTE_LOG 2>&1 &
+    > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
-"
+"; then
+  # Ambiguous failure: the pipeline may have been launched before the
+  # connection died — never stop a possibly-running job.
+  echo "ERROR: launch command failed ambiguously — leaving VM RUNNING."
+  leave_running=1
+  exit 2
+fi
+pipeline_launched=1
 
 REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
 echo "Remote PID: $REMOTE_PID"
