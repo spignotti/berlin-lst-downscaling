@@ -2,10 +2,11 @@
 # Run the scene feature-stack pipeline (full, 324 anchors) on the
 # On-Demand berlin-lst-vm.
 #
-# Lifecycle: start VM → deploy committed branch → launch full run →
-# poll the run marker → validate the published feature stacks locally →
-# stop VM. Products (28-band COGs, masks, sidecars, ledger) live in GCS
-# under gs://berlin-lst-data/features/v2/, not on the VM disk.
+# Lifecycle: preflight → start VM → deploy pinned branch → launch full
+# run → poll the run marker → validate the published feature stacks
+# (independent validator + V2→V3 comparison) → stop VM. Products
+# (28-band COGs, masks, sidecars, ledger) live in GCS under
+# gs://berlin-lst-data/features/v3/, not on the VM disk.
 #
 # Every remote command uses ssh-vm.sh (strict host-key verification) and
 # the fail-closed lifecycle scripts from .opencode/skills/google-access/.
@@ -23,7 +24,8 @@ VM_SCRIPTS="$(cd "$(dirname "$0")/../.opencode/skills/google-access/scripts" && 
 source "$VM_SCRIPTS/vm-identity.sh"
 
 APP_DIR="/workspace/app"
-FEATURES_ROOT="gs://berlin-lst-data/features/v2"
+FEATURES_ROOT="gs://berlin-lst-data/features/v3"
+BASELINE_ROOT="gs://berlin-lst-data/features/v2"
 
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
@@ -92,14 +94,25 @@ ssh_cmd_retry() {
   return 1
 }
 
-# ── preflight: canonical root must be empty or reconcileable ──────────
-# A pre-existing ledger is legitimate only if the config hash matches
-# (reconcile skips done rows); a foreign schema would be caught by the
-# ledger schema check on open. Warn-only — the run itself fails closed.
-REMOTE_HAS_ROOT=$(uv run python -c \
-  "from berlin_lst_downscaling.data.io import exists; print(exists('$FEATURES_ROOT/_state/features/ledger.parquet'))" \
-  2>/dev/null || echo "unknown")
-echo "Canonical root $FEATURES_ROOT — existing ledger: $REMOTE_HAS_ROOT"
+# ── preflight (hard go/no-go gate) ───────────────────────────────────
+# The guarded one-time release runs only when every precondition holds.
+echo "Running release preflight..."
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "ERROR: working tree not clean — refusing to publish."
+  exit 1
+fi
+LOCAL_SHA=$(git rev-parse HEAD)
+ORIGIN_SHA=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "missing")
+if [[ "$LOCAL_SHA" != "$ORIGIN_SHA" ]]; then
+  echo "ERROR: HEAD $LOCAL_SHA != origin/$BRANCH $ORIGIN_SHA (not pushed)."
+  exit 1
+fi
+echo "  Branch: $BRANCH | SHA: $LOCAL_SHA (clean, pushed)"
+
+if ! uv run python scripts/preflight_feature_release.py --config-name full; then
+  echo "ERROR: release preflight failed — not launching."
+  exit 1
+fi
 
 # ── start VM + deploy ────────────────────────────────────────────────
 
@@ -141,6 +154,12 @@ ssh_cmd_retry "
   git reset --hard refs/remotes/origin/$BRANCH && \
   uv sync --frozen --quiet
 "
+DEPLOYED_SHA=$(ssh_cmd_retry "cd $APP_DIR && git rev-parse HEAD")
+if [[ "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
+  echo "ERROR: deployed SHA $DEPLOYED_SHA != local SHA $LOCAL_SHA — refusing to launch."
+  exit 1
+fi
+echo "  Deployed SHA verified: $DEPLOYED_SHA"
 
 # ── marker + launch ──────────────────────────────────────────────────
 
@@ -152,6 +171,8 @@ ssh_cmd_retry "
   \"run_id\": \"$WRAP_RUN_ID\",
   \"config\": \"full\",
   \"branch\": \"$BRANCH\",
+  \"sha\": \"$DEPLOYED_SHA\",
+  \"features_root\": \"$FEATURES_ROOT\",
   \"started\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
   \"pid\": 0,
   \"log\": \"$REMOTE_LOG\",
@@ -167,6 +188,10 @@ echo "Launching feature-stack run on VM..."
 # released between scenes (a full-grid scene peaks at ~7-8 GB; the
 # in-process run OOM-killed the 16 GB VM at scene 4).
 #
+# No automatic --resume: a partially published release must be
+# investigated by an operator, not silently continued. Reconcile still
+# skips already-done scenes if an operator explicitly re-runs.
+#
 # stdin of the detached process comes from /dev/null, yet launch sessions
 # through sshd can STILL hang after the remote command has finished
 # (observed 2026-08-21/22). Bound the wait locally: if the session has not
@@ -176,7 +201,7 @@ echo "Launching feature-stack run on VM..."
 LAUNCH_WAIT_SECONDS=60
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full --resume; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
 " &
@@ -313,6 +338,14 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
     --root "$FEATURES_ROOT" \
     --aoi data/boundaries/aoi_10m.tif \
     --expected-scenes 324 \
+    && VALIDATION_OK=0 || VALIDATION_OK=1
+fi
+
+if [[ "$VALIDATION_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
+  echo "Comparing $BASELINE_ROOT -> $FEATURES_ROOT ..."
+  uv run python scripts/compare_feature_releases.py \
+    --baseline-root "$BASELINE_ROOT" \
+    --candidate-root "$FEATURES_ROOT" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

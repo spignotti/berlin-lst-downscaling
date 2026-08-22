@@ -19,7 +19,7 @@ geometry_mapping_uri: "gs://berlin-lst-data/static/geometry_vintages/v1/geometry
 aoi_mask_uri: "data/boundaries/aoi_10m.tif"
 
 # Canonical feature root (per-anchor stacks, ledger, run reports).
-output_root: "gs://berlin-lst-data/features/v2"
+output_root: "gs://berlin-lst-data/features/v3"
 
 # The one vegetation-height dataset (2020) is carried forward to every
 # scene year via the 2024 geometry profile's vegetation_dsm product.

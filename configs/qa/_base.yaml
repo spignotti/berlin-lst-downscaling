@@ -13,7 +13,7 @@ dynamic_root: "gs://berlin-lst-data/dynamic/full"
 geometry_mapping_uri: "gs://berlin-lst-data/static/geometry_vintages/v1/geometry_mapping.json"
 
 # Canonical feature-stack root (Stage-2 gate input).
-features_root: "gs://berlin-lst-data/features/v2"
+features_root: "gs://berlin-lst-data/features/v3"
 
 # Exact Berlin AOI mask (10 m, EPSG:25833) — Stage-2 independently
 # reconstructs the feature_valid mask from AOI, S2 flag, and channel ranges.

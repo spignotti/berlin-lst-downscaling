@@ -36,7 +36,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
 )
-from berlin_lst_downscaling.data.io import atomic_write
+from berlin_lst_downscaling.data.io import atomic_write, exists
 
 # STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0) — pinned
 # like the secondary product builder (data/secondary/product.py).
@@ -110,6 +110,15 @@ def finalize_feature_product(
     provenance_uri = f"{base}/provenance.json"
     stac_uri = f"{base}/{prepared.scene_id}.stac.json"
     completion_uri = f"{base}/complete.json"
+
+    # A completed scene is immutable: refuse to touch any artifact of a
+    # scene whose completion marker already exists (guards against an
+    # accidental re-run overwriting a published stack before the
+    # create-only marker write below would fail).
+    if exists(completion_uri):
+        raise FileExistsError(
+            f"scene {prepared.scene_id} already published: {completion_uri}"
+        )
 
     # ── 1. data COG ────────────────────────────────────────────────────
     write_cog_atomic(prepared.dataset, cog_uri, _FEATURE_CONTRACT, overwrite=True)
@@ -185,11 +194,12 @@ def finalize_feature_product(
     stac_item = _build_feature_stac_item(prepared, grid, cog_uri, mask_uri, provenance_uri)
     atomic_write(stac_uri, json.dumps(stac_item, indent=2), overwrite=True)
 
-    # ── 5. completion marker (last) ────────────────────────────────────
+    # ── 5. completion marker (last, create-only) ───────────────────────
     atomic_write(
         completion_uri,
         json.dumps({"published_at": completed_at, "run_id": run_id}, indent=2),
-        overwrite=True,
+        overwrite=False,
+        if_generation_match=0,
     )
 
     return FeatureArtifacts(
