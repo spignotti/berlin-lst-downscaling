@@ -126,30 +126,73 @@ carry-forward) live in `data-sources-and-contracts.md`.
   both gates (`features/v1` prefix empty); historical QA evidence under
   `qa/` is retained.
 
+## V3 semantic-availability correction (delivered)
+
+The V2 release's all-channels-NaN validity rule destroyed ~95 % of the
+AOI: the LoD2 source writes NaN for every non-building cell, and V2
+blanked all 28 channels wherever one channel was unavailable. V3 fixes
+the semantics at the source of the validity rule:
+
+- **Per-channel availability.** Only unavailable bands are NaN (e.g. the
+  S2 bands and derived indices under a non-clear flag); static and
+  dynamic channels keep their values. All channels are NaN only outside
+  the AOI. `feature_valid` remains the aggregate complete-vector
+  availability mask.
+- **LoD2 no-building vs source gap.** The four LoD bands are `0` in
+  source-covered cells without a building and `NaN` in cells outside the
+  LoD source-tile coverage. Coverage is reconstructed at composition time
+  from the immutable raw archive manifests (2017 LoD1 ∩ LoD2, 2021,
+  2022) and the 2024 LoD provenance tile receipts
+  (`data/features/lod_coverage.py`); finite source values always win.
+- **Schema v3, root `features/v3`.** The feature config hash now covers
+  the static-sources ledger and the per-vintage LoD coverage + COG
+  content fingerprints, so any change to these inputs invalidates the
+  published stacks.
+- Full run (2026-08-24, VM, `run_features_vm.sh` @ `03e085e`): **324/324
+  stacks**, 0 failed; independent validator green with
+  **1,584,712,041 feature-valid px** (vs 88,282,271 in V2); full V2→V3
+  comparison green (every V2-valid pixel bit-identical, every newly valid
+  pixel has zero LoD bands).
+- Stage-2 QA on V3 (evidence `gs://berlin-lst-data/qa/stage2_features/cc00406a/`):
+  **345 pairings, 324 assessed, 21 expected 2026 exclusions, 0 findings**,
+  `ok: true`. `feature_valid_px` 1,584,712,041 (cross-validated);
+  target-valid 100 m cells 20,169,061; **full-support cells 5,520,165**
+  (all-100 == full-support; up from 742 in V2, where full support
+  required all-100 building pixels). VM stopped (`TERMINATED`).
+- Smoke gates (`smoke-features`, `cloud-smoke-features`, `smoke-qa-stage2`)
+  cover one scene per LoD vintage on a canonical-aligned window with
+  every semantic case (building, covered no-building, source gap, clear,
+  flagged).
+- V2 retirement plan recorded at
+  `gs://berlin-lst-data/qa/retirements/v2/<timestamp>/plan.json`
+  (2,596 objects, 28,694,365,422 bytes) — deletion happens only after
+  explicit inventory-hash confirmation; historical `qa/` evidence is
+  retained.
+
 ## Stage-2 feature-stack QA gate (WB2c-2, delivered)
 
 The reusable QA gate was applied to the published feature stacks (identical
-logic to Stage-1, on all stack channels). Read-only over `features/v2`;
+logic to Stage-1, on all stack channels). Read-only over `features/v3`;
 evidence written to `qa/stage2_features/<run-id>/`. No validity or
 selection mask is produced — `training_eligible@100m` is a WB2c-4
 (training-data preparation) decision.
 
-- Run: `qa-stage2-20260822T152539Z` (2026-08-22, VM), evidence
-  `gs://berlin-lst-data/qa/stage2_features/35eb283e/` —
+- Run: `qa-stage2-20260824T213350Z` (2026-08-24, VM), evidence
+  `gs://berlin-lst-data/qa/stage2_features/cc00406a/` —
   `summary.json`, `scenes.parquet/csv`, `profiles.parquet/csv`.
 - Result: **345 pairings, 324 assessed, 21 excluded** (all
   `dynamic role=inference (2026)`), **0 findings**, `ok: true`.
-- Aggregate (canonical EPSG:25833 grid): `feature_valid_px` 88,282,271;
-  target-valid 100 m cells 20,169,061; full-support cells 742
+- Aggregate (canonical EPSG:25833 grid): `feature_valid_px` 1,584,712,041;
+  target-valid 100 m cells 20,169,061; full-support cells 5,520,165
   (all-100 == full-support).
 - Independent validator (`scripts/validate_qa_stage2_features.py`) green:
   all source fingerprints verified, no `.tif` artifact under the prefix.
 - Per-scene-channel profiles (fixed-bin histograms + count/min/max/mean/std)
   are the diagnostic record for WB2c-4; no values were filtered or removed.
-- VM stopped (`TERMINATED`). The earlier v1-era run
-  (`qa-stage2-20260820T183548Z`, evidence `0c8c8144`) remains under
-  `qa/stage2_features/` as historical evidence but refers to the retired
-  V1 stacks.
+- VM stopped (`TERMINATED`). The V2-era run
+  (`qa-stage2-20260822T152539Z`, evidence `35eb283e`) remains under
+  `qa/stage2_features/` as historical evidence but refers to the
+  superseded V2 stacks.
 
 ## Next steps (separate session)
 
