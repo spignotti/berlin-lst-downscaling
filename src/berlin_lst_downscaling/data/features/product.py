@@ -36,7 +36,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
 )
-from berlin_lst_downscaling.data.io import atomic_write, exists
+from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
 
 # STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0) — pinned
 # like the secondary product builder (data/secondary/product.py).
@@ -189,6 +189,22 @@ def finalize_feature_product(
         ),
     }
     atomic_write(provenance_uri, json.dumps(provenance, indent=2), overwrite=True)
+
+    # ── 3b. provenance read-back (immutability hardening) ─────────────
+    # The create-only marker below atomically commits the scene. Verify
+    # the artifacts just written carry THIS run's identity before that
+    # commit: a concurrent publisher that clobbered any artifact would
+    # leave a differing config hash / scene id, and committing would
+    # produce a mixed-identity immutable scene. Abort instead.
+    written = json.loads(read_bytes(provenance_uri))
+    if (
+        written.get("config_hash") != prepared.config_hash
+        or written.get("scene_id") != prepared.scene_id
+    ):
+        raise ValueError(
+            f"scene {prepared.scene_id}: written provenance does not match this run "
+            f"(config_hash {written.get('config_hash')!r}, scene {written.get('scene_id')!r})"
+        )
 
     # ── 4. STAC Item ───────────────────────────────────────────────────
     stac_item = _build_feature_stac_item(prepared, grid, cog_uri, mask_uri, provenance_uri)

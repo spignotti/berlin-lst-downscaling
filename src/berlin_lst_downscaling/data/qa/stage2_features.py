@@ -69,7 +69,6 @@ from berlin_lst_downscaling.data.qa.inventory import (
 # duplicated offset/tile math would drift from Stage-1. Alternative: private
 # copies (rejected: drift risk).
 from berlin_lst_downscaling.data.qa.stage1_raw import (
-    _check_metadata,
     _tile_windows,
     _window_offset,
     analysis_grid_10m,
@@ -225,6 +224,48 @@ def _profile_histogram(vals: np.ndarray, spec: FeatureChannel, n_bins: int) -> d
 
 # ── per-scene scan ───────────────────────────────────────────────────
 
+_CANON_OX = 369190.0
+_CANON_OY = 5838410.0
+
+
+def _check_stack_metadata(
+    uri: str, analysis: GeoBox, *, n_bands: int | None, dtype: str
+) -> list[str]:
+    """Structural check: CRS, band count, dtype, canonical 10 m alignment.
+
+    The stack must sit on the canonical 10 m lattice and fully contain
+    the analysis grid (full-grid stacks are read through a subset window
+    with offsets; subset smoke stacks equal the analysis grid).
+    """
+    errors: list[str] = []
+    try:
+        with rasterio.open(uri) as src:
+            crs = str(src.crs).upper() if src.crs else "None"
+            if crs != _GRID_CRS:
+                errors.append(f"{uri}: CRS {crs!r}, expected {_GRID_CRS!r}")
+            if n_bands is not None and src.count != n_bands:
+                errors.append(f"{uri}: band count {src.count}, expected {n_bands}")
+            if src.dtypes[0] != dtype:
+                errors.append(f"{uri}: dtype {src.dtypes[0]!r}, expected {dtype!r}")
+            ox, oy = src.transform.xoff, src.transform.yoff
+            if abs((ox - _CANON_OX) % 10.0) > 0.01 or abs((oy - _CANON_OY) % 10.0) > 0.01:
+                errors.append(f"{uri}: origin not on the canonical 10 m lattice")
+            right = ox + src.width * 10.0
+            bottom = oy - src.height * 10.0
+            ax0, ay1 = analysis.transform.xoff, analysis.transform.yoff
+            aright = ax0 + analysis.shape.x * 10.0
+            abottom = ay1 - analysis.shape.y * 10.0
+            if (
+                ox > ax0 + 0.01
+                or oy < ay1 - 0.01
+                or right < aright - 0.01
+                or bottom > abottom + 0.01
+            ):
+                errors.append(f"{uri}: stack does not contain the analysis grid")
+    except Exception as exc:  # noqa: BLE001 — report, never crash the run
+        errors.append(f"{uri}: cannot open: {exc}")
+    return errors
+
 
 def _aoi_on_grid(aoi_uri: str, grid: GeoBox) -> np.ndarray:
     """Reproject the Berlin AOI mask onto *grid* (nearest; independent)."""
@@ -269,13 +310,13 @@ def _scan_stack(
     comp_uri = feature_completion(features_root, scene_id)
 
     # ── metadata + sidecar checks (analysis grid, no pixel reads) ───────
-    # The stacks are published on the analysis grid (full canonical grid
-    # for a full run, the canonical-aligned subset for a smoke run), so
-    # the structural check is grid-aware.
-    errors += _check_metadata(
+    # The stacks sit on the canonical 10 m lattice and must fully contain
+    # the analysis window (full-grid stacks are read through subset
+    # windows; subset smoke stacks equal the analysis grid).
+    errors += _check_stack_metadata(
         cog_uri, analysis_10, n_bands=len(FEATURE_CHANNELS), dtype="float32"
     )
-    errors += _check_metadata(mask_uri, analysis_10, n_bands=1, dtype="uint8")
+    errors += _check_stack_metadata(mask_uri, analysis_10, n_bands=1, dtype="uint8")
     sidecar_errors, coverage = _check_sidecars(
         scene_id, cog_uri, stac_uri, prov_uri, comp_uri
     )

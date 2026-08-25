@@ -2,6 +2,8 @@
 
 import nox
 
+from berlin_lst_downscaling.data.io import exists as exists_uri
+
 nox.options.sessions = ["lint", "typecheck"]
 
 
@@ -903,20 +905,25 @@ def smoke_features(session: nox.Session) -> None:
         )
 
         # V2 → V3 comparison: V2-valid pixels unchanged, newly valid
-        # pixels have zero LoD bands.
-        session.run(
-            "uv",
-            "run",
-            "python",
-            "scripts/compare_feature_releases.py",
-            "--baseline-root",
-            "gs://berlin-lst-data/features/v2",
-            "--candidate-root",
-            output_root,
-            "--scene-ids",
-            ",".join(scene_ids),
-            external=True,
-        )
+        # pixels have zero LoD bands. Runs only while a baseline release
+        # exists (the retired features/v2 root is gone).
+        baseline_ledger = "gs://berlin-lst-data/features/v2/_state/features/ledger.parquet"
+        if exists_uri(baseline_ledger):
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/compare_feature_releases.py",
+                "--baseline-root",
+                "gs://berlin-lst-data/features/v2",
+                "--candidate-root",
+                output_root,
+                "--scene-ids",
+                ",".join(scene_ids),
+                external=True,
+            )
+        else:
+            print("Baseline release absent (retired) — skipping V2→V3 comparison.")
 
         # Exactly four published stacks (one scene dir per vintage).
         scene_dirs = glob.glob(os.path.join(output_root, "LC08*")) + glob.glob(
@@ -1030,19 +1037,23 @@ def cloud_smoke_features(session: nox.Session) -> None:
             f"--bbox={bbox}",
             external=True,
         )
-        session.run(
-            "uv",
-            "run",
-            "python",
-            "scripts/compare_feature_releases.py",
-            "--baseline-root",
-            "gs://berlin-lst-data/features/v2",
-            "--candidate-root",
-            output_root,
-            "--scene-ids",
-            ",".join(scene_ids),
-            external=True,
-        )
+        baseline_ledger = "gs://berlin-lst-data/features/v2/_state/features/ledger.parquet"
+        if exists_uri(baseline_ledger):
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/compare_feature_releases.py",
+                "--baseline-root",
+                "gs://berlin-lst-data/features/v2",
+                "--candidate-root",
+                output_root,
+                "--scene-ids",
+                ",".join(scene_ids),
+                external=True,
+            )
+        else:
+            print("Baseline release absent (retired) — skipping V2→V3 comparison.")
         session.run(
             "uv",
             "run",
