@@ -26,6 +26,7 @@ import numpy as np
 import rasterio
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
 import xarray as xr
+from google.api_core.exceptions import GoogleAPIError
 from odc.geo.geobox import GeoBox
 from rasterio.transform import array_bounds
 from rasterio.warp import transform_bounds
@@ -123,24 +124,41 @@ def finalize_feature_product(
             f"scene {prepared.scene_id} already published: {completion_uri}"
         )
 
-    # Per-scene publish lock (create-only CAS): exactly one publisher may
-    # hold the lock; a concurrent publisher aborts here instead of
+    # Per-scene publish lock (atomic create-only): exactly one publisher
+    # may hold the lock; a concurrent publisher aborts here instead of
     # interleaving artifact writes with the winner. Released in ``finally``
     # after the create-only marker commits the scene. A stale lock after a
     # hard kill is an explicit operator state (inspect, then delete).
     lock_uri = f"{base}/.publish.lock"
-    try:
-        atomic_write(
-            lock_uri,
-            json.dumps({"run_id": run_id, "started_at": completed_at}, indent=2),
-            overwrite=False,
-            if_generation_match=0,
-        )
-    except FileExistsError:
-        raise RuntimeError(
-            f"scene {prepared.scene_id} is being published by another run "
-            f"(lock {lock_uri})"
-        ) from None
+    if lock_uri.startswith("gs://"):
+        try:
+            atomic_write(
+                lock_uri,
+                json.dumps({"run_id": run_id, "started_at": completed_at}, indent=2),
+                overwrite=False,
+                if_generation_match=0,
+            )
+        except FileExistsError:
+            raise RuntimeError(
+                f"scene {prepared.scene_id} is being published by another run "
+                f"(lock {lock_uri})"
+            ) from None
+    else:
+        import os
+
+        lock_path = os.path.expanduser(lock_uri)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(
+                    json.dumps({"run_id": run_id, "started_at": completed_at}, indent=2)
+                )
+        except FileExistsError:
+            raise RuntimeError(
+                f"scene {prepared.scene_id} is being published by another run "
+                f"(lock {lock_uri})"
+            ) from None
 
     try:
         return _finalize_locked(
@@ -159,13 +177,13 @@ def _delete_uri(uri: str) -> None:
         bucket_name, key = _parse_gs_uri(uri)
         try:
             _gcs_client().bucket(bucket_name).blob(key).delete()
-        except Exception as exc:  # noqa: BLE001 — best-effort lock cleanup
+        except GoogleAPIError as exc:
             _logger.warning("publish-lock cleanup failed for %s: %s", uri, exc)
     else:
         import os
 
         try:
-            os.remove(uri)
+            os.remove(os.path.expanduser(uri))
         except OSError as exc:
             _logger.warning("publish-lock cleanup failed for %s: %s", uri, exc)
 

@@ -40,6 +40,7 @@ import pyarrow.parquet as pq
 import rasterio
 import rasterio.warp as rwarp
 from odc.geo.geobox import GeoBox
+from rasterio.errors import RasterioError
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.util import sha256_bytes
@@ -274,7 +275,7 @@ def _check_stack_metadata(
                 or bottom > abottom + 0.01
             ):
                 errors.append(f"{uri}: stack does not contain the analysis grid")
-    except Exception as exc:  # noqa: BLE001 — report, never crash the run
+    except (RasterioError, OSError) as exc:
         errors.append(f"{uri}: cannot open: {exc}")
     return errors
 
