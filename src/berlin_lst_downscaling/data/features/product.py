@@ -18,6 +18,7 @@ COG check.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -37,6 +38,8 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_SCHEMA_VERSION,
 )
 from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
+
+_logger = logging.getLogger(__name__)
 
 # STAC extension schema URLs (Projection v2.0.0, Raster v1.1.0) — pinned
 # like the secondary product builder (data/secondary/product.py).
@@ -120,7 +123,66 @@ def finalize_feature_product(
             f"scene {prepared.scene_id} already published: {completion_uri}"
         )
 
-    # ── 1. data COG ────────────────────────────────────────────────────
+    # Per-scene publish lock (create-only CAS): exactly one publisher may
+    # hold the lock; a concurrent publisher aborts here instead of
+    # interleaving artifact writes with the winner. Released in ``finally``
+    # after the create-only marker commits the scene. A stale lock after a
+    # hard kill is an explicit operator state (inspect, then delete).
+    lock_uri = f"{base}/.publish.lock"
+    try:
+        atomic_write(
+            lock_uri,
+            json.dumps({"run_id": run_id, "started_at": completed_at}, indent=2),
+            overwrite=False,
+            if_generation_match=0,
+        )
+    except FileExistsError:
+        raise RuntimeError(
+            f"scene {prepared.scene_id} is being published by another run "
+            f"(lock {lock_uri})"
+        ) from None
+
+    try:
+        return _finalize_locked(
+            prepared, grid, base, run_id, completed_at, cog_uri, mask_uri,
+            provenance_uri, stac_uri, completion_uri,
+        )
+    finally:
+        _delete_uri(lock_uri)
+
+
+def _delete_uri(uri: str) -> None:
+    """Delete one object best-effort (publish-lock cleanup)."""
+    if uri.startswith("gs://"):
+        from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
+
+        bucket_name, key = _parse_gs_uri(uri)
+        try:
+            _gcs_client().bucket(bucket_name).blob(key).delete()
+        except Exception as exc:  # noqa: BLE001 — best-effort lock cleanup
+            _logger.warning("publish-lock cleanup failed for %s: %s", uri, exc)
+    else:
+        import os
+
+        try:
+            os.remove(uri)
+        except OSError as exc:
+            _logger.warning("publish-lock cleanup failed for %s: %s", uri, exc)
+
+
+def _finalize_locked(
+    prepared: PreparedFeatureProduct,
+    grid: GeoBox,
+    base: str,
+    run_id: str,
+    completed_at: str,
+    cog_uri: str,
+    mask_uri: str,
+    provenance_uri: str,
+    stac_uri: str,
+    completion_uri: str,
+) -> FeatureArtifacts:
+    """Write the five artifacts while holding the per-scene publish lock."""
     write_cog_atomic(prepared.dataset, cog_uri, _FEATURE_CONTRACT, overwrite=True)
 
     # Remote validation reads (data COG validation + mask pair scan) run

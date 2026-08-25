@@ -231,11 +231,12 @@ _CANON_OY = 5838410.0
 def _check_stack_metadata(
     uri: str, analysis: GeoBox, *, n_bands: int | None, dtype: str
 ) -> list[str]:
-    """Structural check: CRS, band count, dtype, canonical 10 m alignment.
+    """Structural check: CRS, band count, dtype, canonical 10 m north-up.
 
-    The stack must sit on the canonical 10 m lattice and fully contain
-    the analysis grid (full-grid stacks are read through a subset window
-    with offsets; subset smoke stacks equal the analysis grid).
+    The stack must sit on the canonical 10 m lattice with a 10 m,
+    north-up (no rotation) affine and fully contain the analysis grid
+    (full-grid stacks are read through a subset window with offsets;
+    subset smoke stacks equal the analysis grid).
     """
     errors: list[str] = []
     try:
@@ -247,7 +248,18 @@ def _check_stack_metadata(
                 errors.append(f"{uri}: band count {src.count}, expected {n_bands}")
             if src.dtypes[0] != dtype:
                 errors.append(f"{uri}: dtype {src.dtypes[0]!r}, expected {dtype!r}")
-            ox, oy = src.transform.xoff, src.transform.yoff
+            t = src.transform
+            if (
+                abs(t.a - 10.0) > 0.01
+                or abs(t.e + 10.0) > 0.01
+                or abs(t.b) > 0.01
+                or abs(t.d) > 0.01
+            ):
+                errors.append(
+                    f"{uri}: transform not 10 m north-up "
+                    f"(a={t.a:.3f}, b={t.b:.3f}, d={t.d:.3f}, e={t.e:.3f})"
+                )
+            ox, oy = t.c, t.f
             if abs((ox - _CANON_OX) % 10.0) > 0.01 or abs((oy - _CANON_OY) % 10.0) > 0.01:
                 errors.append(f"{uri}: origin not on the canonical 10 m lattice")
             right = ox + src.width * 10.0
