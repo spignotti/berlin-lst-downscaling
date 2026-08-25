@@ -2,14 +2,17 @@
 # Run the scene feature-stack pipeline (full, 324 anchors) on the
 # On-Demand berlin-lst-vm.
 #
-# Lifecycle: start VM → deploy committed branch → launch full run →
-# poll the run marker → validate the published feature stacks locally →
-# stop VM. Products (24-band COGs, masks, sidecars, ledger) live in GCS
-# under gs://berlin-lst-data/features/v1/, not on the VM disk.
+# Lifecycle: preflight → start VM → deploy pinned branch → launch full
+# run → poll the run marker → validate the published feature stacks
+# (independent validator + V2→V3 comparison) → stop VM. Products
+# (28-band COGs, masks, sidecars, ledger) live in GCS under
+# gs://berlin-lst-data/features/v3/, not on the VM disk.
 #
 # Every remote command uses ssh-vm.sh (strict host-key verification) and
 # the fail-closed lifecycle scripts from .opencode/skills/google-access/.
-# The VM is always stopped in this script — including on pipeline failure.
+# The VM is stopped on completion, failure, or discovery failure — except
+# on connection loss, where it is intentionally left running until an
+# operator confirms the remote job state (see the exit-2 path).
 #
 # Usage:
 #   scripts/run_features_vm.sh [branch]
@@ -17,15 +20,46 @@
 
 set -euo pipefail
 
-SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 VM_SCRIPTS="$(cd "$(dirname "$0")/../.opencode/skills/google-access/scripts" && pwd)"
 source "$VM_SCRIPTS/vm-identity.sh"
 
 APP_DIR="/workspace/app"
-FEATURES_ROOT="gs://berlin-lst-data/features/v1"
+FEATURES_ROOT="gs://berlin-lst-data/features/v3"
+BASELINE_ROOT="gs://berlin-lst-data/features/v2"
 
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
+
+# ── fail-safe VM cleanup ─────────────────────────────────────────────
+# After a successful start, any pre-launch setup/deploy failure must stop
+# the VM (AGENTS.md: VM stays stopped when not actively running). Once the
+# pipeline is launched, every ambiguous exit leaves the VM RUNNING — a
+# possibly-still-running job must never be killed mid-write. The explicit
+# connection-loss path below also disarms stopping via leave_running.
+vm_started=0
+leave_running=0
+pipeline_launched=0
+
+cleanup() {
+  local rc=$?
+  # leave_running is authoritative: any path that sets it (connection loss
+  # before or after launch) must never trigger an automatic VM stop.
+  if [[ "$leave_running" -eq 1 ]]; then
+    exit "$rc"
+  fi
+  if [[ "$pipeline_launched" -eq 1 ]]; then
+    echo "WARNING: abnormal exit after pipeline launch — VM left RUNNING."
+    echo "  Inspect the marker/log under $APP_DIR/logs/runs/$WRAP_RUN_ID/"
+    echo "  (status-dynamic-vm.sh or direct ssh), then stop manually:"
+    echo "  $VM_SCRIPTS/stop-vm.sh"
+    exit "$rc"
+  fi
+  if [[ "$vm_started" -eq 1 ]]; then
+    echo "Stopping VM (cleanup on pre-launch failure)..."
+    "$VM_SCRIPTS/stop-vm.sh" >/dev/null 2>&1 || true
+  fi
+  exit "$rc"
+}
 
 # ── args ─────────────────────────────────────────────────────────────
 
@@ -46,19 +80,46 @@ ssh_cmd() {
   "$VM_SCRIPTS/ssh-vm.sh" -- "$@"
 }
 
-# ── preflight: canonical root must be empty or reconcileable ──────────
-# A pre-existing ledger is legitimate only if the config hash matches
-# (reconcile skips done rows); a foreign schema would be caught by the
-# ledger schema check on open. Warn-only — the run itself fails closed.
-REMOTE_HAS_ROOT=$(uv run python -c \
-  "from berlin_lst_downscaling.data.io import exists; print(exists('$FEATURES_ROOT/_state/features/ledger.parquet'))" \
-  2>/dev/null || echo "unknown")
-echo "Canonical root $FEATURES_ROOT — existing ledger: $REMOTE_HAS_ROOT"
+# sshd can briefly refuse connections right after boot even after an initial
+# successful probe (observed 2026-08-22). Pre-launch calls therefore retry.
+ssh_cmd_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    if ssh_cmd "$@"; then
+      return 0
+    fi
+    echo "  [$(date +%H:%M:%S)] ssh attempt $attempt/3 failed. Retrying in 15s..."
+    sleep 15
+  done
+  return 1
+}
+
+# ── preflight (hard go/no-go gate) ───────────────────────────────────
+# The guarded one-time release runs only when every precondition holds.
+echo "Running release preflight..."
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "ERROR: working tree not clean — refusing to publish."
+  exit 1
+fi
+LOCAL_SHA=$(git rev-parse HEAD)
+ORIGIN_SHA=$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "missing")
+if [[ "$LOCAL_SHA" != "$ORIGIN_SHA" ]]; then
+  echo "ERROR: HEAD $LOCAL_SHA != origin/$BRANCH $ORIGIN_SHA (not pushed)."
+  exit 1
+fi
+echo "  Branch: $BRANCH | SHA: $LOCAL_SHA (clean, pushed)"
+
+if ! uv run python scripts/preflight_feature_release.py --config-name full; then
+  echo "ERROR: release preflight failed — not launching."
+  exit 1
+fi
 
 # ── start VM + deploy ────────────────────────────────────────────────
 
 echo "Starting VM..."
 "$VM_SCRIPTS/start-vm.sh"
+vm_started=1
+trap cleanup EXIT
 
 # sshd may still be booting after the instance reaches RUNNING — wait for
 # the first connection instead of failing the whole run on a race.
@@ -74,6 +135,7 @@ for attempt in $(seq 1 10); do
 done
 if [[ "$SSH_READY" -ne 1 ]]; then
   echo "ERROR: SSH never became ready. Stopping VM."
+  vm_started=0
   "$VM_SCRIPTS/stop-vm.sh"
   exit 1
 fi
@@ -82,26 +144,35 @@ echo "Pushing branch $BRANCH to origin..."
 git push origin "$BRANCH" --quiet
 
 echo "Deploying code on VM..."
-# ``git checkout`` alone does not move a stale local branch; fast-forward
-# the VM workspace to the pushed origin ref so the new code actually runs.
-ssh_cmd "
+# A never-deployed feature branch needs an explicit fetch refspec (the
+# default fetch may only track main); create/reset the local branch from
+# that ref so the new code actually runs.
+ssh_cmd_retry "
   cd $APP_DIR && \
-  git fetch origin && \
-  git checkout $BRANCH && \
-  git reset --hard origin/$BRANCH && \
+  git fetch origin $BRANCH:refs/remotes/origin/$BRANCH && \
+  git checkout -B $BRANCH refs/remotes/origin/$BRANCH && \
+  git reset --hard refs/remotes/origin/$BRANCH && \
   uv sync --frozen --quiet
 "
+DEPLOYED_SHA=$(ssh_cmd_retry "cd $APP_DIR && git rev-parse HEAD")
+if [[ "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
+  echo "ERROR: deployed SHA $DEPLOYED_SHA != local SHA $LOCAL_SHA — refusing to launch."
+  exit 1
+fi
+echo "  Deployed SHA verified: $DEPLOYED_SHA"
 
 # ── marker + launch ──────────────────────────────────────────────────
 
 echo "Creating run marker: $WRAP_RUN_ID"
-ssh_cmd "
+ssh_cmd_retry "
   mkdir -p '$LOG_DIR' && \
   cat > '$MARKER' <<MARKER_JSON
 {
   \"run_id\": \"$WRAP_RUN_ID\",
   \"config\": \"full\",
   \"branch\": \"$BRANCH\",
+  \"sha\": \"$DEPLOYED_SHA\",
+  \"features_root\": \"$FEATURES_ROOT\",
   \"started\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
   \"pid\": 0,
   \"log\": \"$REMOTE_LOG\",
@@ -116,15 +187,63 @@ echo "Launching feature-stack run on VM..."
 # The isolated runner spawns one subprocess per scene so memory is
 # released between scenes (a full-grid scene peaks at ~7-8 GB; the
 # in-process run OOM-killed the 16 GB VM at scene 4).
+#
+# No automatic --resume: a partially published release must be
+# investigated by an operator, not silently continued. Reconcile still
+# skips already-done scenes if an operator explicitly re-runs.
+#
+# stdin of the detached process comes from /dev/null, yet launch sessions
+# through sshd can STILL hang after the remote command has finished
+# (observed 2026-08-21/22). Bound the wait locally: if the session has not
+# returned within LAUNCH_WAIT_SECONDS, kill ONLY the local ssh client —
+# the remote job is nohup-detached and unaffected — then verify the launch
+# via the pid file before marking the VM as occupied.
+LAUNCH_WAIT_SECONDS=60
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full --resume; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
-    > $REMOTE_LOG 2>&1 &
+  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+    > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
-"
+" &
+LAUNCH_SSH_PID=$!
 
-REMOTE_PID=$(ssh_cmd "cat '$REMOTE_PID_FILE'" 2>/dev/null || echo "unknown")
-echo "Remote PID: $REMOTE_PID"
+for _ in $(seq 1 "$LAUNCH_WAIT_SECONDS"); do
+  kill -0 "$LAUNCH_SSH_PID" 2>/dev/null || break
+  sleep 1
+done
+if kill -0 "$LAUNCH_SSH_PID" 2>/dev/null; then
+  echo "  [$(date +%H:%M:%S)] Launch session did not return within ${LAUNCH_WAIT_SECONDS}s — killing local ssh client only."
+  kill "$LAUNCH_SSH_PID" 2>/dev/null || true
+  wait "$LAUNCH_SSH_PID" 2>/dev/null || true
+fi
+
+sleep 5
+REMOTE_PID=""
+REACHABLE=0
+# A failed ssh here is indistinguishable from a connection blip while the
+# detached job runs — only a successful readback may prove "not launched".
+if VERIFY=$(ssh_cmd "cat '$REMOTE_PID_FILE' 2>/dev/null || true" 2>/dev/null); then
+  REMOTE_PID="$VERIFY"
+  REACHABLE=1
+fi
+
+if [[ "$REACHABLE" -eq 0 ]]; then
+  # Cannot verify because contact was lost — the pipeline may be running.
+  # Never stop a possibly-running job.
+  echo "WARNING: launch verification lost contact — leaving VM RUNNING for inspection."
+  leave_running=1
+  exit 2
+fi
+
+if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]] && ssh_cmd "kill -0 $REMOTE_PID" 2>/dev/null; then
+  pipeline_launched=1
+  echo "Remote PID: $REMOTE_PID (launch verified)"
+else
+  # Reachable but no live process behind the pid file: nothing was
+  # launched or it died instantly — safe pre-launch failure.
+  echo "ERROR: could not confirm the remote pipeline is running."
+  exit 1
+fi
 
 if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]]; then
   ssh_cmd "
@@ -163,6 +282,7 @@ while true; do
       echo "  Remote PID: $REMOTE_PID"
       echo "  Marker:     $MARKER"
       echo "The VM will NOT be stopped automatically."
+      leave_running=1
       exit 2
     fi
     echo "  [$(date +%H:%M:%S)] Connection lost (attempt $POLL_FAILURES/$CONNECTION_RETRIES). Retrying in ${CONNECTION_RETRY_WAIT}s..."
@@ -178,8 +298,12 @@ while true; do
     if [[ -n "$TERMINAL" ]]; then
       break
     fi
-    echo "  [$(date +%H:%M:%S)] No exit status written. Check logs manually."
-    break
+    # The process is gone without writing its exit status — ambiguous
+    # (crash, interrupted write, or delayed publication). Never stop a
+    # possibly-active job; leave the VM for operator inspection.
+    echo "No exit status written — leaving VM RUNNING for manual inspection."
+    leave_running=1
+    exit 2
   fi
 
   LAST_LOG=$(ssh_cmd "
@@ -217,9 +341,19 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 
-# ── stop VM (always) ─────────────────────────────────────────────────
+if [[ "$VALIDATION_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
+  echo "Comparing $BASELINE_ROOT -> $FEATURES_ROOT ..."
+  uv run python scripts/compare_feature_releases.py \
+    --baseline-root "$BASELINE_ROOT" \
+    --candidate-root "$FEATURES_ROOT" \
+    && VALIDATION_OK=0 || VALIDATION_OK=1
+fi
+
+# ── stop VM (normal completion) ──────────────────────────────────────
 
 echo "Stopping VM..."
+vm_started=0
+pipeline_launched=0
 "$VM_SCRIPTS/stop-vm.sh"
 
 # ── report ───────────────────────────────────────────────────────────

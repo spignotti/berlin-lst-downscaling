@@ -1,15 +1,18 @@
-"""Feature-stack composer — 24-band stack + feature_valid mask.
+"""Feature-stack composer — 28-band stack + feature_valid mask.
 
-Reads the resolved per-scene inputs (S2 ARD + flag, morphology COGs,
+Reads the resolved per-scene inputs (S2 ARD + flag, morphology source COGs,
 ERA5-Land, shadows) plus the exact Berlin AOI mask and produces one
-canonical-grid dataset of 24 float32 channels plus the uint8
+canonical-grid dataset of 28 float32 channels plus the uint8
 ``feature_valid`` mask.
 
 Mask semantics (data/features/contracts.py): a pixel is valid only when
 it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and all
-24 channels are finite and within their declared ranges. Where invalid,
-every channel is set to NaN. The Landsat target and ECOSTRESS never enter
-this stack.
+28 channels are finite and within their declared ranges. Availability is
+per channel: an unavailable channel is NaN in that band only — known
+values of the other channels are preserved. ``feature_valid`` is the
+aggregate "complete 28-channel vector" availability, never a
+training-selection mask. All channels are NaN only outside the AOI.
+The Landsat target and ECOSTRESS never enter this stack.
 
 Reading is windowed against the analysis grid: the full canonical grid by
 default, a canonical-aligned bbox subset for local smoke tests. All inputs
@@ -49,9 +52,10 @@ class FeatureInputs:
 
     s2_cog: str
     s2_flag: str
-    morphology: dict[str, str]  # building_dsm, vegetation_dsm, combined_dsm, svf
+    morphology: dict[str, tuple[str, int]]  # channel -> (COG URI, band number)
     era5_cog: str
     shadows: dict[str, str]  # shadow_building, shadow_vegetation
+    lod_coverage: np.ndarray  # bool (grid.shape), True = covered by a LoD source tile
 
 
 # ── AOI ───────────────────────────────────────────────────────────────
@@ -117,9 +121,9 @@ def _read_shadow(uri: str, grid: GeoBox) -> np.ndarray:
 
 @dataclass
 class ComposedFeatureStack:
-    """The 24-band dataset plus the validity mask and coverage metrics."""
+    """The 28-band dataset plus the validity mask and coverage metrics."""
 
-    dataset: xr.Dataset  # 24 float32 bands on the analysis grid
+    dataset: xr.Dataset  # 28 float32 bands on the analysis grid
     mask: np.ndarray  # uint8 (grid.shape), 1 = valid
     coverage: dict  # total/inside/outside/feature-valid pixel counts
 
@@ -129,7 +133,7 @@ def compose_feature_stack(
     aoi: np.ndarray,
     grid: GeoBox,
 ) -> ComposedFeatureStack:
-    """Compose the 24-band feature stack for one scene.
+    """Compose the 28-band feature stack for one scene.
 
     *aoi* must already be a bool mask on *grid* (see
     :func:`load_aoi_mask_on_grid`).
@@ -139,6 +143,12 @@ def compose_feature_stack(
     b02, b03, b04, b08, b11, b12 = s2
     s2_flag = _read_band(inputs.s2_flag, 1, grid, dtype="uint8")
     s2_clear = s2_flag == 0
+    s2_invalid = ~s2_clear
+
+    # The six spectral channels are unavailable where the ARD flag is set;
+    # static and dynamic channels keep their values there.
+    for arr in s2:
+        arr[s2_invalid] = np.nan
 
     # ── spectral indices (NaN-safe ratios) ────────────────────────────
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -150,10 +160,43 @@ def compose_feature_stack(
     for w, b in zip(ALBEDO_WEIGHTS, s2, strict=True):
         albedo += w * b
 
-    # ── morphology (vegetation_dsm resolved via carry-forward) ─────────
+    # S2-derived channels share the S2 flag availability.
+    for arr in (ndvi, ndwi, ndbi, albedo):
+        arr[s2_invalid] = np.nan
+
+    # ── morphology (semantic predictors from source COGs) ─────────────
+    # Each entry is (uri, band_number). Multi-band source COGs (lod2, vh)
+    # are read at the specified band; single-band sources (imp, svf) at 1.
     morphology = {
-        name: _read_band(uri, 1, grid) for name, uri in sorted(inputs.morphology.items())
+        name: _read_band(uri, band, grid) for name, (uri, band) in sorted(inputs.morphology.items())
     }
+
+    # LoD2 semantics: a cell without a building inside the source-covered
+    # area is a known zero; a cell outside the source coverage is a true
+    # data gap and stays NaN. The four LoD bands are jointly NaN or jointly
+    # finite (same rasterization count) — a mixed state is corrupt.
+    _LOD_BAND_NAMES = (
+        "building_height_mean",
+        "building_height_std",
+        "building_coverage_ratio",
+        "building_height_max",
+    )
+    lod = [morphology[name] for name in _LOD_BAND_NAMES]
+    lod_nan = np.stack([np.isnan(arr) for arr in lod], axis=0)
+    lod_all_nan = np.all(lod_nan, axis=0)
+    if np.any(lod_nan & ~lod_all_nan):
+        raise ValueError(
+            f"LoD morphology bands have mixed finite/NaN state on "
+            f"{int(np.sum(lod_nan & ~lod_all_nan))} px"
+        )
+    cov = np.asarray(inputs.lod_coverage, dtype=bool)
+    if cov.shape != lod_all_nan.shape:
+        raise ValueError(
+            f"lod_coverage shape {cov.shape} != grid {lod_all_nan.shape}"
+        )
+    covered_no_building = lod_all_nan & cov & aoi
+    for arr in lod:
+        arr[covered_no_building] = 0.0
 
     # ── ERA5-Land (8 bands) + shadows ─────────────────────────────────
     era5 = [_read_band(inputs.era5_cog, i, grid) for i in range(1, 9)]
@@ -171,16 +214,20 @@ def compose_feature_stack(
         ndwi,
         ndbi,
         albedo,
-        morphology["building_dsm"],
-        morphology["vegetation_dsm"],
-        morphology["combined_dsm"],
+        morphology["building_height_mean"],
+        morphology["building_height_std"],
+        morphology["building_coverage_ratio"],
+        morphology["building_height_max"],
+        morphology["vegetation_height_mean"],
+        morphology["vegetation_height_max"],
+        morphology["imperviousness"],
         morphology["svf"],
         *era5,
         shadows["shadow_building"],
         shadows["shadow_vegetation"],
     ]
-    if len(channels) != 24:  # pragma: no cover — contract guard
-        raise AssertionError(f"composed {len(channels)} channels, expected 24")
+    if len(channels) != 28:  # pragma: no cover — contract guard
+        raise AssertionError(f"composed {len(channels)} channels, expected 28")
 
     # ── validity: AOI ∩ S2-clear ∩ finite ∩ in-range ──────────────────
     valid = aoi & s2_clear
@@ -194,7 +241,10 @@ def compose_feature_stack(
 
     mask = valid.astype(np.uint8)
     stack = np.stack(channels, axis=0)
-    stack[:, ~valid] = np.nan
+    # All channels are NaN only outside the AOI. Inside the AOI, channels
+    # keep their individually known values; ``feature_valid`` (the mask)
+    # marks the aggregate complete-vector availability.
+    stack[:, ~aoi] = np.nan
 
     # ── dataset (canonical coords + transform) ────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
@@ -215,6 +265,12 @@ def compose_feature_stack(
         "feature_valid_px": feature_valid,
         "aoi_frac": round(inside / total, 6) if total else 0.0,
         "feature_valid_frac_of_aoi": round(feature_valid / inside, 6) if inside else 0.0,
+        # LoD semantic classification (diagnostic): known no-building cells
+        # are zeroed, source gaps stay NaN. Finite LoD values always win.
+        "lod_building_px": int(np.sum(~lod_all_nan)),
+        "lod_covered_no_building_px": int(np.sum(covered_no_building)),
+        "lod_source_gap_px": int(np.sum(lod_all_nan & ~cov)),
+        "lod_source_gap_inside_aoi_px": int(np.sum(lod_all_nan & ~cov & aoi)),
     }
     log_event(
         _logger,
@@ -223,6 +279,8 @@ def compose_feature_stack(
         inside_aoi_px=inside,
         outside_aoi_px=outside,
         feature_valid_px=feature_valid,
+        lod_covered_no_building_px=coverage["lod_covered_no_building_px"],
+        lod_source_gap_inside_aoi_px=coverage["lod_source_gap_inside_aoi_px"],
     )
 
     return ComposedFeatureStack(dataset=ds, mask=mask, coverage=coverage)

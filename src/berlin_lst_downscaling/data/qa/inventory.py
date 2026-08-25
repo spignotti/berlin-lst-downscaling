@@ -25,7 +25,12 @@ from berlin_lst_downscaling.data.qa.contracts import (
     STATIC_DERIVED_MORPHOLOGY_PRODUCTS,
     STATIC_DERIVED_OPTIONAL_PRODUCTS,
 )
+from berlin_lst_downscaling.data.secondary.imperviousness import vintage_for_scene_year
 from berlin_lst_downscaling.data.selection.validate import load_bundle
+
+# 2026 anchors are inference scenes, outside the training universe. They
+# are reported as a single, expected exclusion across every QA gate.
+INFERENCE_EXCLUSION_REASON = "dynamic role=inference (2026)"
 
 # Metadata-only derived products (upstream of the shadow computation).
 _METADATA_DERIVED_PRODUCTS = ("horizon_building", "horizon_vegetation")
@@ -54,6 +59,8 @@ class ResolvedScene:
     dynamic: dict[str, str]  # source -> COG URI (era5_land, shadow_*)
     static_derived: dict[str, str]  # product -> COG URI (morphology, in-support)
     static_derived_meta: dict[str, str]  # product -> COG URI (horizons, metadata-only)
+    static_sources: dict[str, str]  # source -> COG URI (lod2, vh, imperv — feature inputs)
+    lod_vintage: int | None = None  # LoD2 morphology vintage for this scene year
     exclusion_reason: str | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -146,6 +153,7 @@ def build_inventory(
 
     # ── static source ledger (vintage-fixed roster) ────────────────────
     static_sources: dict[str, str] = {}
+    source_rows: dict[str, dict] = {}
     src_ledger_uri = f"{static_sources_root.rstrip('/')}/ledger.parquet"
     if exists(src_ledger_uri):
         fingerprints["static_sources_ledger"] = _fingerprint(src_ledger_uri)
@@ -157,7 +165,9 @@ def build_inventory(
                 continue
             output_uri = row.get("output_uri")
             if output_uri:
+                item_id = str(row["item_id"])
                 static_sources[f"{source}/{row['period_or_vintage']}"] = str(output_uri)
+                source_rows[item_id] = row
     else:
         errors.append(f"static sources ledger missing: {src_ledger_uri}")
 
@@ -205,6 +215,7 @@ def build_inventory(
             manifest_rows=manifest_rows,
             ard_rows=ard_rows,
             derived_rows=derived_rows,
+            source_rows=source_rows,
             dynamic_rows=dynamic_rows,
             mapping=mapping,
             ard_root=ard_root,
@@ -240,6 +251,7 @@ def _resolve_scene(
     manifest_rows: dict[str, dict],
     ard_rows: dict[tuple[str, str], dict],
     derived_rows: dict[tuple[str, str], dict],
+    source_rows: dict[str, dict],
     dynamic_rows: dict[tuple[str, str], dict],
     mapping,
     ard_root: str,
@@ -259,7 +271,7 @@ def _resolve_scene(
             scene_id=ls_id, year=year, s2_scene_id=s2_id, geometry_id="",
             landsat_cog="", landsat_flag="", s2_cog="", s2_flag="",
             dynamic={}, static_derived={}, static_derived_meta={},
-            exclusion_reason="dynamic role=inference (2026)", errors=errors,
+            static_sources={}, exclusion_reason=INFERENCE_EXCLUSION_REASON, errors=errors,
         )
 
     # ── Landsat ARD row ────────────────────────────────────────────────
@@ -277,6 +289,7 @@ def _resolve_scene(
             dynamic={},
             static_derived={},
             static_derived_meta={},
+            static_sources={},
             exclusion_reason="ard landsat not done",
             errors=errors,
         )
@@ -298,6 +311,7 @@ def _resolve_scene(
 
     # ── geometry profile ───────────────────────────────────────────────
     geometry_id = ""
+    lod_vintage: int | None = None
     if year is None or mapping is None:
         if exclusion is None:
             exclusion = "missing geometry mapping"
@@ -309,6 +323,7 @@ def _resolve_scene(
         else:
             vdata = mapping.vintages.get(vintage, {})
             geometry_id = str(vdata.get("geometry_id", ""))
+            lod_vintage = int(vintage)
 
     # ── static derived morphology (in-support) ─────────────────────────
     static_derived: dict[str, str] = {}
@@ -323,6 +338,31 @@ def _resolve_scene(
             if row is not None and row["status"] == "done" and row.get("output_uri"):
                 static_derived_meta[product] = str(row["output_uri"])
 
+    # ── static source products (feature-stack morphology inputs) ───────
+    # Resolved per scene year → vintage for the three semantic predictor
+    # source products.  The feature pipeline reads these COGs directly
+    # instead of the derived DSM products.
+    static_src: dict[str, str] = {}
+    if year is not None:
+        # LoD2 morphology — vintage from geometry mapping
+        if geometry_id and mapping is not None:
+            lod_vintage = mapping.year_to_vintage.get(year)
+            if lod_vintage is not None:
+                item_id = f"lod2_morphology_{lod_vintage}"
+                row = source_rows.get(item_id)
+                if row is not None and row.get("output_uri"):
+                    static_src["lod2_morphology"] = str(row["output_uri"])
+        # Vegetation height — fixed 2020 carry-forward
+        vh_row = source_rows.get("vegetation_height_2020")
+        if vh_row is not None and vh_row.get("output_uri"):
+            static_src["vegetation_height"] = str(vh_row["output_uri"])
+        # Imperviousness — year-dependent vintage
+        imp_vintage = vintage_for_scene_year(year)
+        item_id = f"imperviousness_{imp_vintage}"
+        imp_row = source_rows.get(item_id)
+        if imp_row is not None and imp_row.get("output_uri"):
+            static_src["imperviousness"] = str(imp_row["output_uri"])
+
     # ── dynamic products ───────────────────────────────────────────────
     dynamic: dict[str, str] = {}
     for source in ("era5_land", "shadow_building", "shadow_vegetation"):
@@ -333,7 +373,7 @@ def _resolve_scene(
             continue
         if row.get("role") == "inference":
             if exclusion is None:
-                exclusion = "dynamic role=inference (2026)"
+                exclusion = INFERENCE_EXCLUSION_REASON
             continue
         dynamic[source] = str(row["output_uri"])
 
@@ -349,12 +389,15 @@ def _resolve_scene(
         dynamic=dynamic,
         static_derived=static_derived,
         static_derived_meta=static_derived_meta,
+        static_sources=static_src,
+        lod_vintage=lod_vintage,
         exclusion_reason=exclusion,
         errors=errors,
     )
 
 
 __all__ = [
+    "INFERENCE_EXCLUSION_REASON",
     "InventoryReport",
     "ResolvedScene",
     "build_inventory",

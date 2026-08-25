@@ -1,6 +1,6 @@
 """Stage-2 feature-stack QA core — blockwise verification of published stacks.
 
-Verifies every published 24-band feature stack of the training universe
+Verifies every published 28-band feature stack of the training universe
 against the feature-stack contract and computes a **diagnostic** feature
 support statistic at 100 m (valid Landsat target cell plus its
 ``feature_valid`` 10 m subpixels). No validity mask, no selection
@@ -8,19 +8,20 @@ artifact, and no resampling is produced — the report bundle is the only
 output. Publication of the ``training_eligible@100m`` selection mask is a
 WB2c-4 (training-data preparation) decision.
 
-Same gate logic as Stage-1 (``data/qa/stage1_raw.py``): inventory
-resolution, canonical-grid metadata checks, blockwise 2560x2560 10 m
-tiles, exact nested 10x10 aggregation to 100 m, fail-closed findings.
-Range semantics derive from the feature-stack contract
+Reuses the Stage-1 grid/window/inventory primitives (see the ``# decision:``
+comment at import). Range semantics derive from the feature-stack contract
 (``data/features/contracts.py``), never re-derived.
 
 Performance design:
 
 - Pixel scans use 2560x2560 10 m tiles — an exact multiple of both the
-  COG 512 px block size and the 10x10 aggregation factor. The 24-band
-  float32 feature COG is read per tile (~630 MB peak for one tile).
-- The ``feature_valid`` mask is read once per tile and checked for
-  ``mask == 1 ⇔ all 24 channels finite and in declared range``.
+  COG 512 px block size and the 10x10 aggregation factor. The 28-band
+  float32 feature COG is read per tile (~730 MB peak for one tile).
+- The ``feature_valid`` mask is independently reconstructed per tile as
+  ``AOI ∧ S2-flag-clear ∧ all 28 channels finite ∧ in-range`` and compared
+  with the published mask. Availability is per channel: where the S2 flag
+  is non-clear the six S2 bands and four derived indices must be NaN;
+  static/dynamic channels may keep their values.
 - Landsat target/flag are read once per scene at 100 m (tiny).
 """
 
@@ -37,7 +38,9 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import rasterio
+import rasterio.warp as rwarp
 from odc.geo.geobox import GeoBox
+from rasterio.errors import RasterioError
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.util import sha256_bytes
@@ -56,14 +59,17 @@ from berlin_lst_downscaling.data.features.paths import (
 )
 from berlin_lst_downscaling.data.io import atomic_write, log_event, read_bytes
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
-from berlin_lst_downscaling.data.qa.inventory import ResolvedScene, build_inventory
+from berlin_lst_downscaling.data.qa.inventory import (
+    INFERENCE_EXCLUSION_REASON,
+    ResolvedScene,
+    build_inventory,
+)
 
 # decision: reuse the Stage-1 gate's grid/window primitives directly instead of
 # re-implementing them — the Stage-2 brief mandates identical gate logic, and
 # duplicated offset/tile math would drift from Stage-1. Alternative: private
 # copies (rejected: drift risk).
 from berlin_lst_downscaling.data.qa.stage1_raw import (
-    _check_metadata_10m,
     _tile_windows,
     _window_offset,
     analysis_grid_10m,
@@ -71,12 +77,9 @@ from berlin_lst_downscaling.data.qa.stage1_raw import (
 
 _logger = logging.getLogger(__name__)
 
-_TILE = 2560  # 10 m tile size (512 x 5, 10 x 256)
 _GRID_CRS = "EPSG:25833"
 
-# Expected exclusions: reported, never findings. Anything else that
-# prevents assessment of a paired anchor is a hard finding.
-_EXPECTED_EXCLUSIONS = frozenset({"dynamic role=inference (2026)"})
+_EXPECTED_EXCLUSIONS = frozenset({INFERENCE_EXCLUSION_REASON})
 
 _SUPPORT_BINS = (0.0, 0.25, 0.5, 0.75, 0.9, 0.99, 1.0)
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")
@@ -151,7 +154,6 @@ class Stage2Report:
 def _check_sidecars(
     scene_id: str,
     cog_uri: str,
-    mask_uri: str,
     stac_uri: str,
     prov_uri: str,
     comp_uri: str,
@@ -170,7 +172,7 @@ def _check_sidecars(
         prov = json.loads(read_bytes(prov_uri))
         if tuple(prov.get("channel_order", ())) != FEATURE_CHANNEL_NAMES:
             errors.append(f"{scene_id}: provenance channel_order mismatch")
-        for key in ("config_hash", "coverage", "mask_semantics", "vegetation_dsm_policy"):
+        for key in ("config_hash", "coverage", "mask_semantics", "vegetation_height_policy"):
             if key not in prov:
                 errors.append(f"{scene_id}: provenance missing {key!r}")
         coverage = prov.get("coverage", {})
@@ -223,6 +225,80 @@ def _profile_histogram(vals: np.ndarray, spec: FeatureChannel, n_bins: int) -> d
 
 # ── per-scene scan ───────────────────────────────────────────────────
 
+_CANON_OX = 369190.0
+_CANON_OY = 5838410.0
+
+
+def _check_stack_metadata(
+    uri: str, analysis: GeoBox, *, n_bands: int | None, dtype: str
+) -> list[str]:
+    """Structural check: CRS, band count, dtype, canonical 10 m north-up.
+
+    The stack must sit on the canonical 10 m lattice with a 10 m,
+    north-up (no rotation) affine and fully contain the analysis grid
+    (full-grid stacks are read through a subset window with offsets;
+    subset smoke stacks equal the analysis grid).
+    """
+    errors: list[str] = []
+    try:
+        with rasterio.open(uri) as src:
+            crs = str(src.crs).upper() if src.crs else "None"
+            if crs != _GRID_CRS:
+                errors.append(f"{uri}: CRS {crs!r}, expected {_GRID_CRS!r}")
+            if n_bands is not None and src.count != n_bands:
+                errors.append(f"{uri}: band count {src.count}, expected {n_bands}")
+            if src.dtypes[0] != dtype:
+                errors.append(f"{uri}: dtype {src.dtypes[0]!r}, expected {dtype!r}")
+            t = src.transform
+            if (
+                abs(t.a - 10.0) > 0.01
+                or abs(t.e + 10.0) > 0.01
+                or abs(t.b) > 0.01
+                or abs(t.d) > 0.01
+            ):
+                errors.append(
+                    f"{uri}: transform not 10 m north-up "
+                    f"(a={t.a:.3f}, b={t.b:.3f}, d={t.d:.3f}, e={t.e:.3f})"
+                )
+            ox, oy = t.c, t.f
+            if abs((ox - _CANON_OX) % 10.0) > 0.01 or abs((oy - _CANON_OY) % 10.0) > 0.01:
+                errors.append(f"{uri}: origin not on the canonical 10 m lattice")
+            right = ox + src.width * 10.0
+            bottom = oy - src.height * 10.0
+            ax0, ay1 = analysis.transform.xoff, analysis.transform.yoff
+            aright = ax0 + analysis.shape.x * 10.0
+            abottom = ay1 - analysis.shape.y * 10.0
+            if (
+                ox > ax0 + 0.01
+                or oy < ay1 - 0.01
+                or right < aright - 0.01
+                or bottom > abottom + 0.01
+            ):
+                errors.append(f"{uri}: stack does not contain the analysis grid")
+    except (RasterioError, OSError) as exc:
+        errors.append(f"{uri}: cannot open: {exc}")
+    return errors
+
+
+def _aoi_on_grid(aoi_uri: str, grid: GeoBox) -> np.ndarray:
+    """Reproject the Berlin AOI mask onto *grid* (nearest; independent)."""
+    with rasterio.open(aoi_uri) as src:
+        source = src.read(1).astype(np.uint8)
+        src_crs, src_transform, src_nodata = src.crs, src.transform, src.nodata
+    dst = np.zeros((grid.shape.y, grid.shape.x), dtype=np.uint8)
+    rwarp.reproject(
+        source=source,
+        src_crs=src_crs,
+        src_transform=src_transform,
+        src_nodata=src_nodata,
+        destination=dst,
+        dst_crs=grid.crs,
+        dst_transform=grid.transform,
+        dst_nodata=0,
+        resampling=rwarp.Resampling.nearest,
+    )
+    return dst == 1
+
 
 def _scan_stack(
     scene: ResolvedScene,
@@ -230,6 +306,7 @@ def _scan_stack(
     analysis_10: GeoBox,
     analysis_100: GeoBox,
     n_profile_bins: int,
+    aoi: np.ndarray,
 ) -> tuple[SceneMetrics, list[ChannelProfile], list[str]]:
     """Run the blockwise scan for one assessable feature stack.
 
@@ -245,11 +322,16 @@ def _scan_stack(
     prov_uri = feature_provenance(features_root, scene_id)
     comp_uri = feature_completion(features_root, scene_id)
 
-    # ── metadata + sidecar checks (canonical grids, no pixel reads) ────
-    errors += _check_metadata_10m(cog_uri, n_bands=len(FEATURE_CHANNELS), dtype="float32")
-    errors += _check_metadata_10m(mask_uri, n_bands=1, dtype="uint8")
+    # ── metadata + sidecar checks (analysis grid, no pixel reads) ───────
+    # The stacks sit on the canonical 10 m lattice and must fully contain
+    # the analysis window (full-grid stacks are read through subset
+    # windows; subset smoke stacks equal the analysis grid).
+    errors += _check_stack_metadata(
+        cog_uri, analysis_10, n_bands=len(FEATURE_CHANNELS), dtype="float32"
+    )
+    errors += _check_stack_metadata(mask_uri, analysis_10, n_bands=1, dtype="uint8")
     sidecar_errors, coverage = _check_sidecars(
-        scene_id, cog_uri, mask_uri, stac_uri, prov_uri, comp_uri
+        scene_id, cog_uri, stac_uri, prov_uri, comp_uri
     )
     errors += sidecar_errors
 
@@ -288,15 +370,26 @@ def _scan_stack(
     agg: dict[int, dict] = {}
 
     try:
-        with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
+        with (
+            rasterio.open(cog_uri) as cog,
+            rasterio.open(mask_uri) as msk,
+            rasterio.open(scene.s2_flag) as flag_src,
+        ):
             cog_off = _window_offset(cog, analysis_10, 10.0)
             mask_off = _window_offset(msk, analysis_10, 10.0)
+            flag_off = _window_offset(flag_src, analysis_10, 10.0)
             for (r0, c0, r1, c1), _ in _tile_windows(analysis_10):
                 bh, bw = r1 - r0, c1 - c0
                 w_cog = Window(c0 + cog_off[0], r0 + cog_off[1], bw, bh)  # type: ignore[call-arg]
-                bands = cog.read(window=w_cog)  # (24, bh, bw) float32
+                bands = cog.read(window=w_cog)  # (28, bh, bw) float32
                 w_msk = Window(c0 + mask_off[0], r0 + mask_off[1], bw, bh)  # type: ignore[call-arg]
                 mask = msk.read(1, window=w_msk)
+                w_flag = Window.from_slices(
+                    (r0 + flag_off[1], r0 + flag_off[1] + bh),
+                    (c0 + flag_off[0], c0 + flag_off[0] + bw),
+                )
+                s2_flag_t = flag_src.read(1, window=w_flag)
+                aoi_t = aoi[r0:r1, c0:c1]
 
                 if not set(np.unique(mask)).issubset({0, 1}):
                     findings.append(
@@ -304,7 +397,8 @@ def _scan_stack(
                         f"(tile {r0},{c0})"
                     )
 
-                # validity equivalence: mask == 1 ⇔ all 24 finite + in range
+                # ── independent mask reconstruction ───────────────────
+                # expected = AOI ∧ S2-flag-clear ∧ all finite ∧ in-range
                 finite_all = np.all(np.isfinite(bands), axis=0)
                 in_range = np.ones((bh, bw), dtype=bool)
                 for i, spec in enumerate(FEATURE_CHANNELS):
@@ -312,19 +406,30 @@ def _scan_stack(
                         continue
                     lo, hi = spec.valid_range
                     in_range &= (bands[i] >= lo) & (bands[i] <= hi)
-                claim = mask == 1
-                mismatch = claim != (finite_all & in_range)
-                if np.any(mismatch):
-                    n = int(np.sum(mismatch))
+                expected = aoi_t & (s2_flag_t == 0) & finite_all & in_range
+                if np.any(mask != expected.astype(np.uint8)):
+                    n = int(np.sum(mask != expected.astype(np.uint8)))
                     findings.append(
-                        f"{scene_id}: feature_valid disagrees with finite/in-range on {n} px "
-                        f"(tile {r0},{c0})"
+                        f"{scene_id}: feature_valid disagrees with independently "
+                        f"reconstructed mask on {n} px (tile {r0},{c0})"
                     )
-                if np.any(claim & ~finite_all):
-                    n = int(np.sum(claim & ~finite_all))
-                    findings.append(f"{scene_id}: mask==1 with non-finite values on {n} px")
+                # Per-channel availability: the six S2 bands + four indices
+                # must be NaN where the S2 flag is non-clear; static/dynamic
+                # channels may keep their values there.
+                if np.any((s2_flag_t != 0) & np.any(np.isfinite(bands[:10]), axis=0)):
+                    n = int(np.sum((s2_flag_t != 0) & np.any(np.isfinite(bands[:10]), axis=0)))
+                    findings.append(
+                        f"{scene_id}: S2-dependent channels finite under non-clear "
+                        f"flag on {n} px (tile {r0},{c0})"
+                    )
+                # Outside the AOI every channel must be NaN and the mask 0.
+                if np.any((aoi_t == 0) & np.any(np.isfinite(bands), axis=0)):
+                    n = int(np.sum((aoi_t == 0) & np.any(np.isfinite(bands), axis=0)))
+                    findings.append(
+                        f"{scene_id}: {n} px outside AOI with finite values (tile {r0},{c0})"
+                    )
 
-                valid = claim
+                valid = mask == 1
                 feature_valid_px += int(np.sum(valid))
 
                 # ── channel profiles over valid pixels ─────────────────
@@ -613,6 +718,7 @@ def run_stage2_features(cfg, *, run_id: str) -> Stage2Report:
     dynamic_root = str(cfg.dynamic_root)
     geometry_mapping_uri = str(cfg.geometry_mapping_uri)
     features_root = str(cfg.features_root)
+    aoi_mask_uri = str(cfg.get("aoi_mask_uri", ""))
     expected_scene_count = int(cfg.get("expected_scene_count", 0) or 0)
     n_profile_bins = int(cfg.get("profile_bins", 16) or 16)
     bbox = tuple(cfg.get("bbox", None)) if cfg.get("bbox") else None
@@ -646,6 +752,9 @@ def run_stage2_features(cfg, *, run_id: str) -> Stage2Report:
 
     analysis_10 = analysis_grid_10m(bbox)
     analysis_100 = analysis_10.zoom_out(10)
+    if not aoi_mask_uri:
+        raise RuntimeError("Stage-2 requires aoi_mask_uri for independent mask reconstruction")
+    aoi = _aoi_on_grid(aoi_mask_uri, analysis_10)
 
     findings: list[str] = []
     scenes_out: list[SceneMetrics] = []
@@ -671,7 +780,7 @@ def run_stage2_features(cfg, *, run_id: str) -> Stage2Report:
             continue
 
         metrics, profiles, scene_findings = _scan_stack(
-            scene, features_root, analysis_10, analysis_100, n_profile_bins
+            scene, features_root, analysis_10, analysis_100, n_profile_bins, aoi
         )
         findings.extend(scene_findings)
         # Surface precise inventory-level diagnosis (e.g. missing COG/flag

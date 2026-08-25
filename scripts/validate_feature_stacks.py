@@ -9,15 +9,16 @@ the features ledger and every done scene's artifacts and verifies
 
 - ledger completeness and artifact existence (COG, mask, provenance,
   STAC, complete),
-- 24-band COG contract: band count, dtype, CRS, grid, channel order,
+- 28-band COG contract: band count, dtype, CRS, grid, channel order,
 - mask COG: uint8, single band, same grid, values in {0, 1},
-- mask semantics (blockwise): ``mask == 1`` iff all 24 channels are
-  finite; ``mask == 0`` implies all channels NaN,
+- mask semantics (blockwise): ``mask == 1`` implies all 28 channels are
+  finite and in-range; ``mask == 0`` permits finite values in any
+  channel (availability is per channel),
 - AOI semantics: outside the exact Berlin AOI the mask is 0 and every
   channel is NaN,
 - per-channel value ranges on valid pixels only,
 - sidecar content: provenance channel order / coverage / mask semantics,
-  STAC data + feature_valid assets with 24 raster bands,
+  STAC data + feature_valid assets with 28 raster bands,
 - provenance coverage numbers against independently recomputed counts.
 
 The validator imports only the channel contract (names/ranges) — never
@@ -26,7 +27,7 @@ the composer or pipeline implementation. It writes nothing.
 Usage
 -----
     uv run python scripts/validate_feature_stacks.py \
-        --root gs://berlin-lst-data/features/v1
+        --root gs://berlin-lst-data/features/v2
     uv run python scripts/validate_feature_stacks.py --root data/smoke/features
 """
 
@@ -46,7 +47,7 @@ from rasterio.windows import Window
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES, FEATURE_CHANNELS
 from berlin_lst_downscaling.data.io import exists, read_bytes
 
-_N_EXPECTED_BANDS = 24
+_N_EXPECTED_BANDS = 28
 _TILE = 1024  # blockwise scan tile (multiple of COG 512px blocks)
 
 
@@ -134,7 +135,7 @@ def _check_pixels(
     errors: list[str],
     stats: dict,
 ) -> None:
-    """Blockwise mask-equivalence, AOI, and range checks."""
+    """Blockwise mask, AOI, and range checks."""
     with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
         h, w = cog.height, cog.width
         valid_total = 0
@@ -144,22 +145,35 @@ def _check_pixels(
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
                 win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                bands = cog.read(window=win)  # (24, bh, bw)
+                bands = cog.read(window=win)  # (28, bh, bw)
                 mask = msk.read(1, window=win)
                 aoi_t = aoi[r0:r1, c0:c1]
 
                 if not set(np.unique(mask)).issubset({0, 1}):
                     errors.append(f"{cog_uri}: mask values {np.unique(mask)} not in {{0,1}}")
-                finite_all = np.all(np.isfinite(bands), axis=0)
-                if not np.array_equal(finite_all, mask == 1):
-                    n = int(np.sum(finite_all != (mask == 1)))
-                    errors.append(f"{cog_uri}: mask/finite mismatch on {n} px (tile {r0},{c0})")
-                if np.any((mask == 0) & np.any(np.isfinite(bands), axis=0)):
-                    n = int(np.sum((mask == 0) & np.any(np.isfinite(bands), axis=0)))
-                    errors.append(f"{cog_uri}: finite values under mask==0 on {n} px")
+                # mask == 1 must imply all channels finite AND in-range.
+                # mask == 0 does not constrain individual channels (per-channel
+                # availability): only unavailable bands are NaN.
+                claim = mask == 1
+                complete = np.all(np.isfinite(bands), axis=0)
+                for i, spec in enumerate(FEATURE_CHANNELS):
+                    if spec.valid_range is None:
+                        continue
+                    lo, hi = spec.valid_range
+                    complete &= (bands[i] >= lo) & (bands[i] <= hi)
+                if np.any(claim & ~complete):
+                    n = int(np.sum(claim & ~complete))
+                    errors.append(
+                        f"{cog_uri}: mask==1 with non-finite/out-of-range values on {n} px "
+                        f"(tile {r0},{c0})"
+                    )
                 if np.any((aoi_t == 0) & (mask == 1)):
                     n = int(np.sum((aoi_t == 0) & (mask == 1)))
                     errors.append(f"{cog_uri}: {n} px outside AOI marked valid")
+                # Outside the AOI every channel must be NaN.
+                if np.any((aoi_t == 0) & np.any(np.isfinite(bands), axis=0)):
+                    n = int(np.sum((aoi_t == 0) & np.any(np.isfinite(bands), axis=0)))
+                    errors.append(f"{cog_uri}: {n} px outside AOI with finite values")
 
                 # range checks on valid pixels
                 valid = mask == 1
@@ -198,7 +212,7 @@ def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, c
     prov = _read_json(prov_uri)
     if tuple(prov.get("channel_order", ())) != FEATURE_CHANNEL_NAMES:
         errors.append(f"{scene_id}: provenance channel_order mismatch")
-    for key in ("config_hash", "coverage", "mask_semantics", "vegetation_dsm_policy"):
+    for key in ("config_hash", "coverage", "mask_semantics", "vegetation_height_policy"):
         if key not in prov:
             errors.append(f"{scene_id}: provenance missing {key!r}")
     cov = prov.get("coverage", {})
@@ -221,7 +235,7 @@ def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, c
         return
     raster_bands = assets["data"].get("raster:bands", [])
     if len(raster_bands) != _N_EXPECTED_BANDS:
-        errors.append(f"{scene_id}: STAC data raster:bands {len(raster_bands)}, expected 24")
+        errors.append(f"{scene_id}: STAC data raster:bands {len(raster_bands)}, expected 28")
     fv_bands = assets["feature_valid"].get("raster:bands", [])
     if not fv_bands or fv_bands[0].get("data_type") != "uint8":
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")

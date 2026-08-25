@@ -70,7 +70,13 @@ def main(cfg: DictConfig) -> int:
         for label, uri in uris.items():
             print(f"  {label:<14}: {uri}")
 
-        return 0 if report.ok else 1
+        # Hydra 1.3.4 discards the decorated task's return value, so
+        # ``raise SystemExit(main())`` would exit 0 even on findings.
+        # Raise inside the task to make failures propagate as a non-zero
+        # process exit (the VM wrapper captures this exit status).
+        if not report.ok:
+            raise SystemExit(1)
+        return 0
 
 
 if __name__ == "__main__":

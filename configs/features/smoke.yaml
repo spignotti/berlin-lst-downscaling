@@ -1,18 +1,26 @@
 # @package _global_
-# Smoke: one deterministic 2017 Landsat-S2 pair on a bounded,
-# canonical-aligned bbox. Reads real published GCS inputs; writes only
-# local ephemeral output under data/smoke/features/ (removed after the
-# nox smoke session, never uploaded).
+# Smoke: one deterministic scene per LoD vintage (2017, 2021, 2022, 2024)
+# on a bounded canonical-aligned bbox that contains every semantic case
+# (building, covered no-building, source gap, S2-clear, S2-flagged).
+# Reads real published GCS inputs; writes only local ephemeral output
+# under data/smoke/features/ (removed after the nox smoke session, never
+# uploaded).
 defaults:
   - _base
   - _self_
 
 scene_ids:
-  - "LC08_L2SP_192023_20170526_02_T1"
+  - "LC08_L2SP_193023_20170720_02_T1"  # 2017
+  - "LC08_L2SP_192024_20210910_02_T1"  # 2021
+  - "LC09_L2SP_193023_20220624_02_T1"  # 2022
+  - "LC09_L2SP_193023_20240629_02_T1"  # 2024
 
-# Bounded subset inside the Berlin bbox (~1.4k x 1.0k 10m px).
-bbox: [13.35, 52.45, 13.55, 52.60]
+# Bounded canonical-aligned subset inside the Berlin bbox (~1.45k x 1.06k
+# 10m px). Verified 2026-08-22 to contain all semantic categories for all
+# four vintages (gap-in-AOI 63k, building 67-71k, covered-no-building
+# 1.29M, clear 688-712k, flagged 716-740k pixels).
+bbox: [13.4602832, 52.4041766, 13.6691668, 52.4965573]
 
 output_root: "data/smoke/features"
 
-expected_scene_count: 1
+expected_scene_count: 4

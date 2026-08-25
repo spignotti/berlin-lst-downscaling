@@ -6,7 +6,7 @@
 
 Runs exactly one child process per assessable scene via subprocess, so
 each scene gets a fresh interpreter and memory is released between
-scenes. A single full-grid scene peaks at ~7-8 GB (24-band composition +
+scenes. A single full-grid scene peaks at ~9-10 GB (28-band composition +
 COG write); running in-process accumulated that across scenes and
 OOM-killed the VM (n2-highmem-2, 16 GB) at scene 4. The shared features
 ledger (reconcile + config hash) keeps the driver idempotent and

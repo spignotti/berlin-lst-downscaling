@@ -8,7 +8,7 @@ For every assessable paired Landsat anchor (2017-2025, role=anchor):
    AOI mask.
 2. Reconcile against the features ledger (config-hash + completion-marker
    gated idempotency).
-3. Compose the 24-band stack + feature_valid mask, finalise the five
+3. Compose the 28-band stack + feature_valid mask, finalise the five
    artifacts (data COG, mask COG, provenance, STAC, complete), and record
    the ledger row.
 
@@ -24,11 +24,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import numpy as np
 import pyarrow.parquet as pq
 from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.dynamic.geometry import load_geometry_mapping
+from berlin_lst_downscaling.data.features.lod_coverage import (
+    rasterize_lod_coverage,
+    resolve_lod_coverage_artifacts,
+)
 from berlin_lst_downscaling.data.features.paths import (
     ledger_path,
     qa_report_path,
@@ -206,18 +211,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         aoi_fingerprint=aoi_fingerprint,
     )
 
-    # ── 2. config hash ───────────────────────────────────────────────
-    config_hash = config_hash_for_features(
-        manifest_hash=inventory.fingerprints["manifest"],
-        geometry_mapping_hash=mapping.content_hash,
-        ard_ledger_hash=inventory.fingerprints["ard_ledger"],
-        static_derived_ledger_hash=inventory.fingerprints["static_derived_ledger"],
-        dynamic_ledger_hash=inventory.fingerprints["dynamic_ledger"],
-        aoi_fingerprint=aoi_fingerprint,
-        vegetation_carry_forward_geometry_id=veg_geometry_id,
-    )
-
-    # ── 3. grid + AOI mask on grid ───────────────────────────────────
+    # ── 2. grid + AOI mask on grid ───────────────────────────────────
     grid: GeoBox = analysis_grid_10m(bbox)
     aoi = load_aoi_mask_on_grid(aoi_uri, grid)
     log_event(
@@ -227,6 +221,41 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         shape=[grid.shape.x, grid.shape.y],
         origin=[grid.transform.xoff, grid.transform.yoff],
         aoi_inside_px=int(aoi.sum()),
+    )
+
+    # ── 3. LoD source-coverage resolution ─────────────────────────────
+    # Immutable evidence (raw archive manifests / LoD provenance) decides
+    # which cells are "covered, no building" (zero) vs "true source gap"
+    # (NaN) at composition time. Rasterized once per vintage on the
+    # analysis grid, then selected per scene by its LoD vintage.
+    lod_artifacts = resolve_lod_coverage_artifacts(static_sources_root)
+    lod_coverage_fingerprints = {str(v): a.fingerprint for v, a in lod_artifacts.items()}
+    lod_cog_fingerprints = {str(v): a.cog_fingerprint for v, a in lod_artifacts.items()}
+    lod_coverage_evidence = {
+        v: {
+            "uris": list(a.uris),
+            "fingerprint": a.fingerprint,
+            "cog_uri": a.cog_uri,
+            "cog_fingerprint": a.cog_fingerprint,
+        }
+        for v, a in lod_artifacts.items()
+    }
+    coverage_masks = {
+        v: rasterize_lod_coverage(a, grid) for v, a in lod_artifacts.items()
+    }
+
+    # ── 4. config hash ───────────────────────────────────────────────
+    config_hash = config_hash_for_features(
+        manifest_hash=inventory.fingerprints["manifest"],
+        geometry_mapping_hash=mapping.content_hash,
+        ard_ledger_hash=inventory.fingerprints["ard_ledger"],
+        static_sources_ledger_hash=inventory.fingerprints.get("static_sources_ledger", ""),
+        static_derived_ledger_hash=inventory.fingerprints["static_derived_ledger"],
+        dynamic_ledger_hash=inventory.fingerprints["dynamic_ledger"],
+        aoi_fingerprint=aoi_fingerprint,
+        vegetation_carry_forward_geometry_id=veg_geometry_id,
+        lod_coverage_fingerprints=lod_coverage_fingerprints,
+        lod_cog_fingerprints=lod_cog_fingerprints,
     )
 
     # S2 acquisition datetimes from the manifest (STAC datetime per stack).
@@ -266,6 +295,8 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
             output_root=output_root,
             led=led,
             run_id=run_id,
+            coverage_masks=coverage_masks,
+            lod_coverage_evidence=lod_coverage_evidence,
         )
         results.append(result)
         if result.status == "done":
@@ -286,7 +317,11 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     report = FeatureRunReport(
         run_id=run_id,
         timestamp=timestamp,
-        fingerprints=inventory.fingerprints,
+        fingerprints={
+            **inventory.fingerprints,
+            "lod_coverage": lod_coverage_fingerprints,
+            "lod_cog": lod_cog_fingerprints,
+        },
         grid={
             "crs": str(grid.crs),
             "shape": [grid.shape.x, grid.shape.y],
@@ -344,11 +379,19 @@ def _process_scene(
     output_root: str,
     led: SecondaryLedger,
     run_id: str,
+    coverage_masks: dict[int, np.ndarray],
+    lod_coverage_evidence: dict[int, dict],
 ) -> SceneFeatureResult:
     """Compose + finalise one assessable scene; returns the report row."""
     item_id = f"feature_{scene.scene_id}"
     source = "feature_stack"
     todo = reconcile([(item_id, source, scene.scene_id)], led, config_hash)
+
+    if scene.lod_vintage not in coverage_masks:
+        raise RuntimeError(
+            f"scene {scene.scene_id}: no LoD coverage for vintage {scene.lod_vintage!r}"
+        )
+    lod_coverage = coverage_masks[scene.lod_vintage]
 
     base_result = SceneFeatureResult(
         scene_id=scene.scene_id,
@@ -383,11 +426,20 @@ def _process_scene(
     )
 
     try:
+        # Each morphology channel maps to (COG URI, band number).
+        # Multi-band source COGs: lod2_morphology (bands 1-4), vegetation_height (bands 1-2).
+        # Single-band: imperviousness (band 1), svf (band 1).
+        lod_uri = scene.static_sources["lod2_morphology"]
+        vh_uri = scene.static_sources["vegetation_height"]
         morphology = {
-            "building_dsm": scene.static_derived["building_dsm"],
-            "vegetation_dsm": veg_dsm_uri,
-            "combined_dsm": scene.static_derived["combined_dsm"],
-            "svf": scene.static_derived["svf"],
+            "building_height_mean": (lod_uri, 1),
+            "building_height_std": (lod_uri, 2),
+            "building_coverage_ratio": (lod_uri, 3),
+            "building_height_max": (lod_uri, 4),
+            "vegetation_height_mean": (vh_uri, 1),
+            "vegetation_height_max": (vh_uri, 2),
+            "imperviousness": (scene.static_sources["imperviousness"], 1),
+            "svf": (scene.static_derived["svf"], 1),
         }
         inputs = FeatureInputs(
             s2_cog=scene.s2_cog,
@@ -398,6 +450,7 @@ def _process_scene(
                 "shadow_building": scene.dynamic["shadow_building"],
                 "shadow_vegetation": scene.dynamic["shadow_vegetation"],
             },
+            lod_coverage=lod_coverage,
         )
 
         composed = compose_feature_stack(inputs, aoi, grid)
@@ -410,7 +463,9 @@ def _process_scene(
             source_metadata={
                 "aoi_uri": aoi_uri,
                 "aoi_fingerprint": aoi_fingerprint,
-                "vegetation_dsm_policy": vegetation_policy,
+                "vegetation_height_policy": vegetation_policy,
+                "lod_vintage": scene.lod_vintage,
+                "lod_coverage": lod_coverage_evidence,
                 "inputs": {
                     "s2_cog": scene.s2_cog,
                     "s2_flag": scene.s2_flag,

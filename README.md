@@ -35,9 +35,9 @@ Manifest + ARD ──► Static / dynamic context ──► Feature stacks ─�
   geometry vintage.
 - **Dynamic context.** Per-anchor ERA5-Land fields and building/vegetation
   shadow masks.
-- **Feature stacks.** Per-anchor 24-band 10 m stacks (spectral indices,
-  morphology, meteorology, shadows) with co-registered validity masks, ready
-  for the training stage.
+- **Feature stacks.** Per-anchor 28-band 10 m stacks (spectral indices,
+  semantic morphology predictors, meteorology, shadows) with co-registered
+  validity masks, ready for the training stage.
 - **QA gates.** Read-only, mask-free validation of every published input,
   plus independent validators per pipeline stage.
 
@@ -49,9 +49,9 @@ basis; the uv lockfile and per-run config fingerprints pin the environment.
 ## Status
 
 Preprocessing is complete: manifest selection, ARD, static and dynamic
-context, and the per-anchor feature stacks are delivered and validated.
-Training-data preparation, the Stage-2 eligibility gate, and model training
-are in progress.
+context, the per-anchor feature stacks, and the Stage-2 feature-stack QA
+gate are delivered and validated. Training-data preparation (including the
+`training_eligible@100m` selection mask) and model training are next.
 
 ## Setup
 
