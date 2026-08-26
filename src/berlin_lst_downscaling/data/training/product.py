@@ -29,6 +29,7 @@ from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
 from berlin_lst_downscaling.data.ard.writer import write_flag_cog_atomic
+from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
 from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
 from berlin_lst_downscaling.data.training.contracts import (
     TRAINING_SCHEMA_VERSION,
@@ -87,6 +88,7 @@ def publish_eligibility(
     policy_hash: str,
     v3_config_hash: str,
     feature_valid_uri: str,
+    feature_provenance_uri: str,
     landsat_cog_uri: str,
     landsat_flag_uri: str,
     geometry_id: str,
@@ -144,6 +146,7 @@ def publish_eligibility(
             policy_hash=policy_hash,
             v3_config_hash=v3_config_hash,
             feature_valid_uri=feature_valid_uri,
+            feature_provenance_uri=feature_provenance_uri,
             landsat_cog_uri=landsat_cog_uri,
             landsat_flag_uri=landsat_flag_uri,
             geometry_id=geometry_id,
@@ -183,6 +186,7 @@ def _publish_locked(
     policy_hash: str,
     v3_config_hash: str,
     feature_valid_uri: str,
+    feature_provenance_uri: str,
     landsat_cog_uri: str,
     landsat_flag_uri: str,
     geometry_id: str,
@@ -206,6 +210,19 @@ def _publish_locked(
     write_flag_cog_atomic(mask_da, cog_uri, _ELIGIBILITY_CONTRACT, overwrite=True)
 
     # ── 2. provenance ──────────────────────────────────────────────────
+    # Chain the immutable source: the scene's feature-stack provenance
+    # (config hash + channel order) is verified and recorded, so the
+    # training artifact is provably derived from V3.
+    source_prov = json.loads(read_bytes(feature_provenance_uri))
+    if source_prov.get("config_hash") != v3_config_hash or list(
+        source_prov.get("channel_order", [])
+    ) != list(FEATURE_CHANNEL_NAMES):
+        raise ValueError(
+            f"scene {result.scene_id}: source feature provenance does not match "
+            f"Feature Release V3 (config_hash {source_prov.get('config_hash')!r}, "
+            f"channel order {len(source_prov.get('channel_order', []))})"
+        )
+
     provenance = {
         "pipeline": "training-data",
         "scene_id": result.scene_id,
@@ -227,6 +244,9 @@ def _publish_locked(
         },
         "inputs": {
             "feature_valid": feature_valid_uri,
+            "feature_provenance": feature_provenance_uri,
+            "feature_config_hash": source_prov.get("config_hash"),
+            "feature_channel_order": list(source_prov.get("channel_order", [])),
             "landsat_cog": landsat_cog_uri,
             "landsat_flag": landsat_flag_uri,
         },
@@ -240,19 +260,23 @@ def _publish_locked(
 
     # ── 2b. provenance read-back (immutability hardening) ──────────────
     # The create-only marker below atomically commits the scene. Verify
-    # the provenance just written carries THIS run's policy hash and scene
-    # identity before committing: a concurrent publisher that clobbered
-    # the artifact would produce a mixed-identity immutable scene.
+    # the provenance just written carries THIS run's policy hash, scene
+    # identity, and the chained source config hash before committing: a
+    # concurrent publisher that clobbered the artifact would produce a
+    # mixed-identity immutable scene.
     written = json.loads(read_bytes(provenance_uri))
+    written_inputs = written.get("inputs", {})
     if (
         written.get("policy_hash") != policy_hash
         or written.get("scene_id") != result.scene_id
         or written.get("v3_config_hash") != v3_config_hash
+        or written_inputs.get("feature_config_hash") != v3_config_hash
     ):
         raise ValueError(
             f"scene {result.scene_id}: written provenance does not match this run "
             f"(policy_hash {written.get('policy_hash')!r}, "
             f"v3_config_hash {written.get('v3_config_hash')!r}, "
+            f"feature_config_hash {written_inputs.get('feature_config_hash')!r}, "
             f"scene {written.get('scene_id')!r})"
         )
 

@@ -52,6 +52,7 @@ class TrainingRunReport:
     aggregate: dict
     scenes: list[SceneTrainingResult]
     release_uris: dict[str, str] = field(default_factory=dict)
+    readback: dict = field(default_factory=dict)  # publisher-side readback evidence
 
     @property
     def ok(self) -> bool:
@@ -90,6 +91,8 @@ def write_report(report: TrainingRunReport, output_root: str) -> str:
             "exclusion_reasons": report.exclusion_reasons,
         },
         "aggregate": report.aggregate,
+        "readback": report.readback,
+        "release_uris": report.release_uris,
         "scene_results": [
             {
                 "scene_id": s.scene_id,
