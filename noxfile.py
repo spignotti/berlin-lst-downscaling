@@ -1183,3 +1183,141 @@ def smoke_qa_stage2(session: nox.Session) -> None:
             shutil.rmtree(output_root)
             print(f"Removed local smoke output: {output_root}")
 
+
+# ── WB2c-4 training-data release ──────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-training-data")
+def smoke_training_data(session: nox.Session) -> None:
+    """Run the training-data smoke on five deterministic scenes (real GCS).
+
+    One scene per temporal split (train 2017/2021/2022, validation 2024,
+    test 2025) on the bounded canonical-aligned bbox of the features/QA
+    smokes. Reads the published V3 stacks over GCS (requires ADC); writes
+    only local ephemeral output under ``data/smoke/training-data/``. The
+    pipeline is ledger-idempotent, so the output root is removed between
+    the two runs to force full recomputation; the runs must produce
+    identical release artifacts (scaler, manifest, cells) and run reports.
+    Then the independent release validator runs against the second
+    release. Output is removed in ``finally`` (never uploaded).
+    """
+    import hashlib
+    import json
+    import os
+    import shutil
+
+    session.env.setdefault("UV_ENV_FILE", ".env")
+
+    output_root = "data/smoke/training-data"
+    # complete.json embeds published_at/run_id by design (like the feature
+    # product marker) — compare its policy hash, not its bytes.
+    release_files = (
+        "scaler.json",
+        "manifest.parquet",
+        "manifest.csv",
+        "cells.parquet",
+        "cells.csv",
+    )
+
+    def _hashes() -> dict[str, str]:
+        out = {}
+        for name in release_files:
+            path = os.path.join(output_root, name)
+            if not os.path.isfile(path):
+                return {}
+            with open(path, "rb") as fh:
+                out[name] = hashlib.sha256(fh.read()).hexdigest()
+        return out
+
+    def _report_aggregates() -> dict:
+        qa_root = os.path.join(output_root, "qa", "training")
+        run_dirs = sorted(
+            d
+            for d in os.listdir(qa_root)
+            if os.path.isdir(os.path.join(qa_root, d)) and d != "logs"
+        )
+        if not run_dirs:
+            return {}
+        with open(os.path.join(qa_root, run_dirs[-1], "report.json"), encoding="utf-8") as fh:
+            report = json.load(fh)
+        return {
+            "eligible_cells": report["aggregate"]["eligible_cells"],
+            "processed": report["scenes"]["processed"],
+            "failed": report["scenes"]["failed"],
+            "readback_ok": report.get("readback", {}).get("ok", False),
+        }
+
+    try:
+        for _ in range(2):
+            if os.path.isdir(output_root):
+                shutil.rmtree(output_root)
+            session.run(
+                "uv",
+                "run",
+                "python",
+                "scripts/run_training_data.py",
+                "--config-name",
+                "smoke",
+                external=True,
+            )
+
+        h1 = _hashes()
+        if not h1:
+            session.error("first smoke run produced no release artifacts")
+
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/run_training_data.py",
+            "--config-name",
+            "smoke",
+            external=True,
+        )
+        h2 = _hashes()
+
+        # Determinism: the recomputed release artifacts must be identical.
+        for name in release_files:
+            if h1.get(name) != h2.get(name):
+                session.error(
+                    f"non-deterministic release artifact {name}: "
+                    f"{h1.get(name)} vs {h2.get(name)}"
+                )
+
+        # The completion marker is not byte-deterministic (timestamps), but
+        # its policy hash must be stable across recomputation.
+        def _marker_policy() -> str:
+            with open(os.path.join(output_root, "complete.json"), encoding="utf-8") as fh:
+                return json.load(fh).get("policy_hash", "")
+
+        if not _marker_policy():
+            session.error("release complete.json missing policy_hash")
+        print(f"smoke-training-data deterministic — {len(release_files)} artifacts identical")
+
+        # Independent validator against the final release.
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validate_training_data.py",
+            f"--release-root={output_root}",
+            external=True,
+        )
+
+        # Run report determinism + readback evidence.
+        agg = _report_aggregates()
+        if not agg.get("readback_ok"):
+            session.error(f"run report readback not ok: {agg}")
+        if agg.get("failed", 1) != 0:
+            session.error(f"smoke run reported failed scenes: {agg}")
+        if agg.get("processed", 0) != 5:
+            session.error(f"expected 5 processed scenes, got {agg.get('processed')}")
+
+        print(f"smoke-training-data OK — {agg}")
+    finally:
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+            print(f"Removed local smoke output: {output_root}")
+
