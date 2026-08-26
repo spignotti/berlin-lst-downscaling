@@ -194,10 +194,39 @@ selection mask is produced — `training_eligible@100m` is a WB2c-4
   `qa/stage2_features/` as historical evidence but refers to the
   superseded V2 stacks.
 
+## WB2c-4 training-data release (delivered)
+
+The approved training contract is implemented as a reproducible release
+under `gs://berlin-lst-data/training/v1` (pipeline `data/training/`,
+runner `scripts/run_training_data.py`, independent validator
+`scripts/validate_training_data.py`, smoke gate `nox -s smoke-training-data`,
+VM wrapper `scripts/run_training_data_vm.sh`). Full normative details are
+in `data-sources-and-contracts.md` § WB2c-4 training-data release.
+
+- **Input basis pinned to Feature Release V3** (324 done scenes, config
+  hash `d9eb25995b2f4911`); V1/V2 are hard-rejected.
+- **Temporal contract:** 2017-2023 train, 2024 validation, 2025 test,
+  2026 inference (metadata-only, `inference_deferred`).
+- **Eligibility:** strict 100/100 support; scenes with zero eligible
+  cells are excluded with `no_eligible_cells` (no sparse category).
+- **Cells:** stable spatial `cell_id` from the canonical EPSG:25833 grid.
+- **Scaler:** train-only, eligible cells only; z-score, log1p+z-score for
+  precipitation, identity for shadows; Welford population statistics.
+- **QA:** independent validator + publisher-side readback; deterministic
+  smoke; guarded VM publication.
+
+**2026 decision (user, 2026-08-26).** The 21 raw 2026 anchor pairings
+are retained in the manifest/ARD but deliberately **not** materialised
+into V3 features now. They are metadata-only in this release. After the
+model is trained, a dedicated inference-preparation task reuses the
+feature composer (not a second methodology) to produce 2026 features
+under an inference-specific release root, then the trained model runs
+over them.
+
 ## Next steps (separate session)
 
-- WB2c-4 training-data preparation: define and publish the
-  `training_eligible@100m` selection mask (feature support threshold,
-  flagged-value handling, splits) from the Stage-2 evidence.
-
-Planned in Notion and scheduled as its own session.
+- WB3 training: consume `training/v1` (features, eligibility, splits,
+  cells, scaler) — patch geometry, samplers, model training, spatial CV
+  and Zarr materialisation are WB3 scope.
+- Later: 2026 inference-preparation (V3 features for 2026 + trained-model
+  application).

@@ -413,3 +413,78 @@ It is **not** byte-exact reproducible from an empty bucket:
 
 Validators and the pinned bundle/caches, not byte identity, are the
 reproducibility basis.
+
+## WB2c-4 training-data release (training/v1)
+
+The training handoff is the reproducible transfer of Feature Release V3
+into leakage-free training inputs for WB3. It is published under
+`gs://berlin-lst-data/training/v1` (per-scene artifacts + top-level
+manifest, cell index, scaler, and release marker), built by
+`scripts/run_training_data.py` (`data/training/`).
+
+**Input basis.** Feature Release V3 is the only permitted input
+(user-mandated; V1/V2 are hard-rejected). The pipeline verifies the
+features root, the V3 ledger (324 done rows, config hash
+`d9eb25995b2f4911`), and each scene's `provenance.json` (config hash +
+canonical 28-channel order) before any publication.
+
+**Temporal split contract** (user-mandated). 2017-2023 train, 2024
+validation, 2025 test, 2026 inference. 2026 anchors are metadata-only
+(`split=inference`, reason `inference_deferred`): no feature
+materialisation, no eligibility mask, no cells, no scaler contribution.
+A later inference-preparation task reuses the feature composer to provide
+2026 features before the trained model is applied. The split is
+deterministic per year; every `s2_scene_id` appears in exactly one
+non-inference split (leakage check in the release step and the validator).
+
+**Eligibility rule** (`training_eligible@100m`, user-mandated). A 100 m
+cell is eligible iff the Landsat target cell is valid (ARD flag `0` and
+LST in `[150, 400] K`) and **all 100** of its 10 m `feature_valid`
+subpixels are valid (strict 100/100 support; edge-truncated cells are
+never eligible). No imputation, no extra input masks, no sparse category:
+a scene with zero eligible cells is excluded with reason
+`no_eligible_cells` (its all-zero mask is still published for audit).
+
+**Artifacts.** Per scene:
+`<scene_id>.training_eligible_100m.tif` (uint8 0/1, canonical 100 m
+EPSG:25833 grid), `provenance.json` (policy hash, V3 config hash, chained
+source feature provenance), `complete.json` (create-only, written last).
+Top level: `manifest.parquet/csv` (per-scene table), `cells.parquet/csv`
+(stable spatial `cell_id` `E{easting}N{northing}` from the canonical grid
+row/col, one row per eligible cell), `scaler.json` (train-only
+statistics), `complete.json` (release marker, create-only, written last).
+Ledger: `_state/training/ledger.parquet` (`source=training_eligibility`,
+`config_hash=policy_hash`). Run reports:
+`qa/training/<run_id>/report.json` (includes a publisher-side readback of
+every published artifact).
+
+**Scaler** (train-only, user-mandated). Statistics derive exclusively
+from train-split scenes and only from 10 m pixels inside eligible 100 m
+cells. Continuous channels are z-scored; the three precipitation channels
+(`tp_0_24h`, `tp_24_48h`, `tp_48_72h`) are `log1p` then z-scored; the two
+shadow channels are identity (0/1 unchanged). Population variance
+(`ddof=0`) via a streaming Welford accumulator. Validation, test, and
+2026 never contribute. `scaler.json` records channel order, transforms,
+mean/std/count per channel, training years, split hash, V3 config hash,
+and policy hash.
+
+**Policy hash.** `training_policy_hash` (in `data/training/contracts.py`)
+covers the split mapping, support rule, cell-ID formula, scaler policy,
+channel order, and V3 config hash. Any policy change invalidates the
+published artifacts via the ledger's `config_changed` reconcile path.
+
+**Validation.** `scripts/validate_training_data.py` is an independent
+read-only probe over the release root: V3 source gate, per-scene COG
+contract, manifest coverage/splits/leakage, deterministic cell IDs, cells
+vs manifest vs COG counts, scaler contract and train-only provenance, and
+full artifact readback. The smoke gate (`nox -s smoke-training-data`)
+runs the pipeline twice on one scene per split with a clean slate between
+runs, asserts deterministic release artifacts, and runs the validator.
+The full release runs on the VM via `scripts/run_training_data_vm.sh`
+(guardrailed lifecycle, then the same validator).
+
+**Responsibility boundary to WB3.** This release fixes the training
+inputs (features, eligibility, splits, cell identity, scaler) and the
+model input interface (28-channel order). Patch geometry, sampling,
+batch generation, model training, spatial CV, and Zarr materialisation
+are WB3 scope.
