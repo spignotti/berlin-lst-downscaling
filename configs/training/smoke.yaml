@@ -1,0 +1,22 @@
+# @package _global_
+# Smoke: one deterministic scene per temporal split (train 2017/2021/2022,
+# validation 2024, test 2025) on the bounded canonical-aligned bbox of the
+# features/QA smokes. Reads real published GCS inputs; writes only local
+# ephemeral output under data/smoke/training-data/ (removed after the nox
+# smoke session, never uploaded).
+defaults:
+  - _base
+  - _self_
+
+scene_ids:
+  - "LC08_L2SP_193023_20170720_02_T1"  # 2017, train
+  - "LC08_L2SP_192024_20210910_02_T1"  # 2021, train
+  - "LC09_L2SP_193023_20220624_02_T1"  # 2022, train
+  - "LC09_L2SP_193023_20240629_02_T1"  # 2024, validation
+  - "LC09_L2SP_193023_20250819_02_T1"  # 2025, test
+
+# Bounded canonical-aligned subset inside the Berlin bbox (~1.45k x 1.06k
+# 10m px). Matches configs/features/smoke.yaml and configs/qa/*_smoke.yaml.
+bbox: [13.4602832, 52.4041766, 13.6691668, 52.4965573]
+
+output_root: "data/smoke/training-data"
