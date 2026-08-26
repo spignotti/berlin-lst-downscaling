@@ -388,6 +388,11 @@ def _process_scene(
                 f"scene {scene.scene_id}: ledger done row without completion marker "
                 f"({row.completion_uri}) — re-finalise"
             )
+        if not row.output_uri or not exists(row.output_uri):
+            raise RuntimeError(
+                f"scene {scene.scene_id}: ledger done row without readable eligibility "
+                f"COG ({row.output_uri}) — re-finalise"
+            )
         try:
             prov = json.loads(read_bytes(row.provenance_uri))
         except Exception as exc:  # noqa: BLE001
@@ -399,7 +404,14 @@ def _process_scene(
                 f"scene {scene.scene_id}: published provenance policy_hash "
                 f"{prov.get('policy_hash')!r} != {policy_hash!r}"
             )
+        if prov.get("scene_id") != scene.scene_id:
+            raise RuntimeError(
+                f"scene {scene.scene_id}: published provenance scene_id "
+                f"{prov.get('scene_id')!r} != {scene.scene_id}"
+            )
         counts = prov.get("counts", {})
+        if "eligible_cells" not in counts or "target_valid_cells" not in counts:
+            raise RuntimeError(f"scene {scene.scene_id}: published provenance lacks counts")
         base_result.status = "done"
         base_result.eligible_cells = int(counts.get("eligible_cells", 0))
         base_result.target_valid_cells = int(counts.get("target_valid_cells", 0))
@@ -571,48 +583,54 @@ def publish_release(
             run_id=run_id,
             policy_hash=policy_hash,
         )
-    finally:
-        _delete_uri(lock_uri)
 
-    # Publisher-side readback: verify every per-scene eligibility COG and
-    # every top-level artifact is actually published and contract-conform
-    # BEFORE the release completion marker is written. A release whose
-    # readback fails is never marked complete (it stays invisible).
-    report.readback = _readback_release(
-        report=report,
-        output_root=output_root,
-        policy_hash=policy_hash,
-        marker_expected=False,
-    )
-    if not report.readback.get("ok"):
-        raise RuntimeError(
-            f"release readback failed — completion marker NOT written: "
-            f"{report.readback.get('errors')}"
+        # Publisher-side readback: verify every per-scene eligibility COG
+        # and every top-level artifact is actually published and
+        # contract-conform BEFORE the release completion marker is
+        # written. A release whose readback fails is never marked complete
+        # (it stays invisible).
+        report.readback = _readback_release(
+            report=report,
+            output_root=output_root,
+            policy_hash=policy_hash,
+            marker_expected=False,
+        )
+        if not report.readback.get("ok"):
+            raise RuntimeError(
+                f"release readback failed — completion marker NOT written: "
+                f"{report.readback.get('errors')}"
+            )
+
+        # Release completion marker written last (create-only): the
+        # release becomes visible only when every artifact is in place AND
+        # readback passed.
+        marker = {"published_at": now_iso(), "run_id": run_id, "policy_hash": policy_hash}
+        atomic_write(
+            completion_uri,
+            json.dumps(marker, indent=2),
+            overwrite=False,
+            if_generation_match=0,
         )
 
-    # Release completion marker written last (create-only): the release
-    # becomes visible only when every artifact is in place AND readback
-    # passed.
-    marker = {"published_at": now_iso(), "run_id": run_id, "policy_hash": policy_hash}
-    atomic_write(
-        completion_uri,
-        json.dumps(marker, indent=2),
-        overwrite=False,
-        if_generation_match=0,
-    )
-
-    # Post-write marker verification: the marker must read back with the
-    # policy hash before the release is reported as complete.
-    report.readback = _readback_release(
-        report=report,
-        output_root=output_root,
-        policy_hash=policy_hash,
-        marker_expected=True,
-    )
-    if not report.readback.get("ok"):
-        raise RuntimeError(f"release marker verification failed: {report.readback.get('errors')}")
-    uris["complete"] = completion_uri
-    return uris
+        # Post-write marker verification: the marker must read back with
+        # the policy hash before the release is reported as complete.
+        report.readback = _readback_release(
+            report=report,
+            output_root=output_root,
+            policy_hash=policy_hash,
+            marker_expected=True,
+        )
+        if not report.readback.get("ok"):
+            raise RuntimeError(
+                f"release marker verification failed: {report.readback.get('errors')}"
+            )
+        uris["complete"] = completion_uri
+        return uris
+    finally:
+        # The lock is held across artifact writes, both readbacks, and the
+        # create-only marker — a second publisher cannot interleave
+        # artifacts, readback, or marker publication.
+        _delete_uri(lock_uri)
 
 
 def _publish_release_locked(
