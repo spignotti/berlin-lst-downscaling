@@ -145,7 +145,8 @@ def _verify_v3_release(
         rows[period] = {name: cols[name][i] for name in cols}
 
     # Per-scene provenance: pinned config hash + canonical channel order —
-    # verified for every assessable scene, not only the configured subset.
+    # full runs verify every ledger row; smoke runs verify the configured
+    # subset (the only scenes it processes).
     targets = scene_ids if scene_ids else sorted(rows)
     for scene_id in targets:
         prov_uri = feature_provenance(features_root, scene_id)

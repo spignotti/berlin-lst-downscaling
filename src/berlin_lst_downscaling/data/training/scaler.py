@@ -30,6 +30,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNELS,
 )
 from berlin_lst_downscaling.data.features.paths import feature_cog
+from berlin_lst_downscaling.data.qa.stage1_raw import _window_offset
 from berlin_lst_downscaling.data.training.contracts import (
     PRECIP_CHANNELS,
     SHADOW_CHANNELS,
@@ -173,13 +174,6 @@ def fit_scaler(
         "variance": "population (ddof=0), Welford streaming",
         "channels": channels,
     }
-
-
-def _window_offset(src: rasterio.DatasetReader, analysis: GeoBox, res: float) -> tuple[int, int]:
-    """Return (col_off, row_off) mapping analysis-grid indices onto *src* pixels."""
-    col_off = round((analysis.transform.xoff - src.transform.xoff) / res)
-    row_off = round((src.transform.yoff - analysis.transform.yoff) / res)
-    return col_off, row_off
 
 
 __all__ = ["fit_scaler"]
