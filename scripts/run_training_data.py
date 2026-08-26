@@ -26,10 +26,8 @@ import hydra
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
-from berlin_lst_downscaling.data.training.pipeline import (
-    run_training_data,
-    write_report,
-)
+from berlin_lst_downscaling.data.training.pipeline import run_training_data
+from berlin_lst_downscaling.data.training.report import write_report
 
 _logger = logging.getLogger(__name__)
 
@@ -72,6 +70,8 @@ def main(cfg: DictConfig) -> int:
                 print(f"    ✗ {scene.scene_id}: {scene.error}")
         print(f"Policy hash : {report.policy_hash}")
         print(f"V3 config   : {report.v3_config_hash}")
+        for label, uri in sorted(report.release_uris.items()):
+            print(f"  {label:<16}: {uri}")
         print(f"Report: {report_uri}")
 
         # Hydra 1.3.4 discards the decorated task's return value, so

@@ -20,13 +20,11 @@ from __future__ import annotations
 import io
 import json
 import logging
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from uuid import uuid4
 
 import pyarrow.parquet as pq
 from odc.geo.geobox import GeoBox
 
+from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
 from berlin_lst_downscaling.data.features.paths import (
     feature_mask_cog,
@@ -35,7 +33,7 @@ from berlin_lst_downscaling.data.features.paths import (
 from berlin_lst_downscaling.data.features.paths import (
     ledger_path as features_ledger_path,
 )
-from berlin_lst_downscaling.data.io import atomic_write, log_event, read_bytes
+from berlin_lst_downscaling.data.io import atomic_write, exists, log_event, read_bytes
 from berlin_lst_downscaling.data.qa.inventory import (
     INFERENCE_EXCLUSION_REASON,
     ResolvedScene,
@@ -54,13 +52,31 @@ from berlin_lst_downscaling.data.training.contracts import (
 from berlin_lst_downscaling.data.training.eligibility import (
     compute_eligibility,
 )
+from berlin_lst_downscaling.data.training.index import (
+    CELLS_FIELDNAMES,
+    MANIFEST_FIELDNAMES,
+    build_cells_rows,
+    build_manifest_rows,
+)
 from berlin_lst_downscaling.data.training.paths import (
+    cells_csv,
+    cells_parquet,
     ledger_path,
-    qa_report_path,
+    manifest_csv,
+    manifest_parquet,
+    release_completion,
+    scaler_json,
 )
 from berlin_lst_downscaling.data.training.product import (
     publish_eligibility,
 )
+from berlin_lst_downscaling.data.training.report import (
+    SceneTrainingResult,
+    TrainingRunReport,
+    new_run_id,
+    now_iso,
+)
+from berlin_lst_downscaling.data.training.scaler import fit_scaler
 
 _logger = logging.getLogger(__name__)
 
@@ -68,50 +84,6 @@ _logger = logging.getLogger(__name__)
 # root is ``gs://berlin-lst-data/features/v3``; smoke configs use the same
 # published root (they read real GCS stacks).
 V3_FEATURES_ROOT = "gs://berlin-lst-data/features/v3"
-
-
-# ── report types ─────────────────────────────────────────────────────
-
-
-@dataclass
-class SceneTrainingResult:
-    """One per-scene row of the training run report."""
-
-    scene_id: str
-    year: int
-    s2_scene_id: str
-    split: str  # train | validation | test | inference
-    status: str  # done | excluded | failed
-    sensor: str
-    eligible_cells: int | None = None
-    target_valid_cells: int | None = None
-    exclusion_reason: str | None = None
-    error: str | None = None
-
-
-@dataclass
-class TrainingRunReport:
-    """Complete training-data run report (serialised to report.json)."""
-
-    run_id: str
-    timestamp: str
-    inputs: dict
-    fingerprints: dict
-    grid: dict
-    policy_hash: str
-    v3_config_hash: str
-    total_pairings: int
-    assessed: int
-    processed: int
-    failed: int
-    excluded: int
-    exclusion_reasons: dict[str, int]
-    aggregate: dict
-    scenes: list[SceneTrainingResult]
-
-    @property
-    def ok(self) -> bool:
-        return self.failed == 0
 
 
 # ── V3 release gate ───────────────────────────────────────────────────
@@ -189,8 +161,8 @@ def _verify_v3_release(
 def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
     """Run the training-data eligibility pipeline for the configured universe."""
     if run_id is None:
-        run_id = uuid4().hex[:8]
-    timestamp = datetime.now(UTC).isoformat()
+        run_id = new_run_id()
+    timestamp = now_iso()
 
     features_root = str(cfg.features_root)
     output_root = str(cfg.output_root)
@@ -338,6 +310,18 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
         failed=failed,
         eligible_cells=agg["eligible_cells"],
     )
+
+    # ── 4. release assembly (manifest, cells, scaler, marker) ─────────
+    # Idempotent for the same policy hash; refuses a policy change under
+    # an existing release marker (immutable release).
+    report.release_uris = publish_release(
+        report,
+        features_root=features_root,
+        output_root=output_root,
+        grid_10m=grid_10m,
+        run_id=run_id,
+        policy_hash=policy_hash,
+    )
     return report
 
 
@@ -468,55 +452,154 @@ def _read_provenance(uri: str) -> dict:
         return {}
 
 
-# ── report serialisation ─────────────────────────────────────────────
+# ── release assembly ──────────────────────────────────────────────────
 
 
-def write_report(report: TrainingRunReport, output_root: str) -> str:
-    """Persist the run report JSON under ``qa/training/<run_id>/report.json``."""
-    uri = qa_report_path(output_root, report.run_id)
-    payload = {
-        "pipeline": "training-data",
-        "run_id": report.run_id,
-        "timestamp": report.timestamp,
-        "ok": report.ok,
-        "inputs": report.inputs,
-        "fingerprints": report.fingerprints,
-        "grid": report.grid,
-        "policy_hash": report.policy_hash,
-        "v3_config_hash": report.v3_config_hash,
-        "scenes": {
-            "total_pairings": report.total_pairings,
-            "assessed": report.assessed,
-            "processed": report.processed,
-            "failed": report.failed,
-            "excluded": report.excluded,
-            "exclusion_reasons": report.exclusion_reasons,
-        },
-        "aggregate": report.aggregate,
-        "scene_results": [
-            {
-                "scene_id": s.scene_id,
-                "year": s.year,
-                "s2_scene_id": s.s2_scene_id,
-                "split": s.split,
-                "status": s.status,
-                "sensor": s.sensor,
-                "eligible_cells": s.eligible_cells,
-                "target_valid_cells": s.target_valid_cells,
-                "exclusion_reason": s.exclusion_reason,
-                "error": s.error,
-            }
-            for s in report.scenes
-        ],
-    }
-    atomic_write(uri, json.dumps(payload, indent=2, default=str), overwrite=True)
-    return uri
+def publish_release(
+    report: TrainingRunReport,
+    *,
+    features_root: str,
+    output_root: str,
+    grid_10m: GeoBox,
+    run_id: str,
+    policy_hash: str,
+) -> dict[str, str]:
+    """Publish manifest, cells, scaler, and the release completion marker.
+
+    Refuses to overwrite once the top-level completion marker exists
+    (the release is immutable). If the marker exists **and** carries the
+    same policy hash, the release is already complete and this is an
+    idempotent no-op (smoke re-runs). A different policy hash is a hard
+    error — a policy change requires a new release root.
+    """
+    completion_uri = release_completion(output_root)
+    if exists(completion_uri):
+        marker = json.loads(read_bytes(completion_uri))
+        if marker.get("policy_hash") == policy_hash:
+            return {"complete": completion_uri}
+        raise RuntimeError(
+            f"training release already published under a different policy hash "
+            f"({marker.get('policy_hash')!r} != {policy_hash!r}) — immutable"
+        )
+
+    uris: dict[str, str] = {}
+
+    _validate_split_leakage(report.scenes)
+
+    manifest_rows = build_manifest_rows(
+        report.scenes, features_root=features_root, output_root=output_root
+    )
+    cells_rows = build_cells_rows(report.scenes, output_root=output_root)
+    scaler = fit_scaler(
+        report.scenes,
+        features_root=features_root,
+        output_root=output_root,
+        grid_10m=grid_10m,
+    )
+    scaler["policy_hash"] = policy_hash
+    scaler["v3_config_hash"] = EXPECTED_V3_CONFIG_HASH
+    scaler["split_hash"] = _split_hash(report.scenes)
+    scaler["training_years"] = sorted({s.year for s in report.scenes if s.split == "train"})
+    scaler["transform_policy"] = (
+        "zscore: continuous channels; log1p+zscore: tp_0_24h/tp_24_48h/tp_48_72h; "
+        "identity: shadow_building/shadow_vegetation"
+    )
+
+    _write_table(
+        manifest_rows,
+        MANIFEST_FIELDNAMES,
+        manifest_parquet(output_root),
+        manifest_csv(output_root),
+    )
+    uris["manifest_parquet"] = manifest_parquet(output_root)
+    uris["manifest_csv"] = manifest_csv(output_root)
+
+    _write_table(
+        cells_rows,
+        CELLS_FIELDNAMES,
+        cells_parquet(output_root),
+        cells_csv(output_root),
+    )
+    uris["cells_parquet"] = cells_parquet(output_root)
+    uris["cells_csv"] = cells_csv(output_root)
+
+    scaler_uri = scaler_json(output_root)
+    atomic_write(scaler_uri, json.dumps(scaler, indent=2), overwrite=True)
+    uris["scaler"] = scaler_uri
+
+    # Release completion marker written last (create-only): the release
+    # becomes visible only when every artifact above is in place.
+    marker = {"published_at": now_iso(), "run_id": run_id, "policy_hash": policy_hash}
+    atomic_write(
+        completion_uri,
+        json.dumps(marker, indent=2),
+        overwrite=False,
+        if_generation_match=0,
+    )
+    uris["complete"] = completion_uri
+    return uris
+
+
+def _validate_split_leakage(results: list[SceneTrainingResult]) -> None:
+    """Fail if any s2_scene_id occurs in more than one non-inference split.
+
+    The temporal contract requires every Landsat anchor sharing the same
+    Sentinel-2 scene to stay in exactly one split (user-mandated). 2026
+    inference scenes are excluded from this invariant (they are not
+    assigned to a training split).
+    """
+    split_of: dict[str, str] = {}
+    scene_of: dict[str, str] = {}
+    for s in results:
+        if s.split == "inference":
+            continue
+        prior = split_of.get(s.s2_scene_id)
+        if prior is not None and prior != s.split:
+            raise RuntimeError(
+                f"s2_scene_id {s.s2_scene_id!r} spans splits {prior!r} and "
+                f"{s.split!r} (scenes {scene_of[s.s2_scene_id]!r}, {s.scene_id!r}) "
+                f"— temporal leakage"
+            )
+        split_of.setdefault(s.s2_scene_id, s.split)
+        scene_of.setdefault(s.s2_scene_id, s.scene_id)
+
+
+def _split_hash(results: list[SceneTrainingResult]) -> str:
+    """Return a stable hash over the scene -> split assignment."""
+    mapping = {s.scene_id: s.split for s in results}
+    payload = json.dumps(mapping, sort_keys=True)
+    return sha256_bytes(payload.encode())[:16]
+
+
+def _write_table(
+    rows: list[dict],
+    fieldnames: list[str],
+    parquet_uri: str,
+    csv_uri: str,
+) -> None:
+    """Write a row list as Parquet + CSV via atomic writes."""
+    import csv as _csv
+    import io as _io
+
+    import pyarrow as pa
+    import pyarrow.parquet as _pq
+
+    table = pa.Table.from_pylist(rows)
+    buf = pa.BufferOutputStream()
+    _pq.write_table(table, buf)
+    atomic_write(parquet_uri, buf.getvalue().to_pybytes(), overwrite=True)
+
+    csv_buf = _io.StringIO()
+    writer = _csv.DictWriter(csv_buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write(csv_uri, csv_buf.getvalue().encode("utf-8"), overwrite=True)
 
 
 __all__ = [
     "SceneTrainingResult",
     "TrainingRunReport",
     "V3_FEATURES_ROOT",
+    "publish_release",
     "run_training_data",
-    "write_report",
 ]

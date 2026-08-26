@@ -9,12 +9,18 @@ from berlin_lst_downscaling.data.training.contracts import (
     split_for_year,
     training_policy_hash,
 )
+from berlin_lst_downscaling.data.training.report import (
+    SceneTrainingResult,
+    TrainingRunReport,
+)
 
 __all__ = [
     "INFERENCE_DEFERRED_REASON",
     "NO_ELIGIBLE_CELLS_REASON",
+    "SceneTrainingResult",
     "SPLIT_BY_YEAR",
     "TRAINING_SCHEMA_VERSION",
+    "TrainingRunReport",
     "cell_id",
     "split_for_year",
     "training_policy_hash",
