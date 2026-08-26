@@ -48,6 +48,7 @@ import io
 import json
 from collections import Counter
 
+import numpy as np
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.features.contracts import (
@@ -115,14 +116,21 @@ def _list_objects(prefix: str) -> list[str]:
 
 def _check_eligibility_cogs(
     release_root: str, scene_ids: list[str], errors: list[str]
-) -> dict[str, int]:
+) -> tuple[dict[str, int], dict[str, set[str]]]:
     """Verify every published scene's eligibility COG contract + marker.
 
-    Returns ``{scene_id: eligible_cells}`` for the cells-table cross-check.
+    Checks the full raster geometry: CRS EPSG:25833, single uint8 band,
+    ~~~~100 m pixel size with no rotation/shear, origin on the canonical
+    100 m lattice, and (for the full release — expected_scenes set) the
+    exact canonical 389x470 shape. Also returns the deterministic cell-ID
+    set per scene for the cells-table cross-check.
     """
     import rasterio
 
+    from berlin_lst_downscaling.data.training.contracts import cell_id as _cell_id
+
     counts: dict[str, int] = {}
+    cell_ids: dict[str, set[str]] = {}
     for scene_id in scene_ids:
         cog_uri = eligibility_cog(release_root, scene_id)
         if not exists(cog_uri):
@@ -137,8 +145,15 @@ def _check_eligibility_cogs(
                         f"{scene_id}: band count/dtype {src.count}/{src.dtypes[0]}, "
                         "expected 1/uint8"
                     )
-                # Canonical 100 m grid (full-release check: exact shape + origin;
-                # smoke subsets are canonical-aligned but smaller — checked by origin).
+                # Pixel size + orientation: exactly 100 m, no rotation/shear.
+                if (
+                    abs(abs(src.transform.a) - _CELL) > 1e-6
+                    or abs(abs(src.transform.e) - _CELL) > 1e-6
+                ):
+                    errors.append(f"{scene_id}: pixel size not 100 m")
+                if abs(src.transform.b) > 1e-6 or abs(src.transform.d) > 1e-6:
+                    errors.append(f"{scene_id}: rotated/skewed transform")
+                # Origin on the canonical 100 m lattice.
                 if (
                     abs(src.transform.xoff - _CANON_X) % _CELL > 1e-6
                     or abs(src.transform.yoff - _CANON_Y) % _CELL > 1e-6
@@ -148,17 +163,30 @@ def _check_eligibility_cogs(
                 if set(int(v) for v in mask.flatten().tolist()) - {0, 1}:
                     errors.append(f"{scene_id}: eligibility values not in {{0,1}}")
                 counts[scene_id] = int((mask == 1).sum())
+                # Deterministic cell-ID set from global canonical row/col.
+                rows, cols_idx = np.where(mask == 1)
+                ids = set()
+                for r, c in zip(rows, cols_idx, strict=False):
+                    gcol = round((src.transform.xoff - _CANON_X) / _CELL) + int(c)
+                    grow = round((_CANON_Y - src.transform.yoff) / _CELL) + int(r)
+                    ids.add(_cell_id(grow, gcol))
+                cell_ids[scene_id] = ids
         except Exception as exc:  # noqa: BLE001 — read-only probe
             errors.append(f"{scene_id}: eligibility COG unreadable: {exc}")
         if not exists(eligibility_completion(release_root, scene_id)):
             errors.append(f"{scene_id}: per-scene completion marker missing")
-    return counts
+    return counts, cell_ids
 
 
 # ── manifest ──────────────────────────────────────────────────────────
 
 
-def _check_manifest(release_root: str, errors: list[str], warnings: list[str]) -> dict[str, dict]:
+def _check_manifest(
+    release_root: str,
+    errors: list[str],
+    warnings: list[str],
+    expected_scenes: int | None,
+) -> dict[str, dict]:
     """Verify the scene manifest (year coverage, splits, leakage, exclusions)."""
     table = _read_table(manifest_parquet(release_root))
     cols = table.to_pydict()
@@ -184,10 +212,16 @@ def _check_manifest(release_root: str, errors: list[str], warnings: list[str]) -
     if n == 0:
         errors.append("manifest.parquet is empty")
         return {}
+    if expected_scenes is not None and n != expected_scenes:
+        errors.append(f"manifest rows {n} != expected {expected_scenes}")
 
     years = {int(v) for v in cols["year"]}
     if not years.issubset(set(SPLIT_BY_YEAR)):
         errors.append(f"manifest years outside contract: {sorted(years - set(SPLIT_BY_YEAR))}")
+    if expected_scenes is not None:
+        missing_years = set(SPLIT_BY_YEAR) - years
+        if missing_years:
+            errors.append(f"full release missing years: {sorted(missing_years)}")
 
     manifest: dict[str, dict] = {}
     split_of_s2: dict[str, str] = {}
@@ -262,12 +296,15 @@ def _check_manifest(release_root: str, errors: list[str], warnings: list[str]) -
 def _check_cells(
     release_root: str,
     manifest: dict[str, dict],
+    cog_cell_ids: dict[str, set[str]],
     errors: list[str],
 ) -> int:
     """Verify the eligible-cell index against the manifest and the COGs.
 
-    Returns the total train-split eligible-cell count for the scaler
-    cross-check (10 m pixels per cell are ``count * 100``).
+    Every (scene_id, cell_id) pair must be unique, and the per-scene cell
+    set must equal the eligibility COG's cell set (no duplicates, no
+    omitted cells). Returns the total train-split eligible-cell count for
+    the scaler cross-check (10 m pixels per cell are ``count * 100``).
     """
     table = _read_table(cells_parquet(release_root))
     cols = table.to_pydict()
@@ -288,9 +325,16 @@ def _check_cells(
         return 0
 
     per_scene: Counter = Counter()
+    per_scene_ids: dict[str, set[str]] = {}
+    seen_pairs: set[tuple[str, str]] = set()
     train_cells = 0
     for i in range(table.num_rows):
         sid = str(cols["scene_id"][i])
+        cell = str(cols["cell_id"][i])
+        pair = (sid, cell)
+        if pair in seen_pairs:
+            errors.append(f"cells table duplicate row: {sid} {cell}")
+        seen_pairs.add(pair)
         if sid not in manifest:
             errors.append(f"cells row references unknown scene {sid!r}")
             continue
@@ -307,10 +351,8 @@ def _check_cells(
         easting = _CANON_X + col * _CELL
         northing = _CANON_Y - row * _CELL
         expected_id = f"E{int(easting)}N{int(northing)}"
-        if str(cols["cell_id"][i]) != expected_id:
-            errors.append(
-                f"cells row {sid}: cell_id {cols['cell_id'][i]!r} != deterministic {expected_id!r}"
-            )
+        if cell != expected_id:
+            errors.append(f"cells row {sid}: cell_id {cell!r} != deterministic {expected_id!r}")
         # Center coordinates must match the canonical grid.
         cx, cy = float(cols["center_x"][i]), float(cols["center_y"][i])
         if abs(cx - (easting + _CELL / 2)) > 1e-3 or abs(cy - (northing - _CELL / 2)) > 1e-3:
@@ -318,6 +360,7 @@ def _check_cells(
         if split == "train":
             train_cells += 1
         per_scene[sid] += 1
+        per_scene_ids.setdefault(sid, set()).add(cell)
 
     # Cells per scene must match the manifest eligible_cells and the COG counts.
     for sid, count in per_scene.items():
@@ -325,6 +368,23 @@ def _check_cells(
             errors.append(
                 f"{sid}: cells table {count} != manifest eligible_cells "
                 f"{manifest[sid]['eligible_cells']}"
+            )
+        # Set equality against the eligibility COG: same cells, no
+        # duplicates, none omitted.
+        cog_ids = cog_cell_ids.get(sid)
+        if cog_ids is None:
+            errors.append(f"{sid}: no eligibility COG cell set for cross-check")
+            continue
+        if len(per_scene_ids[sid]) != count:
+            errors.append(
+                f"{sid}: {count} cell rows but only {len(per_scene_ids[sid])} unique cell IDs"
+            )
+        if per_scene_ids[sid] != cog_ids:
+            missing_ids = sorted(cog_ids - per_scene_ids[sid])
+            extra_ids = sorted(per_scene_ids[sid] - cog_ids)
+            errors.append(
+                f"{sid}: cells table cell set != COG cell set "
+                f"(missing {len(missing_ids)}, extra {len(extra_ids)})"
             )
 
     return train_cells
@@ -431,6 +491,13 @@ def _check_v3_source(release_root: str, errors: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-root", required=True, help="training release root")
+    parser.add_argument(
+        "--expected-scenes",
+        type=int,
+        default=None,
+        help="exact manifest row count for the full release (e.g. 345); "
+        "enforces full year coverage 2017-2026",
+    )
     args = parser.parse_args()
 
     root = args.release_root.rstrip("/")
@@ -444,10 +511,10 @@ def main() -> int:
 
     _check_v3_source(root, errors)
 
-    manifest = _check_manifest(root, errors, warnings)
+    manifest = _check_manifest(root, errors, warnings, args.expected_scenes)
     # Only non-inference scenes carry a published eligibility COG.
     scene_ids = sorted(s for s, m in manifest.items() if m["split"] != "inference")
-    cog_counts = _check_eligibility_cogs(root, scene_ids, errors)
+    cog_counts, cog_cell_ids = _check_eligibility_cogs(root, scene_ids, errors)
 
     # Cross-check COG counts against the manifest.
     for sid, cells in cog_counts.items():
@@ -456,7 +523,7 @@ def main() -> int:
                 f"{sid}: COG eligible cells {cells} != manifest {manifest[sid]['eligible_cells']}"
             )
 
-    train_cells = _check_cells(root, manifest, errors) if manifest else 0
+    train_cells = _check_cells(root, manifest, cog_cell_ids, errors) if manifest else 0
     _check_scaler(root, train_cells, errors, warnings)
 
     for w in warnings:

@@ -270,6 +270,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $RELEASE_ROOT ..."
   uv run python scripts/validate_training_data.py \
     --release-root "$RELEASE_ROOT" \
+    --expected-scenes 345 \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

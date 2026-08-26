@@ -374,9 +374,31 @@ def _process_scene(
 
     if not todo:
         # Idempotent skip: reuse the published counts so the run report
-        # stays deterministic across re-runs.
+        # stays deterministic across re-runs. The published artifact must
+        # be genuinely present and readable — a ledger row whose
+        # provenance is missing/corrupt must not silently degrade to zero
+        # counts (which would wrongly mark the scene no_eligible_cells).
         row = led.get(item_id, source, scene.scene_id)
-        prov = _read_provenance(row.provenance_uri) if row and row.provenance_uri else {}
+        if row is None or not row.provenance_uri or not row.completion_uri:
+            raise RuntimeError(
+                f"scene {scene.scene_id}: ledger done row lacks provenance/completion URI"
+            )
+        if not exists(row.completion_uri):
+            raise RuntimeError(
+                f"scene {scene.scene_id}: ledger done row without completion marker "
+                f"({row.completion_uri}) — re-finalise"
+            )
+        try:
+            prov = json.loads(read_bytes(row.provenance_uri))
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"scene {scene.scene_id}: published provenance unreadable: {exc}"
+            ) from exc
+        if prov.get("policy_hash") != policy_hash:
+            raise RuntimeError(
+                f"scene {scene.scene_id}: published provenance policy_hash "
+                f"{prov.get('policy_hash')!r} != {policy_hash!r}"
+            )
         counts = prov.get("counts", {})
         base_result.status = "done"
         base_result.eligible_cells = int(counts.get("eligible_cells", 0))
@@ -468,13 +490,6 @@ def _sensor(scene_id: str) -> str:
     return scene_id.split("_", 1)[0]
 
 
-def _read_provenance(uri: str) -> dict:
-    try:
-        return json.loads(read_bytes(uri))
-    except Exception:  # best-effort skip metadata
-        return {}
-
-
 # ── release assembly ──────────────────────────────────────────────────
 
 
@@ -505,6 +520,7 @@ def publish_release(
                 report=report,
                 output_root=output_root,
                 policy_hash=policy_hash,
+                marker_expected=True,
             )
             return {"complete": completion_uri}
         raise RuntimeError(
@@ -544,6 +560,9 @@ def publish_release(
             ) from None
 
     try:
+        # Write the release artifacts (manifest, cells, scaler) while
+        # holding the top-level publish lock — the completion marker is
+        # NOT written here.
         uris = _publish_release_locked(
             report=report,
             features_root=features_root,
@@ -551,19 +570,48 @@ def publish_release(
             grid_10m=grid_10m,
             run_id=run_id,
             policy_hash=policy_hash,
-            completion_uri=completion_uri,
         )
     finally:
         _delete_uri(lock_uri)
 
     # Publisher-side readback: verify every per-scene eligibility COG and
     # every top-level artifact is actually published and contract-conform
-    # before the completion marker can be claimed as valid evidence.
+    # BEFORE the release completion marker is written. A release whose
+    # readback fails is never marked complete (it stays invisible).
     report.readback = _readback_release(
         report=report,
         output_root=output_root,
         policy_hash=policy_hash,
+        marker_expected=False,
     )
+    if not report.readback.get("ok"):
+        raise RuntimeError(
+            f"release readback failed — completion marker NOT written: "
+            f"{report.readback.get('errors')}"
+        )
+
+    # Release completion marker written last (create-only): the release
+    # becomes visible only when every artifact is in place AND readback
+    # passed.
+    marker = {"published_at": now_iso(), "run_id": run_id, "policy_hash": policy_hash}
+    atomic_write(
+        completion_uri,
+        json.dumps(marker, indent=2),
+        overwrite=False,
+        if_generation_match=0,
+    )
+
+    # Post-write marker verification: the marker must read back with the
+    # policy hash before the release is reported as complete.
+    report.readback = _readback_release(
+        report=report,
+        output_root=output_root,
+        policy_hash=policy_hash,
+        marker_expected=True,
+    )
+    if not report.readback.get("ok"):
+        raise RuntimeError(f"release marker verification failed: {report.readback.get('errors')}")
+    uris["complete"] = completion_uri
     return uris
 
 
@@ -575,9 +623,12 @@ def _publish_release_locked(
     grid_10m: GeoBox,
     run_id: str,
     policy_hash: str,
-    completion_uri: str,
 ) -> dict[str, str]:
-    """Write the release artifacts while holding the top-level publish lock."""
+    """Write the release artifacts while holding the top-level publish lock.
+
+    The completion marker is deliberately NOT written here — the caller
+    runs the publisher readback first and only then commits the marker.
+    """
     uris: dict[str, str] = {}
 
     _validate_split_leakage(report.scenes)
@@ -623,16 +674,6 @@ def _publish_release_locked(
     atomic_write(scaler_uri, json.dumps(scaler, indent=2), overwrite=True)
     uris["scaler"] = scaler_uri
 
-    # Release completion marker written last (create-only): the release
-    # becomes visible only when every artifact above is in place.
-    marker = {"published_at": now_iso(), "run_id": run_id, "policy_hash": policy_hash}
-    atomic_write(
-        completion_uri,
-        json.dumps(marker, indent=2),
-        overwrite=False,
-        if_generation_match=0,
-    )
-    uris["complete"] = completion_uri
     return uris
 
 
@@ -660,6 +701,7 @@ def _readback_release(
     report: TrainingRunReport,
     output_root: str,
     policy_hash: str,
+    marker_expected: bool,
 ) -> dict:
     """Verify the published release by re-reading every artifact.
 
@@ -667,7 +709,8 @@ def _readback_release(
     validator's job): every published scene's eligibility COG must exist
     with the canonical 100 m grid contract and 0/1 values; the per-scene
     completion markers must exist; the top-level manifest/cells/scaler
-    must parse; and the release completion marker must carry the policy
+    must parse. When ``marker_expected`` (idempotent re-run or post-write
+    verification) the release completion marker must carry the policy
     hash. Returns a ``{ok, artifacts, scenes, errors}`` evidence dict.
     """
     import rasterio
@@ -736,13 +779,15 @@ def _readback_release(
     except Exception as exc:  # noqa: BLE001
         errors.append(f"scaler.json unreadable: {exc}")
 
-    # Release completion marker carries the policy hash.
-    try:
-        marker = json.loads(read_bytes(release_completion(output_root)))
-        if marker.get("policy_hash") != policy_hash:
-            errors.append("release complete.json policy_hash mismatch")
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"release complete.json unreadable: {exc}")
+    # Release completion marker carries the policy hash — checked only when
+    # the marker is expected to exist (idempotent re-run / post-write).
+    if marker_expected:
+        try:
+            marker = json.loads(read_bytes(release_completion(output_root)))
+            if marker.get("policy_hash") != policy_hash:
+                errors.append("release complete.json policy_hash mismatch")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"release complete.json unreadable: {exc}")
 
     return {
         "ok": not errors,

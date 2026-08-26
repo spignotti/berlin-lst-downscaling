@@ -56,7 +56,14 @@ class TrainingRunReport:
 
     @property
     def ok(self) -> bool:
-        return self.failed == 0
+        # Failed assessable scenes fail the run; once a release was
+        # assembled, a failed publisher readback also fails it (a release
+        # whose artifacts do not read back is not complete).
+        if self.failed != 0:
+            return False
+        if self.release_uris and not self.readback.get("ok", False):
+            return False
+        return True
 
 
 def new_run_id() -> str:
