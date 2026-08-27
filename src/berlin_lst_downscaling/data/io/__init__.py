@@ -9,19 +9,23 @@ from berlin_lst_downscaling.data.io.run_logging import (
 )
 from berlin_lst_downscaling.data.io.storage import (
     OutputLocation,
+    PublishLock,
     atomic_upload,
     atomic_write,
     exists,
+    publish_lock,
     read_bytes,
 )
 
 __all__ = [
     "OutputLocation",
+    "PublishLock",
     "RunLogSession",
     "atomic_upload",
     "atomic_write",
     "exists",
     "log_event",
+    "publish_lock",
     "read_bytes",
     "run_context_path",
     "run_log_path",

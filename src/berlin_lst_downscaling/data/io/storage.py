@@ -373,10 +373,146 @@ def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation
             pass
         raise
 
+# ── publish lock ─────────────────────────────────────────────────────
+
+
+class PublishLock:
+    """Ownership-safe publisher lock for local and GCS URIs.
+
+    For **GCS paths**: created with ``if_generation_match=0`` (absent);
+    released only if the current generation matches the one captured at
+    creation.  A replacement lock created by a concurrent publisher is
+    never deleted by this owner.
+
+    For **local paths**: created with ``O_CREAT | O_EXCL``; released only
+    if the file's content matches this owner's token.
+    """
+
+    __slots__ = ("uri", "_token", "_generation", "_scheme")
+
+    def __init__(self, uri: str, payload: dict) -> None:
+        loc = _as_loc(uri)
+        self.uri = loc.uri
+        self._token = uuid4().hex
+        self._generation: int | None = None
+        self._scheme = loc.scheme
+
+    def __enter__(self) -> PublishLock:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.release()
+
+    def acquire(self) -> None:
+        """Create the lock atomically.
+
+        Raises :class:`FileExistsError` if the lock already exists.
+        """
+        payload = self._token.encode()
+
+        if self._scheme == "gcs":
+            bucket_name, key = _parse_gs_uri(self.uri)
+            client = _gcs_client()
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(key)
+            blob.upload_from_string(
+                payload, content_type="application/octet-stream",
+                if_generation_match=0,
+            )
+            # upload_from_string populates blob.generation via _set_properties
+            gen = blob.generation
+            if gen is None:
+                raise RuntimeError(
+                    f"GCS lock creation succeeded but generation not set: {self.uri}"
+                )
+            self._generation = int(gen)
+
+        elif self._scheme in ("local", "mounted"):
+            import os as _os
+
+            dst = _resolve_local(self.uri)
+            _os.makedirs(_os.path.dirname(dst), exist_ok=True)
+            try:
+                fd = _os.open(
+                    str(dst), _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY,
+                )
+                with _os.fdopen(fd, "w") as fh:
+                    fh.write(self._token)
+            except FileExistsError:
+                raise FileExistsError(f"lock already held: {self.uri}") from None
+
+        else:
+            raise ValueError(f"unsupported lock URI scheme: {self.uri!r}")
+
+    def release(self) -> None:
+        """Release the lock only if this owner still owns it."""
+        try:
+            if self._scheme == "gcs":
+                if self._generation is None:
+                    _logger.warning("GCS lock release skipped (no generation): %s", self.uri)
+                    return
+                bucket_name, key = _parse_gs_uri(self.uri)
+                client = _gcs_client()
+                bucket = client.bucket(bucket_name)
+                lock_blob = bucket.blob(key, generation=self._generation)
+                try:
+                    lock_blob.delete(if_generation_match=self._generation)
+                except Exception as exc:  # noqa: BLE001 — precondition mismatch is expected
+                    _logger.warning(
+                        "GCS lock release skipped (generation mismatch, another "
+                        "publisher owns %s): %s",
+                        self.uri, exc,
+                    )
+
+            elif self._scheme in ("local", "mounted"):
+                import os as _os
+
+                dst = _resolve_local(self.uri)
+                try:
+                    with open(dst, encoding="utf-8") as fh:
+                        stored_token = fh.read()
+                    if stored_token == self._token:
+                        _os.remove(str(dst))
+                    else:
+                        _logger.warning(
+                            "local lock release skipped (token mismatch, another "
+                            "publisher owns %s)", self.uri,
+                        )
+                except FileNotFoundError:
+                    pass
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            _logger.warning("publish-lock cleanup failed for %s: %s", self.uri, exc)
+
+
+def publish_lock(uri: str, payload: dict | None = None) -> PublishLock:
+    """Create a :class:`PublishLock` and acquire it.
+
+    Use as a context manager::
+
+        with publish_lock("gs://bucket/path/.publish.lock") as lock:
+            ...  # work under lock
+
+    On normal exit the lock is released.  On exception the lock is
+    released best-effort; a failure to release is logged, not raised.
+
+    Parameters
+    ----------
+    uri :
+        Lock URI (local or ``gs://``).
+    payload :
+        Arbitrary metadata stored in the lock object.
+    """
+    lock = PublishLock(uri, payload or {})
+    lock.acquire()
+    return lock
+
+
 __all__ = [
     "OutputLocation",
+    "PublishLock",
     "atomic_write",
     "atomic_upload",
     "exists",
+    "publish_lock",
     "read_bytes",
 ]
