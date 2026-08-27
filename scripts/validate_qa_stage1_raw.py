@@ -103,7 +103,7 @@ def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[
         ),
     ):
         if not uri or not uri.endswith((".parquet", ".json")):
-            warnings.append(f"source {label}: no verifiable URI in report inputs")
+            errors.append(f"source {label}: no verifiable URI in report inputs")
             continue
         try:
             actual = sha256_bytes(read_bytes(uri))[:16]
@@ -116,7 +116,7 @@ def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[
             else:
                 print(f"  {label}: fingerprint OK ({actual})")
         except Exception as exc:  # noqa: BLE001 — read-only probe
-            warnings.append(f"source {label}: cannot re-read {uri}: {exc}")
+            errors.append(f"source {label}: cannot re-read {uri}: {exc}")
 
 
 def _check_scenes_table(summary: dict, parquet_uri: str, csv_uri: str, errors: list[str]) -> None:

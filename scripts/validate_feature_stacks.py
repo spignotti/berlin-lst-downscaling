@@ -123,6 +123,14 @@ def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]) -> GeoBox | 
                     f"{mask_uri}: shape ({src.height}, {src.width}) != COG "
                     f"({grid.shape.y}, {grid.shape.x})"
                 )
+            mask_grid = GeoBox.from_rio(src)
+            if not np.allclose(
+                grid.transform[:6], mask_grid.transform[:6], rtol=0.0, atol=1e-6
+            ):
+                errors.append(
+                    f"{mask_uri}: transform mismatch with COG — "
+                    f"mask {mask_grid.transform} != COG {grid.transform}"
+                )
     except Exception as exc:
         errors.append(f"{mask_uri}: cannot open: {exc}")
     return grid
@@ -200,7 +208,8 @@ def _check_pixels(
     stats["outside_aoi_px"] = int(aoi.size) - aoi_inside
 
 
-def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, comp_uri: str,
+def _check_sidecars(scene_id: str, cog_uri: str, mask_uri: str, prov_uri: str,
+                    stac_uri: str, comp_uri: str,
                     stats: dict, errors: list[str]) -> None:
     if not exists(comp_uri):
         errors.append(f"{scene_id}: complete.json missing")
@@ -241,6 +250,8 @@ def _check_sidecars(scene_id: str, cog_uri: str, prov_uri: str, stac_uri: str, c
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")
     if assets["data"].get("href") != cog_uri:
         errors.append(f"{scene_id}: STAC data href does not match ledger COG")
+    if assets["feature_valid"].get("href") != mask_uri:
+        errors.append(f"{scene_id}: STAC feature_valid href does not match ledger mask")
 
 
 # ── orchestration ────────────────────────────────────────────────────
@@ -352,7 +363,10 @@ def main() -> int:
         aoi = _aoi_on_grid(args.aoi, grid)
         stats: dict = {}
         _check_pixels(row["cog"], mask_uri, aoi, errors, stats)
-        _check_sidecars(scene_id, row["cog"], row["prov"], row["stac"], row["comp"], stats, errors)
+        _check_sidecars(
+            scene_id, row["cog"], mask_uri, row["prov"], row["stac"],
+            row["comp"], stats, errors,
+        )
         total_valid += stats.get("feature_valid_px", 0)
         total_inside += stats.get("inside_aoi_px", 0)
         total_outside += stats.get("outside_aoi_px", 0)
