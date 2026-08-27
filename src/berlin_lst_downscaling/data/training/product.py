@@ -115,6 +115,12 @@ def publish_eligibility(
 
     try:
         with publish_lock(lock_uri, lock_payload):
+            # Recheck after acquiring lock: another publisher may have
+            # completed the scene while we waited.
+            if exists(completion_uri):
+                raise FileExistsError(
+                    f"scene {result.scene_id} already published: {completion_uri}"
+                )
             return _publish_locked(
                 result=result,
                 grid_100m=grid_100m,

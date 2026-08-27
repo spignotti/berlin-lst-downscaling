@@ -180,6 +180,23 @@ def publish_release(
 
     try:
         with publish_lock(lock_uri, lock_payload):
+            # Recheck after acquiring lock: another publisher may have
+            # completed the release while we waited.
+            if exists(completion_uri):
+                marker = json.loads(read_bytes(completion_uri))
+                if marker.get("policy_hash") == policy_hash:
+                    report.readback = _readback_release(
+                        report=report,
+                        output_root=output_root,
+                        policy_hash=policy_hash,
+                        marker_expected=True,
+                    )
+                    return {"complete": completion_uri}
+                raise RuntimeError(
+                    f"training release already published under a different "
+                    f"policy hash ({marker.get('policy_hash')!r} != "
+                    f"{policy_hash!r}) — immutable"
+                )
             # Write the release artifacts (manifest, cells, scaler) while
             # holding the top-level publish lock — the completion marker is
             # NOT written here.

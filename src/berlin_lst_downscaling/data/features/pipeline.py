@@ -545,13 +545,13 @@ def _existing_coverage(
     row = led.get(item_id, source, scene_id)
     if row is None or not row.provenance_uri:
         raise RuntimeError(
-            f"scene {scene_id}: provenedance URI missing for completed stack"
+            f"scene {scene_id}: provenance URI missing for completed stack"
         )
     try:
         import json
 
         prov = json.loads(read_bytes(row.provenance_uri))
-    except Exception as exc:  # noqa: BLE001 — best-effort read
+    except Exception as exc:  # noqa: BLE001 — wrap with context
         raise RuntimeError(
             f"scene {scene_id}: cannot read provenance at {row.provenance_uri}: {exc}"
         ) from exc

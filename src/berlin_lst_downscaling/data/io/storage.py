@@ -14,6 +14,7 @@ All functions accept ``str | Path | OutputLocation`` as the URI argument.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -388,12 +389,13 @@ class PublishLock:
     if the file's content matches this owner's token.
     """
 
-    __slots__ = ("uri", "_token", "_generation", "_scheme")
+    __slots__ = ("uri", "_token", "_payload", "_generation", "_scheme")
 
     def __init__(self, uri: str, payload: dict) -> None:
         loc = _as_loc(uri)
         self.uri = loc.uri
         self._token = uuid4().hex
+        self._payload = payload
         self._generation: int | None = None
         self._scheme = loc.scheme
 
@@ -408,7 +410,8 @@ class PublishLock:
 
         Raises :class:`FileExistsError` if the lock already exists.
         """
-        payload = self._token.encode()
+        lock_content = json.dumps({"token": self._token, **self._payload}, indent=2)
+        lock_bytes = lock_content.encode()
 
         if self._scheme == "gcs":
             bucket_name, key = _parse_gs_uri(self.uri)
@@ -416,7 +419,7 @@ class PublishLock:
             bucket = client.bucket(bucket_name)
             blob = bucket.blob(key)
             blob.upload_from_string(
-                payload, content_type="application/octet-stream",
+                lock_bytes, content_type="application/json",
                 if_generation_match=0,
             )
             # upload_from_string populates blob.generation via _set_properties
@@ -437,7 +440,7 @@ class PublishLock:
                     str(dst), _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY,
                 )
                 with _os.fdopen(fd, "w") as fh:
-                    fh.write(self._token)
+                    fh.write(lock_content)
             except FileExistsError:
                 raise FileExistsError(f"lock already held: {self.uri}") from None
 
@@ -470,15 +473,15 @@ class PublishLock:
                 dst = _resolve_local(self.uri)
                 try:
                     with open(dst, encoding="utf-8") as fh:
-                        stored_token = fh.read()
-                    if stored_token == self._token:
+                        stored = json.loads(fh.read())
+                    if stored.get("token") == self._token:
                         _os.remove(str(dst))
                     else:
                         _logger.warning(
                             "local lock release skipped (token mismatch, another "
                             "publisher owns %s)", self.uri,
                         )
-                except FileNotFoundError:
+                except (FileNotFoundError, json.JSONDecodeError):
                     pass
         except Exception as exc:  # noqa: BLE001 — best-effort cleanup
             _logger.warning("publish-lock cleanup failed for %s: %s", self.uri, exc)

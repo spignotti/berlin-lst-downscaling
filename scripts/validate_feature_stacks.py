@@ -44,6 +44,7 @@ import rasterio.warp as rwarp
 from odc.geo.geobox import GeoBox
 from rasterio.windows import Window
 
+from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES, FEATURE_CHANNELS
 from berlin_lst_downscaling.data.io import exists, read_bytes
 
@@ -106,6 +107,15 @@ def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]) -> GeoBox | 
                     f"{cog_uri}: channel order {names} != contract {FEATURE_CHANNEL_NAMES}"
                 )
             grid = GeoBox.from_rio(src)
+            # Verify the COG sits on the canonical 10 m grid.
+            canonical = canon_grid_10m()
+            if not np.allclose(
+                grid.transform[:6], canonical.transform[:6], rtol=0.0, atol=1e-6
+            ):
+                errors.append(
+                    f"{cog_uri}: transform not on canonical 10 m grid — "
+                    f"{grid.transform}"
+                )
     except Exception as exc:  # read-only probe
         errors.append(f"{cog_uri}: cannot open: {exc}")
         return None

@@ -133,6 +133,12 @@ def finalize_feature_product(
 
     try:
         with publish_lock(lock_uri, lock_payload):
+            # Recheck after acquiring lock: another publisher may have
+            # completed the scene while we waited.
+            if exists(completion_uri):
+                raise FileExistsError(
+                    f"scene {prepared.scene_id} already published: {completion_uri}"
+                )
             return _finalize_locked(
                 prepared, grid, base, run_id, completed_at, cog_uri, mask_uri,
                 provenance_uri, stac_uri, completion_uri,
