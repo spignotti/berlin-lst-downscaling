@@ -24,13 +24,12 @@ from datetime import UTC, datetime
 import numpy as np
 import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
-from google.api_core.exceptions import GoogleAPIError
 from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
 from berlin_lst_downscaling.data.ard.writer import write_flag_cog_atomic
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
-from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
+from berlin_lst_downscaling.data.io import atomic_write, exists, publish_lock, read_bytes
 from berlin_lst_downscaling.data.training.contracts import (
     TRAINING_SCHEMA_VERSION,
 )
@@ -112,70 +111,30 @@ def publish_eligibility(
     # ``finally`` after the create-only marker commits the scene. A stale
     # lock after a hard kill is an explicit operator state.
     lock_uri = f"{base}/{result.scene_id}/.publish.lock"
-    if lock_uri.startswith("gs://"):
-        try:
-            atomic_write(
-                lock_uri,
-                json.dumps({"run_id": run_id, "started_at": completed_at}, indent=2),
-                overwrite=False,
-                if_generation_match=0,
-            )
-        except FileExistsError:
-            raise RuntimeError(
-                f"scene {result.scene_id} is being published by another run (lock {lock_uri})"
-            ) from None
-    else:
-        import os
-
-        lock_path = os.path.expanduser(lock_uri)
-        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(json.dumps({"run_id": run_id, "started_at": completed_at}, indent=2))
-        except FileExistsError:
-            raise RuntimeError(
-                f"scene {result.scene_id} is being published by another run (lock {lock_uri})"
-            ) from None
+    lock_payload = {"run_id": run_id, "started_at": completed_at}
 
     try:
-        return _publish_locked(
-            result=result,
-            grid_100m=grid_100m,
-            run_id=run_id,
-            policy_hash=policy_hash,
-            v3_config_hash=v3_config_hash,
-            feature_valid_uri=feature_valid_uri,
-            feature_provenance_uri=feature_provenance_uri,
-            landsat_cog_uri=landsat_cog_uri,
-            landsat_flag_uri=landsat_flag_uri,
-            geometry_id=geometry_id,
-            completed_at=completed_at,
-            cog_uri=cog_uri,
-            provenance_uri=provenance_uri,
-            completion_uri=completion_uri,
-        )
-    finally:
-        _delete_uri(lock_uri)
-
-
-def _delete_uri(uri: str) -> None:
-    """Delete one object best-effort (publish-lock cleanup)."""
-    if uri.startswith("gs://"):
-        from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
-
-        bucket_name, key = _parse_gs_uri(uri)
-        try:
-            _gcs_client().bucket(bucket_name).blob(key).delete()
-        except GoogleAPIError as exc:
-            _logger.warning("publish-lock cleanup failed for %s: %s", uri, exc)
-    else:
-        import os
-
-        try:
-            os.remove(os.path.expanduser(uri))
-        except OSError as exc:
-            _logger.warning("publish-lock cleanup failed for %s: %s", uri, exc)
+        with publish_lock(lock_uri, lock_payload):
+            return _publish_locked(
+                result=result,
+                grid_100m=grid_100m,
+                run_id=run_id,
+                policy_hash=policy_hash,
+                v3_config_hash=v3_config_hash,
+                feature_valid_uri=feature_valid_uri,
+                feature_provenance_uri=feature_provenance_uri,
+                landsat_cog_uri=landsat_cog_uri,
+                landsat_flag_uri=landsat_flag_uri,
+                geometry_id=geometry_id,
+                completed_at=completed_at,
+                cog_uri=cog_uri,
+                provenance_uri=provenance_uri,
+                completion_uri=completion_uri,
+            )
+    except FileExistsError:
+        raise RuntimeError(
+            f"scene {result.scene_id} is being published by another run (lock {lock_uri})"
+        ) from None
 
 
 def _publish_locked(

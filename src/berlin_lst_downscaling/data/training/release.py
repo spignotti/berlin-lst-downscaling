@@ -23,7 +23,7 @@ from berlin_lst_downscaling.data.features.paths import (
 from berlin_lst_downscaling.data.features.paths import (
     ledger_path as features_ledger_path,
 )
-from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
+from berlin_lst_downscaling.data.io import atomic_write, exists, publish_lock, read_bytes
 from berlin_lst_downscaling.data.training.contracts import EXPECTED_V3_CONFIG_HASH
 from berlin_lst_downscaling.data.training.index import (
     CELLS_FIELDNAMES,
@@ -176,92 +176,71 @@ def publish_release(
     # released in ``finally``. A stale lock after a hard kill is an
     # explicit operator state (inspect, then delete).
     lock_uri = f"{output_root.rstrip('/')}/.release.lock"
-    if lock_uri.startswith("gs://"):
-        try:
+    lock_payload = {"run_id": run_id, "policy_hash": policy_hash}
+
+    try:
+        with publish_lock(lock_uri, lock_payload):
+            # Write the release artifacts (manifest, cells, scaler) while
+            # holding the top-level publish lock — the completion marker is
+            # NOT written here.
+            uris = _publish_release_locked(
+                report=report,
+                features_root=features_root,
+                output_root=output_root,
+                grid_10m=grid_10m,
+                run_id=run_id,
+                policy_hash=policy_hash,
+            )
+
+            # Publisher-side readback: verify every per-scene eligibility COG
+            # and every top-level artifact is actually published and
+            # contract-conform BEFORE the release completion marker is
+            # written. A release whose readback fails is never marked complete
+            # (it stays invisible).
+            report.readback = _readback_release(
+                report=report,
+                output_root=output_root,
+                policy_hash=policy_hash,
+                marker_expected=False,
+            )
+            if not report.readback.get("ok"):
+                raise RuntimeError(
+                    f"release readback failed — completion marker NOT written: "
+                    f"{report.readback.get('errors')}"
+                )
+
+            # Release completion marker written last (create-only): the
+            # release becomes visible only when every artifact is in place AND
+            # readback passed.
+            marker = {
+                "published_at": now_iso(), "run_id": run_id,
+                "policy_hash": policy_hash,
+            }
             atomic_write(
-                lock_uri,
-                json.dumps({"run_id": run_id, "policy_hash": policy_hash}, indent=2),
+                completion_uri,
+                json.dumps(marker, indent=2),
                 overwrite=False,
                 if_generation_match=0,
             )
-        except FileExistsError:
-            raise RuntimeError(
-                f"training release is being published by another run (lock {lock_uri})"
-            ) from None
-    else:
-        import os
 
-        lock_path = os.path.expanduser(lock_uri)
-        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(json.dumps({"run_id": run_id, "policy_hash": policy_hash}, indent=2))
-        except FileExistsError:
-            raise RuntimeError(
-                f"training release is being published by another run (lock {lock_uri})"
-            ) from None
-
-    try:
-        # Write the release artifacts (manifest, cells, scaler) while
-        # holding the top-level publish lock — the completion marker is
-        # NOT written here.
-        uris = _publish_release_locked(
-            report=report,
-            features_root=features_root,
-            output_root=output_root,
-            grid_10m=grid_10m,
-            run_id=run_id,
-            policy_hash=policy_hash,
-        )
-
-        # Publisher-side readback: verify every per-scene eligibility COG
-        # and every top-level artifact is actually published and
-        # contract-conform BEFORE the release completion marker is
-        # written. A release whose readback fails is never marked complete
-        # (it stays invisible).
-        report.readback = _readback_release(
-            report=report,
-            output_root=output_root,
-            policy_hash=policy_hash,
-            marker_expected=False,
-        )
-        if not report.readback.get("ok"):
-            raise RuntimeError(
-                f"release readback failed — completion marker NOT written: "
-                f"{report.readback.get('errors')}"
+            # Post-write marker verification: the marker must read back with
+            # the policy hash before the release is reported as complete.
+            report.readback = _readback_release(
+                report=report,
+                output_root=output_root,
+                policy_hash=policy_hash,
+                marker_expected=True,
             )
-
-        # Release completion marker written last (create-only): the
-        # release becomes visible only when every artifact is in place AND
-        # readback passed.
-        marker = {"published_at": now_iso(), "run_id": run_id, "policy_hash": policy_hash}
-        atomic_write(
-            completion_uri,
-            json.dumps(marker, indent=2),
-            overwrite=False,
-            if_generation_match=0,
-        )
-
-        # Post-write marker verification: the marker must read back with
-        # the policy hash before the release is reported as complete.
-        report.readback = _readback_release(
-            report=report,
-            output_root=output_root,
-            policy_hash=policy_hash,
-            marker_expected=True,
-        )
-        if not report.readback.get("ok"):
-            raise RuntimeError(
-                f"release marker verification failed: {report.readback.get('errors')}"
-            )
-        uris["complete"] = completion_uri
-        return uris
-    finally:
-        # The lock is held across artifact writes, both readbacks, and the
-        # create-only marker — a second publisher cannot interleave
-        # artifacts, readback, or marker publication.
-        _delete_uri(lock_uri)
+            if not report.readback.get("ok"):
+                raise RuntimeError(
+                    f"release marker verification failed: {report.readback.get('errors')}"
+                )
+            uris["complete"] = completion_uri
+            return uris
+    except FileExistsError:
+        raise RuntimeError(
+            f"training release is being published by another run (lock {lock_uri})"
+        ) from None
 
 
 def _publish_release_locked(
@@ -324,25 +303,6 @@ def _publish_release_locked(
     uris["scaler"] = scaler_uri
 
     return uris
-
-
-def _delete_uri(uri: str) -> None:
-    """Delete one object best-effort (publish-lock cleanup)."""
-    if uri.startswith("gs://"):
-        from berlin_lst_downscaling.data.io.storage import _gcs_client, _parse_gs_uri
-
-        bucket_name, key = _parse_gs_uri(uri)
-        try:
-            _gcs_client().bucket(bucket_name).blob(key).delete()
-        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
-            _logger.warning("release-lock cleanup failed for %s: %s", uri, exc)
-    else:
-        import os
-
-        try:
-            os.remove(os.path.expanduser(uri))
-        except OSError as exc:
-            _logger.warning("release-lock cleanup failed for %s: %s", uri, exc)
 
 
 def _readback_release(
