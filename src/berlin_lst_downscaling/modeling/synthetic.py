@@ -107,9 +107,7 @@ class SyntheticDataModule(LightningDataModule):
             "test": self._generate("test", self.n_test, generator),
         }
 
-    def _generate(
-        self, split: str, n: int, generator: torch.Generator
-    ) -> _SyntheticDataset:
+    def _generate(self, split: str, n: int, generator: torch.Generator) -> _SyntheticDataset:
         patch = self.patch_size
         channels = self.n_active_channels
         # Gaussian noise input; the target below is a learnable combination.
@@ -130,9 +128,7 @@ class SyntheticDataModule(LightningDataModule):
         # All-valid mask — the synthetic path claims no masking semantics.
         mask = torch.ones_like(target, dtype=torch.bool)
 
-        cells = [
-            _CELL_TEMPLATE.format(369190 + 100 * i, 5838410 - 100 * i) for i in range(n)
-        ]
+        cells = [_CELL_TEMPLATE.format(369190 + 100 * i, 5838410 - 100 * i) for i in range(n)]
         metadata = [
             SampleMeta(
                 cell_id=cells[i],

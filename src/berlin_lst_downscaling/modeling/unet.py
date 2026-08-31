@@ -112,10 +112,7 @@ class UNet(nn.Module):
         self.bn0 = nn.BatchNorm2d(widths[0])
 
         self.encoders = nn.ModuleList(
-            [
-                _EncoderBlock(widths[i], widths[i + 1])
-                for i in range(depth)
-            ]
+            [_EncoderBlock(widths[i], widths[i + 1]) for i in range(depth)]
         )
 
         self.bottleneck = _ConvBlock(widths[depth], widths[depth] * 2)
@@ -143,7 +140,7 @@ class UNet(nn.Module):
         if input_extent[0] % (2**self.depth) != 0 or input_extent[1] % (2**self.depth) != 0:
             raise ValueError(
                 f"input extent {tuple(input_extent)} must be divisible by 2 ** depth "
-                f"({2 ** self.depth})"
+                f"({2**self.depth})"
             )
 
         x = F.relu(self.bn0(self.stem(x)), inplace=True)

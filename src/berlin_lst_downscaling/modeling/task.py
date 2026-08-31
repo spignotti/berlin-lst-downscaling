@@ -96,7 +96,7 @@ class LSTRegressionTask(LightningModule):
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
         )
-        return optimizer  # type: ignore[return-value]
+        return optimizer
 
 
 __all__ = ["LSTRegressionTask"]

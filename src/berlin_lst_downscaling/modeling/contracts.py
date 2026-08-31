@@ -150,6 +150,8 @@ def validate_batch(
         raise ValueError(
             f"features carry {features.shape[1]} channels, expected {n_active_channels}"
         )
+    if target.shape[1] != 1:
+        raise ValueError(f"target must have exactly 1 channel, got {target.shape[1]}")
     if target.shape[1:] != mask.shape[1:]:
         raise ValueError("target and mask spatial shapes differ")
     if len(batch.metadata) != features.shape[0]:
