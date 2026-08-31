@@ -32,7 +32,7 @@ or duplicating the published stack.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -93,7 +93,7 @@ class DatasetReader(Protocol):
     task never depends on a concrete reader.
     """
 
-    def __iter__(self) -> DatasetReader:
+    def __iter__(self) -> Iterator[Batch]:
         """Iterate over batches (yields :class:`Batch`)."""
         ...
 

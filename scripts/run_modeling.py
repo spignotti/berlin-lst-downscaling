@@ -50,7 +50,7 @@ def main(cfg: DictConfig) -> int:
             seed=int(cfg.get("seed", 0)),
             wandb_mode=str(cfg.get("wandb", {}).get("mode", "")),
         )
-        result = run_training(cfg)
+        result = run_training(cfg, run_id=run_id)
 
         print(f"Modeling — run {run_id}")
         print(f"  Best checkpoint : {result.best_checkpoint}")
