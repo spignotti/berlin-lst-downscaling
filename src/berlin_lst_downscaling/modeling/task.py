@@ -39,11 +39,13 @@ class LSTRegressionTask(LightningModule):
 
     Parameters
     ----------
-    model:
-        The U-Net (``in_channels == n_active_channels``).
     n_active_channels:
         Number of active input channels (first-C of the fixed V3 order);
         validated against each batch at the task boundary.
+    base_width:
+        U-Net base width (first encoder stage).
+    depth:
+        U-Net depth (number of down/up stages).
     learning_rate:
         AdamW learning rate.
     weight_decay:
@@ -54,23 +56,24 @@ class LSTRegressionTask(LightningModule):
 
     def __init__(
         self,
-        model: UNet,
         n_active_channels: int,
+        base_width: int = 32,
+        depth: int = 3,
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
         loss_factory: Callable[[], MaskedLoss] = _default_loss,
     ) -> None:
         super().__init__()
-        if model.in_channels != n_active_channels:
-            raise ValueError(
-                f"model expects {model.in_channels} input channels, task configured "
-                f"for {n_active_channels}"
-            )
-        self.model = model
+        # The model is built from serializable config so ``load_from_checkpoint``
+        # can reconstruct it; only the loss factory is excluded from hparams.
+        self.model = UNet(
+            in_channels=n_active_channels, base_width=base_width, depth=depth
+        )
         self.n_active_channels = n_active_channels
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.loss = loss_factory()
+        self.save_hyperparameters(ignore=["loss_factory"])
 
     # ── lifecycle ─────────────────────────────────────────────────────
 

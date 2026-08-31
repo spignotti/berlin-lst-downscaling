@@ -48,7 +48,7 @@ N_FEATURE_CHANNELS: int = len(FEATURE_CHANNEL_NAMES)
 # ── batch surface ─────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
+@dataclass
 class SampleMeta:
     """Per-sample provenance carried through training.
 
@@ -62,7 +62,7 @@ class SampleMeta:
     year: int
 
 
-@dataclass(frozen=True)
+@dataclass
 class Batch:
     """One training batch — the data/task boundary.
 
