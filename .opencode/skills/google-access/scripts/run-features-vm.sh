@@ -24,7 +24,6 @@ source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 BRANCH="${1:-main}"
 PIPELINE_LABEL="Feature stacks"
 MARKER_CONFIG="full"
-DEPLOY_SHA_VERIFY=1
 FEATURES_ROOT="gs://berlin-lst-data/features/v3"
 BASELINE_ROOT="gs://berlin-lst-data/features/v2"
 EXTRA_MARKER_JSON="  \"features_root\": \"$FEATURES_ROOT\",

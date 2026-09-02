@@ -21,9 +21,9 @@
 #   MARKER_CONFIG    value of the marker "config" field
 #   REMOTE_CMD       remote command to run detached (repo-relative paths
 #                    resolve from APP_DIR on the VM)
+#   BRANCH           branch to deploy (validated; the VM runs exactly the
+#                    clean, pushed local HEAD)
 #   Optional:
-#     DEPLOY_SHA_VERIFY  "1" to verify the deployed SHA after checkout
-#                        (requires vm_preflight_pushed to have set LOCAL_SHA)
 #     EXTRA_MARKER_JSON  extra marker fields, one JSON line ending with a
 #                        comma, inserted before the "started" field
 #     RUN_PREFIX_GREP    grep pattern (BRE) to discover the evidence/run
@@ -94,6 +94,12 @@ ssh_cmd_retry() {
 
 vm_init_run() {
   local prefix="$1"
+  # Reject any branch that could alter the remote command or marker JSON
+  # (git ref names cannot contain shell metacharacters).
+  if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
+    echo "ERROR: invalid branch name: $BRANCH"
+    exit 1
+  fi
   WRAP_RUN_ID="${prefix}-$(date -u +%Y%m%dT%H%M%SZ)"
   LOG_DIR="$APP_DIR/logs/runs/$WRAP_RUN_ID"
   MARKER="$LOG_DIR/marker.json"
@@ -147,6 +153,10 @@ vm_start_and_wait_ssh() {
 # ── deploy pinned commit ─────────────────────────────────────────────
 
 vm_push_deploy() {
+  # Exact-commit pinning: refuse to deploy unless the local HEAD is the
+  # clean, pushed state, and verify the VM runs exactly that SHA.
+  vm_preflight_pushed
+
   echo "Pushing branch $BRANCH to origin..."
   git push origin "$BRANCH" --quiet
 
@@ -161,25 +171,18 @@ vm_push_deploy() {
     git reset --hard refs/remotes/origin/$BRANCH && \
     uv sync --frozen --quiet
   "
-  if [[ "${DEPLOY_SHA_VERIFY:-0}" == "1" ]]; then
-    DEPLOYED_SHA=$(ssh_cmd_retry "cd $APP_DIR && git rev-parse HEAD")
-    if [[ "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
-      echo "ERROR: deployed SHA $DEPLOYED_SHA != local SHA $LOCAL_SHA — refusing to launch."
-      exit 1
-    fi
-    echo "  Deployed SHA verified: $DEPLOYED_SHA"
+  DEPLOYED_SHA=$(ssh_cmd_retry "cd $APP_DIR && git rev-parse HEAD")
+  if [[ "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
+    echo "ERROR: deployed SHA $DEPLOYED_SHA != local SHA $LOCAL_SHA — refusing to launch."
+    exit 1
   fi
+  echo "  Deployed SHA verified: $DEPLOYED_SHA"
 }
 
 # ── marker + detached launch ─────────────────────────────────────────
 
 vm_write_marker() {
   local config_name="$1"
-  local sha_line=""
-  if [[ "${DEPLOY_SHA_VERIFY:-0}" == "1" ]]; then
-    sha_line="  \"sha\": \"$DEPLOYED_SHA\",
-"
-  fi
   echo "Creating run marker: $WRAP_RUN_ID"
   ssh_cmd_retry "
     mkdir -p '$LOG_DIR' && \
@@ -188,7 +191,8 @@ vm_write_marker() {
   \"run_id\": \"$WRAP_RUN_ID\",
   \"config\": \"$config_name\",
   \"branch\": \"$BRANCH\",
-  ${sha_line}${EXTRA_MARKER_JSON:-}\"started\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+  \"sha\": \"$DEPLOYED_SHA\",
+  ${EXTRA_MARKER_JSON:-}\"started\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
   \"pid\": 0,
   \"log\": \"$REMOTE_LOG\",
   \"status_file\": \"$STATUS_FILE\"
