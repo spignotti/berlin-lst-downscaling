@@ -211,10 +211,18 @@ class StageManager:
             self._cleanup_local()
 
     def _cleanup_local(self) -> None:
-        """Remove the local stage directory tree."""
+        """Remove the local stage directory tree.
+
+        Also removes the run-owned base directory when this run leaves it
+        empty, so a dedicated staging root (e.g. ``data/smoke/ecostress_stage``)
+        does not linger as an empty directory after the run.
+        """
         root = Path(self.uri.uri)
         if root.is_dir():
             shutil.rmtree(root)
+        base = Path(self._base_loc.uri)
+        if base.is_dir() and not any(base.iterdir()):
+            base.rmdir()
 
     @retry(
         stop=stop_after_attempt(3),
