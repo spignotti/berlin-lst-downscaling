@@ -16,6 +16,8 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
 - Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
+- Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
+- Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
 - Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
 
 All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
@@ -326,6 +328,49 @@ identity is independently verified.
 The pipeline is ledger-aware and idempotent — re-running skips scenes already
 at `status=done`. Products live in GCS, not on the VM disk. The boot disk
 preserves the workspace, venv, and VM-side secrets between runs.
+
+### Herdr workspace layout
+
+The project declares its Herdr workspace in `.herdr/layout.toml`:
+
+| Tab | Content | Refresh |
+|-----|---------|---------|
+| `main` | OpenCode agent | — |
+| `files` | Yazi file browser | — |
+| `edit` | Neovim | — |
+| `cloud-ops` | VM status, bucket contents, rclone mount status | 30 s |
+
+Run `herdr-restore` to restore missing tabs/panes after a server restart.
+All cloud-ops panes are read-only — they never start, stop, or modify any resource.
+
+### Monitored run tabs
+
+For long-running VM pipelines, use the run-tab launcher to isolate the
+process from the agent pane and create dedicated monitoring panels:
+
+```bash
+# Launch in a monitored tab (agent continues in main)
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-vm.sh full main
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-vm.sh main
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-data-vm.sh main
+```
+
+The launcher:
+1. Creates a temporary Herdr tab (`run-<timestamp>`)
+2. Runs the approved launcher in the root pane
+3. Waits for the run ID, renames the tab to `run-<id>`
+4. Splits read-only monitoring panes: VM status, bucket contents, run status
+
+Approved launchers only: `run-dynamic-vm.sh`, `run-features-vm.sh`,
+`run-training-data-vm.sh`, `run-qa-stage1-vm.sh`, `run-qa-stage2-vm.sh`.
+Arbitrary executables are rejected.
+
+### Billing visibility
+
+Google Cloud does not expose remaining free-trial credit or current spend
+via API or CLI. The balance is only visible in the Cloud Billing Console.
+Budget definitions can be listed via `gcloud billing budgets list`, but
+they show thresholds, not current usage.
 
 ### Run markers and reconnection
 
