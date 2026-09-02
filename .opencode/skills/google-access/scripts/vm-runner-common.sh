@@ -197,14 +197,13 @@ vm_push_deploy() {
 vm_write_marker() {
   local config_name="$1"
   echo "Creating run marker: $WRAP_RUN_ID"
-  # Refuse to reuse an existing run directory: a colliding run id must
-  # never clobber another run's marker, pid file, or log.
+  # Atomically reserve the final run directory: plain mkdir fails with
+  # EEXIST if the directory already exists, so a colliding run id can
+  # never clobber another run's marker, pid file, or log — even when two
+  # launches race in the same second.
   ssh_cmd_retry "
-    if [ -e '$LOG_DIR' ]; then
-      echo 'ERROR: run directory already exists: $LOG_DIR' >&2
-      exit 1
-    fi
-    mkdir -p '$LOG_DIR' && \
+    mkdir -p '$(dirname "$LOG_DIR")' && \
+    mkdir '$LOG_DIR' && \
     cat > '$MARKER' <<MARKER_JSON
 {
   \"run_id\": \"$WRAP_RUN_ID\",

@@ -332,7 +332,7 @@ preserves the workspace, venv, and VM-side secrets between runs.
 Each `run-dynamic-vm.sh` execution writes an immutable run marker on the VM:
 
 ```
-/workspace/app/logs/runs/<config>-<timestamp>/marker.json
+/workspace/app/logs/runs/<config>-<timestamp>-<suffix>/marker.json
 ```
 
 The marker contains: `run_id`, `config`, `branch`, `sha`, `started`, `pid`,
