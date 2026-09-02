@@ -14,7 +14,6 @@ SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 MODE=""
 RUN_ID=""
 REFRESH_INTERVAL="${REFRESH_INTERVAL:-30}"
-PROJECT_ROOT="${PROJECT_ROOT:-.}"
 
 # ── parse arguments ──────────────────────────────────────────────────
 

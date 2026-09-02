@@ -55,7 +55,7 @@ echo "Marker found: $MARKER"
 echo ""
 
 # Parse marker
-CONFIG=$(echo "$MARKER_CONTENTS" | rg '"config"\s*:\s*"[^"]*"' -o -r '$1' 2>/dev/null || echo "(unknown)")
+CONFIG=$(echo "$MARKER_CONTENTS" | rg '"config"\s*:\s*"([^"]+)"' -o -r '$1' 2>/dev/null || echo "(unknown)")
 REMOTE_PID=$(echo "$MARKER_CONTENTS" | rg '"pid"\s*:\s*(\d+)' -o -r '$1' 2>/dev/null || echo "0")
 START_TIME=$(echo "$MARKER_CONTENTS" | rg '"started"\s*:\s*"([^"]+)"' -o -r '$1' 2>/dev/null || echo "(unknown)")
 
