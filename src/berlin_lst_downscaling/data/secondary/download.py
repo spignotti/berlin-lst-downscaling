@@ -19,6 +19,7 @@ from tempfile import TemporaryDirectory
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from berlin_lst_downscaling.common.util import sha256_file
 from berlin_lst_downscaling.data.io.storage import atomic_upload, exists
 
 
@@ -109,7 +110,7 @@ def download_to_raw(
         else:
             # Local / mounted: the destination IS a local file.
             dst_path = Path(destination).expanduser()
-            checksum = _stream_sha256_file(dst_path)
+            checksum = sha256_file(str(dst_path))
             if local_cache_path:
                 _ensure_local_cache(dst_path, local_cache_path)
 
@@ -121,17 +122,6 @@ def download_to_raw(
         )
 
 # ── helpers ───────────────────────────────────────────────────────────────
-
-def _stream_sha256_file(path: Path) -> str:
-    """Compute SHA-256 of a local file in 8 KiB chunks."""
-    h = sha256()
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(8192)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
 
 def _stream_sha256_gcs(uri: str) -> str:
     """Stream-download a GCS object and compute its SHA-256."""

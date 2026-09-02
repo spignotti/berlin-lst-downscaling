@@ -196,10 +196,16 @@ def _atomic_write_gcs(
     tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match)
+    _gcs_upload_with_retry(
+        tmp_blob, lambda: tmp_blob.upload_from_string(data), bucket, key, if_generation_match
+    )
 
-def _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match=None):
-    """Upload to GCS with retries for transient failures (429, 503, etc.)."""
+def _gcs_upload_with_retry(tmp_blob, upload, bucket, key, if_generation_match=None):
+    """Upload to GCS with retries for transient failures (429, 503, etc.).
+
+    ``upload`` is a zero-argument callable that uploads *tmp_blob*
+    (e.g. ``lambda: tmp_blob.upload_from_string(data)``).
+    """
     from tenacity import (
         retry,
         retry_if_exception_type,
@@ -210,16 +216,12 @@ def _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match=None
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=2, min=1, max=60),
-        retry=retry_if_exception_type(
-            (
-                Exception,  # google.api_core.exceptions 429/503 inherit from Exception
-            )
-        ),
+        retry=retry_if_exception_type(Exception),
         reraise=True,
     )
     def _do_upload():
         try:
-            tmp_blob.upload_from_string(data)
+            upload()
             bucket.copy_blob(tmp_blob, bucket, key, if_generation_match=if_generation_match)
         except Exception:
             # Clean up temp blob on failure before retry
@@ -336,43 +338,13 @@ def _atomic_upload_gcs(
     tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match)
-
-def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match):
-    """Upload file to GCS with retries for transient failures."""
-    from tenacity import (
-        retry,
-        retry_if_exception_type,
-        stop_after_attempt,
-        wait_exponential,
+    _gcs_upload_with_retry(
+        tmp_blob,
+        lambda: tmp_blob.upload_from_filename(str(local_path)),
+        bucket,
+        key,
+        if_generation_match,
     )
-
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=1, max=60),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
-    def _do_upload():
-        try:
-            tmp_blob.upload_from_filename(str(local_path))
-            bucket.copy_blob(tmp_blob, bucket, key, if_generation_match=if_generation_match)
-        except Exception:
-            try:
-                tmp_blob.delete()
-            except Exception:  # noqa: S110 — best-effort cleanup
-                pass
-            raise
-
-    try:
-        _do_upload()
-        tmp_blob.delete()
-    except Exception:
-        try:
-            tmp_blob.delete()
-        except Exception:  # noqa: S110 — best-effort cleanup
-            pass
-        raise
 
 # ── publish lock ─────────────────────────────────────────────────────
 
