@@ -359,7 +359,7 @@ The launcher:
 1. Creates a temporary Herdr tab (`run-<timestamp>`)
 2. Runs the approved launcher in the root pane
 3. Waits for the run ID, renames the tab to `run-<id>`
-4. Splits read-only monitoring panes: VM status, bucket contents, run status
+4. Splits read-only snapshot panes: VM status, bucket contents, run status
 
 Approved launchers only: `run-dynamic-vm.sh`, `run-features-vm.sh`,
 `run-training-data-vm.sh`, `run-qa-stage1-vm.sh`, `run-qa-stage2-vm.sh`.
