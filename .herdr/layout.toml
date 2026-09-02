@@ -1,0 +1,37 @@
+version = 1
+
+[[tabs]]
+label = "main"
+
+[[tabs.panes]]
+label = "opencode"
+argv = ["opencode"]
+
+[[tabs]]
+label = "files"
+
+[[tabs.panes]]
+label = "yazi"
+argv = ["yazi"]
+
+[[tabs]]
+label = "edit"
+
+[[tabs.panes]]
+label = "nvim"
+argv = ["nvim", "."]
+
+[[tabs]]
+label = "cloud-ops"
+
+[[tabs.panes]]
+label = "vm"
+argv = ["bash", ".opencode/skills/google-access/scripts/cloud-monitor.sh", "vm"]
+
+[[tabs.panes]]
+label = "bucket"
+argv = ["bash", ".opencode/skills/google-access/scripts/cloud-monitor.sh", "bucket"]
+
+[[tabs.panes]]
+label = "mount"
+argv = ["bash", ".opencode/skills/google-access/scripts/cloud-monitor.sh", "mount"]
