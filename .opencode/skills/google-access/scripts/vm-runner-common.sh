@@ -94,14 +94,13 @@ ssh_cmd_retry() {
 
 vm_init_run() {
   local prefix="$1"
-  # Strict allowlist: only letters, digits, '.', '_', '/' and '-' — this
-  # excludes every shell metacharacter and quote so the branch is safe to
-  # interpolate into remote shell commands and marker JSON. The project
-  # only deploys 'main' and conventional 'type/description' branches.
+  # Two-part branch validation: the strict allowlist excludes every shell
+  # metacharacter and quote (so the branch is safe to interpolate into
+  # remote shell commands and marker JSON), and git check-ref-format
+  # rejects malformed refs (e.g. 'foo//bar', 'foo.lock') that would fail
+  # later during push/fetch/checkout.
   if [[ ! "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
-    || [[ "$BRANCH" == *".."* ]] \
-    || [[ "$BRANCH" == -* ]] \
-    || [[ "$BRANCH" == *. ]]; then
+    || ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
     echo "ERROR: invalid branch name: $BRANCH"
     exit 1
   fi
