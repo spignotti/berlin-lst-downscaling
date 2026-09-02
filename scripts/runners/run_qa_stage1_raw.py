@@ -7,10 +7,10 @@
 Usage
 -----
     # Smoke: one deterministic pair, bounded bbox, local ephemeral output
-    uv run python scripts/run_qa_stage1_raw.py --config-name stage1_raw_smoke
+    uv run python scripts/runners/run_qa_stage1_raw.py --config-name stage1_raw_smoke
 
     # Full: the published 2017-2025 training universe, evidence to GCS
-    uv run python scripts/run_qa_stage1_raw.py --config-name stage1_raw_full
+    uv run python scripts/runners/run_qa_stage1_raw.py --config-name stage1_raw_full
 
 Exits non-zero when the gate finds contract/range/input faults in the
 training universe (fail-closed). Exclusions (e.g. 2026 inference scenes)
@@ -34,7 +34,7 @@ from berlin_lst_downscaling.data.qa.stage1_raw import (
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/qa", config_name="stage1_raw_full", version_base=None)
+@hydra.main(config_path="../../configs/qa", config_name="stage1_raw_full", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Dispatch to the Stage-1 raw QA gate and persist the report bundle."""
     run_id = uuid4().hex[:8]

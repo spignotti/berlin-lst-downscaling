@@ -103,7 +103,7 @@ echo "Launching Stage-1 QA on VM..."
 # from inside the process (wait on a sibling subshell would return 127).
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_qa_stage1_raw.py --config-name stage1_raw_full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+  nohup sh -c 'uv run python scripts/runners/run_qa_stage1_raw.py --config-name stage1_raw_full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
 "
@@ -200,7 +200,7 @@ fi
 VALIDATION_OK=1
 if [[ "$PIPELINE_EXIT" == "0" && -n "$RUN_PREFIX" ]]; then
   echo "Validating $RUN_PREFIX ..."
-  uv run python scripts/validate_qa_stage1_raw.py \
+  uv run python scripts/validators/validate_qa_stage1_raw.py \
     --run-prefix "$RUN_PREFIX" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi

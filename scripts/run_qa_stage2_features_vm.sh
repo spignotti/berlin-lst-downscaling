@@ -144,7 +144,7 @@ echo "Launching Stage-2 feature QA on VM..."
 LAUNCH_WAIT_SECONDS=60
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_qa_stage2_features.py --config-name stage2_features_full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+  nohup sh -c 'uv run python scripts/runners/run_qa_stage2_features.py --config-name stage2_features_full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
 " &
@@ -281,7 +281,7 @@ fi
 VALIDATION_OK=1
 if [[ "$PIPELINE_EXIT" == "0" && -n "$RUN_PREFIX" ]]; then
   echo "Validating $RUN_PREFIX ..."
-  uv run python scripts/validate_qa_stage2_features.py \
+  uv run python scripts/validators/validate_qa_stage2_features.py \
     --run-prefix "$RUN_PREFIX" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi

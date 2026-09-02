@@ -25,8 +25,8 @@ coverage from the same published evidence independently.
 
 Usage
 -----
-    uv run python scripts/validate_lod_coverage.py
-    uv run python scripts/validate_lod_coverage.py \\
+    uv run python scripts/validators/validate_lod_coverage.py
+    uv run python scripts/validators/validate_lod_coverage.py \\
         --static-sources-root gs://berlin-lst-data/static/sources/full \\
         --bbox 13.35,52.45,13.55,52.60
 """

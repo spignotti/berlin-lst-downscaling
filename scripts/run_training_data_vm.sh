@@ -144,7 +144,7 @@ echo "Launching training-data release on VM..."
 LAUNCH_WAIT_SECONDS=60
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_training_data.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+  nohup sh -c 'uv run python scripts/runners/run_training_data.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
 " &
@@ -268,7 +268,7 @@ echo "  Run ID:      $WRAP_RUN_ID"
 VALIDATION_OK=1
 if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $RELEASE_ROOT ..."
-  uv run python scripts/validate_training_data.py \
+  uv run python scripts/validators/validate_training_data.py \
     --release-root "$RELEASE_ROOT" \
     --expected-scenes 345 \
     && VALIDATION_OK=0 || VALIDATION_OK=1

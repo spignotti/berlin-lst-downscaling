@@ -8,10 +8,10 @@ Usage
 -----
     # Smoke: deterministic synthetic run, W&B offline, local ephemeral
     # output (validated by `nox -s smoke-modeling`)
-    uv run python scripts/run_modeling.py --config-name smoke
+    uv run python scripts/runners/run_modeling.py --config-name smoke
 
     # Full: base synthetic config, W&B online (requires login)
-    uv run python scripts/run_modeling.py --config-name full
+    uv run python scripts/runners/run_modeling.py --config-name full
 
 Exits non-zero when the lifecycle fails (fit error, missing best
 checkpoint, or checkpoint reload validation failure — fail-closed).
@@ -31,7 +31,7 @@ from berlin_lst_downscaling.modeling.run import run_training
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/modeling", config_name="full", version_base=None)
+@hydra.main(config_path="../../configs/modeling", config_name="full", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Dispatch to the modeling lifecycle and persist run logging."""
     run_id = uuid4().hex[:8]

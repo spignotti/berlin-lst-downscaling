@@ -13,7 +13,7 @@ COG contract, STAC extensions, provenance, and completion marker.
 
 Usage
 -----
-    uv run python scripts/validate_ard.py \
+    uv run python scripts/validators/validate_ard.py \
         --ledger gs://berlin-lst-data/ard/full/.../ledger.parquet \
         --manifest gs://berlin-lst-data/manifests/v3/.../manifest.parquet
 """

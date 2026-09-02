@@ -8,10 +8,10 @@ Usage
 -----
     # Smoke: one deterministic scene per temporal split, bounded bbox,
     # local ephemeral output
-    uv run python scripts/run_training_data.py --config-name smoke
+    uv run python scripts/runners/run_training_data.py --config-name smoke
 
     # Full: all 324 assessable anchor scenes, canonical release to GCS
-    uv run python scripts/run_training_data.py --config-name full
+    uv run python scripts/runners/run_training_data.py --config-name full
 
 Exits non-zero when any assessable scene fails to publish (fail-closed).
 2026 inference scenes are metadata-only (deferred) and never processed.
@@ -32,7 +32,7 @@ from berlin_lst_downscaling.data.training.report import write_report
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/training", config_name="full", version_base=None)
+@hydra.main(config_path="../../configs/training", config_name="full", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Dispatch to the training-data pipeline and persist the run report."""
     run_id = uuid4().hex[:8]

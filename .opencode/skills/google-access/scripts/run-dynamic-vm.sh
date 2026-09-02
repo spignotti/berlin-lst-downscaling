@@ -101,7 +101,7 @@ MARKER_JSON
 echo "Launching pipeline on VM..."
 ssh_cmd "
   cd $APP_DIR && \
-  nohup uv run python scripts/run_dynamic.py \
+  nohup uv run python scripts/runners/run_dynamic.py \
     --config-name $CONFIG \
     manifest_uri=$MANIFEST_URI \
     > '$REMOTE_LOG' 2>&1 &
@@ -219,7 +219,7 @@ case "$CONFIG" in
 esac
 
 echo "Validating $OUTPUT_ROOT ..."
-uv run python scripts/validate_dynamic.py \
+uv run python scripts/validators/validate_dynamic.py \
   --output-root "$OUTPUT_ROOT" \
   --expected-role "$EXPECTED_ROLE" \
   --expected-scenes "$EXPECTED_SCENES" \

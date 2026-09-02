@@ -26,9 +26,9 @@ share implementation with ``data/qa/stage2_features.py``.
 
 Usage
 -----
-    uv run python scripts/validate_qa_stage2_features.py \
+    uv run python scripts/validators/validate_qa_stage2_features.py \
         --run-prefix gs://berlin-lst-data/qa/stage2_features/<run-id>
-    uv run python scripts/validate_qa_stage2_features.py \
+    uv run python scripts/validators/validate_qa_stage2_features.py \
         --run-prefix data/smoke/qa-stage2/<run-id>
 """
 

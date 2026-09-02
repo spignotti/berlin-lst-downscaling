@@ -36,7 +36,7 @@ water-vs-QC split is not recoverable from the published flag artefact.
 
 Usage
 -----
-    uv run python scripts/validate_ecostress_scenes.py \
+    uv run python scripts/validators/validate_ecostress_scenes.py \
         --manifest gs://berlin-lst-data/manifests/v3/<bundle>-r2/manifest.parquet \
         --ledger gs://berlin-lst-data/ard/full/<cutoff>/ledger.parquet
 """

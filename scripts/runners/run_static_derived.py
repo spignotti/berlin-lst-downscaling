@@ -7,8 +7,8 @@
 
 Usage
 -----
-    uv run python scripts/run_static_derived.py --config-name smoke
-    uv run python scripts/run_static_derived.py --config-name full \
+    uv run python scripts/runners/run_static_derived.py --config-name smoke
+    uv run python scripts/runners/run_static_derived.py --config-name full \
         source_root=gs://berlin-lst-data/static/sources/full \
         derived_root=gs://berlin-lst-data/static/derived/full
 """
@@ -26,7 +26,7 @@ from berlin_lst_downscaling.data.secondary.derived_pipeline import run_derived
 
 
 @hydra.main(
-    config_path="../configs/static_derived",
+    config_path="../../configs/static_derived",
     config_name="smoke",
     version_base=None,
 )

@@ -8,12 +8,12 @@
 Usage
 -----
     # Smoke test (manifest-driven, all sources)
-    uv run python scripts/run_ard.py --config-name smoke_primary \
+    uv run python scripts/runners/run_ard.py --config-name smoke_primary \
         manifest_uri=data/smoke/primary/manifest.parquet
 
     # Production
     #   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
-    uv run python scripts/run_ard.py --config-name full_all
+    uv run python scripts/runners/run_ard.py --config-name full_all
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from berlin_lst_downscaling.data.io import RunLogSession, log_event
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/ard", config_name="full_all", version_base=None)
+@hydra.main(config_path="../../configs/ard", config_name="full_all", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to the ARD pipeline."""
     manifest_uri = cfg.get("manifest_uri")

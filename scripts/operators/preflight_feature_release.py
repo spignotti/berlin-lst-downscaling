@@ -25,8 +25,8 @@ code is non-zero on any failed precondition.
 
 Usage
 -----
-    uv run python scripts/preflight_feature_release.py
-    uv run python scripts/preflight_feature_release.py --config-name full
+    uv run python scripts/operators/preflight_feature_release.py
+    uv run python scripts/operators/preflight_feature_release.py --config-name full
 """
 
 from __future__ import annotations

@@ -8,12 +8,12 @@
 Usage
 -----
     # Local smoke test (requires local static smoke products + CDS access)
-    uv run python scripts/run_dynamic.py --config-name smoke \
+    uv run python scripts/runners/run_dynamic.py --config-name smoke \
         manifest_uri=data/ard/manifests/v3/...-r2/manifest.parquet
 
     # Full run on VM
     #   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
-    uv run python scripts/run_dynamic.py --config-name full \
+    uv run python scripts/runners/run_dynamic.py --config-name full \
         output_root=gs://berlin-lst-data/dynamic/full
 """
 
@@ -31,7 +31,7 @@ from berlin_lst_downscaling.data.io import RunLogSession
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/dynamic", config_name="full", version_base=None)
+@hydra.main(config_path="../../configs/dynamic", config_name="full", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Hydra entry point — dispatch to the Dynamic pipeline."""
     manifest_uri = cfg.get("manifest_uri")

@@ -23,9 +23,9 @@ the prefix is empty afterwards.
 
 Usage
 -----
-    uv run python scripts/retire_feature_release.py plan
-    uv run python scripts/retire_feature_release.py delete --confirm-inventory <hash>
-    uv run python scripts/retire_feature_release.py verify
+    uv run python scripts/operators/retire_feature_release.py plan
+    uv run python scripts/operators/retire_feature_release.py delete --confirm-inventory <hash>
+    uv run python scripts/operators/retire_feature_release.py verify
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@ coupling → ECOSTRESS → bundle write) plus checkpointing and telemetry.
 
 Usage
 -----
-    uv run python scripts/build_manifest.py \
+    uv run python scripts/runners/build_manifest.py \
         --config-dir configs/selection \
         --config-name full_2017_2026
 """
@@ -39,7 +39,11 @@ def main(cfg: DictConfig) -> int:
 
 
 if __name__ == "__main__":
-    @hydra.main(config_path="../configs/selection", config_name="full_2017_2026", version_base=None)
+    @hydra.main(
+        config_path="../../configs/selection",
+        config_name="full_2017_2026",
+        version_base=None,
+    )
     def _hydra_main(cfg: DictConfig) -> int:
         return main(cfg)
 

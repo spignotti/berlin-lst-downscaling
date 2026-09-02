@@ -16,10 +16,10 @@ bucket is the source of truth.
 ## Pipeline graph
 
 ```text
-Selection (build_manifest → publish_manifest)
+Selection (build_manifest)
   └─ manifests/v3/<bundle>-r2/
        ├── ARD (run_ard)                  → ard/full/<cutoff>/
-       └── Dynamic (run_dynamic_isolated) → dynamic/full/, dynamic/inference/2026/
+       └── Dynamic (run_dynamic)          → dynamic/full/, dynamic/inference/2026/
 
 Static sources (run_static_sources)   → static/sources/full/
   └─ Static derived (run_static_derived) → static/derived/full/
@@ -109,7 +109,7 @@ Known limits of the delivered state:
   `dwd_validation/r3/` remains as historical retained evidence.
 - **ECOSTRESS validation scenes:** the six published validation
   granules satisfy the native `NaN ⟺ FLAG_FILL` contract and the 70 m
-  STAC `spatial_resolution` declaration; `scripts/validate_ecostress_scenes.py`
+  STAC `spatial_resolution` declaration; `scripts/validators/validate_ecostress_scenes.py`
   enforces both on the published artifacts.
 
 ## Pre-training diagnostic probes
@@ -121,7 +121,7 @@ cloud audit additionally saves bounded, descriptive QA evidence.
 ```bash
 # 1. Published ECOSTRESS validation scenes (six granules): structural +
 #    grid + STAC-resolution + NaN/flag contract checks and flag fractions.
-uv run python scripts/validate_ecostress_scenes.py \
+uv run python scripts/validators/validate_ecostress_scenes.py \
     --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
     --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet
 
@@ -132,7 +132,7 @@ uv run python scripts/validate_ecostress_scenes.py \
 #    evidence (PNG overlays for the top-`--save-limit` risk-ranked pairs,
 #    default 12, plus index.csv and summary.json) under the run-scoped
 #    output root.
-uv run python scripts/audit_cloud_masking.py \
+uv run python scripts/operators/audit_cloud_masking.py \
     --manifest gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet \
     --pairings gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/pairings.parquet \
     --ledger gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z/ledger.parquet \

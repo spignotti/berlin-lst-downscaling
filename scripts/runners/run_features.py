@@ -7,10 +7,10 @@
 Usage
 -----
     # Smoke: one deterministic pair, bounded bbox, local ephemeral output
-    uv run python scripts/run_features.py --config-name smoke
+    uv run python scripts/runners/run_features.py --config-name smoke
 
     # Full: the published 2017-2025 training universe (324 anchors)
-    uv run python scripts/run_features.py --config-name full
+    uv run python scripts/runners/run_features.py --config-name full
 
 Exits non-zero when any assessable scene fails to publish (fail-closed).
 Excluded scenes (2026 role=inference) are reported, never processed.
@@ -30,7 +30,7 @@ from berlin_lst_downscaling.data.io import RunLogSession, log_event
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/features", config_name="full", version_base=None)
+@hydra.main(config_path="../../configs/features", config_name="full", version_base=None)
 def main(cfg: DictConfig) -> None:
     """Dispatch to the feature-stack pipeline and persist the run report.
 

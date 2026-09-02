@@ -7,10 +7,10 @@
 Usage
 -----
     # Smoke: one deterministic pair, bounded bbox, local ephemeral output
-    uv run python scripts/run_qa_stage2_features.py --config-name stage2_features_smoke
+    uv run python scripts/runners/run_qa_stage2_features.py --config-name stage2_features_smoke
 
     # Full: the published 2017-2025 training universe, evidence to GCS
-    uv run python scripts/run_qa_stage2_features.py --config-name stage2_features_full
+    uv run python scripts/runners/run_qa_stage2_features.py --config-name stage2_features_full
 
 Exits non-zero when the gate finds contract/range/input faults in the
 published feature stacks (fail-closed). Exclusions (e.g. 2026 inference
@@ -36,7 +36,7 @@ from berlin_lst_downscaling.data.qa.stage2_features import (
 _logger = logging.getLogger(__name__)
 
 
-@hydra.main(config_path="../configs/qa", config_name="stage2_features_full", version_base=None)
+@hydra.main(config_path="../../configs/qa", config_name="stage2_features_full", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Dispatch to the Stage-2 feature-stack QA gate and persist the report bundle."""
     run_id = uuid4().hex[:8]

@@ -35,9 +35,9 @@ with ``data/training/``.
 
 Usage
 -----
-    uv run python scripts/validate_training_data.py \
+    uv run python scripts/validators/validate_training_data.py \
         --release-root gs://berlin-lst-data/training/v1
-    uv run python scripts/validate_training_data.py \
+    uv run python scripts/validators/validate_training_data.py \
         --release-root data/smoke/training-data
 """
 

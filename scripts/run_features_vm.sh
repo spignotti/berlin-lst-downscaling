@@ -109,7 +109,7 @@ if [[ "$LOCAL_SHA" != "$ORIGIN_SHA" ]]; then
 fi
 echo "  Branch: $BRANCH | SHA: $LOCAL_SHA (clean, pushed)"
 
-if ! uv run python scripts/preflight_feature_release.py --config-name full; then
+if ! uv run python scripts/operators/preflight_feature_release.py --config-name full; then
   echo "ERROR: release preflight failed — not launching."
   exit 1
 fi
@@ -201,7 +201,7 @@ echo "Launching feature-stack run on VM..."
 LAUNCH_WAIT_SECONDS=60
 ssh_cmd "
   cd $APP_DIR && \
-  nohup sh -c 'uv run python scripts/run_features_isolated.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
+  nohup sh -c 'uv run python scripts/runners/run_features_isolated.py --config-name full; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
     > $REMOTE_LOG 2>&1 < /dev/null &
   PID=\$! && echo \$PID > $REMOTE_PID_FILE
 " &
@@ -334,7 +334,7 @@ fi
 VALIDATION_OK=1
 if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $FEATURES_ROOT ..."
-  uv run python scripts/validate_feature_stacks.py \
+  uv run python scripts/validators/validate_feature_stacks.py \
     --root "$FEATURES_ROOT" \
     --aoi data/boundaries/aoi_10m.tif \
     --expected-scenes 324 \
@@ -343,7 +343,7 @@ fi
 
 if [[ "$VALIDATION_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
   echo "Comparing $BASELINE_ROOT -> $FEATURES_ROOT ..."
-  uv run python scripts/compare_feature_releases.py \
+  uv run python scripts/operators/compare_feature_releases.py \
     --baseline-root "$BASELINE_ROOT" \
     --candidate-root "$FEATURES_ROOT" \
     && VALIDATION_OK=0 || VALIDATION_OK=1

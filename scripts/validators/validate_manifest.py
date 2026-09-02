@@ -12,11 +12,11 @@ local and gs:// URIs.
 
 Usage
 -----
-    uv run python scripts/validate_manifest.py \
+    uv run python scripts/validators/validate_manifest.py \
         --manifest gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet
 
     # With upstream PC/CMR identity resolution (network):
-    uv run python scripts/validate_manifest.py \
+    uv run python scripts/validators/validate_manifest.py \
         --manifest gs://berlin-lst-data/manifests/v3/<cutoff>-r2/manifest.parquet \
         --resolve-upstream
 """

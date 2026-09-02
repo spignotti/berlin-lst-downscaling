@@ -16,13 +16,13 @@ config hash.
 Usage
 -----
     # Full: one child process per assessable scene (324), GCS output.
-    uv run python scripts/run_features_isolated.py --config-name full
+    uv run python scripts/runners/run_features_isolated.py --config-name full
 
     # Resume a previous run (skip scenes already done + complete).
-    uv run python scripts/run_features_isolated.py --config-name full --resume
+    uv run python scripts/runners/run_features_isolated.py --config-name full --resume
 
     # Dry run: print the scene list without executing.
-    uv run python scripts/run_features_isolated.py --config-name full --dry-run
+    uv run python scripts/runners/run_features_isolated.py --config-name full --dry-run
 
 Exit code is non-zero when any assessable scene fails.
 """
