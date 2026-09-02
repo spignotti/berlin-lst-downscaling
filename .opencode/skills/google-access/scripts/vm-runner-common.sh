@@ -94,9 +94,14 @@ ssh_cmd_retry() {
 
 vm_init_run() {
   local prefix="$1"
-  # Reject any branch that could alter the remote command or marker JSON
-  # (git ref names cannot contain shell metacharacters).
-  if ! git check-ref-format --branch "$BRANCH" >/dev/null 2>&1; then
+  # Strict allowlist: only letters, digits, '.', '_', '/' and '-' — this
+  # excludes every shell metacharacter and quote so the branch is safe to
+  # interpolate into remote shell commands and marker JSON. The project
+  # only deploys 'main' and conventional 'type/description' branches.
+  if [[ ! "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || [[ "$BRANCH" == *".."* ]] \
+    || [[ "$BRANCH" == -* ]] \
+    || [[ "$BRANCH" == *. ]]; then
     echo "ERROR: invalid branch name: $BRANCH"
     exit 1
   fi
