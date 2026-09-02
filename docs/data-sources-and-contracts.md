@@ -474,7 +474,8 @@ vs manifest vs COG counts, scaler contract and train-only provenance, and
 full artifact readback. The smoke gate (`nox -s smoke-training-data`)
 runs the pipeline twice on one scene per split with a clean slate between
 runs, asserts deterministic release artifacts, and runs the validator.
-The full release runs on the VM via `scripts/run_training_data_vm.sh`
+The full release runs on the VM via
+`.opencode/skills/google-access/scripts/run-training-data-vm.sh`
 (guardrailed lifecycle, then the same validator).
 
 **Responsibility boundary to WB3.** This release fixes the training

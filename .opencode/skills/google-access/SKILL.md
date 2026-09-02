@@ -11,8 +11,19 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - SSH into VM:    `.opencode/skills/google-access/scripts/ssh-vm.sh`
 - SSH readiness:  `.opencode/skills/google-access/scripts/ssh-vm.sh --check`
 - Run Dynamic:    `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
+- Run Features:   `.opencode/skills/google-access/scripts/run-features-vm.sh [branch]`
+- Run Training:   `.opencode/skills/google-access/scripts/run-training-data-vm.sh [branch]`
+- Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
+- Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
 - Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
+
+All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
+`scripts/vm-runner-common.sh` (start → deploy pinned commit → detached
+launch → poll → validate → stop; the VM is never stopped automatically
+after a connection loss or an ambiguous exit). Pipeline-specific
+parameters (runner, config, validator, output roots) live only in each
+launcher; the application code itself stays VM-agnostic.
 
 ## Purpose
 

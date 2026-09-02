@@ -94,7 +94,7 @@ carry-forward) live in `data-sources-and-contracts.md`.
   2021 for 2020-2025), and `svf`. The DSMs remain internal auxiliaries
   for SVF/horizon/shadow computation only.
 - Run: full 324-scene publication (2026-08-21/22, VM,
-  `run_features_vm.sh`, isolated per-scene subprocesses with `--resume`;
+  `run-features-vm.sh`, isolated per-scene subprocesses with `--resume`;
   interrupted twice by SSH connection loss and resumed cleanly — the
   atomic `complete.json` visibility gate kept every published scene
   intact). Final ledger: **324 done, 0 failed**;
@@ -200,7 +200,7 @@ The approved training contract is implemented as a reproducible release
 under `gs://berlin-lst-data/training/v1` (pipeline `data/training/`,
 runner `scripts/runners/run_training_data.py`, independent validator
 `scripts/validators/validate_training_data.py`, smoke gate `nox -s smoke-training-data`,
-VM wrapper `scripts/run_training_data_vm.sh`). Full normative details are
+VM wrapper `.opencode/skills/google-access/scripts/run-training-data-vm.sh`). Full normative details are
 in `data-sources-and-contracts.md` § WB2c-4 training-data release.
 
 - **Input basis pinned to Feature Release V3** (324 done scenes, config
