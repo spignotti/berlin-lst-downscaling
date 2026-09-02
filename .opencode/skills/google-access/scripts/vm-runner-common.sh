@@ -104,7 +104,16 @@ vm_init_run() {
     echo "ERROR: invalid branch name: $BRANCH"
     exit 1
   fi
-  WRAP_RUN_ID="${prefix}-$(date -u +%Y%m%dT%H%M%SZ)"
+  local suffix
+  if command -v uuidgen >/dev/null 2>&1; then
+    suffix=$(uuidgen | tr -d "-" | cut -c1-8)
+  else
+    suffix="${RANDOM}-$$"
+  fi
+  # Unique run identity: timestamp plus a random suffix so two launches in
+  # the same second never share a marker/pid/log. vm_write_marker refuses
+  # to reuse an existing run directory as a hard guarantee.
+  WRAP_RUN_ID="${prefix}-$(date -u +%Y%m%dT%H%M%SZ)-${suffix}"
   LOG_DIR="$APP_DIR/logs/runs/$WRAP_RUN_ID"
   MARKER="$LOG_DIR/marker.json"
   STATUS_FILE="$LOG_DIR/exit_status"
@@ -188,7 +197,13 @@ vm_push_deploy() {
 vm_write_marker() {
   local config_name="$1"
   echo "Creating run marker: $WRAP_RUN_ID"
+  # Refuse to reuse an existing run directory: a colliding run id must
+  # never clobber another run's marker, pid file, or log.
   ssh_cmd_retry "
+    if [ -e '$LOG_DIR' ]; then
+      echo 'ERROR: run directory already exists: $LOG_DIR' >&2
+      exit 1
+    fi
     mkdir -p '$LOG_DIR' && \
     cat > '$MARKER' <<MARKER_JSON
 {

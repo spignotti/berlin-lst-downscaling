@@ -44,7 +44,7 @@ from omegaconf import OmegaConf
 from berlin_lst_downscaling.data.qa.inventory import build_inventory
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _SCRIPT_DIR.parent
+_REPO_ROOT = _SCRIPT_DIR.parents[1]
 _CONFIG_DIR = _REPO_ROOT / "configs" / "features"
 
 _logger = logging.getLogger("features.isolated")

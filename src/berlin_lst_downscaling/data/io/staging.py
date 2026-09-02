@@ -95,6 +95,11 @@ class StageManager:
         self._base_loc = OutputLocation(str(uri))
         self._run_id = run_id or uuid4().hex[:8]
         self._persist = persist
+        # Only a base directory this run created may be removed on cleanup;
+        # a pre-existing (possibly shared) staging root must survive.
+        self._base_created_by_run = (
+            self._base_loc.scheme != "gcs" and not Path(self._base_loc.uri).exists()
+        )
 
     @property
     def run_id(self) -> str:
@@ -213,15 +218,16 @@ class StageManager:
     def _cleanup_local(self) -> None:
         """Remove the local stage directory tree.
 
-        Also removes the run-owned base directory when this run leaves it
-        empty, so a dedicated staging root (e.g. ``data/smoke/ecostress_stage``)
-        does not linger as an empty directory after the run.
+        Also removes the run-owned base directory when this run created it
+        and leaves it empty, so a dedicated staging root (e.g.
+        ``data/smoke/ecostress_stage``) does not linger as an empty
+        directory after the run. Pre-existing bases are never removed.
         """
         root = Path(self.uri.uri)
         if root.is_dir():
             shutil.rmtree(root)
         base = Path(self._base_loc.uri)
-        if base.is_dir() and not any(base.iterdir()):
+        if self._base_created_by_run and base.is_dir() and not any(base.iterdir()):
             base.rmdir()
 
     @retry(

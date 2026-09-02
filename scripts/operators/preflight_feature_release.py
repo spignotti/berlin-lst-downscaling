@@ -47,7 +47,7 @@ from berlin_lst_downscaling.data.io import exists, read_bytes
 from berlin_lst_downscaling.data.qa.inventory import build_inventory
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _SCRIPT_DIR.parent
+_REPO_ROOT = _SCRIPT_DIR.parents[1]
 _CONFIG_DIR = _REPO_ROOT / "configs" / "features"
 
 # Smoke fixture: one scene per LoD vintage (mirrors configs/features/smoke.yaml).

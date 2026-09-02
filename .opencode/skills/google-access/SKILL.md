@@ -19,9 +19,9 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
 
 All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
-`scripts/vm-runner-common.sh` (start → deploy pinned commit → detached
-launch → poll → validate → stop; the VM is never stopped automatically
-after a connection loss or an ambiguous exit). Pipeline-specific
+`.opencode/skills/google-access/scripts/vm-runner-common.sh` (start → deploy pinned
+commit → detached launch → poll → validate → stop; the VM is never stopped
+automatically after a connection loss or an ambiguous exit). Pipeline-specific
 parameters (runner, config, validator, output roots) live only in each
 launcher; the application code itself stays VM-agnostic.
 
@@ -335,8 +335,9 @@ Each `run-dynamic-vm.sh` execution writes an immutable run marker on the VM:
 /workspace/app/logs/runs/<config>-<timestamp>/marker.json
 ```
 
-The marker contains: `run_id`, `config`, `branch`, `started`, `pid`, `log`,
-and `status_file`.  On process completion, the wrapper writes an exit-status
+The marker contains: `run_id`, `config`, `branch`, `sha`, `started`, `pid`,
+`log`, and `status_file`.  On process completion, the wrapper writes an
+exit-status
 file at the same location.
 
 If the local session is interrupted (SSH failure, machine sleep, agent crash):
