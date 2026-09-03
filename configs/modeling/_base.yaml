@@ -1,0 +1,60 @@
+# @package _global_
+# Shared base config for the WB3 modeling scaffold (deterministic synthetic
+# training lifecycle). The full config trains on synthetic data only — real
+# WB3 patch/reader/loss integration arrives later through the extension
+# points in modeling/contracts.py.
+defaults:
+  - _self_
+
+# Canonical data-release identifier this scaffold is wired to consume
+# (immutable WB2c-4 training-data release; features on the V3 28-channel
+# interface). No real data is read by the synthetic path.
+data_release_id: "training/v1"
+features_root: "gs://berlin-lst-data/features/v3"
+
+# Determinism: fixed seed + deterministic kernels. Recorded at run level;
+# byte identity is still environment/hardware/library dependent.
+seed: 0
+
+# ── data (synthetic) ──────────────────────────────────────────────────
+data:
+  n_active_channels: 28   # first-C of the fixed V3 28-channel order
+  batch_size: 8
+  patch_size: 32          # H == W; must be divisible by 2 ** model.depth
+  n_train: 128
+  n_val: 32
+  n_test: 32
+
+# ── model (fixed deterministic 2D U-Net) ──────────────────────────────
+model:
+  base_width: 32
+  depth: 3
+
+# ── training ──────────────────────────────────────────────────────────
+trainer:
+  max_epochs: 5
+  learning_rate: 1.0e-3
+  weight_decay: 0.0
+
+# ── output ────────────────────────────────────────────────────────────
+# Local output root (smoke: data/smoke/modeling). GCS output is out of
+# scope for this scaffold; the VM/Vertex execution path is a later task.
+output_root: "data/runs/modeling"
+
+# ── W&B ───────────────────────────────────────────────────────────────
+# mode "offline" writes local run records (no credentials, no network);
+# mode "online" requires a valid W&B login and syncs to the project.
+wandb:
+  project: "berlin-lst-downscaling"
+  mode: "online"
+
+logging_level: INFO
+
+# Hydra overrides (suppress run dir and cwd changes) — mirrors the other
+# pipeline runners.
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false

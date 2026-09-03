@@ -2,7 +2,7 @@
 
 Owns the multi-anchor pipeline that turns a Hydra config into the
 canonical v3 manifest bundle. The thin Hydra adapter in
-``scripts/build_manifest.py`` is the entry point; this module holds
+``scripts/runners/build_manifest.py`` is the entry point; this module holds
 the work so the heavy lifting lives alongside the selection stages.
 """
 from __future__ import annotations

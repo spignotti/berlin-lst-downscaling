@@ -31,9 +31,9 @@ Per the v3 manifest: 345 Landsat anchors, 509 manifest rows.
 
 ### Historical LoD morphometry vintages
 
-The historical runner (`scripts/run_lod_vintages.py`) consumes three
-CityGML archives supplied by the Senatsverwaltung Berlin — LoD1 (2017),
-LoD2 (2021), and LoD2 (2022) — and publishes canonical-grid
+The historical LoD backfill consumed three CityGML archives supplied
+by the Senatsverwaltung Berlin — LoD1 (2017), LoD2 (2021), and LoD2
+(2022) — and published canonical-grid
 `lod2_morphology/{2017,2021,2022}` products. The 2017 vintage applies
 the LoD2-2021 stock filter against the LoD1-2017 footprints
 (50% minimum footprint overlap) so only buildings present in 2017
@@ -82,12 +82,6 @@ half-published state.
 The Dynamic pipeline resolves each scene's LoD vintage from
 `geometry_mapping.json` per scene year and applies the matching
 building-shadow horizon (`data/dynamic/geometry.py`).
-
-#### Runner commands
-
-The full LoD-vintage runner, reconcile, and derive-only commands live in
-the README operations section (they are operational instructions, not
-contracts).
 
 ## Manifest bundle (v3)
 
@@ -249,7 +243,7 @@ belong to a future task (WB2c-4).
 
 ### Stage-1 raw-input QA gate
 
-The Stage-1 gate (`scripts/run_qa_stage1_raw.py`, core in
+The Stage-1 gate (`scripts/runners/run_qa_stage1_raw.py`, core in
 `data/qa/`) validates the published raw inputs of the training universe
 before feature engineering. Contract:
 
@@ -282,7 +276,7 @@ before feature engineering. Contract:
 ### Scene feature stacks (28-band, 10 m)
 
 Per paired Landsat anchor (2017-2025, 324 scenes), the features pipeline
-(`scripts/run_features.py`, core in `data/features/`) publishes one
+(`scripts/runners/run_features.py`, core in `data/features/`) publishes one
 canonical-grid 10 m stack plus a co-registered validity mask:
 
 ```
@@ -389,7 +383,7 @@ formulas, weights, ranges) — any change invalidates published stacks via
 `<root>/_state/features/ledger.parquet` (keyed `feature_stack` +
 `period_or_vintage = scene_id`) with the same `complete.json` visibility
 gate as every other product. The full run uses per-scene subprocess
-isolation (`scripts/run_features_isolated.py`) because one full-grid
+isolation (`scripts/runners/run_features_isolated.py`) because one full-grid
 scene peaks at ~7-8 GB of RAM; a fresh interpreter per scene bounds
 memory and makes the run resume-safe.
 
@@ -420,7 +414,7 @@ The training handoff is the reproducible transfer of Feature Release V3
 into leakage-free training inputs for WB3. It is published under
 `gs://berlin-lst-data/training/v1` (per-scene artifacts + top-level
 manifest, cell index, scaler, and release marker), built by
-`scripts/run_training_data.py` (`data/training/`).
+`scripts/runners/run_training_data.py` (`data/training/`).
 
 **Input basis.** Feature Release V3 is the only permitted input
 (user-mandated; V1/V2 are hard-rejected). The pipeline verifies the
@@ -473,14 +467,15 @@ covers the split mapping, support rule, cell-ID formula, scaler policy,
 channel order, and V3 config hash. Any policy change invalidates the
 published artifacts via the ledger's `config_changed` reconcile path.
 
-**Validation.** `scripts/validate_training_data.py` is an independent
+**Validation.** `scripts/validators/validate_training_data.py` is an independent
 read-only probe over the release root: V3 source gate, per-scene COG
 contract, manifest coverage/splits/leakage, deterministic cell IDs, cells
 vs manifest vs COG counts, scaler contract and train-only provenance, and
 full artifact readback. The smoke gate (`nox -s smoke-training-data`)
 runs the pipeline twice on one scene per split with a clean slate between
 runs, asserts deterministic release artifacts, and runs the validator.
-The full release runs on the VM via `scripts/run_training_data_vm.sh`
+The full release runs on the VM via
+`.opencode/skills/google-access/scripts/run-training-data-vm.sh`
 (guardrailed lifecycle, then the same validator).
 
 **Responsibility boundary to WB3.** This release fixes the training

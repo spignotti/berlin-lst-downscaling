@@ -2,7 +2,7 @@
 # Full Stage-2 feature-stack QA gate: the published 2017-2025 training
 # universe (324 assessable pairs), writing immutable evidence to GCS under
 # qa/stage2_features/<run-id>/. Invoke on the VM via
-# scripts/run_qa_stage2_features_vm.sh.
+# .opencode/skills/google-access/scripts/run-qa-stage2-vm.sh.
 defaults:
   - _base
   - _self_

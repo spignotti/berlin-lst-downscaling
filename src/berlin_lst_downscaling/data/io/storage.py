@@ -14,6 +14,7 @@ All functions accept ``str | Path | OutputLocation`` as the URI argument.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -195,10 +196,16 @@ def _atomic_write_gcs(
     tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match)
+    _gcs_upload_with_retry(
+        tmp_blob, lambda: tmp_blob.upload_from_string(data), bucket, key, if_generation_match
+    )
 
-def _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match=None):
-    """Upload to GCS with retries for transient failures (429, 503, etc.)."""
+def _gcs_upload_with_retry(tmp_blob, upload, bucket, key, if_generation_match=None):
+    """Upload to GCS with retries for transient failures (429, 503, etc.).
+
+    ``upload`` is a zero-argument callable that uploads *tmp_blob*
+    (e.g. ``lambda: tmp_blob.upload_from_string(data)``).
+    """
     from tenacity import (
         retry,
         retry_if_exception_type,
@@ -209,16 +216,12 @@ def _gcs_upload_with_retry(tmp_blob, data, bucket, key, if_generation_match=None
     @retry(
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=2, min=1, max=60),
-        retry=retry_if_exception_type(
-            (
-                Exception,  # google.api_core.exceptions 429/503 inherit from Exception
-            )
-        ),
+        retry=retry_if_exception_type(Exception),
         reraise=True,
     )
     def _do_upload():
         try:
-            tmp_blob.upload_from_string(data)
+            upload()
             bucket.copy_blob(tmp_blob, bucket, key, if_generation_match=if_generation_match)
         except Exception:
             # Clean up temp blob on failure before retry
@@ -335,48 +338,156 @@ def _atomic_upload_gcs(
     tmp_key = (Path(key).parent / ".tmp" / f"_{Path(key).name}.{uuid4().hex[:8]}").as_posix()
     tmp_blob = bucket.blob(tmp_key)
 
-    _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match)
-
-def _gcs_upload_file_with_retry(tmp_blob, local_path, bucket, key, if_generation_match):
-    """Upload file to GCS with retries for transient failures."""
-    from tenacity import (
-        retry,
-        retry_if_exception_type,
-        stop_after_attempt,
-        wait_exponential,
+    _gcs_upload_with_retry(
+        tmp_blob,
+        lambda: tmp_blob.upload_from_filename(str(local_path)),
+        bucket,
+        key,
+        if_generation_match,
     )
 
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=1, max=60),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
-    def _do_upload():
-        try:
-            tmp_blob.upload_from_filename(str(local_path))
-            bucket.copy_blob(tmp_blob, bucket, key, if_generation_match=if_generation_match)
-        except Exception:
+# ── publish lock ─────────────────────────────────────────────────────
+
+
+class PublishLock:
+    """Ownership-safe publisher lock for local and GCS URIs.
+
+    For **GCS paths**: created with ``if_generation_match=0`` (absent);
+    released only if the current generation matches the one captured at
+    creation.  A replacement lock created by a concurrent publisher is
+    never deleted by this owner.
+
+    For **local paths**: created with ``O_CREAT | O_EXCL``; released only
+    if the file's content matches this owner's token.
+    """
+
+    __slots__ = ("uri", "_token", "_payload", "_generation", "_scheme")
+
+    def __init__(self, uri: str, payload: dict) -> None:
+        loc = _as_loc(uri)
+        self.uri = loc.uri
+        self._token = uuid4().hex
+        self._payload = payload
+        self._generation: int | None = None
+        self._scheme = loc.scheme
+
+    def __enter__(self) -> PublishLock:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.release()
+
+    def acquire(self) -> None:
+        """Create the lock atomically.
+
+        Raises :class:`FileExistsError` if the lock already exists.
+        """
+        lock_content = json.dumps({"token": self._token, **self._payload}, indent=2)
+        lock_bytes = lock_content.encode()
+
+        if self._scheme == "gcs":
+            bucket_name, key = _parse_gs_uri(self.uri)
+            client = _gcs_client()
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(key)
+            blob.upload_from_string(
+                lock_bytes, content_type="application/json",
+                if_generation_match=0,
+            )
+            # upload_from_string populates blob.generation via _set_properties
+            gen = blob.generation
+            if gen is None:
+                raise RuntimeError(
+                    f"GCS lock creation succeeded but generation not set: {self.uri}"
+                )
+            self._generation = int(gen)
+
+        elif self._scheme in ("local", "mounted"):
+            import os as _os
+
+            dst = _resolve_local(self.uri)
+            _os.makedirs(_os.path.dirname(dst), exist_ok=True)
             try:
-                tmp_blob.delete()
-            except Exception:  # noqa: S110 — best-effort cleanup
-                pass
-            raise
+                fd = _os.open(
+                    str(dst), _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY,
+                )
+                with _os.fdopen(fd, "w") as fh:
+                    fh.write(lock_content)
+            except FileExistsError:
+                raise FileExistsError(f"lock already held: {self.uri}") from None
 
-    try:
-        _do_upload()
-        tmp_blob.delete()
-    except Exception:
+        else:
+            raise ValueError(f"unsupported lock URI scheme: {self.uri!r}")
+
+    def release(self) -> None:
+        """Release the lock only if this owner still owns it."""
         try:
-            tmp_blob.delete()
-        except Exception:  # noqa: S110 — best-effort cleanup
-            pass
-        raise
+            if self._scheme == "gcs":
+                if self._generation is None:
+                    _logger.warning("GCS lock release skipped (no generation): %s", self.uri)
+                    return
+                bucket_name, key = _parse_gs_uri(self.uri)
+                client = _gcs_client()
+                bucket = client.bucket(bucket_name)
+                lock_blob = bucket.blob(key, generation=self._generation)
+                try:
+                    lock_blob.delete(if_generation_match=self._generation)
+                except Exception as exc:  # noqa: BLE001 — precondition mismatch is expected
+                    _logger.warning(
+                        "GCS lock release skipped (generation mismatch, another "
+                        "publisher owns %s): %s",
+                        self.uri, exc,
+                    )
+
+            elif self._scheme in ("local", "mounted"):
+                import os as _os
+
+                dst = _resolve_local(self.uri)
+                try:
+                    with open(dst, encoding="utf-8") as fh:
+                        stored = json.loads(fh.read())
+                    if stored.get("token") == self._token:
+                        _os.remove(str(dst))
+                    else:
+                        _logger.warning(
+                            "local lock release skipped (token mismatch, another "
+                            "publisher owns %s)", self.uri,
+                        )
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            _logger.warning("publish-lock cleanup failed for %s: %s", self.uri, exc)
+
+
+def publish_lock(uri: str, payload: dict | None = None) -> PublishLock:
+    """Create a :class:`PublishLock` and acquire it.
+
+    Use as a context manager::
+
+        with publish_lock("gs://bucket/path/.publish.lock") as lock:
+            ...  # work under lock
+
+    On normal exit the lock is released.  On exception the lock is
+    released best-effort; a failure to release is logged, not raised.
+
+    Parameters
+    ----------
+    uri :
+        Lock URI (local or ``gs://``).
+    payload :
+        Arbitrary metadata stored in the lock object.
+    """
+    lock = PublishLock(uri, payload or {})
+    lock.acquire()
+    return lock
+
 
 __all__ = [
     "OutputLocation",
+    "PublishLock",
     "atomic_write",
     "atomic_upload",
     "exists",
+    "publish_lock",
     "read_bytes",
 ]

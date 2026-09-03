@@ -62,7 +62,21 @@ uv run nox -s lint typecheck
 
 Local smoke gates (`uv run nox -s smoke-*`) need Google Cloud ADC and, for
 the dynamic pipeline, a Copernicus CDS API key. Heavy production runs execute
-on a GCP VM against GCS.
+on a GCP VM against GCS; managed model training will run on Vertex AI.
+
+## Entrypoints
+
+Scripts are grouped by role under `scripts/`:
+
+- `scripts/runners/` — pipeline entrypoints (`run_*`, `build_manifest`)
+- `scripts/validators/` — read-only validators (`validate_*`)
+- `scripts/operators/` — release and diagnostic tooling
+  (`compare_feature_releases`, `preflight_feature_release`,
+  `retire_feature_release`, `audit_cloud_masking`)
+
+Each script is self-documenting (`uv run python scripts/<group>/<name>.py
+--help`) and runnable directly on the VM. VM lifecycle orchestration lives in
+the `google-access` OpenCode skill, not in the repository.
 
 ## Documentation
 

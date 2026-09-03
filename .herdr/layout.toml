@@ -1,0 +1,29 @@
+version = 1
+
+[[tabs]]
+label = "main"
+
+[[tabs.panes]]
+label = "opencode"
+argv = ["opencode"]
+
+[[tabs]]
+label = "files"
+
+[[tabs.panes]]
+label = "yazi"
+argv = ["yazi"]
+
+[[tabs]]
+label = "edit"
+
+[[tabs.panes]]
+label = "nvim"
+argv = ["nvim", "."]
+
+[[tabs]]
+label = "cloud-ops"
+
+[[tabs.panes]]
+label = "dashboard"
+argv = ["bash", ".herdr/monitors/status-dashboard.sh", "--title", "Berlin LST Cloud Operations", "--checks", ".herdr/monitors/cloud-ops-checks.sh", "--interval", "60"]

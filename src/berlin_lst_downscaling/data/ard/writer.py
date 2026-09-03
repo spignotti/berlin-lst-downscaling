@@ -199,7 +199,7 @@ def write_flag_cog_atomic(
         cog_options: dict[str, str] = {
             "BLOCKSIZE": str(contract.tiling.blocksize),
             "COMPRESS": "ZSTD",
-            "PREDICTOR": "1",
+            "PREDICTOR": "NO",
             "BIGTIFF": "IF_SAFER",
             "OVERVIEW_RESAMPLING": _FLAG_OV_RESAMPLING,
         }

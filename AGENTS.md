@@ -43,6 +43,12 @@ Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Compu
 - The VM stays stopped and protected (deletion protection on, boot disk not auto-delete) when not actively running the Dynamic pipeline.
 - Secrets via ENV, never committed.
 
+## Compute Placement
+
+- Compute-heavy production work runs on the GCP VM (On-Demand `berlin-lst-vm`); managed model training runs on Vertex AI.
+- VM lifecycle orchestration (start/stop/ssh/status, run launchers) lives **only** in `.opencode/skills/google-access/scripts/` — never in application source under `src/` or repo `scripts/`.
+- Application code stays VM-agnostic: it consumes GCS and takes config via Hydra; only the skill launchers know the VM.
+
 ## Conventions
 
 - follow existing patterns before introducing new ones

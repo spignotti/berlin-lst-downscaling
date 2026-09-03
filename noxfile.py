@@ -147,7 +147,7 @@ def smoke_primary(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_ard.py",
+            "scripts/runners/run_ard.py",
             "--config-name",
             "smoke_primary",
             f"manifest_uri={manifest_path}",
@@ -163,7 +163,7 @@ def smoke_primary(session: nox.Session) -> None:
         "uv",
         "run",
         "python",
-        "scripts/validate_ard.py",
+        "scripts/validators/validate_ard.py",
         f"--ledger={output_root}/ledger.parquet",
         f"--manifest={manifest_path}",
         external=True,
@@ -227,7 +227,7 @@ def smoke_selection_couple(session: nox.Session) -> None:
         "uv",
         "run",
         "python",
-        "scripts/build_manifest.py",
+        "scripts/runners/build_manifest.py",
         "output_root=data/manifest_build/v3/smoke",
         "checkpoint_dir=data/manifest_build/v3/smoke/checkpoints",
         "years=[2017]",
@@ -397,7 +397,7 @@ def smoke_static_sources(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_static_sources.py",
+            "scripts/runners/run_static_sources.py",
             "--config-name",
             "smoke",
             f"source_root={output_root}",
@@ -451,7 +451,7 @@ def cloud_static_sources(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_static_sources.py",
+            "scripts/runners/run_static_sources.py",
             "--config-name",
             "smoke",
             f"source_root={source_root}",
@@ -494,7 +494,7 @@ def smoke_static_derived(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_static_derived.py",
+            "scripts/runners/run_static_derived.py",
             "--config-name",
             "smoke",
             f"derived_root={output_root}",
@@ -561,7 +561,7 @@ def cloud_static_derived(session: nox.Session) -> None:
         "uv",
         "run",
         "python",
-        "scripts/run_static_derived.py",
+        "scripts/runners/run_static_derived.py",
         "--config-name",
         "smoke",
         f"source_root={source_root}",
@@ -615,7 +615,7 @@ def smoke_dynamic(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_dynamic.py",
+            "scripts/runners/run_dynamic.py",
             "--config-name",
             "smoke",
             f"manifest_uri={manifest_uri}",
@@ -628,7 +628,7 @@ def smoke_dynamic(session: nox.Session) -> None:
         "uv",
         "run",
         "python",
-        "scripts/validate_dynamic.py",
+        "scripts/validators/validate_dynamic.py",
         f"--output-root={output_root}",
         "--expected-role",
         "anchor",
@@ -671,7 +671,7 @@ def cloud_smoke_dynamic(session: nox.Session) -> None:
         "uv",
         "run",
         "python",
-        "scripts/run_dynamic.py",
+        "scripts/runners/run_dynamic.py",
         "--config-name",
         "cloud_smoke",
         f"manifest_uri={manifest_uri}",
@@ -710,7 +710,7 @@ def cloud_dynamic(session: nox.Session) -> None:
         "uv",
         "run",
         "python",
-        "scripts/run_dynamic.py",
+        "scripts/runners/run_dynamic.py",
         "--config-name",
         "full",
         f"manifest_uri={manifest_uri}",
@@ -757,7 +757,7 @@ def smoke_qa_stage1(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/run_qa_stage1_raw.py",
+                "scripts/runners/run_qa_stage1_raw.py",
                 "--config-name",
                 "stage1_raw_smoke",
                 external=True,
@@ -772,7 +772,7 @@ def smoke_qa_stage1(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/validate_qa_stage1_raw.py",
+                "scripts/validators/validate_qa_stage1_raw.py",
                 f"--run-prefix={run_dir}",
                 external=True,
             )
@@ -856,7 +856,7 @@ def smoke_features(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/run_features.py",
+                "scripts/runners/run_features.py",
                 "--config-name",
                 "smoke",
                 external=True,
@@ -887,7 +887,7 @@ def smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_feature_stacks.py",
+            "scripts/validators/validate_feature_stacks.py",
             f"--root={output_root}",
             "--expected-scenes",
             "4",
@@ -899,7 +899,7 @@ def smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_lod_coverage.py",
+            "scripts/validators/validate_lod_coverage.py",
             f"--bbox={bbox}",
             external=True,
         )
@@ -913,7 +913,7 @@ def smoke_features(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/compare_feature_releases.py",
+                "scripts/operators/compare_feature_releases.py",
                 "--baseline-root",
                 "gs://berlin-lst-data/features/v2",
                 "--candidate-root",
@@ -937,7 +937,7 @@ def smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_qa_stage2_features.py",
+            "scripts/runners/run_qa_stage2_features.py",
             "--config-name",
             "stage2_features_smoke",
             f"features_root={output_root}",
@@ -955,7 +955,7 @@ def smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_qa_stage2_features.py",
+            "scripts/validators/validate_qa_stage2_features.py",
             f"--run-prefix={stage2_dirs[0]}",
             external=True,
         )
@@ -1013,7 +1013,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_features.py",
+            "scripts/runners/run_features.py",
             "--config-name",
             "smoke",
             f"output_root={output_root}",
@@ -1023,7 +1023,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_feature_stacks.py",
+            "scripts/validators/validate_feature_stacks.py",
             f"--root={output_root}",
             "--expected-scenes",
             "4",
@@ -1033,7 +1033,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_lod_coverage.py",
+            "scripts/validators/validate_lod_coverage.py",
             f"--bbox={bbox}",
             external=True,
         )
@@ -1043,7 +1043,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/compare_feature_releases.py",
+                "scripts/operators/compare_feature_releases.py",
                 "--baseline-root",
                 "gs://berlin-lst-data/features/v2",
                 "--candidate-root",
@@ -1058,7 +1058,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_qa_stage2_features.py",
+            "scripts/runners/run_qa_stage2_features.py",
             "--config-name",
             "stage2_features_smoke",
             f"features_root={output_root}",
@@ -1072,7 +1072,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_qa_stage2_features.py",
+            "scripts/validators/validate_qa_stage2_features.py",
             f"--run-prefix={stage2_root}/{stage2_dirs[0]}",
             external=True,
         )
@@ -1125,7 +1125,7 @@ def smoke_qa_stage2(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/run_qa_stage2_features.py",
+                "scripts/runners/run_qa_stage2_features.py",
                 "--config-name",
                 "stage2_features_smoke",
                 external=True,
@@ -1140,7 +1140,7 @@ def smoke_qa_stage2(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/validate_qa_stage2_features.py",
+                "scripts/validators/validate_qa_stage2_features.py",
                 f"--run-prefix={run_dir}",
                 external=True,
             )
@@ -1255,7 +1255,7 @@ def smoke_training_data(session: nox.Session) -> None:
                 "uv",
                 "run",
                 "python",
-                "scripts/run_training_data.py",
+                "scripts/runners/run_training_data.py",
                 "--config-name",
                 "smoke",
                 external=True,
@@ -1271,7 +1271,7 @@ def smoke_training_data(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/run_training_data.py",
+            "scripts/runners/run_training_data.py",
             "--config-name",
             "smoke",
             external=True,
@@ -1301,7 +1301,7 @@ def smoke_training_data(session: nox.Session) -> None:
             "uv",
             "run",
             "python",
-            "scripts/validate_training_data.py",
+            "scripts/validators/validate_training_data.py",
             f"--release-root={output_root}",
             external=True,
         )
@@ -1316,6 +1316,85 @@ def smoke_training_data(session: nox.Session) -> None:
             session.error(f"expected 5 processed scenes, got {agg.get('processed')}")
 
         print(f"smoke-training-data OK — {agg}")
+    finally:
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+            print(f"Removed local smoke output: {output_root}")
+
+
+# ── WB3 modeling scaffold ─────────────────────────────────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-modeling")
+def smoke_modeling(session: nox.Session) -> None:
+    """Run the modeling smoke twice and assert the full lifecycle.
+
+    Deterministic synthetic data, W&B offline (no credentials, no
+    network), local ephemeral output under ``data/smoke/modeling/``. Two
+    runs must produce the same validation loss and the same best-checkpoint
+    metric; the run context must record git/seed/release metadata; the W&B
+    offline run directory and the best checkpoint must exist. Output is
+    removed in ``finally`` (never uploaded).
+    """
+    import glob
+    import json
+    import os
+    import re
+    import shutil
+
+    output_root = "data/smoke/modeling"
+
+    def _run_metrics() -> dict:
+        """Return the deterministic run outcome of one smoke run."""
+        # Clean slate: the checkpoint filename embeds the validation loss,
+        # which is identical across deterministic runs — without cleanup the
+        # second run's checkpoint collides and gets a version suffix.
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_modeling.py",
+            "--config-name",
+            "smoke",
+            external=True,
+        )
+        context = glob.glob(os.path.join(output_root, "logs", "modeling", "*.context.json"))
+        if not context:
+            session.error("run context JSON not written")
+        with open(context[-1], encoding="utf-8") as fh:
+            ctx = json.load(fh)
+        best = glob.glob(os.path.join(output_root, "checkpoints", "best-*.ckpt"))
+        if len(best) != 1:
+            session.error(f"expected exactly one best checkpoint, found {best}")
+        if not os.path.isfile(os.path.join(output_root, "checkpoints", "last.ckpt")):
+            session.error("last.ckpt missing")
+        match = re.search(r"best-\d+-([0-9.]+)\.ckpt", os.path.basename(best[0]))
+        if match is None:
+            session.error(f"unparseable best checkpoint name: {best[0]}")
+        offline = glob.glob(os.path.join(output_root, "wandb", "offline-run-*"))
+        if not offline or not os.path.isdir(offline[-1]):
+            session.error("W&B offline run directory missing")
+        if not glob.glob(os.path.join(offline[-1], "*.wandb")):
+            session.error("W&B offline run record (.wandb) missing")
+        return {
+            "val_loss": float(match.group(1)),
+            "git_commit": ctx.get("git_commit", ""),
+            "pipeline": ctx.get("pipeline", ""),
+            "offline_wandb": bool(offline),
+        }
+
+    try:
+        m1 = _run_metrics()
+        m2 = _run_metrics()
+        if m1["val_loss"] != m2["val_loss"]:
+            session.error(f"non-deterministic validation loss: {m1} vs {m2}")
+        if m1["pipeline"] != "modeling" or not m1["git_commit"]:
+            session.error(f"run context incomplete: {m1}")
+        if not m1["offline_wandb"]:
+            session.error("W&B run was not offline")
+        print(f"smoke-modeling OK — val_loss={m1['val_loss']}, git={m1['git_commit'][:8]}")
     finally:
         if os.path.isdir(output_root):
             shutil.rmtree(output_root)

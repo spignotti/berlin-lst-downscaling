@@ -24,7 +24,7 @@ session must know up front.
 
 The six ECOSTRESS granules are `role=validation` only — never training
 input. They are published at 70 m native resolution and the
-`scripts/validate_ecostress_scenes.py` probe enforces, on the published
+`scripts/validators/validate_ecostress_scenes.py` probe enforces, on the published
 artifacts:
 
 - structural COG/flag/grid contract (EPSG:25833, canonical 70 m grid),
@@ -48,7 +48,7 @@ pass/fail decision and changes no published mask.
 
 ## Stage-1 raw-input QA gate (completed)
 
-The Stage-1 raw-input gate (`scripts/run_qa_stage1_raw.py`,
+The Stage-1 raw-input gate (`scripts/runners/run_qa_stage1_raw.py`,
 `data/qa/`) ran over the full training universe on the VM
 (2026-08-14, run `9518fe0c`, after the six-band S2 republish):
 
@@ -94,11 +94,11 @@ carry-forward) live in `data-sources-and-contracts.md`.
   2021 for 2020-2025), and `svf`. The DSMs remain internal auxiliaries
   for SVF/horizon/shadow computation only.
 - Run: full 324-scene publication (2026-08-21/22, VM,
-  `run_features_vm.sh`, isolated per-scene subprocesses with `--resume`;
+  `run-features-vm.sh`, isolated per-scene subprocesses with `--resume`;
   interrupted twice by SSH connection loss and resumed cleanly — the
   atomic `complete.json` visibility gate kept every published scene
   intact). Final ledger: **324 done, 0 failed**;
-  `scripts/validate_feature_stacks.py --root gs://berlin-lst-data/features/v2
+  `scripts/validators/validate_feature_stacks.py --root gs://berlin-lst-data/features/v2
   --expected-scenes 324` passes **324/324** with **88,282,271**
   feature-valid px. VM stopped (`TERMINATED`). A bounded cloud smoke gate
   (`nox -s cloud-smoke-features`) guards the same-process GCS/GDAL
@@ -185,7 +185,7 @@ selection mask is produced — `training_eligible@100m` is a WB2c-4
 - Aggregate (canonical EPSG:25833 grid): `feature_valid_px` 1,584,712,041;
   target-valid 100 m cells 20,169,061; full-support cells 5,520,165
   (all-100 == full-support).
-- Independent validator (`scripts/validate_qa_stage2_features.py`) green:
+- Independent validator (`scripts/validators/validate_qa_stage2_features.py`) green:
   all source fingerprints verified, no `.tif` artifact under the prefix.
 - Per-scene-channel profiles (fixed-bin histograms + count/min/max/mean/std)
   are the diagnostic record for WB2c-4; no values were filtered or removed.
@@ -198,9 +198,9 @@ selection mask is produced — `training_eligible@100m` is a WB2c-4
 
 The approved training contract is implemented as a reproducible release
 under `gs://berlin-lst-data/training/v1` (pipeline `data/training/`,
-runner `scripts/run_training_data.py`, independent validator
-`scripts/validate_training_data.py`, smoke gate `nox -s smoke-training-data`,
-VM wrapper `scripts/run_training_data_vm.sh`). Full normative details are
+runner `scripts/runners/run_training_data.py`, independent validator
+`scripts/validators/validate_training_data.py`, smoke gate `nox -s smoke-training-data`,
+VM wrapper `.opencode/skills/google-access/scripts/run-training-data-vm.sh`). Full normative details are
 in `data-sources-and-contracts.md` § WB2c-4 training-data release.
 
 - **Input basis pinned to Feature Release V3** (324 done scenes, config

@@ -537,17 +537,29 @@ def _existing_coverage(
     source: str,
     scene_id: str,
 ) -> dict:
-    """Return the coverage dict of an already-published stack (or empty)."""
+    """Return the coverage dict of an already-published stack.
+
+    Raises if provenance is missing or unreadable — a reconciled "done"
+    scene must carry deterministic coverage metadata.
+    """
     row = led.get(item_id, source, scene_id)
     if row is None or not row.provenance_uri:
-        return {}
+        raise RuntimeError(
+            f"scene {scene_id}: provenance URI missing for completed stack"
+        )
     try:
         import json
 
         prov = json.loads(read_bytes(row.provenance_uri))
-        return dict(prov.get("coverage", {}))
-    except Exception:  # best-effort skip metadata
-        return {}
+    except Exception as exc:  # noqa: BLE001 — wrap with context
+        raise RuntimeError(
+            f"scene {scene_id}: cannot read provenance at {row.provenance_uri}: {exc}"
+        ) from exc
+    if "coverage" not in prov:
+        raise RuntimeError(
+            f"scene {scene_id}: provenance missing 'coverage' at {row.provenance_uri}"
+        )
+    return dict(prov["coverage"])
 
 
 def _manifest_datetimes(manifest_uri: str) -> dict[str, str]:

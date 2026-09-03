@@ -11,8 +11,21 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - SSH into VM:    `.opencode/skills/google-access/scripts/ssh-vm.sh`
 - SSH readiness:  `.opencode/skills/google-access/scripts/ssh-vm.sh --check`
 - Run Dynamic:    `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
+- Run Features:   `.opencode/skills/google-access/scripts/run-features-vm.sh [branch]`
+- Run Training:   `.opencode/skills/google-access/scripts/run-training-data-vm.sh [branch]`
+- Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
+- Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
+- Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
+- Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
 - Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
+
+All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
+`.opencode/skills/google-access/scripts/vm-runner-common.sh` (start → deploy pinned
+commit → detached launch → poll → validate → stop; the VM is never stopped
+automatically after a connection loss or an ambiguous exit). Pipeline-specific
+parameters (runner, config, validator, output roots) live only in each
+launcher; the application code itself stays VM-agnostic.
 
 ## Purpose
 
@@ -316,16 +329,63 @@ The pipeline is ledger-aware and idempotent — re-running skips scenes already
 at `status=done`. Products live in GCS, not on the VM disk. The boot disk
 preserves the workspace, venv, and VM-side secrets between runs.
 
+### Herdr workspace layout
+
+The project declares its Herdr workspace in `.herdr/layout.toml`:
+
+| Tab | Content | Refresh |
+|-----|---------|---------|
+| `main` | OpenCode agent | — |
+| `files` | Yazi file browser | — |
+| `edit` | Neovim | — |
+| `cloud-ops` | Consolidated status dashboard (VM, bucket, mount) | 60 s |
+
+Run `herdr-restore` to restore missing tabs/panes after a server restart.
+The `cloud-ops` tab uses the standard Herdr monitoring contract:
+`.herdr/monitors/cloud-ops-checks.sh` (TSV probe) and
+`.herdr/monitors/status-dashboard.sh` (copied from the Herdr global asset).
+All cloud-ops checks are read-only — they never start, stop, or modify any resource.
+
+### Monitored run tabs
+
+For long-running VM pipelines, use the run-tab launcher to isolate the
+process from the agent pane and create dedicated monitoring panels:
+
+```bash
+# Launch in a monitored tab (agent continues in main)
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-vm.sh full main
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-vm.sh main
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-data-vm.sh main
+```
+
+The launcher:
+1. Creates a temporary Herdr tab (`run-<timestamp>`)
+2. Runs the approved launcher in the root pane
+3. Waits for the run ID, renames the tab to `run-<id>`
+4. Splits read-only snapshot panes: VM status, bucket contents, run status
+
+Approved launchers only: `run-dynamic-vm.sh`, `run-features-vm.sh`,
+`run-training-data-vm.sh`, `run-qa-stage1-vm.sh`, `run-qa-stage2-vm.sh`.
+Arbitrary executables are rejected.
+
+### Billing visibility
+
+Google Cloud does not expose remaining free-trial credit or current spend
+via API or CLI. The balance is only visible in the Cloud Billing Console.
+Budget definitions can be listed via `gcloud billing budgets list`, but
+they show thresholds, not current usage.
+
 ### Run markers and reconnection
 
 Each `run-dynamic-vm.sh` execution writes an immutable run marker on the VM:
 
 ```
-/workspace/app/logs/runs/<config>-<timestamp>/marker.json
+/workspace/app/logs/runs/<config>-<timestamp>-<suffix>/marker.json
 ```
 
-The marker contains: `run_id`, `config`, `branch`, `started`, `pid`, `log`,
-and `status_file`.  On process completion, the wrapper writes an exit-status
+The marker contains: `run_id`, `config`, `branch`, `sha`, `started`, `pid`,
+`log`, and `status_file`.  On process completion, the wrapper writes an
+exit-status
 file at the same location.
 
 If the local session is interrupted (SSH failure, machine sleep, agent crash):

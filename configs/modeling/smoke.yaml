@@ -1,0 +1,24 @@
+# @package _global_
+# Smoke: a fast deterministic synthetic training run that exercises the
+# full lifecycle locally — W&B offline (no credentials, no network),
+# local ephemeral output under data/smoke/modeling/ (removed by the nox
+# smoke session, never uploaded).
+defaults:
+  - _base
+  - _self_
+
+data:
+  n_train: 32
+  n_val: 16
+  n_test: 16
+
+model:
+  depth: 2
+
+trainer:
+  max_epochs: 2
+
+output_root: "data/smoke/modeling"
+
+wandb:
+  mode: "offline"

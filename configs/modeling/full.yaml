@@ -1,0 +1,6 @@
+# @package _global_
+# Full: the default synthetic training run (base values). W&B online
+# requires a valid login; use the smoke config for credential-free runs.
+defaults:
+  - _base
+  - _self_

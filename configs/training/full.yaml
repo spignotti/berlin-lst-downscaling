@@ -1,7 +1,7 @@
 # @package _global_
 # Full training-data release: all 324 assessable anchor scenes (2017-2025)
 # on the canonical 100 m grid, writing canonical products to GCS under
-# training/v1/. Invoke on the VM via scripts/run_training_data_vm.sh (P3).
+# training/v1/. Invoke on the VM via .opencode/skills/google-access/scripts/run-training-data-vm.sh.
 defaults:
   - _base
   - _self_
