@@ -25,13 +25,5 @@ argv = ["nvim", "."]
 label = "cloud-ops"
 
 [[tabs.panes]]
-label = "vm"
-argv = ["bash", ".opencode/skills/google-access/scripts/cloud-monitor.sh", "vm"]
-
-[[tabs.panes]]
-label = "bucket"
-argv = ["bash", ".opencode/skills/google-access/scripts/cloud-monitor.sh", "bucket"]
-
-[[tabs.panes]]
-label = "mount"
-argv = ["bash", ".opencode/skills/google-access/scripts/cloud-monitor.sh", "mount"]
+label = "dashboard"
+argv = ["bash", ".herdr/monitors/status-dashboard.sh", "--title", "Berlin LST Cloud Operations", "--checks", ".herdr/monitors/cloud-ops-checks.sh", "--interval", "60"]

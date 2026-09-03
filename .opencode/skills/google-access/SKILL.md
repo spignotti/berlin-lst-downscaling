@@ -338,10 +338,13 @@ The project declares its Herdr workspace in `.herdr/layout.toml`:
 | `main` | OpenCode agent | — |
 | `files` | Yazi file browser | — |
 | `edit` | Neovim | — |
-| `cloud-ops` | VM status, bucket contents, rclone mount status | 30 s |
+| `cloud-ops` | Consolidated status dashboard (VM, bucket, mount) | 60 s |
 
 Run `herdr-restore` to restore missing tabs/panes after a server restart.
-All cloud-ops panes are read-only — they never start, stop, or modify any resource.
+The `cloud-ops` tab uses the standard Herdr monitoring contract:
+`.herdr/monitors/cloud-ops-checks.sh` (TSV probe) and
+`.herdr/monitors/status-dashboard.sh` (copied from the Herdr global asset).
+All cloud-ops checks are read-only — they never start, stop, or modify any resource.
 
 ### Monitored run tabs
 
