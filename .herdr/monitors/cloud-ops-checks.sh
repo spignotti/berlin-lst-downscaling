@@ -106,12 +106,12 @@ bucket_pid=$!
 MOUNT_POINT="$HOME/.mnt/berlin-lst"
 if pgrep -f "rclone mount" >/dev/null 2>&1; then
   if [[ -d "$MOUNT_POINT" ]] && ls "$MOUNT_POINT" >/dev/null 2>&1; then
-    echo -e "Mount\trunning\t$MOUNT_POINT\trclone active"
+    echo -e "Mount\tok\t$MOUNT_POINT\trclone active"
   else
     echo -e "Mount\twarn\trunning but empty\t$MOUNT_POINT"
   fi
 else
-    echo -e "Mount\twarn\tnot running\trclone not active"
+  echo -e "Mount\twarn\tnot running\trclone not active"
 fi
 
 # ── collect background results ──────────────────────────────────────
