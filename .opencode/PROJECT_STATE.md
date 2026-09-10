@@ -1,10 +1,15 @@
 # Project State
 
-Last updated: 2026-08-21
+Last updated: 2026-09-03
 
 **Current Focus:** WB2c-4 training-data preparation. As-built note delivered; ready to plan `training_eligible@100m` + splits.
 
 **Active Work:** None.
+
+### 2026-09-03
+- Completed: Herdr cloud-ops tab modernization — replaced 3 separate `cloud-monitor.sh` panes with consolidated TSV-based status dashboard (Herdr monitoring contract): `cloud-ops-checks.sh` (parallel TSV probe), `status-dashboard.sh` (global asset copy), updated `layout.toml` + `SKILL.md`. PR #4 merged. Commits `e64a481`..`595d30e`.
+- Open: none. WB2c-4 training-data preparation is next.
+- Context: HEAD `595d30e` (main). Herdr workspace has 4 tabs: main, files, edit, cloud-ops (dashboard).
 
 ### 2026-08-21
 - Completed: WB2c-2 Stage-2 feature-stack QA gate — built (Hydra runner, blockwise `stage2_features.py` core, independent validator, `smoke-qa-stage2` nox session, VM wrapper), ran full on VM (`qa-stage2-20260820T183548Z`, evidence `gs://berlin-lst-data/qa/stage2_features/0c8c8144/`): 345 pairings, 324 assessed, 21 excluded (2026 inference), 0 findings; validator green incl. `features_ledger`; VM `TERMINATED`. Commits `1a89bd1`..`5e7a8b8`. Docs recorded observed delivery and corrected `training_eligible@100m` ownership to WB2c-4.

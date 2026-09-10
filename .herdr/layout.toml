@@ -3,10 +3,6 @@ version = 1
 [[tabs]]
 label = "main"
 
-[[tabs.panes]]
-label = "opencode"
-argv = ["opencode"]
-
 [[tabs]]
 label = "files"
 
