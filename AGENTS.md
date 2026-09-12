@@ -93,6 +93,7 @@ Notion Page ID: 28c35645-1f66-8057-b647-db5aebf191a5
 
 Issues: on
 Repo: spignotti/berlin-lst-downscaling
+Project: spignotti/1
 
 ## Merge Workflow
 
