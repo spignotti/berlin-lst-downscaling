@@ -93,3 +93,8 @@ Notion Page ID: 28c35645-1f66-8057-b647-db5aebf191a5
 
 Issues: on
 Repo: spignotti/berlin-lst-downscaling
+
+## Merge Workflow
+
+Standard profile without Security CI: merges are decided by human review plus local validation (`uv run nox`) and GitHub mergeability (`CLEAN`/`MERGEABLE`) with no failing visible checks.
+`/pr-review` stays manifest-bound and is expected to report `STOP — Security CI Manifest Gate` here until Security CI is adopted or the upstream skill logic changes. That STOP is informational, not a merge blocker, and this note does not override the skill.
