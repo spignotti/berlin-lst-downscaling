@@ -1,49 +1,41 @@
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-.nox/
-*.egg-info/
 
-# Environment
+__pycache__/
+!.env.example
+.code-review-graph/
+.DS_Store
 .env
 .env.*
-!.env.example
-
-# Pipeline run logs (JSONL — persisted beside output, see AGENTS.md Runtime Logging)
-*.log
-logs/
-
-# macOS
-.DS_Store
-
-# Node
-node_modules/
-package-lock.json
-
-# OpenCode
-.opencode/
+.nox/
 .opencode.json
-
-# code-review-graph
-.code-review-graph/
-
-# W&B run artifacts (local cache)
-wandb/
-data/logs/
-
-# Pipeline temporary processing files
-data/tmp/
-data/smoke/
-data/ard/
-data/static/
-data/dynamic/
-data/LoD2/
-data/diag/
+.opencode/
 .tmp/
-
+.venv/
+*.egg-info/
+*.log
+*.py[cod]
+/.herdr/
+# code-review-graph
 # ECOSTRESS raw inputs (AppEEARS export for full-mode)
-data/ecostress/
-
+# Environment
 # Ephemeral run logs
+# macOS
+# Node
+# OpenCode
+# Pipeline run logs (JSONL — persisted beside output, see AGENTS.md Runtime Logging)
+# Pipeline temporary processing files
+# Python
+# W&B run artifacts (local cache)
+data/ard/
+data/diag/
+data/dynamic/
+data/ecostress/
+data/LoD2/
+data/logs/
+data/smoke/
+data/static/
+data/tmp/
+logs/
+node_modules/
 outputs/
+package-lock.json
+wandb/
