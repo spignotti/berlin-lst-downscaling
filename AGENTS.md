@@ -2,14 +2,16 @@
 
 Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Computer STAC for Landsat/Sentinel-2 data access and NASA CMR (earthaccess) for ECOSTRESS data. Manifest-driven scene selection, ARD processing (COGs + STAC + ledger), and GCS-native storage.
 
-## Repository Category
+## Delivery Profile
 
-`portfolio` — public-facing, presentable, polished.
+`standard` — determined during setup interview.
 
-- feature branches preferred for meaningful work; direct commits to `main` acceptable for small changes
+Git policy: `feature-pr` — direct-main for personal/local repos (commit on default branch); feature-pr for collaborative/production/published (feature branch + PR for non-trivial work). Issue-backed exception: see `git-workflow` §Repository Policy (canonical rule). Work happens sequentially in the current checkout — one process per repository; worktrees are not used.
+
+- branch/commit/PR workflow → load `git-workflow` skill
+- Git lifecycle: every planned package ends with a commit; final push after review; completed remote features open a PR by default
 - conventional commits always
-- README quality matters — keep it accurate, clear, and presentable
-- no formal release process needed
+- profile-specific gates → see below
 
 ## Tech Stack
 
@@ -67,6 +69,15 @@ Context7 MCP is available in this project. When working with any external librar
 - Reproducibility: env lock (uv), Git commit hash logged per W&B run.
 - macOS x86_64 ceiling: `numpy<2`, `torch<2.3` for training stack.
 
+## Project Contract
+
+Status: not-required
+Manifest: TECHNICAL_CONTRACT.md
+Activation reason: none
+Opt-out reason: none
+
+<!-- Set by setup: production projects become `active` unless the user explicitly opts out with a reason. Set on request for any project: "set up a project contract". -->
+
 ## Documentation
 
 - `README.md` — public project overview: architecture, status, minimal setup.
@@ -77,3 +88,8 @@ Context7 MCP is available in this project. When working with any external librar
 ## Notion Integration
 
 Notion Page ID: 28c35645-1f66-8057-b647-db5aebf191a5
+
+## GitHub Issues
+
+Issues: on
+Repo: spignotti/berlin-lst-downscaling

@@ -1,0 +1,32 @@
+name: Change request
+description: Suggest a change, improvement, or new behavior
+title: "change: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this solve? What is suboptimal today?
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired outcome
+      description: What should happen after the change?
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Suggested approach
+      description: If you have a preferred solution, describe it here.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Relevant files, pipeline stage, manifests/ledgers, or data-safety constraints.
+    validations:
+      required: false
