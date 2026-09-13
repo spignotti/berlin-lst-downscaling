@@ -93,8 +93,14 @@ Notion Page ID: 28c35645-1f66-8057-b647-db5aebf191a5
 
 Issues: on
 Repo: spignotti/berlin-lst-downscaling
+Project: spignotti/1
+
+## PR Review
+
+Mode: basic
 
 ## Merge Workflow
 
 Standard profile without Security CI: merges are decided by human review plus local validation (`uv run nox`) and GitHub mergeability (`CLEAN`/`MERGEABLE`) with no failing visible checks.
-`/pr-review` stays manifest-bound and is expected to report `STOP — Security CI Manifest Gate` here until Security CI is adopted or the upstream skill logic changes. That STOP is informational, not a merge blocker, and this note does not override the skill.
+
+The basic PR-review gate is active. `/pr-review` resolves the mode marker from the verified PR base SHA, so this mode applies to subsequent issue-backed PRs but not to the PR that first introduces the marker. PRs that do not qualify for the basic gate continue under the human-review rule above.
