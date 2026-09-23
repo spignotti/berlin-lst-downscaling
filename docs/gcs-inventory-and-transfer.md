@@ -52,7 +52,7 @@ is the disposition for the mirror.
 | `features/v3/` | 2,594 | 152,375,498,958 | canonical | 324 published 28-band stacks plus `_state/features/ledger.parquet` |
 | `training/v1/` | 982 | 1,191,080,151 | canonical | Eligibility masks, manifest, cells, scaler, release marker, `_state/training/ledger.parquet` |
 | `qa/stage1_raw/` | 5 | 129,210 | evidence | Stage-1 run `9518fe0c`, `summary.json` |
-| `qa/stage2_features/` | 21 | 7,799,922 | evidence | Stage-2 runs `cc00406a` (V3), `35eb283e` (V2 era), `0c8c8144` (see notes) |
+| `qa/stage2_features/` | 21 | 7,799,922 | evidence | Stage-2 runs `cc00406a` (V3), `35eb283e` (V2 era), `0c8c8144` (see notes), plus `logs/` sidecars |
 | `qa/cloud_masking/` | 42 | 65,142,561 | evidence | Three descriptive cloud-mask audit run roots |
 | `qa/repairs/` | 394 | 12,154,297,863 | evidence | `s2-snow-ice-20260811T215612` repair evidence |
 | `qa/retirements/` | 2 | 999,464 | evidence | V2 retirement `plan.json` and `receipt.json` |
@@ -283,17 +283,21 @@ the cutover.
 
 - Configuration roots: `configs/features/_base.yaml`,
   `configs/training/_base.yaml`, `configs/qa/_base.yaml`,
-  `configs/modeling/_base.yaml`, `configs/dynamic/full.yaml`,
-  `configs/dynamic/inference_2026.yaml`, `configs/static_sources/full.yaml`,
-  `configs/static_derived/full.yaml`, `configs/ard/full_sentinel2_swir.yaml`.
+  `configs/qa/stage2_features_full.yaml`, `configs/modeling/_base.yaml`,
+  `configs/dynamic/full.yaml`, `configs/dynamic/inference_2026.yaml`,
+  `configs/static_sources/full.yaml`, `configs/static_derived/full.yaml`,
+  `configs/ard/full_sentinel2_swir.yaml`.
 - Hard-coded roots in code and scripts:
   `src/berlin_lst_downscaling/data/training/release.py` (`V3_FEATURES_ROOT`),
   `src/berlin_lst_downscaling/data/dynamic/geometry.py`,
   `src/berlin_lst_downscaling/data/secondary/lod_vintages.py`,
   `scripts/validators/validate_training_data.py` (`_V3_FEATURES_ROOT`),
+  `scripts/validators/validate_lod_coverage.py`,
   `scripts/operators/preflight_feature_release.py`,
   `scripts/operators/retire_feature_release.py`,
   `scripts/operators/compare_feature_releases.py`, `noxfile.py`.
+  Smoke configs and smoke baselines are also affected: the
+  `configs/*/smoke*.yaml` files and the smoke sessions in `noxfile.py`.
 - Local and VM access: the bucket name in the `google-access` skill, the
   rclone remote `gcs-masterarbeit`, the ADC service-account key path, and
   the VM service account's bucket access.
