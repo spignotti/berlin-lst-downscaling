@@ -82,3 +82,5 @@ the `google-access` OpenCode skill, not in the repository.
 
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest
   and product contracts.
+- `docs/gcs-inventory-and-transfer.md` — GCS bucket inventory and the
+  copy-first mirror runbook for a later account move.
