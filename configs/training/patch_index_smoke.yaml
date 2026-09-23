@@ -1,0 +1,11 @@
+# @package _global_
+# Smoke WB3 patch index over the local training-data smoke release written by
+# `run_training_data.py --config-name smoke` (data/smoke/training-data). Reads
+# only that local release; writes ephemeral local output (removed by the
+# smoke-training-data session, never uploaded).
+defaults:
+  - _base
+  - _self_
+
+source_root: "data/smoke/training-data"
+output_root: "data/smoke/patch-index"
