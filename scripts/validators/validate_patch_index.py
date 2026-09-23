@@ -128,7 +128,7 @@ def _check_marker(root: str, errors: list[str]) -> dict:
         return {}
     try:
         marker = _read_json(marker_uri)
-    except Exception as exc:  # noqa: BLE001 — read-only probe
+    except Exception as exc:
         errors.append(f"completion marker unreadable: {exc}")
         return {}
     for key in ("index_policy_hash", "source_policy_hash"):
@@ -275,13 +275,13 @@ def _check_source_release(
             source_marker = _read_json(marker_uri)
             if source_marker.get("policy_hash") != qa.get("source", {}).get("policy_hash"):
                 errors.append("qa source policy_hash does not match the source release marker")
-        except Exception as exc:  # noqa: BLE001 — read-only probe
+        except Exception as exc:
             errors.append(f"source release marker unreadable: {exc}")
 
     manifest_uri = f"{source_root.rstrip('/')}/manifest.parquet"
     try:
         table = _read_table(manifest_uri)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         errors.append(f"source manifest unreadable: {exc}")
         return
     manifest = {str(r["scene_id"]): r for r in table.to_pylist()}
@@ -373,7 +373,7 @@ def _recompute_scenes(
                 grow0 = round((_CANON_Y - src.transform.yoff) / _CELL)
                 gcol0 = round((src.transform.xoff - _CANON_X) / _CELL)
                 height, width = src.height, src.width
-        except Exception as exc:  # noqa: BLE001 — read-only probe
+        except Exception as exc:
             errors.append(f"{sid}: eligibility mask unreadable: {exc}")
             continue
 
@@ -438,16 +438,20 @@ def main() -> int:
         if missing_cols:
             errors.append(f"patch_index.parquet missing columns: {missing_cols}")
         rows = table.to_pylist()
-    except Exception as exc:  # noqa: BLE001 — read-only probe
-        print(f"  ✗ patch_index.parquet unreadable: {exc}")
-        print("FAIL: 1 finding(s)")
+    except Exception as exc:
+        errors.append(f"patch_index.parquet unreadable: {exc}")
+        for e in errors:
+            print(f"  ✗ {e}")
+        print(f"FAIL: {len(errors)} finding(s)")
         return 1
 
     try:
         qa = _read_json(f"{root}/patch_index_qa.json")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  ✗ patch_index_qa.json unreadable: {exc}")
-        print("FAIL: 1 finding(s)")
+    except Exception as exc:
+        errors.append(f"patch_index_qa.json unreadable: {exc}")
+        for e in errors:
+            print(f"  ✗ {e}")
+        print(f"FAIL: {len(errors)} finding(s)")
         return 1
 
     derived = _check_rows(rows, errors)

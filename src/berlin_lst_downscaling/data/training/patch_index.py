@@ -429,6 +429,22 @@ def _build_qa(
 # ── publication ───────────────────────────────────────────────────────
 
 
+def _assert_outside_source(source_root: str, output_root: str) -> None:
+    """Refuse a destination at or below the immutable source release root.
+
+    The ``training/v1`` release is immutable, so the index must never be
+    published inside its namespace — including a nested sub-prefix, which
+    would otherwise create new objects under the frozen release.
+    """
+    source = source_root.rstrip("/")
+    dest = output_root.rstrip("/")
+    if source and (dest == source or dest.startswith(f"{source}/")):
+        raise RuntimeError(
+            f"patch-index output_root {output_root!r} is inside the source training "
+            f"release {source_root!r} — the release is immutable"
+        )
+
+
 def publish_patch_index(
     build: PatchIndexBuild,
     *,
@@ -438,12 +454,16 @@ def publish_patch_index(
     """Publish the index, QA report, and completion marker under ``output_root``.
 
     Refuses an occupied destination (artifacts without a completion marker
-    are a partial publication and are never overwritten) and refuses to
+    are a partial publication and are never overwritten), refuses a
+    destination inside the immutable source release, and refuses to
     overwrite a completed index published under a different policy
     fingerprint. A completed index with the same fingerprints is an
     idempotent no-op. The completion marker is create-only and written last,
     after the publisher-side readback.
     """
+    _assert_outside_source(
+        str(build.qa.get("source", {}).get("release_root") or ""), output_root
+    )
     completion_uri = patch_index_completion(output_root)
     if exists(completion_uri):
         marker = json.loads(read_bytes(completion_uri))
@@ -451,6 +471,7 @@ def publish_patch_index(
             build.readback = _readback_patch_index(
                 build=build, output_root=output_root, marker_expected=True
             )
+            _require_readback(build, "already-published index")
             return {"complete": completion_uri}
         raise RuntimeError(
             f"patch index already published under a different fingerprint "
@@ -484,6 +505,7 @@ def publish_patch_index(
                     build.readback = _readback_patch_index(
                         build=build, output_root=output_root, marker_expected=True
                     )
+                    _require_readback(build, "already-published index")
                     return {"complete": completion_uri}
                 raise RuntimeError(
                     f"patch index already published under a different fingerprint "
@@ -500,11 +522,7 @@ def publish_patch_index(
             build.readback = _readback_patch_index(
                 build=build, output_root=output_root, marker_expected=False
             )
-            if not build.readback.get("ok"):
-                raise RuntimeError(
-                    f"patch-index readback failed — completion marker NOT written: "
-                    f"{build.readback.get('errors')}"
-                )
+            _require_readback(build, "published index")
 
             marker = {
                 "published_at": now_iso(),
@@ -522,10 +540,7 @@ def publish_patch_index(
             build.readback = _readback_patch_index(
                 build=build, output_root=output_root, marker_expected=True
             )
-            if not build.readback.get("ok"):
-                raise RuntimeError(
-                    f"patch-index marker verification failed: {build.readback.get('errors')}"
-                )
+            _require_readback(build, "published index marker")
             return {
                 "patch_index": patch_index_parquet(output_root),
                 "qa": patch_index_qa(output_root),
@@ -535,6 +550,15 @@ def publish_patch_index(
         raise RuntimeError(
             f"patch index is being published by another run (lock {lock_uri})"
         ) from None
+
+
+def _require_readback(build: PatchIndexBuild, label: str) -> None:
+    """Raise when a readback did not verify the published index."""
+    if not build.readback.get("ok"):
+        raise RuntimeError(
+            f"patch-index readback failed ({label}) — completion marker NOT written: "
+            f"{build.readback.get('errors')}"
+        )
 
 
 def _same_release(marker: dict, build: PatchIndexBuild) -> bool:
