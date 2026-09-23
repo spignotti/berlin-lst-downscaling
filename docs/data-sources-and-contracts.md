@@ -483,3 +483,8 @@ inputs (features, eligibility, splits, cell identity, scaler) and the
 model input interface (28-channel order). Patch geometry, sampling,
 batch generation, model training, spatial CV, and Zarr materialisation
 are WB3 scope.
+
+The WB3 pseudo-pair and tensor contract (10 m prediction, `lst_prior`
+input, masked 100 m loss) is fixed in
+[`pseudo-pair-tensor-contract.md`](pseudo-pair-tensor-contract.md). It is
+normative for future real-data training and is not yet implemented.
