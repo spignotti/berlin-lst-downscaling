@@ -86,6 +86,21 @@ def release_completion(root: str) -> str:
     return f"{root.rstrip('/')}/complete.json"
 
 
+def patch_index_parquet(root: str) -> str:
+    """Return the WB3 patch-index Parquet URI."""
+    return f"{root.rstrip('/')}/patch_index.parquet"
+
+
+def patch_index_qa(root: str) -> str:
+    """Return the WB3 patch-index QA report URI."""
+    return f"{root.rstrip('/')}/patch_index_qa.json"
+
+
+def patch_index_completion(root: str) -> str:
+    """Return the WB3 patch-index completion-marker URI (create-only, last)."""
+    return f"{root.rstrip('/')}/complete.json"
+
+
 def qa_report_dir(root: str, run_id: str) -> str:
     """Return the QA report directory for a training run."""
     return f"{root.rstrip('/')}/{_QA_ROOT}/{run_id}"
@@ -105,6 +120,9 @@ __all__ = [
     "ledger_path",
     "manifest_csv",
     "manifest_parquet",
+    "patch_index_completion",
+    "patch_index_parquet",
+    "patch_index_qa",
     "qa_report_dir",
     "qa_report_path",
     "release_completion",

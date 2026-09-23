@@ -480,11 +480,59 @@ The full release runs on the VM via
 
 **Responsibility boundary to WB3.** This release fixes the training
 inputs (features, eligibility, splits, cell identity, scaler) and the
-model input interface (28-channel order). Patch geometry, sampling,
-batch generation, model training, spatial CV, and Zarr materialisation
-are WB3 scope.
+model input interface (28-channel order). Sampling, batch generation,
+model training, spatial CV, and Zarr materialisation are WB3 scope. Patch
+geometry is fixed in the WB3 patch index below.
 
 The WB3 pseudo-pair and tensor contract (10 m prediction, `lst_prior`
 input, masked 100 m loss) is fixed in
 [`pseudo-pair-tensor-contract.md`](pseudo-pair-tensor-contract.md). It is
 normative for future real-data training and is not yet implemented.
+
+## WB3 patch index (training/patch-index/v1)
+
+The patch index is the WB3 sampling surface: it enumerates the training
+windows a future dataset reads, without touching the immutable
+`training/v1` release. It is published under
+`gs://berlin-lst-data/training/patch-index/v1` (index, QA report, and a
+create-only completion marker), built by
+`scripts/runners/run_patch_index.py` from the `training/v1` scene manifest
+and the per-scene `training_eligible@100m` COGs. No feature pixels are
+recomputed and no patch rasters are written.
+
+**Patch geometry** (fixed, issue #14). The main patch is 160×160 px at
+10 m = 16×16 cells at 100 m (1.6 km), the depth-4 U-Net edge requirement.
+Windows are complete 16×16 blocks anchored on the **global canonical**
+EPSG:25833 100 m lattice (anchor row/col are multiples of the stride), so
+the same spatial window carries the same anchor across every scene.
+Windows that would extend past a mask edge are never emitted.
+
+**Acceptance rule.** A window is valid when at least 95% of its 256 100 m
+cells are `training_eligible`; 243/256 = 0.9492 fails, so the integer
+minimum is 244. The v1 default is non-overlapping (stride 16). An
+assessable scene with eligible cells but no accepted window is excluded
+with reason `no_valid_patch`, reported separately from the release's
+`no_eligible_cells`.
+
+**Index schema.** One row per accepted window: `scene_id`, `year`,
+`split`, `s2_scene_id`, `patch_id`, the global 100 m anchor (`row`,
+`col`) and its 10 m anchor (`row_10m`, `col_10m`), the window center in
+EPSG:25833, the owning `eligibility_mask` URI, and `n_eligible`,
+`n_total` (256), `eligible_frac`. Every patch inherits its scene's
+temporal split, so the scene-before-patch invariant holds by
+construction. Rows are sorted by scene, row, and column.
+
+**Provenance.** The completion marker binds the index to the source
+release's `policy_hash` and to an index-policy fingerprint covering the
+patch size, stride, anchor rule, acceptance threshold, and schema
+version. The index fingerprint is independent of `training_policy_hash`:
+a patch-index change never invalidates `training/v1`.
+
+**Validation.** `scripts/validators/validate_patch_index.py` is an
+independent read-only probe: it re-derives the QA aggregates from the
+index rows, reconciles the index against the source manifest
+(`no_valid_patch` / `no_eligible_cells` accounting, split inheritance),
+and recomputes the accepted windows directly from the source eligibility
+COGs for every scene with patches. The smoke gate (`nox -s
+smoke-training-data`) builds the index twice over its local smoke release,
+asserts byte-identical Parquet and QA artifacts, and runs the validator.

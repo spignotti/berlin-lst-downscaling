@@ -1,0 +1,11 @@
+# @package _global_
+# Full WB3 patch index: enumerate the complete 160x160 px windows over every
+# published training/v1 eligibility mask and publish the index under its own
+# versioned root (training/v1 stays immutable).
+# Invoke via scripts/runners/run_patch_index.py --config-name patch_index_full.
+defaults:
+  - _base
+  - _self_
+
+source_root: "gs://berlin-lst-data/training/v1"
+output_root: "gs://berlin-lst-data/training/patch-index/v1"
