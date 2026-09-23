@@ -49,9 +49,12 @@ basis; the uv lockfile and per-run config fingerprints pin the environment.
 ## Status
 
 Preprocessing is complete: manifest selection, ARD, static and dynamic
-context, the per-anchor feature stacks, and the Stage-2 feature-stack QA
-gate are delivered and validated. Training-data preparation (including the
-`training_eligible@100m` selection mask) and model training are next.
+context, and the per-anchor feature stacks (V3) are delivered and
+validated, with the Stage-1 raw-input and Stage-2 feature-stack QA gates
+green. Training-data preparation is delivered as the `training/v1`
+release: eligibility masks, temporal splits, the cell index, and the
+train-only scaler. The modelling stack is a scaffold that exercises the
+model lifecycle on synthetic data; real-data training is next.
 
 ## Setup
 
