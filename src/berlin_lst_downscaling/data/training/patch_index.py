@@ -52,6 +52,8 @@ from berlin_lst_downscaling.data.training.report import now_iso
 # Main patch: 160x160 px at 10 m = 16x16 cells at 100 m (1.6 km).
 PATCH_CELLS: int = 16
 PATCH_SIZE_10M: int = PATCH_CELLS * 10
+# Physical patch edge in metres (1600 m), used for the window centre.
+PATCH_SIZE_M: int = PATCH_CELLS * CELL_SIZE_M
 # Non-overlapping v1 default (stride equals the patch size).
 PATCH_STRIDE_CELLS: int = PATCH_CELLS
 N_CELLS: int = PATCH_CELLS * PATCH_CELLS
@@ -348,8 +350,8 @@ def _scene_windows(
                 "col": gcol,
                 "row_10m": grow * 10,
                 "col_10m": gcol * 10,
-                "center_x": CANON_GRID_ORIGIN_X + gcol * CELL_SIZE_M + PATCH_SIZE_10M / 2,
-                "center_y": CANON_GRID_ORIGIN_Y - grow * CELL_SIZE_M - PATCH_SIZE_10M / 2,
+                "center_x": CANON_GRID_ORIGIN_X + gcol * CELL_SIZE_M + PATCH_SIZE_M / 2,
+                "center_y": CANON_GRID_ORIGIN_Y - grow * CELL_SIZE_M - PATCH_SIZE_M / 2,
                 "eligibility_mask": mask_uri,
                 "n_eligible": n_eligible,
                 "n_total": N_CELLS,
@@ -643,6 +645,7 @@ __all__ = [
     "PATCH_INDEX_FIELDNAMES",
     "PATCH_INDEX_SCHEMA_VERSION",
     "PATCH_SIZE_10M",
+    "PATCH_SIZE_M",
     "PATCH_STRIDE_CELLS",
     "PatchIndexBuild",
     "build_patch_index",

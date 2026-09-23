@@ -5,10 +5,11 @@ freezes how a training sample maps coarse 100 m LST supervision to the
 10 m downscaling product, so the dataset, loss, and later patch work
 share one definition.
 
-Status: **normative, not yet implemented.** No dataset, loss, or training
-code in the repository implements this contract today; the modelling
-package is a synthetic scaffold (see *Relation to the current modelling
-scaffold*).
+Status: **normative, partly implemented.** Patch geometry and the sampling
+index are delivered (see *Patch geometry* and the WB3 patch index in
+`data-sources-and-contracts.md`); no dataset, loss, or training code in
+the repository implements this contract yet, and the modelling package is
+a synthetic scaffold (see *Relation to the current modelling scaffold*).
 
 ## Scope
 
@@ -17,8 +18,6 @@ tensor fields and their grids, and the masked-loss normalization.
 
 Out of scope, left to later WB3 decisions:
 
-- patch size and patch geometry,
-- patch acceptance thresholds,
 - the sampler,
 - the concrete loss family beyond masked aggregation,
 - Zarr versus COG I/O,
@@ -39,6 +38,17 @@ These are already defined elsewhere and are inputs to this contract:
   every 100 m cell is a disjoint 10×10 block of 10 m pixels. The
   eligibility computation uses the same exact nested 10×10 aggregation
   (`data/training/eligibility.py`).
+
+## Patch geometry (fixed)
+
+The patch is 160×160 px at 10 m = 16×16 cells at 100 m (1.6 km), the
+depth-4 U-Net edge requirement. Windows are complete 16×16 blocks
+anchored on the global canonical 100 m lattice and are accepted when at
+least 95% of their 256 cells are `training_eligible` (244 of 256). The
+published `patch_index.parquet` enumerates them; its schema, anchor rule,
+stride, and provenance are defined in `data-sources-and-contracts.md`
+§ WB3 patch index. This contract consumes the index; it does not redefine
+it.
 
 ## Variant B (main contract)
 

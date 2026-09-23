@@ -1199,7 +1199,12 @@ def smoke_training_data(session: nox.Session) -> None:
     the two runs to force full recomputation; the runs must produce
     identical release artifacts (scaler, manifest, cells) and run reports.
     Then the independent release validator runs against the second
-    release. Output is removed in ``finally`` (never uploaded).
+    release.
+
+    The session then builds the WB3 patch index over that smoke release
+    twice into a fresh destination, asserts byte-identical index artifacts
+    (Parquet + QA report), and runs the independent patch-index validator.
+    Output is removed in ``finally`` (never uploaded).
     """
     import hashlib
     import json
@@ -1209,6 +1214,7 @@ def smoke_training_data(session: nox.Session) -> None:
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     output_root = "data/smoke/training-data"
+    index_root = "data/smoke/patch-index"
     # complete.json embeds published_at/run_id by design (like the feature
     # product marker) — compare its policy hash, not its bytes.
     release_files = (
@@ -1218,11 +1224,27 @@ def smoke_training_data(session: nox.Session) -> None:
         "cells.parquet",
         "cells.csv",
     )
+    # The patch index is deterministic end to end: its Parquet and QA
+    # report carry no timestamps (only the completion marker does).
+    index_files = (
+        "patch_index.parquet",
+        "patch_index_qa.json",
+    )
 
     def _hashes() -> dict[str, str]:
         out = {}
         for name in release_files:
             path = os.path.join(output_root, name)
+            if not os.path.isfile(path):
+                return {}
+            with open(path, "rb") as fh:
+                out[name] = hashlib.sha256(fh.read()).hexdigest()
+        return out
+
+    def _index_hashes() -> dict[str, str]:
+        out = {}
+        for name in index_files:
+            path = os.path.join(index_root, name)
             if not os.path.isfile(path):
                 return {}
             with open(path, "rb") as fh:
@@ -1306,6 +1328,57 @@ def smoke_training_data(session: nox.Session) -> None:
             external=True,
         )
 
+        # ── WB3 patch index over the smoke release ───────────────────
+        # Built twice into a fresh destination; the Parquet + QA report must
+        # be byte-identical, and the independent validator recomputes the
+        # accepted windows from the source eligibility COGs.
+        if os.path.isdir(index_root):
+            shutil.rmtree(index_root)
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_patch_index.py",
+            "--config-name",
+            "patch_index_smoke",
+            external=True,
+        )
+        i1 = _index_hashes()
+        if not i1:
+            session.error("first patch-index smoke run produced no artifacts")
+
+        if os.path.isdir(index_root):
+            shutil.rmtree(index_root)
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_patch_index.py",
+            "--config-name",
+            "patch_index_smoke",
+            external=True,
+        )
+        i2 = _index_hashes()
+        for name in index_files:
+            if i1.get(name) != i2.get(name):
+                session.error(
+                    f"non-deterministic patch-index artifact {name}: "
+                    f"{i1.get(name)} vs {i2.get(name)}"
+                )
+        print(
+            f"smoke-training-data patch index deterministic — "
+            f"{len(index_files)} artifacts identical"
+        )
+
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/validators/validate_patch_index.py",
+            f"--index-root={index_root}",
+            external=True,
+        )
+
         # Run report determinism + readback evidence.
         agg = _report_aggregates()
         if not agg.get("readback_ok"):
@@ -1317,9 +1390,10 @@ def smoke_training_data(session: nox.Session) -> None:
 
         print(f"smoke-training-data OK — {agg}")
     finally:
-        if os.path.isdir(output_root):
-            shutil.rmtree(output_root)
-            print(f"Removed local smoke output: {output_root}")
+        for path in (output_root, index_root):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+                print(f"Removed local smoke output: {path}")
 
 
 # ── WB3 modeling scaffold ─────────────────────────────────────────────
