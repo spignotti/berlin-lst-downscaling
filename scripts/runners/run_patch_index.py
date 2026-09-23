@@ -55,7 +55,7 @@ def main(cfg: DictConfig) -> int:
             source_root=source_root,
             output_root=output_root,
         )
-        build = build_patch_index(source_root=source_root, run_id=run_id)
+        build = build_patch_index(source_root=source_root)
         uris = publish_patch_index(build, output_root=output_root, run_id=run_id)
 
         qa = build.qa

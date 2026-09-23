@@ -199,7 +199,7 @@ def _verify_source_release(source_root: str) -> str:
         )
     try:
         marker = json.loads(read_bytes(marker_uri))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise RuntimeError(f"source release marker unreadable ({marker_uri}): {exc}") from exc
     policy_hash = marker.get("policy_hash")
     if not policy_hash:
@@ -240,7 +240,7 @@ class PatchIndexBuild:
     readback: dict = field(default_factory=dict)
 
 
-def build_patch_index(*, source_root: str, run_id: str) -> PatchIndexBuild:
+def build_patch_index(*, source_root: str) -> PatchIndexBuild:
     """Build the patch index from a completed ``training/v1`` release.
 
     Reads the published scene manifest and the per-scene eligibility COGs.
@@ -571,7 +571,7 @@ def _readback_patch_index(
         missing = [name for name in PATCH_INDEX_FIELDNAMES if name not in table.column_names]
         if missing:
             errors.append(f"patch_index missing columns: {missing}")
-    except Exception as exc:  # noqa: BLE001 — readback probe
+    except Exception as exc:  # readback probe
         artifacts[parquet_uri] = False
         errors.append(f"patch_index parquet unreadable: {exc}")
 
@@ -584,7 +584,7 @@ def _readback_patch_index(
             errors.append("qa index_policy_hash mismatch")
         if qa.get("source", {}).get("policy_hash") != build.source_policy_hash:
             errors.append("qa source policy_hash mismatch")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         artifacts[qa_uri] = False
         errors.append(f"patch_index QA unreadable: {exc}")
 
@@ -593,7 +593,7 @@ def _readback_patch_index(
             marker = json.loads(read_bytes(patch_index_completion(output_root)))
             if not _same_release(marker, build):
                 errors.append("completion marker fingerprint mismatch")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             errors.append(f"completion marker unreadable: {exc}")
 
     return {"ok": not errors, "artifacts": artifacts, "errors": errors}
@@ -632,13 +632,6 @@ def _parquet_schema():
             ("eligible_frac", pa.float64()),
         ]
     )
-
-
-def _now_iso() -> str:
-    """Return the current UTC timestamp in ISO format."""
-    from berlin_lst_downscaling.data.training.report import now_iso
-
-    return now_iso()
 
 
 __all__ = [
