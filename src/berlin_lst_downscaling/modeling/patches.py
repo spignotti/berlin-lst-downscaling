@@ -233,6 +233,27 @@ def load_scaler(training_root: str) -> ScalerSpec:
     return ScalerSpec(channel_order=order, channels=channels, policy_hash=policy_hash)
 
 
+def patch_index_fingerprints(patch_index_root: str) -> dict[str, str]:
+    """Return the published patch index's completion-marker fingerprints.
+
+    The marker is create-only and written last, so its presence proves the
+    index is complete; its hashes are the provenance a comparison records.
+    """
+    marker_uri = patch_index_completion(patch_index_root)
+    if not exists(marker_uri):
+        raise RuntimeError(
+            f"patch index {patch_index_root!r} has no completion marker "
+            f"({marker_uri}) — the index is incomplete or unpublished"
+        )
+    marker = json.loads(read_bytes(marker_uri))
+    return {
+        "index_policy_hash": str(marker.get("index_policy_hash", "")),
+        "source_policy_hash": str(marker.get("source_policy_hash", "")),
+        "patches_total": str(marker.get("patches_total", "")),
+        "published_at": str(marker.get("published_at", "")),
+    }
+
+
 def load_patch_refs(
     cfg: RealSourceConfig,
     *,
@@ -246,22 +267,16 @@ def load_patch_refs(
     that every row's ``split`` agrees with the temporal contract. Rows keep
     the index's deterministic ``(scene_id, row, col)`` order.
     """
-    marker_uri = patch_index_completion(cfg.patch_index_root)
-    if not exists(marker_uri):
-        raise RuntimeError(
-            f"patch index {cfg.patch_index_root!r} has no completion marker "
-            f"({marker_uri}) — the index is incomplete or unpublished"
-        )
-    marker = json.loads(read_bytes(marker_uri))
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
     expected = training_policy_hash()
-    if str(marker.get("source_policy_hash", "")) != expected:
+    if fingerprints["source_policy_hash"] != expected:
         raise RuntimeError(
-            f"patch index source policy hash {marker.get('source_policy_hash')!r} != "
+            f"patch index source policy hash {fingerprints['source_policy_hash']!r} != "
             f"current training policy {expected!r} — the index is stale"
         )
 
     table = _read_parquet(patch_index_parquet(cfg.patch_index_root))
-    total = int(marker.get("patches_total", -1))
+    total = int(fingerprints["patches_total"] or -1)
     if total != table.num_rows:
         raise RuntimeError(
             f"patch index marker reports {total} patches but the table holds {table.num_rows}"
@@ -744,5 +759,6 @@ __all__ = [
     "load_landsat_uris",
     "load_patch_refs",
     "load_scaler",
+    "patch_index_fingerprints",
     "prior_model_channel",
 ]

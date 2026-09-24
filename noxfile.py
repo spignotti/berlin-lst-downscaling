@@ -1474,3 +1474,100 @@ def smoke_modeling(session: nox.Session) -> None:
             shutil.rmtree(output_root)
             print(f"Removed local smoke output: {output_root}")
 
+
+# ── WB3 real two-arm comparison (opt-in, requires ADC) ────────────────
+
+
+@nox.session(venv_backend="none", name="smoke-real-comparison")
+def smoke_real_comparison(session: nox.Session) -> None:
+    """Score the model and the naive baseline on the same real patch subset.
+
+    Opt-in and deliberately outside the default session set: it reads the
+    published WB3 sources over GCS (requires ADC), trains a bounded 1-epoch
+    model, evaluates the naive prior-expand baseline, asserts that both arms
+    cover an identical patch universe, and runs the independent baseline
+    validator. Local ephemeral output is removed in ``finally`` and never
+    uploaded.
+
+    This is not a training-quality gate. It proves the two arms are wired to
+    one reader, mask, and metric, not that either is good.
+    """
+    import glob
+    import json
+    import os
+    import re
+    import shutil
+
+    model_root = "data/smoke/modeling-real"
+    baseline_root = "data/smoke/baseline-real"
+
+    def _clean() -> None:
+        for path in (model_root, baseline_root):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+
+    # Fail loudly and early when ADC is unavailable, before any reading.
+    _preflight_gcs(session)
+
+    try:
+        _clean()
+        session.run(
+            "uv", "run", "python", "scripts/runners/run_modeling.py",
+            "--config-name", "real_smoke", external=True,
+        )
+        session.run(
+            "uv", "run", "python", "scripts/runners/run_baseline.py",
+            "--config-name", "baseline_smoke", external=True,
+        )
+
+        with open(os.path.join(model_root, "data_scope.json"), encoding="utf-8") as fh:
+            model_scope = json.load(fh)
+        with open(
+            os.path.join(baseline_root, "baseline_report.json"), encoding="utf-8"
+        ) as fh:
+            report = json.load(fh)
+
+        # The shared comparison universe is the point of this session.
+        baseline_ids: dict[str, list[str]] = {}
+        for record in report["patches"]:
+            baseline_ids.setdefault(record["split"], []).append(record["patch_id"])
+        model_ids: dict[str, list[str]] = model_scope["patch_ids"]
+        for split in sorted(model_ids):
+            if model_ids[split] != baseline_ids.get(split, []):
+                session.error(
+                    f"arms disagree on the {split} patch universe: "
+                    f"{len(model_ids[split])} model vs {len(baseline_ids.get(split, []))} baseline"
+                )
+
+        best = glob.glob(os.path.join(model_root, "checkpoints", "best-*.ckpt"))
+        if len(best) != 1:
+            session.error(f"expected exactly one model checkpoint, found {best}")
+        match = re.search(r"best-\d+-([0-9.]+)\.ckpt", os.path.basename(best[0]))
+        if match is None:
+            session.error(f"unparseable best checkpoint name: {best[0]}")
+        model_mae = float(match.group(1))
+
+        session.run(
+            "uv", "run", "python", "scripts/validators/validate_baseline.py",
+            "--report", os.path.join(baseline_root, "baseline_report.json"),
+            "--max-patches", "4", external=True,
+        )
+
+        print("Real two-arm comparison (identical admitted patch universe):")
+        print(f"  model (1 epoch, untrained) : validation MAE {model_mae:.4f} K")
+        for split in sorted(report["splits"]):
+            summary = report["splits"][split]
+            mae = "n/a" if summary["mae"] is None else f"{summary['mae']:.4f}"
+            ssim = "n/a" if summary["ssim"] is None else f"{summary['ssim']:.4f}"
+            print(
+                f"  baseline {split:<11}     : MAE {mae} K | SSIM {ssim} | "
+                f"{summary['valid_cells']} cells"
+            )
+        print(
+            "Note: the model arm is an untrained 1-epoch smoke; this run proves "
+            "shared wiring, not model quality."
+        )
+    finally:
+        _clean()
+        print(f"Removed local smoke output: {model_root}, {baseline_root}")
+

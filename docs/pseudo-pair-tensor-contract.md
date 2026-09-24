@@ -5,13 +5,20 @@ freezes how a training sample maps coarse 100 m LST supervision to the
 10 m downscaling product, so the dataset, loss, and later patch work
 share one definition.
 
-Status: **normative, partly implemented.** Patch geometry, the sampling
-index, and the real patch reader with the `lst_prior` construction are
-delivered (`modeling/patches.py`); the masked loss, the Stage-1 metrics,
-the real Lightning path, and the naive baseline are in progress under
-issues #18 and #19. The modelling package still carries a synthetic
-scaffold alongside the real path (see *Relation to the current modelling
-scaffold*).
+Status: **implemented.** Patch geometry, the sampling index, the real patch
+reader with the `lst_prior` construction (`modeling/patches.py`), the exact
+pooling and masked metrics (`modeling/metrics.py`), the 10 m Lightning path
+(`modeling/real_task.py`), and the naive prior-expand baseline
+(`modeling/baseline.py`) are delivered under issues #18 and #19. The
+modelling package keeps its synthetic scaffold alongside the real path (see
+*Relation to the current modelling scaffold*).
+
+Verification surface: `scripts/validators/validate_real_patches.py` and
+`scripts/validators/validate_baseline.py` recompute the reader and the
+baseline artifact independently, and `nox -s smoke-real-comparison` (opt-in,
+requires ADC) runs both arms on one bounded real subset and asserts they
+share a patch universe. Full training runs and the 2025 test comparison are
+explicit invocations, not part of that gate.
 
 ## Scope
 

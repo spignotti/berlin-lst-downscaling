@@ -486,8 +486,15 @@ geometry is fixed in the WB3 patch index below.
 
 The WB3 pseudo-pair and tensor contract (10 m prediction, `lst_prior`
 input, masked 100 m loss) is fixed in
-[`pseudo-pair-tensor-contract.md`](pseudo-pair-tensor-contract.md). It is
-normative for future real-data training and is not yet implemented.
+[`pseudo-pair-tensor-contract.md`](pseudo-pair-tensor-contract.md) and is
+implemented: `modeling/patches.py` resolves these published artifacts into
+contract-shaped patches (1000 m prior, native 100 m target, eligibility
+mask) and applies the released train-only scaler at read time;
+`modeling/metrics.py` holds the exact 10×10 pooling, the masked L1/MAE, and
+the secondary SSIM; `modeling/real_task.py` is the 10 m Lightning path; and
+`modeling/baseline.py` is the naive prior-expand baseline. Nothing in the
+release is modified by them — the reader treats `training/v1` and the patch
+index as immutable inputs and verifies their policy hashes before reading.
 
 ## WB3 patch index (training/patch-index/v1)
 
