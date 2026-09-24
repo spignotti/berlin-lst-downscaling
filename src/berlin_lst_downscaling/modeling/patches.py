@@ -100,6 +100,7 @@ _LANDSAT_RES_M = float(CELL_SIZE_M)
 # Exclusion reasons (reported, never silently dropped).
 NO_LANDSAT_REASON = "ard_landsat_unresolved"
 NO_PRIOR_BLOCK_REASON = NO_PRIOR_REASON
+PRIOR_OUTSIDE_REASON = "prior_window_outside_scene"
 TARGET_OUTSIDE_REASON = "target_window_outside_scene"
 EMPTY_MASK_REASON = "empty_eligibility_window"
 
@@ -394,15 +395,22 @@ class ScenePrior:
     block_means: np.ndarray  # (n_blocks_row, n_blocks_col) float32, NaN if unavailable
     native_valid_cells: int
 
+    def _window_indices(
+        self, row: int, col: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return ``(rows, cols, ri, ci)``: block indices for the patch window."""
+        rows = (row * 10 + np.arange(REAL_PATCH_PX)) // _ARRAY_10M
+        cols = (col * 10 + np.arange(REAL_PATCH_PX)) // _ARRAY_10M
+        return rows, cols, rows - self.block_row0, cols - self.block_col0
+
     def window(self, *, row: int, col: int) -> np.ndarray | None:
         """Return the 160x160 10 m prior for the patch at global 100 m anchor.
 
-        ``None`` when any required 1000 m block carries no native-valid cell.
+        ``None`` when any required 1000 m block carries no native-valid cell
+        or lies wholly outside the scene footprint; ``unavailable_reason``
+        reports which.
         """
-        rows = (row * 10 + np.arange(REAL_PATCH_PX)) // _ARRAY_10M
-        cols = (col * 10 + np.arange(REAL_PATCH_PX)) // _ARRAY_10M
-        ri = rows - self.block_row0
-        ci = cols - self.block_col0
+        _, _, ri, ci = self._window_indices(row, col)
         if (
             ri.min() < 0
             or ci.min() < 0
@@ -414,6 +422,17 @@ class ScenePrior:
         if not np.isfinite(values).all():
             return None
         return values
+
+    def unavailable_reason(self, *, row: int, col: int) -> str:
+        """Return why :meth:`window` is unavailable: footprint vs no observations."""
+        _, _, ri, ci = self._window_indices(row, col)
+        outside = (
+            ri.min() < 0
+            or ci.min() < 0
+            or ri.max() >= self.block_means.shape[0]
+            or ci.max() >= self.block_means.shape[1]
+        )
+        return PRIOR_OUTSIDE_REASON if outside else NO_PRIOR_BLOCK_REASON
 
 
 def _build_scene_prior(scene_id: str, landsat_cog: str, landsat_flag: str) -> ScenePrior:
@@ -571,7 +590,7 @@ class RealPatchReader:
 
         prior_k = prior.window(row=ref.row, col=ref.col)
         if prior_k is None:
-            self.exclusions[NO_PRIOR_BLOCK_REASON] += 1
+            self.exclusions[prior.unavailable_reason(row=ref.row, col=ref.col)] += 1
             return None
 
         target, mask = self._read_target_and_mask(ref, prior)
@@ -712,6 +731,7 @@ __all__ = [
     "EMPTY_MASK_REASON",
     "NO_LANDSAT_REASON",
     "NO_PRIOR_BLOCK_REASON",
+    "PRIOR_OUTSIDE_REASON",
     "TARGET_OUTSIDE_REASON",
     "PatchRef",
     "RealPatchReader",

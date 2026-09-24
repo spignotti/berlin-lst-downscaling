@@ -172,9 +172,9 @@ target cells stay excluded from the loss and the metric as before.
 ### Model-boundary normalization and invalid predictor pixels
 
 The prior enters the model as a fixed affine transform of the Kelvin
-value, documented in `modeling/patches.py`; the baseline consumes the same
-physical Kelvin prior. The transform is a fixed constant, not a fitted
-statistic, so no split information leaks into it.
+value, defined in `modeling/contracts.py` and applied by the reader; the
+baseline consumes the same physical Kelvin prior. The transform is a fixed
+constant, not a fitted statistic, so no split information leaks into it.
 
 An admitted patch can still contain invalid 10 m **predictor** pixels
 (individual feature channels are NaN where unavailable). At the model

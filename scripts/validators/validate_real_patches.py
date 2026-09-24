@@ -278,6 +278,18 @@ def _check_patch(
     return {"n_mask": n_mask, "filled": expected_filled, "distinct_axes": distinct_axes}
 
 
+def _spans_block_boundary(row: int, col: int) -> bool:
+    """True when the 160 px window covers more than one 1000 m block on an axis.
+
+    A patch anchored on a multiple of 10 still spans a boundary: 16 cells is
+    wider than a 10-cell block. This mirrors the block indexing used in the
+    per-block constancy check.
+    """
+    rows = (row * 10 + np.arange(_PATCH_PX)) // _BLOCK_PX
+    cols = (col * 10 + np.arange(_PATCH_PX)) // _BLOCK_PX
+    return int(rows.min()) != int(rows.max()) or int(cols.min()) != int(cols.max())
+
+
 def _select_refs(refs: list[PatchRef], per_split: int) -> list[PatchRef]:
     """Pick deterministically, guaranteeing a block-boundary-crossing patch."""
     by_split: dict[str, list[PatchRef]] = {}
@@ -287,9 +299,9 @@ def _select_refs(refs: list[PatchRef], per_split: int) -> list[PatchRef]:
     for split in sorted(by_split):
         split_refs = by_split[split]
         picked = split_refs[:per_split]
-        if not any(r.row % _BLOCK_CELLS or r.col % _BLOCK_CELLS for r in picked):
+        if not any(_spans_block_boundary(r.row, r.col) for r in picked):
             boundary = next(
-                (r for r in split_refs if r.row % _BLOCK_CELLS or r.col % _BLOCK_CELLS), None
+                (r for r in split_refs if _spans_block_boundary(r.row, r.col)), None
             )
             if boundary is not None:
                 picked = [*picked[: max(0, per_split - 1)], boundary]
