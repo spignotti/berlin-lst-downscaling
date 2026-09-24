@@ -89,6 +89,10 @@ class RealPatchDataModule(LightningDataModule):
         self._datasets: dict[str, _BatchDataset] = {}
 
     def setup(self, stage: str | None = None) -> None:
+        # Idempotent: the real read is expensive and the lifecycle may set the
+        # module up explicitly (to record the read scope) before ``fit``.
+        if self._datasets:
+            return
         self.reader = RealPatchReader(self.source)
         refs = load_patch_refs(self.source, splits=_REAL_SPLITS, scene_ids=self.scene_ids)
         by_split: dict[str, list[PatchRef]] = {split: [] for split in _REAL_SPLITS}
@@ -98,6 +102,25 @@ class RealPatchDataModule(LightningDataModule):
             self._datasets[split] = _BatchDataset(
                 self._read_batches(self.reader, split_refs)
             )
+
+    def stats(self) -> dict[str, object]:
+        """Describe the real read: per-split batches, patch IDs, and exclusions.
+
+        Retained as run evidence so a comparison can be audited: which patches
+        entered each split, and which were dropped with which reason.
+        """
+        if self.reader is None:
+            raise RuntimeError("setup() must run before stats()")
+        patch_ids = {
+            split: [meta.patch_id for batch in dataset.batches for meta in batch.metadata]
+            for split, dataset in self._datasets.items()
+        }
+        return {
+            "batches_per_split": {s: len(d) for s, d in self._datasets.items()},
+            "patches_per_split": {s: len(ids) for s, ids in patch_ids.items()},
+            "patch_ids": patch_ids,
+            "exclusions": dict(self.reader.exclusions),
+        }
 
     def _read_batches(self, reader: RealPatchReader, refs: list[PatchRef]) -> list[RealBatch]:
         """Read, filter exclusions, and collate in deterministic order."""

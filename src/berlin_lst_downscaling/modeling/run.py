@@ -33,6 +33,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
+from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
 from berlin_lst_downscaling.modeling.patches import RealSourceConfig
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask, RealPatchDataModule
 from berlin_lst_downscaling.modeling.synthetic import SyntheticDataModule
@@ -254,6 +255,22 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     wandb_logger = _logger_for(cfg, output_root)
 
+    # Record the read scope before fitting: which patches entered each split and
+    # which were dropped, with reasons. Retained beside the run.
+    data_module.setup()
+    scope = data_module.stats()
+    scope_uri = output_root / "data_scope.json"
+    scope_uri.write_text(json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8")
+    log_event(
+        _logger,
+        logging.INFO,
+        "data_read",
+        batches_per_split=scope["batches_per_split"],
+        patches_per_split=scope["patches_per_split"],
+        exclusions=scope["exclusions"],
+        patch_ids_uri=str(scope_uri),
+    )
+
     monitored = "validation/mae_100m"
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(checkpoint_dir),
@@ -284,6 +301,12 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         "ard_root": source.ard_root,
         "seed": seed,
         "selection_metric": monitored,
+        "data_scope": {
+            "batches_per_split": scope["batches_per_split"],
+            "patches_per_split": scope["patches_per_split"],
+            "exclusions": scope["exclusions"],
+            "patch_ids_uri": str(scope_uri),
+        },
         "git_revision": _git_revision_from_context(
             run_context_path(str(cfg.output_root), "modeling", run_id)
         ),
@@ -309,22 +332,35 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
             raise RuntimeError("best checkpoint produced no monitored score")
         best_metric = float(checkpoint_callback.best_model_score)
 
-        # Recoverable selected model state: reload and verify it predicts on the
-        # real contract shape, and that the reloaded validation metric matches
-        # the selected score rather than merely producing finite output.
+        # Recoverable selected model state: reload the best checkpoint, verify
+        # it predicts on the contract shape, and recompute the selection metric
+        # over the validation batches in eval mode. The saved score is checked,
+        # not assumed.
         reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint)
-        sample = next(iter(data_module.val_dataloader()))
+        reloaded.eval()
+        recheck = MaskedMAE()
         with torch.inference_mode():
-            prediction = reloaded(sample)
-        validate_real_batch(sample, n_active_channels=reloaded.n_active_channels)
-        expected = (sample.features.shape[0], 1) + tuple(sample.features.shape[2:])
-        if tuple(prediction.shape) != expected:
+            for batch in data_module.val_dataloader():
+                validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
+                prediction = reloaded(batch)
+                expected = (batch.features.shape[0], 1) + tuple(batch.features.shape[2:])
+                if tuple(prediction.shape) != expected:
+                    raise RuntimeError(
+                        f"reloaded checkpoint prediction shape mismatch: "
+                        f"{tuple(prediction.shape)} != {expected}"
+                    )
+                if not torch.isfinite(prediction).all():
+                    raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
+                recheck.update(
+                    pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m
+                )
+        recomputed = float(recheck.compute())
+        tolerance = 1e-3 * max(1.0, abs(best_metric))
+        if abs(recomputed - best_metric) > tolerance:
             raise RuntimeError(
-                f"reloaded checkpoint prediction shape mismatch: {tuple(prediction.shape)} "
-                f"!= {expected}"
+                f"reloaded checkpoint validation MAE {recomputed:.6f} != selected "
+                f"{best_metric:.6f} (tolerance {tolerance:.6f})"
             )
-        if not torch.isfinite(prediction).all():
-            raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
 
         success = True
     except BaseException:
