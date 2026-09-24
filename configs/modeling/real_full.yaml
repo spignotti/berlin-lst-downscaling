@@ -1,0 +1,34 @@
+# @package _global_
+# Real-path full run: every published WB3 patch for the configured splits
+# through the contract-conforming lifecycle. Checkpoints are selected on the
+# cell-weighted masked MAE at 100 m (validation only; the 2025 test split is
+# never used for selection).
+#
+# This is an explicit, expensive invocation. It is not run by CI and not by
+# `nox -s smoke-*`. Run it on the compute environment that suits the budget;
+# the output root is local to that machine. Do not point output_root at a
+# canonical release or retained QA root.
+defaults:
+  - _base
+  - _self_
+
+data:
+  kind: real
+  batch_size: 4
+  max_batches_per_split: null   # unbounded: every published patch
+  scene_ids: []                 # empty = all published scenes
+
+model:
+  depth: 4
+
+trainer:
+  max_epochs: 20
+
+output_root: "data/runs/modeling-real"
+
+wandb:
+  mode: "online"
+
+patch_index_root: "gs://berlin-lst-data/training/patch-index/v1"
+training_root: "gs://berlin-lst-data/training/v1"
+ard_root: "gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z"

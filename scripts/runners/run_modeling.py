@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""WB3 modeling runner (Hydra-driven synthetic training lifecycle).
+"""WB3 modeling runner (Hydra-driven).
 
 Usage
 -----
@@ -13,8 +13,15 @@ Usage
     # Full: base synthetic config, W&B online (requires login)
     uv run python scripts/runners/run_modeling.py --config-name full
 
-Exits non-zero when the lifecycle fails (fit error, missing best
-checkpoint, or checkpoint reload validation failure — fail-closed).
+    # Contract-conforming real path (reads the published patch index):
+    #   smoke — bounded subset, W&B offline, local ephemeral output
+    uv run python scripts/runners/run_modeling.py --config-name real_smoke
+    #   full  — every published patch; explicit invocation, not run by CI
+    uv run python scripts/runners/run_modeling.py --config-name real_full
+
+The config's ``data.kind`` selects the synthetic or the real lifecycle.
+Exits non-zero when the lifecycle fails (fit error, missing best checkpoint,
+or checkpoint reload validation failure — fail-closed).
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ import hydra
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
-from berlin_lst_downscaling.modeling.run import run_training
+from berlin_lst_downscaling.modeling.run import run_modeling
 
 _logger = logging.getLogger(__name__)
 
@@ -50,11 +57,13 @@ def main(cfg: DictConfig) -> int:
             seed=int(cfg.get("seed", 0)),
             wandb_mode=str(cfg.get("wandb", {}).get("mode", "")),
         )
-        result = run_training(cfg, run_id=run_id)
+        result = run_modeling(cfg, run_id=run_id)
 
         print(f"Modeling — run {run_id}")
         print(f"  Best checkpoint : {result.best_checkpoint}")
         print(f"  Validation loss : {result.validation_loss:.6f}")
+        if result.selection_metric != "validation/loss":
+            print(f"  Selection metric: {result.selection_metric} (cell-weighted masked MAE)")
         print(f"  OK              : {result.run_ok}")
 
         # Hydra 1.3.4 discards the decorated task's return value, so

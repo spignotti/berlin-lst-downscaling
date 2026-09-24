@@ -1,8 +1,8 @@
 # @package _global_
-# Shared base config for the WB3 modeling scaffold (deterministic synthetic
-# training lifecycle). The full config trains on synthetic data only — real
-# WB3 patch/reader/loss integration arrives later through the extension
-# points in modeling/contracts.py.
+# Shared base config for the WB3 modeling scaffold. ``data.kind`` selects the
+# lifecycle: ``synthetic`` (the deterministic CI fixture) or ``real`` (the
+# contract-conforming path reading the published WB3 patch index). The base
+# defaults to synthetic; the ``real_*`` configs override it.
 defaults:
   - _self_
 
@@ -12,18 +12,27 @@ defaults:
 data_release_id: "training/v1"
 features_root: "gs://berlin-lst-data/features/v3"
 
+# ── published roots for the real path (data.kind=real) ────────────────
+# Required only by the real lifecycle; the synthetic path never reads them.
+patch_index_root: null
+training_root: null
+ard_root: null
+
 # Determinism: fixed seed + deterministic kernels. Recorded at run level;
 # byte identity is still environment/hardware/library dependent.
 seed: 0
 
-# ── data (synthetic) ──────────────────────────────────────────────────
+# ── data ──────────────────────────────────────────────────────────────
 data:
+  kind: synthetic         # synthetic | real
   n_active_channels: 28   # first-C of the fixed V3 28-channel order
   batch_size: 8
-  patch_size: 32          # H == W; must be divisible by 2 ** model.depth
-  n_train: 128
-  n_val: 32
-  n_test: 32
+  patch_size: 32          # synthetic only; H == W, divisible by 2 ** model.depth
+  n_train: 128            # synthetic only
+  n_val: 32               # synthetic only
+  n_test: 32              # synthetic only
+  max_batches_per_split: null  # real only; null = unbounded (full run)
+  scene_ids: []           # real only; empty = all published scenes
 
 # ── model (fixed deterministic 2D U-Net) ──────────────────────────────
 model:
