@@ -12,7 +12,7 @@ defaults:
 data:
   kind: real
   batch_size: 2
-  max_batches_per_split: 2   # 4 patches per split: a bounded single pass
+  max_patches_per_split: 4   # first 4 indexed rows per split: a bounded pass
 
 model:
   depth: 4                   # 160 px / 2**4 = 10 px bottleneck

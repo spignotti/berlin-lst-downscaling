@@ -31,7 +31,7 @@ data:
   n_train: 128            # synthetic only
   n_val: 32               # synthetic only
   n_test: 32              # synthetic only
-  max_batches_per_split: null  # real only; null = unbounded (full run)
+  max_patches_per_split: null  # real only; null = unbounded (full run)
   scene_ids: []           # real only; empty = all published scenes
 
 # ── model (fixed deterministic 2D U-Net) ──────────────────────────────

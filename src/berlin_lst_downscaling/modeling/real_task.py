@@ -16,6 +16,7 @@ without importing the training framework.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 
 import torch
@@ -67,9 +68,10 @@ class RealPatchDataModule(LightningDataModule):
 
     The subset is read eagerly at ``setup`` so a smoke run is a single
     bounded pass over the published sources instead of repeated GCS reads.
-    ``max_batches_per_split`` caps every split; ``scene_ids`` restricts the
-    scene universe. Both default to unbounded, which is a full-run choice and
-    is expected to be invoked explicitly, not by CI.
+    ``max_patches_per_split`` bounds every split to its first N indexed rows
+    — the same ref-level bound the naive baseline uses, so the two arms cover
+    an identical requested universe. It defaults to unbounded, which is a
+    full-run choice and is expected to be invoked explicitly, not by CI.
     """
 
     def __init__(
@@ -77,13 +79,13 @@ class RealPatchDataModule(LightningDataModule):
         source: RealSourceConfig,
         *,
         batch_size: int = 4,
-        max_batches_per_split: int | None = None,
+        max_patches_per_split: int | None = None,
         scene_ids: Sequence[str] | None = None,
     ) -> None:
         super().__init__()
         self.source = source
         self.batch_size = batch_size
-        self.max_batches_per_split = max_batches_per_split
+        self.max_patches_per_split = max_patches_per_split
         self.scene_ids = tuple(scene_ids) if scene_ids else None
         self.reader: RealPatchReader | None = None
         self._datasets: dict[str, _BatchDataset] = {}
@@ -96,7 +98,16 @@ class RealPatchDataModule(LightningDataModule):
         self.reader = RealPatchReader(self.source)
         refs = load_patch_refs(self.source, splits=_REAL_SPLITS, scene_ids=self.scene_ids)
         by_split: dict[str, list[PatchRef]] = {split: [] for split in _REAL_SPLITS}
+        # Bound the *refs* per split, before any exclusion, so the requested
+        # universe matches the baseline's selection exactly.
+        taken: Counter[str] = Counter()
         for ref in refs:
+            if (
+                self.max_patches_per_split is not None
+                and taken[ref.split] >= self.max_patches_per_split
+            ):
+                continue
+            taken[ref.split] += 1
             by_split[ref.split].append(ref)
         for split, split_refs in by_split.items():
             self._datasets[split] = _BatchDataset(
@@ -124,7 +135,6 @@ class RealPatchDataModule(LightningDataModule):
 
     def _read_batches(self, reader: RealPatchReader, refs: list[PatchRef]) -> list[RealBatch]:
         """Read, filter exclusions, and collate in deterministic order."""
-        cap = self.max_batches_per_split
         batches: list[RealBatch] = []
         chunk: list[RealSample] = []
         for sample in reader.iter_samples(refs):
@@ -132,8 +142,6 @@ class RealPatchDataModule(LightningDataModule):
             if len(chunk) == self.batch_size:
                 batches.append(collate_real_batch(chunk))
                 chunk = []
-                if cap is not None and len(batches) >= cap:
-                    return batches
         if chunk:
             batches.append(collate_real_batch(chunk))
         return batches

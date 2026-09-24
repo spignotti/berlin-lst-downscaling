@@ -34,7 +34,10 @@ from omegaconf import DictConfig, OmegaConf
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
-from berlin_lst_downscaling.modeling.patches import RealSourceConfig
+from berlin_lst_downscaling.modeling.patches import (
+    RealSourceConfig,
+    patch_index_fingerprints,
+)
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask, RealPatchDataModule
 from berlin_lst_downscaling.modeling.synthetic import SyntheticDataModule
 from berlin_lst_downscaling.modeling.task import LSTRegressionTask
@@ -234,11 +237,11 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
 
     source = real_source_config(cfg)
     scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
-    max_batches = cfg.data.get("max_batches_per_split") or None
+    max_patches = cfg.data.get("max_patches_per_split") or None
     data_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
-        max_batches_per_split=None if max_batches is None else int(max_batches),
+        max_patches_per_split=None if max_patches is None else int(max_patches),
         scene_ids=scene_ids or None,
     )
 
@@ -299,6 +302,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         "patch_index_root": source.patch_index_root,
         "features_root": source.features_root,
         "ard_root": source.ard_root,
+        "patch_index_fingerprints": patch_index_fingerprints(source.patch_index_root),
         "seed": seed,
         "selection_metric": monitored,
         "data_scope": {

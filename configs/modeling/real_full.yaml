@@ -15,7 +15,7 @@ defaults:
 data:
   kind: real
   batch_size: 4
-  max_batches_per_split: null   # unbounded: every published patch
+  max_patches_per_split: null   # unbounded: every published patch
   scene_ids: []                 # empty = all published scenes
 
 model:
