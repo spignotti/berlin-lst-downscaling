@@ -10,6 +10,10 @@ Usage
     # output (validated by `nox -s smoke-modeling`)
     uv run python scripts/runners/run_modeling.py --config-name smoke
 
+    # Contract-shaped synthetic smoke (masked L1, no GCS; validated by
+    # `nox -s smoke-modeling-contract`)
+    uv run python scripts/runners/run_modeling.py --config-name contract_smoke
+
     # Full: base synthetic config, W&B online (requires login)
     uv run python scripts/runners/run_modeling.py --config-name full
 
@@ -19,9 +23,10 @@ Usage
     #   full  — every published patch; explicit invocation, not run by CI
     uv run python scripts/runners/run_modeling.py --config-name real_full
 
-The config's ``data.kind`` selects the synthetic or the real lifecycle.
-Exits non-zero when the lifecycle fails (fit error, missing best checkpoint,
-or checkpoint reload validation failure — fail-closed).
+The config's ``data.kind`` selects the lifecycle (``synthetic``,
+``synthetic_contract``, or ``real``). Exits non-zero when the lifecycle fails
+(fit error, missing best checkpoint, or checkpoint reload validation failure —
+fail-closed).
 """
 
 from __future__ import annotations

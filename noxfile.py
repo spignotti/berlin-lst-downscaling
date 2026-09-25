@@ -1475,6 +1475,111 @@ def smoke_modeling(session: nox.Session) -> None:
             print(f"Removed local smoke output: {output_root}")
 
 
+# ── WB3 contract-shaped synthetic smoke (opt-in, no GCS) ──────────────
+
+
+@nox.session(venv_backend="none", name="smoke-modeling-contract")
+def smoke_modeling_contract(session: nox.Session) -> None:
+    """Exercise the masked-L1 contract lifecycle without reading GCS.
+
+    The contract-shaped fixture produces 28x160x160 features with a prior
+    channel and a partially valid 16x16 target/mask, so this session covers the
+    masked loss, the masked-MAE checkpoint, and the reload check that the
+    all-valid ``smoke-modeling`` fixture cannot. Two runs must agree on the
+    validation MAE; an independent hand-computed masked-L1 case (including an
+    invalid NaN cell) must match; local output is removed in ``finally``.
+    """
+    import glob
+    import json
+    import os
+    import re
+    import shutil
+
+    output_root = "data/smoke/modeling-contract"
+
+    def _run_metrics() -> dict:
+        """Return the deterministic run outcome of one contract smoke run."""
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+        session.run(
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_modeling.py",
+            "--config-name",
+            "contract_smoke",
+            external=True,
+        )
+        context = glob.glob(os.path.join(output_root, "logs", "modeling", "*.context.json"))
+        if not context:
+            session.error("run context JSON not written")
+        with open(context[-1], encoding="utf-8") as fh:
+            ctx = json.load(fh)
+        best = glob.glob(os.path.join(output_root, "checkpoints", "best-*.ckpt"))
+        if len(best) != 1:
+            session.error(f"expected exactly one best checkpoint, found {best}")
+        if not os.path.isfile(os.path.join(output_root, "checkpoints", "last.ckpt")):
+            session.error("last.ckpt missing")
+        match = re.search(r"best-\d+-([0-9.]+)\.ckpt", os.path.basename(best[0]))
+        if match is None:
+            session.error(f"unparseable best checkpoint name (non-finite MAE?): {best[0]}")
+        offline = glob.glob(os.path.join(output_root, "wandb", "offline-run-*"))
+        if not offline or not os.path.isdir(offline[-1]):
+            session.error("W&B offline run directory missing")
+        if not glob.glob(os.path.join(offline[-1], "*.wandb")):
+            session.error("W&B offline run record (.wandb) missing")
+        with open(os.path.join(output_root, "data_scope.json"), encoding="utf-8") as fh:
+            scope = json.load(fh)
+        patches = scope.get("patches_per_split", {})
+        for split in ("train", "validation", "test"):
+            if int(patches.get(split, 0)) <= 0:
+                session.error(f"no contract-shaped patch in the {split} split: {patches}")
+        if scope.get("exclusions"):
+            session.error(f"contract fixture reported exclusions: {scope['exclusions']}")
+        return {
+            "val_loss": float(match.group(1)),
+            "git_commit": ctx.get("git_commit", ""),
+            "pipeline": ctx.get("pipeline", ""),
+        }
+
+    # Independent masked-L1 check: the invalid NaN cell must be selected out,
+    # and an all-invalid mask must raise rather than divide by zero.
+    loss_code = (
+        "import torch\n"
+        "from berlin_lst_downscaling.modeling.metrics import masked_l1_loss\n"
+        "pred = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])\n"
+        "target = torch.tensor([[[[0.0, float('nan')], [1.0, 2.0]]]])\n"
+        "mask = torch.tensor([[[[True, False], [True, True]]]])\n"
+        "got = float(masked_l1_loss(pred, target, mask))\n"
+        "expected = 5.0 / 3.0\n"
+        "assert abs(got - expected) < 1e-6, (got, expected)\n"
+        "try:\n"
+        "    masked_l1_loss(pred, target, torch.zeros_like(mask))\n"
+        "except ValueError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('masked L1 accepted an all-invalid mask')\n"
+        "print(f'masked-L1 check OK: {got:.6f}')\n"
+    )
+
+    try:
+        session.run("uv", "run", "python", "-c", loss_code, external=True)
+        m1 = _run_metrics()
+        m2 = _run_metrics()
+        if m1["val_loss"] != m2["val_loss"]:
+            session.error(f"non-deterministic validation MAE: {m1} vs {m2}")
+        if m1["pipeline"] != "modeling" or not m1["git_commit"]:
+            session.error(f"run context incomplete: {m1}")
+        print(
+            f"smoke-modeling-contract OK — val MAE={m1['val_loss']}, "
+            f"git={m1['git_commit'][:8]}"
+        )
+    finally:
+        if os.path.isdir(output_root):
+            shutil.rmtree(output_root)
+            print(f"Removed local smoke output: {output_root}")
+
+
 # ── WB3 real two-arm comparison (opt-in, requires ADC) ────────────────
 
 

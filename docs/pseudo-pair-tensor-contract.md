@@ -243,3 +243,18 @@ and they remain the CI lifecycle fixture. The real path is additive:
 (pooling, masked L1/MAE, SSIM), `modeling/real_task.py` (10 m prediction
 over features + prior), and `modeling/baseline.py` (naive prior-expand).
 The synthetic configuration and its `validation/loss` smoke stay intact.
+
+Alongside that MSE fixture, `ContractSyntheticDataModule`
+(`modeling/synthetic.py`) emits contract-shaped tensors — 28x160x160
+features, the normalized prior channel, a 16x16 target/mask, and a partially
+valid mask (first row and column ineligible, invalid targets `NaN`) — and
+feeds them through the same `RealLSTTask`, masked L1, and masked-MAE
+checkpoint as the real path. `nox -s smoke-modeling-contract` exercises it
+without reading GCS. It is a wiring gate only: a finite loss there proves the
+tensor/loss/lifecycle path, never training quality.
+
+The frozen geometry, temporal split, Stage-1 loss, and feature order are
+declared in the `contract` block of `configs/modeling/_base.yaml` and asserted
+against the contract constants by `modeling/run.py:contract_invariants`,
+which fails closed on drift. They are declared for visibility, not exposed as
+free parameters.
