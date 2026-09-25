@@ -26,7 +26,7 @@ from berlin_lst_downscaling.data.features.paths import (
     feature_mask_cog,
     feature_provenance,
 )
-from berlin_lst_downscaling.data.io import exists, log_event, read_bytes
+from berlin_lst_downscaling.data.io import exists, log_event, read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.data.qa.inventory import (
     INFERENCE_EXCLUSION_REASON,
     ResolvedScene,
@@ -282,18 +282,18 @@ def _process_scene(
             raise RuntimeError(
                 f"scene {scene.scene_id}: ledger done row lacks provenance/completion URI"
             )
-        if not exists(row.completion_uri):
+        if not exists(resolve_canonical_uri(row.completion_uri)):
             raise RuntimeError(
                 f"scene {scene.scene_id}: ledger done row without completion marker "
                 f"({row.completion_uri}) — re-finalise"
             )
-        if not row.output_uri or not exists(row.output_uri):
+        if not row.output_uri or not exists(resolve_canonical_uri(row.output_uri)):
             raise RuntimeError(
                 f"scene {scene.scene_id}: ledger done row without readable eligibility "
                 f"COG ({row.output_uri}) — re-finalise"
             )
         try:
-            prov = json.loads(read_bytes(row.provenance_uri))
+            prov = json.loads(read_bytes(resolve_canonical_uri(row.provenance_uri)))
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 f"scene {scene.scene_id}: published provenance unreadable: {exc}"

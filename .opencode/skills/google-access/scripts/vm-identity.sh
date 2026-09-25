@@ -123,6 +123,20 @@ assert_vm_identity() {
     echo "  Deleting the instance would destroy the boot disk." >&2
   fi
 
+  # ── service account ──────────────────────────────────────────────────
+  if [[ "$actual_sa" != "$VM_SA" ]]; then
+    echo "ERROR: service account mismatch." >&2
+    echo "  Expected: $VM_SA" >&2
+    echo "  Actual:   $actual_sa" >&2
+    return 1
+  fi
+
+  # ── deletion protection ──────────────────────────────────────────────
+  if [[ "$_protection" != "True" ]]; then
+    echo "ERROR: instance deletion protection is not enabled." >&2
+    return 1
+  fi
+
   # ── export for callers ───────────────────────────────────────────────
   VM_ACTUAL_STATE="$actual_state"
   VM_INSTANCE_ID="$actual_id"

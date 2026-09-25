@@ -259,11 +259,17 @@ def _check_sidecars(scene_id: str, cog_uri: str, mask_uri: str, prov_uri: str,
     if not fv_bands or fv_bands[0].get("data_type") != "uint8":
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")
     # The STAC sidecar records the bucket of its publication time; the ledger
-    # URI is already resolved to the current canonical bucket. Normalise both
-    # so the comparison still checks the object path, not the bucket era.
-    if resolve_canonical_uri(str(assets["data"].get("href") or "")) != cog_uri:
+    # URI is resolved to the current canonical bucket. Normalise both so the
+    # comparison still checks the object path, not the bucket era.
+    try:
+        data_href = resolve_canonical_uri(str(assets["data"].get("href") or ""))
+        fv_href = resolve_canonical_uri(str(assets["feature_valid"].get("href") or ""))
+    except ValueError as exc:
+        errors.append(f"{scene_id}: STAC asset href not on a canonical bucket: {exc}")
+        return
+    if data_href != cog_uri:
         errors.append(f"{scene_id}: STAC data href does not match ledger COG")
-    if resolve_canonical_uri(str(assets["feature_valid"].get("href") or "")) != mask_uri:
+    if fv_href != mask_uri:
         errors.append(f"{scene_id}: STAC feature_valid href does not match ledger mask")
 
 

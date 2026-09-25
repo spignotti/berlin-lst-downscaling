@@ -37,7 +37,7 @@ import json
 
 import pyarrow.parquet as pq
 
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")
 
@@ -106,7 +106,7 @@ def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[
             errors.append(f"source {label}: no verifiable URI in report inputs")
             continue
         try:
-            actual = sha256_bytes(read_bytes(uri))[:16]
+            actual = sha256_bytes(read_bytes(resolve_canonical_uri(uri)))[:16]
             declared = expected.get(label)
             if declared != actual:
                 errors.append(

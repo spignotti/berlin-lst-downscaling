@@ -11,7 +11,7 @@ publication: GCS cannot publish multiple blobs atomically, so the
 
 from __future__ import annotations
 
-from berlin_lst_downscaling.data.io import exists
+from berlin_lst_downscaling.data.io import exists, resolve_canonical_uri
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
 
 
@@ -40,8 +40,15 @@ def reconcile(
             continue
 
         if row.status == "done" and row.config_hash == config_hash:
-            output_ok = row.output_uri and exists(row.output_uri)
-            completion_ok = row.completion_uri and exists(row.completion_uri)
+            # decision: map the stored ledger URIs before the existence check so
+            # a mirrored canonical product is recognised as done and is never
+            # reprocessed or rewritten after the old account's credit ends.
+            # Alternative: leave them raw, which marks every mirrored scene
+            # incomplete and triggers a mass reprocess — rejected.
+            output_ok = row.output_uri and exists(resolve_canonical_uri(row.output_uri))
+            completion_ok = row.completion_uri and exists(
+                resolve_canonical_uri(row.completion_uri)
+            )
             if output_ok and completion_ok:
                 continue
             if output_ok and not completion_ok:

@@ -46,7 +46,7 @@ import pyarrow.parquet as pq
 import rasterio
 from rasterio.windows import Window
 
-from berlin_lst_downscaling.data.io import read_bytes
+from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
 
 _CANON_X = 369190.0
 _CANON_Y = 5838410.0
@@ -98,7 +98,10 @@ def _load_landsat(ard_root: str) -> dict[str, tuple[str, str]]:
     for i, source in enumerate(cols["source"]):
         if str(source) != "landsat-c2-l2" or str(cols["status"][i]) != "done":
             continue
-        out[str(cols["scene_id"][i])] = (str(cog_col[i] or ""), str(flag_col[i] or ""))
+        out[str(cols["scene_id"][i])] = (
+            resolve_canonical_uri(str(cog_col[i] or "")),
+            resolve_canonical_uri(str(flag_col[i] or "")),
+        )
     return out
 
 
@@ -199,7 +202,7 @@ def _recompute_patch(
                 (col - geometry["col0"], col - geometry["col0"] + _PATCH_CELLS),
             ),
         ).astype(np.float64)
-    mask_uri = str(index_row["eligibility_mask"])
+    mask_uri = resolve_canonical_uri(str(index_row["eligibility_mask"]))
     with rasterio.open(mask_uri) as msk:
         moff_c, moff_r = _canon_offset(msk.transform, _CELL_100)
         mask = (
@@ -228,11 +231,13 @@ def main() -> int:
     errors: list[str] = []
     report = _read_json(args.report)
     source = report["source"]
-    index_root = args.patch_index_root or str(source["patch_index_root"])
+    index_root = resolve_canonical_uri(
+        args.patch_index_root or str(source["patch_index_root"])
+    )
     print(f"Validating baseline report: {args.report}")
 
     index_rows, index_by_id = _load_index(index_root)
-    landsat = _load_landsat(str(source["ard_root"]))
+    landsat = _load_landsat(resolve_canonical_uri(str(source["ard_root"])))
 
     by_split: dict[str, list[dict]] = {}
     for record in report["patches"]:

@@ -72,7 +72,7 @@ from audit_cloud_masking_panels import compose_png, load_s2_rgb
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.acquisition.pc_client import resolve_item_from_href, stac_load
-from berlin_lst_downscaling.data.io import atomic_write, read_bytes
+from berlin_lst_downscaling.data.io import atomic_write, read_bytes, resolve_canonical_uri
 
 _GRID_10M = canon_grid_10m()
 _GRID_LS = _GRID_10M.zoom_out(3)  # 30 m — Landsat QA_PIXEL near-native
@@ -148,7 +148,9 @@ def _load_ard_flags(ledger_uri: str) -> dict[str, str]:
     flags: dict[str, str] = {}
     for i in range(table.num_rows):
         if cols["status"][i] == "done" and cols["path_flag"][i]:
-            flags[str(cols["scene_id"][i])] = str(cols["path_flag"][i])
+            flags[str(cols["scene_id"][i])] = resolve_canonical_uri(
+                str(cols["path_flag"][i])
+            )
     return flags
 
 
