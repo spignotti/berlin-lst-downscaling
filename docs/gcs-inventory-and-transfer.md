@@ -152,8 +152,9 @@ compare domain counts to object counts.
   source objects.
 - A completed copy does not authorize a cutover. Changing readers is a
   later, separately approved step (see below).
-- The destination project and bucket are not known yet. They are
-  preflight inputs that must be recorded before the copy starts.
+- The destination project and bucket are recorded under §1 below
+  (2026-09-25). They stay preflight inputs and are fixed before a copy
+  starts.
 - The remaining old-account credit and its expiry are only visible in the
   Cloud Billing Console. Confirm them and record the cutoff date; they
   cannot be read from an API.
@@ -176,6 +177,36 @@ compare domain counts to object counts.
    an explicit decision on the historical roots.
 6. The bucket snapshot refreshed at copy time (see below), so the
    destination can be checked against the exact source state.
+
+### Destination (recorded 2026-09-25)
+
+| Field | Value |
+|---|---|
+| New account identity | `pignotti.dev@gmail.com` (has no access to the old project or bucket) |
+| Billing | new billing linked; budget `berlin-lst-training budget` at 250 EUR with alerts at 50/90/100 %. Billing-account ID is deliberately not recorded in this public repo. |
+| New credit | active, expires 2026-12-25 |
+| Old credit cutoff | expires Sunday 2026-09-27 (console-only value; the deadline for the mirror) |
+| Project ID | `berlin-lst-training` |
+| Project number | `996559849187` |
+| Bucket | `gs://berlin-lst-training-data` |
+| Location | `EUROPE-WEST3` (regional, same as source) |
+| Default storage class | `STANDARD` |
+| Uniform bucket-level access | enabled |
+| Object versioning | disabled |
+| Soft-delete retention | 7 days (604800 s, matches source) |
+| Copy principal (service account email) | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
+| Role on the source bucket | pre-existing `roles/storage.objectAdmin` (the old project's runner SA; the source owner grants are untouched) |
+| Role on the destination bucket | `roles/storage.objectAdmin` (temporary, revoked after the mirror is verified) |
+| Role on the destination project | `roles/serviceusage.serviceUsageConsumer` (quota-project access only) |
+| New VM principal (service account email) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
+| Role of the new VM principal | `roles/storage.objectAdmin` on the destination bucket only; no source access |
+
+The new account cannot read the old project, so the old project's runner
+service account is the copy principal: it already holds read/write on the
+source bucket and receives a **temporary** destination grant that is
+revoked once the mirror is verified. This avoids creating a credential or
+touching the old project's IAM. The new VM principal is a separate
+identity with destination-only access.
 
 ### 2. Refresh the source inventory
 
