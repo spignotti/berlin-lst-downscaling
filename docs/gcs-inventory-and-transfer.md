@@ -182,7 +182,7 @@ compare domain counts to object counts.
 
 | Field | Value |
 |---|---|
-| New account identity | `pignotti.dev@gmail.com` (has no access to the old project or bucket) |
+| New account identity | new account owner (personal Google identity; deliberately not named in this public repo). It has no access to the old project or bucket. |
 | Billing | new billing linked; budget `berlin-lst-training budget` at 250 EUR with alerts at 50/90/100 %. Billing-account ID is deliberately not recorded in this public repo. |
 | New credit | active, expires 2026-12-25 |
 | Old credit cutoff | expires Sunday 2026-09-27 (console-only value; the deadline for the mirror) |
@@ -196,17 +196,26 @@ compare domain counts to object counts.
 | Soft-delete retention | 7 days (604800 s, matches source) |
 | Copy principal (service account email) | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
 | Role on the source bucket | pre-existing `roles/storage.objectAdmin` (the old project's runner SA; the source owner grants are untouched) |
-| Role on the destination bucket | `roles/storage.objectAdmin` (temporary, revoked after the mirror is verified) |
-| Role on the destination project | `roles/serviceusage.serviceUsageConsumer` (quota-project access only) |
+| Role on the destination bucket | `roles/storage.objectAdmin` (temporary, revoked after the mirror is verified and no later than 2026-09-27) |
+| Role on the destination project | `roles/serviceusage.serviceUsageConsumer` (quota-project access only; temporary, revoked together with the destination bucket binding) |
 | New VM principal (service account email) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
 | Role of the new VM principal | `roles/storage.objectAdmin` on the destination bucket only; no source access |
 
 The new account cannot read the old project, so the old project's runner
 service account is the copy principal: it already holds read/write on the
-source bucket and receives a **temporary** destination grant that is
-revoked once the mirror is verified. This avoids creating a credential or
-touching the old project's IAM. The new VM principal is a separate
-identity with destination-only access.
+source bucket and receives a **temporary** destination grant (bucket
+`objectAdmin` plus project `serviceusage.serviceUsageConsumer`) that is
+revoked once the mirror is verified, and no later than the 2026-09-27
+credit cutoff. This avoids creating a credential or touching the old
+project's IAM. The new VM principal is a separate identity with
+destination-only access.
+
+Asymmetry to respect: the copy principal can **write and delete on the
+source bucket** (its pre-existing `objectAdmin`, which this runbook does
+not narrow). The "no source write/delete" rule is therefore procedural,
+not IAM-enforced. Every copy command must be direction-checked before it
+runs, and verification includes a source spot-checksum to show the source
+bytes did not change.
 
 ### 2. Refresh the source inventory
 
