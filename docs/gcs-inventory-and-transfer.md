@@ -196,19 +196,19 @@ compare domain counts to object counts.
 | Soft-delete retention | 7 days (604800 s, matches source) |
 | Copy principal (service account email) | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
 | Role on the source bucket | pre-existing `roles/storage.objectAdmin` (the old project's runner SA; the source owner grants are untouched) |
-| Role on the destination bucket | `roles/storage.objectAdmin` (temporary, revoked after the mirror is verified and no later than 2026-09-27) |
-| Role on the destination project | `roles/serviceusage.serviceUsageConsumer` (quota-project access only; temporary, revoked together with the destination bucket binding) |
+| Role on the destination bucket | `roles/storage.objectAdmin` and `roles/storage.legacyBucketReader` — granted for the copy, **revoked 2026-09-25** once the mirror was verified |
+| Role on the destination project | `roles/serviceusage.serviceUsageConsumer` (quota-project access only) — granted for the copy, **revoked 2026-09-25** with the bucket bindings |
 | New VM principal (service account email) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
 | Role of the new VM principal | `roles/storage.objectAdmin` on the destination bucket only; no source access |
 
 The new account cannot read the old project, so the old project's runner
-service account is the copy principal: it already holds read/write on the
-source bucket and receives a **temporary** destination grant (bucket
-`objectAdmin` plus project `serviceusage.serviceUsageConsumer`) that is
-revoked once the mirror is verified, and no later than the 2026-09-27
-credit cutoff. This avoids creating a credential or touching the old
-project's IAM. The new VM principal is a separate identity with
-destination-only access.
+service account was the copy principal: it already holds read/write on the
+source bucket and received a **temporary** destination grant (bucket
+`objectAdmin` + `legacyBucketReader`, plus project
+`serviceusage.serviceUsageConsumer`) that was **revoked on 2026-09-25, as
+soon as the mirror was verified** — see §7. This avoided creating a
+credential or touching the old project's IAM. The new VM principal is a
+separate identity with destination-only access.
 
 Asymmetry to respect: the copy principal can **write and delete on the
 source bucket** (its pre-existing `objectAdmin`, which this runbook does
@@ -356,9 +356,14 @@ generations — 0 changed, added, or removed objects. The source was
 neither written nor deleted.
 
 The destination is accepted. No reader was cut over in this step; the
-copy principal's temporary destination grants are revoked in the cutover
-step. The repo validators still point at the old root (see §4) until the
-cutover updates them.
+copy principal's temporary destination grants were **revoked on
+2026-09-25, immediately after acceptance** (bucket `objectAdmin` +
+`legacyBucketReader` and project `serviceusage.serviceUsageConsumer`
+removed). Verified afterwards: the copy principal is denied on the
+destination bucket but can still read the source, and the new VM
+principal keeps destination access. The old project's runner SA therefore
+holds no residual grant in the new account. The repo validators still
+point at the old root (see §4) until the cutover updates them.
 
 ## Cutover (later, separately approved)
 
