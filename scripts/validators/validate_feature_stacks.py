@@ -46,7 +46,7 @@ from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES, FEATURE_CHANNELS
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 
 _N_EXPECTED_BANDS = 28
 _TILE = 1024  # blockwise scan tile (multiple of COG 512px blocks)
@@ -258,9 +258,12 @@ def _check_sidecars(scene_id: str, cog_uri: str, mask_uri: str, prov_uri: str,
     fv_bands = assets["feature_valid"].get("raster:bands", [])
     if not fv_bands or fv_bands[0].get("data_type") != "uint8":
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")
-    if assets["data"].get("href") != cog_uri:
+    # The STAC sidecar records the bucket of its publication time; the ledger
+    # URI is already resolved to the current canonical bucket. Normalise both
+    # so the comparison still checks the object path, not the bucket era.
+    if resolve_canonical_uri(str(assets["data"].get("href") or "")) != cog_uri:
         errors.append(f"{scene_id}: STAC data href does not match ledger COG")
-    if assets["feature_valid"].get("href") != mask_uri:
+    if resolve_canonical_uri(str(assets["feature_valid"].get("href") or "")) != mask_uri:
         errors.append(f"{scene_id}: STAC feature_valid href does not match ledger mask")
 
 
@@ -325,10 +328,10 @@ def main() -> int:
             {
                 "scene_id": str(cols["period_or_vintage"][i]),
                 "config_hash": str(cols["config_hash"][i] or ""),
-                "cog": str(cols["output_uri"][i] or ""),
-                "stac": str(cols["stac_uri"][i] or ""),
-                "prov": str(cols["provenance_uri"][i] or ""),
-                "comp": str(cols["completion_uri"][i] or ""),
+                "cog": resolve_canonical_uri(str(cols["output_uri"][i] or "")),
+                "stac": resolve_canonical_uri(str(cols["stac_uri"][i] or "")),
+                "prov": resolve_canonical_uri(str(cols["provenance_uri"][i] or "")),
+                "comp": resolve_canonical_uri(str(cols["completion_uri"][i] or "")),
             }
         )
 

@@ -813,10 +813,9 @@ def smoke_features(session: nox.Session) -> None:
     AOI mask; writes only local ephemeral output under
     ``data/smoke/features/``. Runs the pipeline twice, asserts
     deterministic aggregate metrics across both run reports, then runs
-    the independent validators — feature stacks, LoD coverage, V2→V3
-    release comparison — and the Stage-2 gate against the freshly
-    produced stacks. Removes all local smoke output in ``finally``
-    (never uploaded).
+    the independent validators — feature stacks and LoD coverage — and the
+    Stage-2 gate against the freshly produced stacks. Removes all local
+    smoke output in ``finally`` (never uploaded).
     """
     import glob
     import json
@@ -955,8 +954,8 @@ def cloud_smoke_features(session: nox.Session) -> None:
     Runs the feature pipeline against real GCS inputs with the output
     rooted at a unique ``gs://berlin-lst-training-data/features/smoke/<run-id>/``
     prefix, then validates the published stacks with the independent
-    validator, the LoD coverage validator, the V2→V3 comparison, and a
-    bounded Stage-2 gate. Exercises the exact GCS/GDAL runtime path: data
+    validator, the LoD coverage validator, and a bounded Stage-2 gate.
+    Exercises the exact GCS/GDAL runtime path: data
     COG write, mask COG write into the same folder, and the same-process
     mask read (the GDAL directory-cache failure this gate guards against).
 

@@ -28,6 +28,8 @@ from collections import Counter
 
 import pyarrow.parquet as pq
 
+from berlin_lst_downscaling.data.io import resolve_canonical_uri
+
 # ── ERA5 8-band contract ─────────────────────────────────────────────
 
 _ERA5_BAND_NAMES = [
@@ -237,6 +239,8 @@ def main() -> int:
         for row_dict in era5_done[:sample_size]:
             cog_uri = row_dict.get("output_uri", [None])[0]
             prov_uri = row_dict.get("provenance_uri", [None])[0]
+            cog_uri = resolve_canonical_uri(cog_uri) if cog_uri else cog_uri
+            prov_uri = resolve_canonical_uri(prov_uri) if prov_uri else prov_uri
             if cog_uri:
                 errs = _validate_cog_bands(cog_uri)
                 if errs:

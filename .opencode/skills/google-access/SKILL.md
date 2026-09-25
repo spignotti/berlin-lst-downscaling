@@ -138,7 +138,7 @@ pkill -f "rclone mount"
 
 - **macFUSE not loaded:** rclone mount requires macFUSE (already installed on this system). If mount fails, restart macFUSE: `/Library/Filesystems/macfuse.fs/Contents/Resources/load_macfuse`
 - **Stale mount:** Sometimes macOS caches the empty directory. Run `pkill -f "rclone mount" && sleep 2 && mount-berlin`
-- **"can't list buckets without project number":** The rclone config has `project_number = 469137882515` set.
+- **"can't list buckets without project number":** The rclone config has `project_number = 996559849187` set.
 - **VFS cache:** Cached files are stored in `~/Library/Caches/rclone/`. Can be cleared safely.
 
 ## GCS Access
@@ -256,7 +256,7 @@ for blob in bucket.list_blobs(max_results=5):
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `rclone ls gcs-masterarbeit:` fails | `project_number` missing in rclone config | Add `project_number = 469137882515` to `~/.config/rclone/rclone.conf` |
+| `rclone ls gcs-masterarbeit:` fails | `project_number` missing in rclone config | Add `project_number = 996559849187` to `~/.config/rclone/rclone.conf` |
 | `gcloud auth application-default` fails | no ADC | `gcloud auth application-default login` (new account) |
 | Mount directory empty after start | VFS cache not populated yet | Wait a few seconds (rclone lazily fetches files on first access). Run `ls` again. |
 | `google.cloud` import fails | `google-cloud-storage` not installed | `uv add google-cloud-storage` |

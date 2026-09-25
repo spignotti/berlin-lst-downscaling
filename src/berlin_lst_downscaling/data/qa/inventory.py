@@ -295,8 +295,8 @@ def _resolve_scene(
             exclusion_reason="ard landsat not done",
             errors=errors,
         )
-    ls_cog = str(ls_row.get("path_cog") or "")
-    ls_flag = str(ls_row.get("path_flag") or "")
+    ls_cog = resolve_canonical_uri(str(ls_row.get("path_cog") or ""))
+    ls_flag = resolve_canonical_uri(str(ls_row.get("path_flag") or ""))
     if not ls_cog or not ls_flag:
         errors.append(f"landsat {ls_id}: missing COG/flag path in ARD ledger")
 
@@ -306,8 +306,8 @@ def _resolve_scene(
     if s2_row is None or s2_row["status"] != "done":
         exclusion = "ard sentinel2 not done"
     else:
-        s2_cog = str(s2_row.get("path_cog") or "")
-        s2_flag = str(s2_row.get("path_flag") or "")
+        s2_cog = resolve_canonical_uri(str(s2_row.get("path_cog") or ""))
+        s2_flag = resolve_canonical_uri(str(s2_row.get("path_flag") or ""))
         if not s2_cog or not s2_flag:
             errors.append(f"sentinel2 {s2_id}: missing COG/flag path in ARD ledger")
 

@@ -51,7 +51,7 @@ import json
 
 import pyarrow.parquet as pq
 
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 
 # Canonical grid + patch geometry (mirrored from the contract; the
 # validator must derive them independently of the publisher's imports).
@@ -352,7 +352,7 @@ def _recompute_scenes(
     sample = scene_ids if max_scenes <= 0 else scene_ids[:max_scenes]
     checked = 0
     for sid in sample:
-        mask_uri = str(rows_by_scene[sid][0]["eligibility_mask"])
+        mask_uri = resolve_canonical_uri(str(rows_by_scene[sid][0]["eligibility_mask"]))
         if not exists(mask_uri):
             errors.append(f"{sid}: eligibility mask missing: {mask_uri}")
             continue

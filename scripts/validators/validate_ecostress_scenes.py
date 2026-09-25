@@ -58,7 +58,7 @@ from berlin_lst_downscaling.data.ard.validate import (
     validate_cog,
     validate_flag_cog,
 )
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.data.selection.schema import ECOSTRESS_VALIDATION_IDS
 
 _GRID = canon_grid_70m()
@@ -120,9 +120,9 @@ def _ledger_eco_rows(ledger_uri: str) -> dict[str, dict]:
             continue
         rows[str(cols["scene_id"][i])] = {
             "status": str(cols["status"][i]),
-            "path_cog": cols["path_cog"][i],
-            "path_flag": cols["path_flag"][i],
-            "path_stac": cols["path_stac"][i],
+            "path_cog": resolve_canonical_uri(str(cols["path_cog"][i] or "")),
+            "path_flag": resolve_canonical_uri(str(cols["path_flag"][i] or "")),
+            "path_stac": resolve_canonical_uri(str(cols["path_stac"][i] or "")),
             "aoi_clear_frac": cols.get("aoi_clear_frac", [None] * table.num_rows)[i],
         }
     return rows

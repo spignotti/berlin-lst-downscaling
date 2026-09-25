@@ -98,8 +98,8 @@ Canonical storage since the 2026-09-25 account cutover is
 `EUROPE-WEST3`), a verified byte-for-byte mirror of the previous bucket;
 see `docs/gcs-inventory-and-transfer.md`.
 
-Source roots are Hydra values and can be overridden per run, which is how the
-cutover was applied without editing the configs:
+Source roots are Hydra values and can be overridden per run, so a bucket
+change needs no config edit:
 
 ```bash
 uv run python scripts/runners/run_modeling.py --config-name real_smoke \
