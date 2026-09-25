@@ -18,7 +18,7 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
 - Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
 - Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
-- Service account key: `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json`
+- Local ADC:     `gcloud auth application-default login` (new account)
 
 All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
 `.opencode/skills/google-access/scripts/vm-runner-common.sh` (start → deploy pinned
@@ -33,32 +33,48 @@ This skill documents how to access Google Cloud resources for the berlin-lst-dow
 
 ## Account Info
 
+Canonical account since the 2026-09-25 GCS cutover (see
+`docs/gcs-inventory-and-transfer.md`):
+
 | Field | Value |
 |-------|-------|
-| GCP project ID | `masterarbeit-berlin-lst-v2` |
-| GCP project number | `469137882515` |
+| GCP project ID | `berlin-lst-training` |
+| GCP project number | `996559849187` |
 | Region | `europe-west3` (Frankfurt) |
-| GCS bucket | `berlin-lst-data` |
-| Service account | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
-| Auth method | Service account JSON key `masterarbeit-berlin-lst-v2.json` + ADC |
+| GCS bucket | `berlin-lst-training-data` |
+| Service account (VM) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
+| Auth method | user ADC via `gcloud auth application-default login` for local runs; the VM uses its attached SA through the metadata server |
+
+Legacy (old account, read-only fallback until its credit ends
+2026-09-27): project `masterarbeit-berlin-lst-v2`, bucket
+`gs://berlin-lst-data`, service account
+`masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com`.
+The old account has **no** access to the new bucket, and the new account
+has no access to the old project. Do not point the pipeline at the old
+account.
 
 ## Configuration Files
 
 | File | Purpose |
 |------|---------|
-| `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json` | Service account JSON key (private key, used by rclone and ADC) |
-| `~/.config/rclone/rclone.conf` | rclone remote `gcs-masterarbeit` pointing to bucket |
-| `~/.config/gcloud/configurations/config_default` | gcloud CLI config (service account login) |
+| `~/.config/rclone/rclone.conf` | rclone remote pointing to the canonical bucket |
+| `~/.config/gcloud/configurations/config_default` | gcloud CLI config |
+| `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json` | legacy old-account key — only for reading the old bucket as a fallback |
 
 ## Environment
 
-`GOOGLE_APPLICATION_CREDENTIALS` is set in `~/.zshrc`:
+Local Python Google libraries (`google.cloud.storage`, `google.auth`) use
+ADC. After the cutover that must be the **new** account:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcp-keys/masterarbeit-berlin-lst-v2.json"
+gcloud auth application-default login    # sign in as the new account owner
 ```
 
-This enables ADC for all Python Google libraries (`google.cloud.storage`, `google.auth`).
+Do **not** point `GOOGLE_APPLICATION_CREDENTIALS` at the legacy old-account
+key for normal work: it takes precedence over ADC, the old key has no
+access to `gs://berlin-lst-training-data`, and such a run would fail
+closed. Keep it only if you deliberately want to read the old bucket as a
+fallback. Any legacy key file stays outside the repository.
 
 To verify:
 ```bash
@@ -66,18 +82,21 @@ gcloud auth application-default print-access-token
 ```
 or in Python:
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcp-keys/masterarbeit-berlin-lst-v2.json"
 uv run python -c "import google.auth; cr, proj = google.auth.default(); print(proj)"
 ```
+The reported project must be `berlin-lst-training`. If it is
+`masterarbeit-berlin-lst-v2`, a stale legacy key is still set through
+`GOOGLE_APPLICATION_CREDENTIALS`; unset it and re-run
+`gcloud auth application-default login`.
 
 ## rclone Mount
 
-The GCS bucket is mounted locally as a filesystem via rclone (not gcsfuse — gcsfuse doesn't support Intel Macs). rclone uses the same JSON key as ADC.
+The GCS bucket is mounted locally as a filesystem via rclone (not gcsfuse — gcsfuse doesn't support Intel Macs). rclone authenticates with the new account (update `~/.config/rclone/rclone.conf` to the new project number and bucket).
 
 Aliases are defined in `~/.zshrc`:
 
 ```bash
-alias mount-berlin='rclone mount gcs-masterarbeit:berlin-lst-data ~/.mnt/berlin-lst --vfs-cache-mode writes --dir-cache-time 10s --daemon'
+alias mount-berlin='rclone mount gcs-masterarbeit:berlin-lst-training-data ~/.mnt/berlin-lst --vfs-cache-mode writes --dir-cache-time 10s --daemon'
 alias umount-berlin='umount ~/.mnt/berlin-lst'
 ```
 
@@ -98,7 +117,7 @@ ls ~/.mnt/berlin-lst/
 ```bash
 mount-berlin
 # or directly:
-rclone mount gcs-masterarbeit:berlin-lst-data ~/.mnt/berlin-lst --vfs-cache-mode writes --dir-cache-time 10s --daemon
+rclone mount gcs-masterarbeit:berlin-lst-training-data ~/.mnt/berlin-lst --vfs-cache-mode writes --dir-cache-time 10s --daemon
 ```
 
 Wait 2 seconds, then verify:
@@ -129,49 +148,49 @@ pkill -f "rclone mount"
 List bucket root:
 
 ```bash
-rclone ls gcs-masterarbeit:berlin-lst-data
+rclone ls gcs-masterarbeit:berlin-lst-training-data
 ```
 
 List subdirectories:
 
 ```bash
-rclone ls gcs-masterarbeit:berlin-lst-data/raw/
+rclone ls gcs-masterarbeit:berlin-lst-training-data/raw/
 ```
 
 Copy from bucket:
 
 ```bash
-rclone copy gcs-masterarbeit:berlin-lst-data/raw/ ./data/raw/
+rclone copy gcs-masterarbeit:berlin-lst-training-data/raw/ ./data/raw/
 ```
 
 Copy to bucket:
 
 ```bash
-rclone copy ./results/ gcs-masterarbeit:berlin-lst-data/results/
+rclone copy ./results/ gcs-masterarbeit:berlin-lst-training-data/results/
 ```
 
 Sync (bidirectional, one-way):
 
 ```bash
-rclone sync gcs-masterarbeit:berlin-lst-data/raw/ ./data/raw/
+rclone sync gcs-masterarbeit:berlin-lst-training-data/raw/ ./data/raw/
 ```
 
 ### gcloud storage CLI
 
 ```bash
-gcloud storage ls gs://berlin-lst-data/ --project=masterarbeit-berlin-lst
-gcloud storage cp gs://berlin-lst-data/test/smoke-test.txt ./data/
+gcloud storage ls gs://berlin-lst-training-data/ --project=berlin-lst-training
+gcloud storage cp gs://berlin-lst-training-data/test/smoke-test.txt ./data/
 ```
 
 ### Python GCS Client
 
-Requires `GOOGLE_APPLICATION_CREDENTIALS` to be set.
+Requires ADC for the new account (`gcloud auth application-default login`).
 
 ```python
 from google.cloud import storage
 
 client = storage.Client()
-bucket = client.get_bucket("berlin-lst-data")
+bucket = client.get_bucket("berlin-lst-training-data")
 
 # List blobs
 for blob in bucket.list_blobs():
@@ -199,12 +218,12 @@ ls ~/.mnt/berlin-lst/
 
 #### rclone CLI
 ```bash
-rclone ls gcs-masterarbeit:berlin-lst-data
+rclone ls gcs-masterarbeit:berlin-lst-training-data
 ```
 
 #### gcloud CLI
 ```bash
-gcloud storage ls gs://berlin-lst-data/ --project=masterarbeit-berlin-lst-v2
+gcloud storage ls gs://berlin-lst-training-data/ --project=berlin-lst-training
 ```
 
 #### Python GCS
@@ -212,7 +231,7 @@ gcloud storage ls gs://berlin-lst-data/ --project=masterarbeit-berlin-lst-v2
 uv run python -c "
 from google.cloud import storage
 client = storage.Client()
-bucket = client.get_bucket('berlin-lst-data')
+bucket = client.get_bucket('berlin-lst-training-data')
 for blob in bucket.list_blobs(max_results=5):
     print(blob.name)
 "
@@ -230,39 +249,46 @@ for blob in bucket.list_blobs(max_results=5):
 | `ssh-vm.sh` fails with "Connection timed out" | No external IP or firewall rule missing | Check `status-vm.sh` for external IP. If absent, VM may need restart. |
 | `start-vm.sh` fails with "does not exist" | VM was deleted | Requires manual recreation — this script will NOT create one. |
 | `start-vm.sh` fails with "Unexpected state" | VM in PROVISIONING/STAGING/REPAIRING | Wait and retry. If persistent, investigate via GCP console. |
-| `stop-vm.sh` shows "auto-delete=true" warning | Boot disk would be destroyed on `gcloud compute instances delete` | Run `gcloud compute instances set-disk-auto-delete berlin-lst-vm --disk=berlin-lst-vm --no-auto-delete --zone=europe-west3-a` to fix. Note: `--disk` takes the disk resource name (`berlin-lst-vm`), not the device name (`persistent-disk-0`). |
-| Instance has no deletion protection | Instance can be deleted without a guard | Run `gcloud compute instances update berlin-lst-vm --deletion-protection --zone=europe-west3-a` |
+| `stop-vm.sh` shows "auto-delete=true" warning | Boot disk would be destroyed on `gcloud compute instances delete` | Run `gcloud compute instances set-disk-auto-delete berlin-lst-vm --disk=berlin-lst-vm --no-auto-delete --zone=europe-west3-b` to fix. Note: `--disk` takes the disk resource name (`berlin-lst-vm`), not the device name (`persistent-disk-0`). |
+| Instance has no deletion protection | Instance can be deleted without a guard | Run `gcloud compute instances update berlin-lst-vm --deletion-protection --zone=europe-west3-b` |
 
 ### GCS / rclone
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `rclone ls gcs-masterarbeit:` fails | `project_number` missing in rclone config | Add `project_number = 469137882515` to `~/.config/rclone/rclone.conf` |
-| `gcloud auth application-default` fails | `GOOGLE_APPLICATION_CREDENTIALS` not set | `export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcp-keys/masterarbeit-berlin-lst-v2.json"` |
+| `gcloud auth application-default` fails | no ADC | `gcloud auth application-default login` (new account) |
 | Mount directory empty after start | VFS cache not populated yet | Wait a few seconds (rclone lazily fetches files on first access). Run `ls` again. |
 | `google.cloud` import fails | `google-cloud-storage` not installed | `uv add google-cloud-storage` |
-| Pipeline on VM says all scenes already `done` | Ledger at `gs://.../ledger.parquet` is from a previous run | `rclone delete gcs-masterarbeit:berlin-lst-data/<output_root>/ledger.parquet` before re-running |
+| Pipeline on VM says all scenes already `done` | Ledger at `gs://.../ledger.parquet` is from a previous run | `rclone delete gcs-masterarbeit:berlin-lst-training-data/<output_root>/ledger.parquet` before re-running |
 
 ## Compute Engine VM (berlin-lst-vm)
 
-An On-Demand VM in `europe-west3-a` runs the Dynamic pipeline against the bucket.
-Same SA as the local setup (`masterarbeit-vertex@...`) — it has
-`storage.objectAdmin` on the bucket, so `google.cloud.storage.Client()` on
-the VM uses VM ADC (no JSON key, no `GOOGLE_APPLICATION_CREDENTIALS`).
+An On-Demand VM in `europe-west3-b` runs the Dynamic pipeline against the
+canonical bucket. Its attached service account (`berlin-lst-vertex@...`)
+has `storage.objectAdmin` on `gs://berlin-lst-training-data` only, so
+`google.cloud.storage.Client()` on the VM uses VM ADC (no JSON key, no
+`GOOGLE_APPLICATION_CREDENTIALS`).
 
 | Field | Value |
 |-------|-------|
 | Name | `berlin-lst-vm` |
-| Instance ID | `8456019039456721311` |
-| Zone | `europe-west3-a` |
+| Instance ID | `6236232769523665407` |
+| Zone | `europe-west3-b` |
 | Machine | `n2-highmem-2` (2 vCPU / 16 GB) |
 | Image | `debian-12` |
 | Disk | 50 GB `pd-balanced` (resource name `berlin-lst-vm`, device name `persistent-disk-0`, retained between runs) |
 | Protection | Boot disk not auto-delete, instance deletion protection enabled |
 | Provisioning | On-Demand (no preemption) |
-| Service account | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
-| Required SA roles | `roles/compute.instanceAdmin.v1`, `roles/serviceusage.serviceUsageAdmin`, `roles/iam.serviceAccountUser` |
+| Service account | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
+| Role | `roles/storage.objectAdmin` on the canonical bucket (pipeline data only) |
 | Labels | `purpose=berlin-lst-runner,owner=silas` |
+
+The old-account VM (`masterarbeit-berlin-lst-v2`, instance ID
+`8456019039456721311`, `europe-west3-a`) still exists, is `TERMINATED`, and
+stays identity-pinned only in this record. The pinned constants below no
+longer match it, so every `run-*-vm.sh` launcher fails closed rather than
+silently starting the old VM.
 
 ### Fail-closed lifecycle
 
@@ -286,11 +312,11 @@ retry, no fallback, no creation.
 
 | Constant | Value |
 |----------|-------|
-| `VM_PROJECT` | `masterarbeit-berlin-lst-v2` |
-| `VM_ZONE` | `europe-west3-a` |
+| `VM_PROJECT` | `berlin-lst-training` |
+| `VM_ZONE` | `europe-west3-b` |
 | `VM_NAME` | `berlin-lst-vm` |
-| `VM_EXPECTED_ID` | `8456019039456721311` |
-| `VM_SA` | `masterarbeit-vertex@…` |
+| `VM_EXPECTED_ID` | `6236232769523665407` |
+| `VM_SA` | `berlin-lst-vertex@…` |
 | `VM_DISK_DEVICE` | `persistent-disk-0` |
 
 Change these values only when the instance is knowingly re-created and the new
@@ -418,11 +444,11 @@ authenticated channel — never by accepting whatever the VM presents.
 4. Back up `~/.ssh/google_compute_known_hosts`.
 5. Remove only the `compute.<instance-id>` entry:
    ```bash
-   ssh-keygen -R "compute.8456019039456721311"
+   ssh-keygen -R "compute.6236232769523665407"
    ```
 6. Add the verified key:
    ```bash
-   echo "compute.8456019039456721311 <key-type> <key-blob>" \
+   echo "compute.6236232769523665407 <key-type> <key-blob>" \
      >> ~/.ssh/google_compute_known_hosts
    ```
 7. Re-run `ssh-vm.sh --check` to confirm.
@@ -459,7 +485,7 @@ need to resume a run.
 
 | File | Purpose |
 |------|---------|
-| `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json` | Service account JSON key (private key) |
+| `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json` | legacy old-account key (private key); only for the old-bucket fallback |
 | `~/.config/rclone/rclone.conf` | rclone remote config |
 | `~/.zshrc` | `GOOGLE_APPLICATION_CREDENTIALS` env var |
 | `~/.mnt/berlin-lst/` | rclone mount point |

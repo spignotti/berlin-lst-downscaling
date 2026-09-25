@@ -22,7 +22,7 @@ source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 BRANCH="${1:-main}"
 PIPELINE_LABEL="Stage-2 feature QA"
 MARKER_CONFIG="stage2_features_full"
-QA_OUTPUT_ROOT="gs://berlin-lst-data/qa/stage2_features"
+QA_OUTPUT_ROOT="gs://berlin-lst-training-data/qa/stage2_features"
 RUN_PREFIX_GREP="$QA_OUTPUT_ROOT/[0-9a-f]\\{8\\}"
 REMOTE_CMD="uv run python scripts/runners/run_qa_stage2_features.py --config-name stage2_features_full"
 

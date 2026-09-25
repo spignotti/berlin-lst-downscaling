@@ -2,8 +2,6 @@
 
 import nox
 
-from berlin_lst_downscaling.data.io import exists as exists_uri
-
 nox.options.sessions = ["lint", "typecheck"]
 
 
@@ -291,7 +289,7 @@ def _preflight_gcs(session: nox.Session) -> None:
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-data'); "
+            "bucket = client.get_bucket('berlin-lst-training-data'); "
             "print('Bucket reachable:', bucket.name)"
         ),
         external=True,
@@ -311,7 +309,7 @@ def _delete_gcs_prefix(prefix: str) -> bool:
     from google.cloud import storage
 
     client = storage.Client()
-    bucket = client.get_bucket("berlin-lst-data")
+    bucket = client.get_bucket("berlin-lst-training-data")
     try:
         blobs = list(bucket.list_blobs(prefix=prefix))
         if not blobs:
@@ -330,7 +328,7 @@ def _list_gcs_subdirs(prefix: str) -> list[str]:
     from google.cloud import storage
 
     client = storage.Client()
-    bucket = client.get_bucket("berlin-lst-data")
+    bucket = client.get_bucket("berlin-lst-training-data")
     it = bucket.list_blobs(prefix=prefix, delimiter="/")
     list(it)  # consume the iterator so .prefixes is populated
     return sorted(str(p).rstrip("/").split("/")[-1] for p in it.prefixes)
@@ -352,10 +350,10 @@ def _verify_gcs_artifacts(
         f"""import sys
 from google.cloud import storage
 client = storage.Client()
-bucket = client.get_bucket('berlin-lst-data')
+bucket = client.get_bucket('berlin-lst-training-data')
 prefix = '{prefix}'
 blobs = list(bucket.list_blobs(prefix=prefix))
-print(f'Outputs in gs://berlin-lst-data/{{prefix}}')
+print(f'Outputs in gs://berlin-lst-training-data/{{prefix}}')
 print(f'  {{len(blobs)}} blob(s)')
 for b in blobs:
     print(f'  {{b.name}} ({{b.size}} bytes)')
@@ -442,7 +440,7 @@ def cloud_static_sources(session: nox.Session) -> None:
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     run_id = f"stat-src-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    source_root = f"gs://berlin-lst-data/static/sources/smoke/{run_id}"
+    source_root = f"gs://berlin-lst-training-data/static/sources/smoke/{run_id}"
 
     _preflight_gcs(session)
 
@@ -541,7 +539,7 @@ def cloud_static_derived(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s cloud-static-derived -- \
-            gs://berlin-lst-data/static/sources/smoke/...
+            gs://berlin-lst-training-data/static/sources/smoke/...
     """
     import uuid
     from datetime import UTC, datetime
@@ -549,11 +547,11 @@ def cloud_static_derived(session: nox.Session) -> None:
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     source_root = (
-        session.posargs[0] if session.posargs else "gs://berlin-lst-data/static/sources/full"
+        session.posargs[0] if session.posargs else "gs://berlin-lst-training-data/static/sources/full"
     )
 
     run_id = f"stat-drv-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    derived_root = f"gs://berlin-lst-data/static/derived/smoke/{run_id}"
+    derived_root = f"gs://berlin-lst-training-data/static/derived/smoke/{run_id}"
 
     _preflight_gcs(session)
 
@@ -643,7 +641,7 @@ def cloud_smoke_dynamic(session: nox.Session) -> None:
     """Run a deterministic 1-scene dynamic smoke test against GCS.
 
     Uses cloud_smoke.yaml config with a fixed scene ID.
-    Output goes to gs://berlin-lst-data/dynamic/smoke/<run_id>/.
+    Output goes to gs://berlin-lst-training-data/dynamic/smoke/<run_id>/.
 
     Requires:
     - ADC / Workload Identity
@@ -653,7 +651,7 @@ def cloud_smoke_dynamic(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s cloud-smoke-dynamic -- \
-            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+            gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
     """
     import uuid
     from datetime import UTC, datetime
@@ -663,7 +661,7 @@ def cloud_smoke_dynamic(session: nox.Session) -> None:
     manifest_uri = session.posargs[0] if session.posargs else ""
 
     run_id = f"dyn-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    output_root = f"gs://berlin-lst-data/dynamic/smoke/{run_id}"
+    output_root = f"gs://berlin-lst-training-data/dynamic/smoke/{run_id}"
 
     _preflight_gcs(session)
 
@@ -692,7 +690,7 @@ def cloud_dynamic(session: nox.Session) -> None:
 
     Usage:
         uv run nox -s cloud-dynamic -- \
-            gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
+            gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet
     """
     import uuid
     from datetime import UTC, datetime
@@ -702,7 +700,7 @@ def cloud_dynamic(session: nox.Session) -> None:
     manifest_uri = session.posargs[0] if session.posargs else ""
 
     run_id = f"dyn-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    output_root = f"gs://berlin-lst-data/dynamic/full/{run_id}"
+    output_root = f"gs://berlin-lst-training-data/dynamic/full/{run_id}"
 
     _preflight_gcs(session)
 
@@ -832,12 +830,6 @@ def smoke_features(session: nox.Session) -> None:
     output_root = "data/smoke/features"
     stage2_root = "data/smoke/qa-stage2-v3"
     bbox = "13.4602832,52.4041766,13.6691668,52.4965573"
-    scene_ids = [
-        "LC08_L2SP_193023_20170720_02_T1",  # 2017
-        "LC08_L2SP_192024_20210910_02_T1",  # 2021
-        "LC09_L2SP_193023_20220624_02_T1",  # 2022
-        "LC09_L2SP_193023_20240629_02_T1",  # 2024
-    ]
 
     def _run_dirs() -> list[str]:
         qa_root = os.path.join(output_root, "qa", "features")
@@ -904,26 +896,9 @@ def smoke_features(session: nox.Session) -> None:
             external=True,
         )
 
-        # V2 → V3 comparison: V2-valid pixels unchanged, newly valid
-        # pixels have zero LoD bands. Runs only while a baseline release
-        # exists (the retired features/v2 root is gone).
-        baseline_ledger = "gs://berlin-lst-data/features/v2/_state/features/ledger.parquet"
-        if exists_uri(baseline_ledger):
-            session.run(
-                "uv",
-                "run",
-                "python",
-                "scripts/operators/compare_feature_releases.py",
-                "--baseline-root",
-                "gs://berlin-lst-data/features/v2",
-                "--candidate-root",
-                output_root,
-                "--scene-ids",
-                ",".join(scene_ids),
-                external=True,
-            )
-        else:
-            print("Baseline release absent (retired) — skipping V2→V3 comparison.")
+        # The V2 -> V3 release comparison was removed in the 2026-09-25 GCS
+        # cutover: features/v2 was retired on 2026-08-25, so there is no live
+        # baseline. compare_feature_releases.py stays for two live roots.
 
         # Exactly four published stacks (one scene dir per vintage).
         scene_dirs = glob.glob(os.path.join(output_root, "LC08*")) + glob.glob(
@@ -978,7 +953,7 @@ def cloud_smoke_features(session: nox.Session) -> None:
     """Publish the four-vintage V3 smoke stacks to a unique GCS prefix.
 
     Runs the feature pipeline against real GCS inputs with the output
-    rooted at a unique ``gs://berlin-lst-data/features/smoke/<run-id>/``
+    rooted at a unique ``gs://berlin-lst-training-data/features/smoke/<run-id>/``
     prefix, then validates the published stacks with the independent
     validator, the LoD coverage validator, the V2→V3 comparison, and a
     bounded Stage-2 gate. Exercises the exact GCS/GDAL runtime path: data
@@ -994,17 +969,11 @@ def cloud_smoke_features(session: nox.Session) -> None:
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     run_id = f"feat-smoke-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    output_root = f"gs://berlin-lst-data/features/smoke/{run_id}"
+    output_root = f"gs://berlin-lst-training-data/features/smoke/{run_id}"
     prefix = f"features/smoke/{run_id}/"
     stage2_prefix = f"qa/smoke/stage2-v3/{run_id}/"
-    stage2_root = f"gs://berlin-lst-data/{stage2_prefix.rstrip('/')}"
+    stage2_root = f"gs://berlin-lst-training-data/{stage2_prefix.rstrip('/')}"
     bbox = "13.4602832,52.4041766,13.6691668,52.4965573"
-    scene_ids = [
-        "LC08_L2SP_193023_20170720_02_T1",  # 2017
-        "LC08_L2SP_192024_20210910_02_T1",  # 2021
-        "LC09_L2SP_193023_20220624_02_T1",  # 2022
-        "LC09_L2SP_193023_20240629_02_T1",  # 2024
-    ]
 
     _preflight_gcs(session)
 
@@ -1037,23 +1006,9 @@ def cloud_smoke_features(session: nox.Session) -> None:
             f"--bbox={bbox}",
             external=True,
         )
-        baseline_ledger = "gs://berlin-lst-data/features/v2/_state/features/ledger.parquet"
-        if exists_uri(baseline_ledger):
-            session.run(
-                "uv",
-                "run",
-                "python",
-                "scripts/operators/compare_feature_releases.py",
-                "--baseline-root",
-                "gs://berlin-lst-data/features/v2",
-                "--candidate-root",
-                output_root,
-                "--scene-ids",
-                ",".join(scene_ids),
-                external=True,
-            )
-        else:
-            print("Baseline release absent (retired) — skipping V2→V3 comparison.")
+        # The V2 -> V3 release comparison was removed in the 2026-09-25 GCS
+        # cutover (features/v2 retired); compare_feature_releases.py stays for
+        # two live roots.
         session.run(
             "uv",
             "run",

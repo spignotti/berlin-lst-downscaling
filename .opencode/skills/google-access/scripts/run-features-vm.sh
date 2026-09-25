@@ -6,7 +6,7 @@
 # deploy pinned branch → launch full run → poll the run marker → validate
 # the published feature stacks (independent validator + V2→V3 comparison)
 # → stop VM. Products (28-band COGs, masks, sidecars, ledger) live in GCS
-# under gs://berlin-lst-data/features/v3/, not on the VM disk.
+# under gs://berlin-lst-training-data/features/v3/, not on the VM disk.
 #
 # Every remote command uses ssh-vm.sh (strict host-key verification) and
 # the fail-closed lifecycle scripts in this directory. The VM is stopped
@@ -24,8 +24,7 @@ source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 BRANCH="${1:-main}"
 PIPELINE_LABEL="Feature stacks"
 MARKER_CONFIG="full"
-FEATURES_ROOT="gs://berlin-lst-data/features/v3"
-BASELINE_ROOT="gs://berlin-lst-data/features/v2"
+FEATURES_ROOT="gs://berlin-lst-training-data/features/v3"
 EXTRA_MARKER_JSON="  \"features_root\": \"$FEATURES_ROOT\",
 "
 REMOTE_CMD="uv run python scripts/runners/run_features_isolated.py --config-name full"
@@ -77,13 +76,10 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 
-if [[ "$VALIDATION_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
-  echo "Comparing $BASELINE_ROOT -> $FEATURES_ROOT ..."
-  uv run python scripts/operators/compare_feature_releases.py \
-    --baseline-root "$BASELINE_ROOT" \
-    --candidate-root "$FEATURES_ROOT" \
-    && VALIDATION_OK=0 || VALIDATION_OK=1
-fi
+# The former V2 -> V3 release comparison was dropped during the GCS cutover:
+# features/v2 was retired on 2026-08-25, so there is no live baseline to
+# compare against. compare_feature_releases.py stays available for two live
+# roots.
 
 # ── stop VM + report ─────────────────────────────────────────────────
 vm_stop

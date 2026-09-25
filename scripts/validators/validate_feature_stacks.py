@@ -27,7 +27,7 @@ the composer or pipeline implementation. It writes nothing.
 Usage
 -----
     uv run python scripts/validators/validate_feature_stacks.py \
-        --root gs://berlin-lst-data/features/v2
+        --root gs://berlin-lst-training-data/features/v3
     uv run python scripts/validators/validate_feature_stacks.py --root data/smoke/features
 """
 

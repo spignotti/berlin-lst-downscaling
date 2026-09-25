@@ -38,7 +38,7 @@ publisher bug cannot silently validate itself.
 Usage
 -----
     uv run python scripts/validators/validate_patch_index.py \
-        --index-root gs://berlin-lst-data/training/patch-index/v1
+        --index-root gs://berlin-lst-training-data/training/patch-index/v1
     uv run python scripts/validators/validate_patch_index.py \
         --index-root data/smoke/patch-index
 """

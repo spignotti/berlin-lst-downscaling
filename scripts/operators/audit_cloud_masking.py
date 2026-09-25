@@ -49,10 +49,10 @@ S2 pixel-level comparison, max-pooled to the SCL 20 m grid.
 Usage
 -----
     uv run python scripts/operators/audit_cloud_masking.py \
-        --manifest gs://berlin-lst-data/manifests/v3/<bundle>-r2/manifest.parquet \
-        --pairings gs://berlin-lst-data/manifests/v3/<bundle>-r2/pairings.parquet \
-        --ledger gs://berlin-lst-data/ard/full/<cutoff>/ledger.parquet \
-        --output-root gs://berlin-lst-data/qa/cloud_masking/<run-id> \
+        --manifest gs://berlin-lst-training-data/manifests/v3/<bundle>-r2/manifest.parquet \
+        --pairings gs://berlin-lst-training-data/manifests/v3/<bundle>-r2/pairings.parquet \
+        --ledger gs://berlin-lst-training-data/ard/full/<cutoff>/ledger.parquet \
+        --output-root gs://berlin-lst-training-data/qa/cloud_masking/<run-id> \
         --seed 42 --n-pairs 24
 """
 

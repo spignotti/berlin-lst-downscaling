@@ -54,7 +54,7 @@ def write_cog_atomic(
         carrying CRS and transform via ``rio``.
     dst :
         Final output URI (e.g. ``data/ard/…/<scene_id>.tif`` or
-        ``gs://berlin-lst-data/…/<scene_id>.tif``).
+        ``gs://berlin-lst-training-data/…/<scene_id>.tif``).
     contract :
         Contract describing tiling, compression, and expected nodata.
     overwrite :

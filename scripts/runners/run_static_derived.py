@@ -9,8 +9,8 @@ Usage
 -----
     uv run python scripts/runners/run_static_derived.py --config-name smoke
     uv run python scripts/runners/run_static_derived.py --config-name full \
-        source_root=gs://berlin-lst-data/static/sources/full \
-        derived_root=gs://berlin-lst-data/static/derived/full
+        source_root=gs://berlin-lst-training-data/static/sources/full \
+        derived_root=gs://berlin-lst-training-data/static/derived/full
 """
 
 from __future__ import annotations

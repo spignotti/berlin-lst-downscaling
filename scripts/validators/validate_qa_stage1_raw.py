@@ -23,7 +23,7 @@ an independent consistency gate over the published evidence.
 Usage
 -----
     uv run python scripts/validators/validate_qa_stage1_raw.py \
-        --run-prefix gs://berlin-lst-data/qa/stage1_raw/<run-id>
+        --run-prefix gs://berlin-lst-training-data/qa/stage1_raw/<run-id>
     uv run python scripts/validators/validate_qa_stage1_raw.py \
         --run-prefix data/smoke/qa-stage1/<run-id>
 """

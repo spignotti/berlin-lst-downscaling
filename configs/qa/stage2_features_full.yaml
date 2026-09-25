@@ -10,4 +10,4 @@ defaults:
 scene_ids: []
 bbox: null
 
-output_root: "gs://berlin-lst-data/qa/stage2_features"
+output_root: "gs://berlin-lst-training-data/qa/stage2_features"

@@ -39,7 +39,7 @@ fi
 
 PIPELINE_LABEL="Dynamic pipeline"
 MARKER_CONFIG="$CONFIG"
-MANIFEST_URI="gs://berlin-lst-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet"
+MANIFEST_URI="gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet"
 REMOTE_CMD="uv run python scripts/runners/run_dynamic.py --config-name $CONFIG manifest_uri=$MANIFEST_URI"
 
 vm_init_run "$CONFIG"
@@ -64,11 +64,11 @@ echo "  Error lines: $PIPELINE_ERRORS"
 if [[ "$CONFIG" == "full" ]]; then
   EXPECTED_ROLE="anchor"
   EXPECTED_SCENES="324"
-  OUTPUT_ROOT="gs://berlin-lst-data/dynamic/full"
+  OUTPUT_ROOT="gs://berlin-lst-training-data/dynamic/full"
 else
   EXPECTED_ROLE="inference"
   EXPECTED_SCENES="21"
-  OUTPUT_ROOT="gs://berlin-lst-data/dynamic/inference/2026"
+  OUTPUT_ROOT="gs://berlin-lst-training-data/dynamic/inference/2026"
 fi
 
 VALIDATION_OK=1

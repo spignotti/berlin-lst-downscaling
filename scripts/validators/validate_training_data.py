@@ -36,7 +36,7 @@ with ``data/training/``.
 Usage
 -----
     uv run python scripts/validators/validate_training_data.py \
-        --release-root gs://berlin-lst-data/training/v1
+        --release-root gs://berlin-lst-training-data/training/v1
     uv run python scripts/validators/validate_training_data.py \
         --release-root data/smoke/training-data
 """
@@ -79,7 +79,7 @@ _CANON_X = 369190.0
 _CANON_Y = 5838410.0
 _CELL = 100.0
 
-_V3_FEATURES_ROOT = "gs://berlin-lst-data/features/v3"
+_V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v3"
 
 
 def _read_json(uri: str) -> dict:

@@ -29,7 +29,13 @@ import pyarrow.parquet as pq
 import rasterio
 
 from berlin_lst_downscaling.common.util import sha256_bytes
-from berlin_lst_downscaling.data.io import atomic_write, exists, publish_lock, read_bytes
+from berlin_lst_downscaling.data.io import (
+    atomic_write,
+    exists,
+    publish_lock,
+    read_bytes,
+    resolve_canonical_uri,
+)
 from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_X,
     CANON_GRID_ORIGIN_Y,
@@ -319,7 +325,11 @@ def _scene_windows(
     mask_uri: str,
 ) -> list[dict]:
     """Return the accepted patch rows for one published scene."""
-    with rasterio.open(mask_uri) as src:
+    # The stored mask URI points at the publication-time bucket; resolve it
+    # to the current canonical bucket, but keep the stored value in the
+    # emitted row (no provenance rewrite).
+    mask_path = resolve_canonical_uri(mask_uri)
+    with rasterio.open(mask_path) as src:
         errors = _mask_grid_errors(src)
         if errors:
             raise RuntimeError(f"{scene_id}: eligibility mask {mask_uri}: " + "; ".join(errors))

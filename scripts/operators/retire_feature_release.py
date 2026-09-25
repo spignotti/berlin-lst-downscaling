@@ -38,7 +38,7 @@ from datetime import UTC, datetime
 from google.api_core.exceptions import GoogleAPIError, PreconditionFailed
 from google.cloud import storage
 
-_BUCKET = "berlin-lst-data"
+_BUCKET = "berlin-lst-training-data"
 _PREFIX = "features/v2/"
 _EVIDENCE_ROOT = "qa/retirements/v2"
 

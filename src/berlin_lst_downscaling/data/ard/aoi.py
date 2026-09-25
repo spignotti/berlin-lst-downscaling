@@ -7,7 +7,7 @@ scene's AOI area.
 AOI masks (``aoi_10m.tif``, ``aoi_100m.tif``) are pre-baked at
 ``data/boundaries/`` from ``berlin_landesgrenze.geojson`` (EPSG:25833).
 They are uint8, 1 = inside Berlin, 0 = outside.  In cloud runs the same
-files are mirrored to ``gs://berlin-lst-data/boundaries/`` and the
+files are mirrored to ``gs://berlin-lst-training-data/boundaries/`` and the
 pipeline reads them from there.
 """
 

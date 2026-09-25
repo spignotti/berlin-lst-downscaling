@@ -365,12 +365,29 @@ principal keeps destination access. The old project's runner SA therefore
 holds no residual grant in the new account. The repo validators still
 point at the old root (see §4) until the cutover updates them.
 
-## Cutover (later, separately approved)
+## Cutover (executed 2026-09-25)
 
-Copying objects does not rewire the pipeline. After a verified copy, a
-cutover must update every reference to the old bucket. These are the
-known references; treat the list as a starting point and re-grep before
-the cutover.
+Copying objects does not rewire the pipeline. After the verified copy, the
+cutover updated every active reference to the old bucket. The list below
+records what was changed; a repo-wide re-grep after the cutover found no
+remaining active reference — the only deliberate occurrence of the old
+bucket string is the mapping constant in
+`src/berlin_lst_downscaling/data/io/uri_mapping.py`.
+
+Canonical account after the cutover: project `berlin-lst-training`, bucket
+`gs://berlin-lst-training-data`, VM `berlin-lst-vm` in `europe-west3-b`
+(instance ID `6236232769523665407`, deletion protection on, boot disk not
+auto-delete). The old account stays read-only until its credit ends
+2026-09-27; its `features/v2` root was already retired.
+
+Stored asset URIs inside the copied artifacts still name the old bucket —
+provenance is not rewritten. Readers map only the exact old canonical
+prefix onto the new bucket at read time (`resolve_canonical_uri` in
+`data/io/uri_mapping.py`), applied in `modeling/patches.py`,
+`data/qa/inventory.py`, `data/training/patch_index.py`, and
+`scripts/validators/validate_real_patches.py`. A `gs://` URI on any other
+bucket raises instead of falling back to the old account. No global
+redirect was added to `data/io/storage.py`.
 
 - Configuration roots: `configs/features/_base.yaml`,
   `configs/training/_base.yaml`, `configs/qa/_base.yaml`,
@@ -389,17 +406,40 @@ the cutover.
   `scripts/operators/compare_feature_releases.py`, `noxfile.py`.
   Smoke configs and smoke baselines are also affected: the
   `configs/*/smoke*.yaml` files and the smoke sessions in `noxfile.py`.
-- Local and VM access: the bucket name in the `google-access` skill, the
-  rclone remote `gcs-masterarbeit`, the ADC service-account key path, and
-  the VM service account's bucket access.
+- Local and VM access: the `google-access` skill was updated to the new
+  project, bucket, and VM; the rclone remote and the local ADC setting are
+  operator-local config outside this repo (see below).
 - Provenance records under the copied roots reference the old bucket in
   historical metadata. Those are records of past runs; do not rewrite
   them to match the new bucket.
 
-Also note that some existing references point at `features/v2`, which no
-longer exists (for example the smoke baselines in `noxfile.py` and
-`scripts/operators/compare_feature_releases.py`). Those are stale
-regardless of the transfer and should be resolved by the cutover.
+### Operator-local config (outside the repo)
+
+Not versioned here; switch these on the machine for the new account:
+
+- `~/.config/rclone/rclone.conf` — point the remote at
+  `gs://berlin-lst-training-data` with project number `996559849187`.
+- `GOOGLE_APPLICATION_CREDENTIALS` in `~/.zshrc` — it pointed at the legacy
+  old-account key. Prefer the ADC file
+  (`~/.config/gcloud/application_default_credentials.json`) after
+  `gcloud auth application-default login`, or unset the variable. GDAL/
+  rasterio needs this file (or another GDAL credential) to read `gs://`
+  COGs; a stale old-account value fails closed because that principal no
+  longer has new-bucket access.
+- The `gcloud` default account and project — set to the new account.
+
+### Historical documents (deliberately not rewritten)
+
+`docs/phase-1-delivery.md` and `docs/phase-2-preparation.md` record the
+old-account era and keep the paths of their time; they are history, not the
+current canonical root. `docs/data-sources-and-contracts.md` is a contract
+and was updated to the new canonical bucket.
+
+The stale `features/v2` references (the smoke baselines in `noxfile.py`,
+`scripts/operators/compare_feature_releases.py`, and
+`scripts/operators/retire_feature_release.py`) were resolved by the
+cutover: the dead V2→V3 comparison blocks were removed, since `features/v2`
+was retired on 2026-08-25 and cannot serve as a baseline.
 
 ## Non-goals for the old account
 

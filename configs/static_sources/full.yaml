@@ -4,7 +4,7 @@ defaults:
 
 # Full run — all static sources against production root.
 # On the VM: uv run python scripts/runners/run_static_sources.py --config-name full \
-#     source_root=gs://berlin-lst-data/static/sources/full
+#     source_root=gs://berlin-lst-training-data/static/sources/full
 mode: full
 sources:
   - imperviousness

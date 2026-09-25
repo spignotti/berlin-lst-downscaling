@@ -54,7 +54,7 @@ exit) and iterates it as a regular ZipFile. No expanded XML ever
 appears in the bucket.
 
 ```
-gs://berlin-lst-data/lod_vintages/<vintage>/<archive_filename>
+gs://berlin-lst-training-data/lod_vintages/<vintage>/<archive_filename>
     ├─ LoD1_2017.zip         (1006 XML members, ~190 MB)
     ├─ LoD2_BE_1_33_2021.zip (928 XML members, ~2.5 GB)
     └─ LoD2_2022.zip         (928 XML members, ~1.7 GB)
@@ -67,7 +67,7 @@ manifests (LoD1-2017 + LoD2-2021).
 
 Year → vintage carry-forward mapping is published at
 `<metadata_root>/geometry_mapping.json` (default
-`gs://berlin-lst-data/static/geometry_vintages/v1/`); the runner only
+`gs://berlin-lst-training-data/static/geometry_vintages/v1/`); the runner only
 writes it after every requested vintage morphology AND every required
 derived product has finalised, so the artefact can never point at
 half-published state.
@@ -89,7 +89,7 @@ The canonical bundle is the only accepted manifest contract.
 The reader fails fast on any other layout.
 
 ```
-gs://berlin-lst-data/manifests/v3/<bundle-id>-r2/
+gs://berlin-lst-training-data/manifests/v3/<bundle-id>-r2/
     manifest.parquet       (schema_version 3)
     pairings.parquet       (schema_version 1)
     manifest_report.json   (publication gate)
@@ -280,7 +280,7 @@ Per paired Landsat anchor (2017-2025, 324 scenes), the features pipeline
 canonical-grid 10 m stack plus a co-registered validity mask:
 
 ```
-<root>/<scene_id>/                         (root = gs://berlin-lst-data/features/v3)
+<root>/<scene_id>/                         (root = gs://berlin-lst-training-data/features/v3)
     ├─ <scene_id>.tif                     # 28-band float32 COG
     ├─ <scene_id>.feature_valid.tif       # uint8 0/1 validity-mask COG
     ├─ <scene_id>.stac.json               # STAC Item (data + mask assets)
@@ -412,7 +412,7 @@ reproducibility basis.
 
 The training handoff is the reproducible transfer of Feature Release V3
 into leakage-free training inputs for WB3. It is published under
-`gs://berlin-lst-data/training/v1` (per-scene artifacts + top-level
+`gs://berlin-lst-training-data/training/v1` (per-scene artifacts + top-level
 manifest, cell index, scaler, and release marker), built by
 `scripts/runners/run_training_data.py` (`data/training/`).
 
@@ -501,7 +501,7 @@ index as immutable inputs and verifies their policy hashes before reading.
 The patch index is the WB3 sampling surface: it enumerates the training
 windows a future dataset reads, without touching the immutable
 `training/v1` release. It is published under
-`gs://berlin-lst-data/training/patch-index/v1` (index, QA report, and a
+`gs://berlin-lst-training-data/training/patch-index/v1` (index, QA report, and a
 create-only completion marker), built by
 `scripts/runners/run_patch_index.py` from the `training/v1` scene manifest
 and the per-scene `training_eligible@100m` COGs. No feature pixels are

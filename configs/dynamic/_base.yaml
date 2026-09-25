@@ -2,7 +2,7 @@
 # Base config for dynamic scene pipeline.
 
 # Manifest URI — REQUIRED. Published v3 manifest bundle.
-# Override on command line: manifest_uri=gs://berlin-lst-data/manifests/v3/...
+# Override on command line: manifest_uri=gs://berlin-lst-training-data/manifests/v3/...
 manifest_uri: null
 
 # Static product roots (source + derived geometry)

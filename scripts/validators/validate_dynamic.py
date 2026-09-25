@@ -8,12 +8,12 @@ dynamic run root.
 Usage::
 
     uv run python scripts/validators/validate_dynamic.py \\
-        --output-root gs://berlin-lst-data/dynamic/full \\
+        --output-root gs://berlin-lst-training-data/dynamic/full \\
         --expected-role anchor \\
         --expected-scenes 324
 
     uv run python scripts/validators/validate_dynamic.py \\
-        --output-root gs://berlin-lst-data/dynamic/inference/2026 \\
+        --output-root gs://berlin-lst-training-data/dynamic/inference/2026 \\
         --expected-role inference \\
         --expected-scenes 21
 """

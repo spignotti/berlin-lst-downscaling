@@ -9,7 +9,7 @@ Usage
 -----
     uv run python scripts/runners/run_static_sources.py --config-name smoke
     uv run python scripts/runners/run_static_sources.py --config-name full \
-        source_root=gs://berlin-lst-data/static/sources/full
+        source_root=gs://berlin-lst-training-data/static/sources/full
 """
 
 from __future__ import annotations
