@@ -314,6 +314,52 @@ cutover only. Until the cutover completes, do not start:
 Record the cutoff date during preflight and treat it as the deadline for
 the mirror and verification steps.
 
+### 7. Transfer record (executed 2026-09-25)
+
+Source bucket `gs://berlin-lst-data` → destination
+`gs://berlin-lst-training-data`, same region `EUROPE-WEST3`. The old
+pipeline VM (`berlin-lst-vm`) was confirmed `TERMINATED` before the copy,
+so no writer changed the source during the transfer.
+
+Fresh source inventory at `2026-09-25T10:47:58Z`:
+**12,572 objects / 246,174,902,157 bytes (229.27 GiB)**. Compared with the
+2026-09-23 snapshot this is +5 objects / +127,355 bytes, all of it the
+later-published `training/patch-index/v1/` (5 objects). Every non-empty
+object sat under a classified prefix; the `*/smoke/` roots were empty.
+The mirror set was therefore the whole bucket.
+
+Copy tool: `gcloud storage rsync` (server-side bucket-to-bucket, no
+client-side data path), **without** `--delete-unmatched-destination-objects`.
+The destination was empty; a dry-run first reported 12,572 objects to copy
+with no errors.
+
+Independent verification (separate full listings of both sides):
+
+| Check | Result |
+|---|---|
+| Object keys | 12,572 source = 12,572 destination; 0 missing, 0 extra |
+| Byte size per object | 0 differences |
+| `crc32c` per object | 0 differences |
+| `md5Hash` per object | 0 differences |
+| Total bytes | source = destination = 246,174,902,157 |
+| Per-prefix counts/bytes | all 11 top-level prefixes reconcile |
+
+Marker and ledger readback at the destination (all present and parsing):
+`training/v1/complete.json`, the `-r2` `manifest_report.json`,
+`qa/stage2_features/cc00406a/summary.json`,
+`training/patch-index/v1/complete.json` and `patch_index_qa.json`; the
+features, training, ARD, static, and dynamic ledgers under their roots.
+
+Source-unchanged evidence: a second full source listing after the copy
+matched the pre-copy listing on object keys, sizes, and object
+generations — 0 changed, added, or removed objects. The source was
+neither written nor deleted.
+
+The destination is accepted. No reader was cut over in this step; the
+copy principal's temporary destination grants are revoked in the cutover
+step. The repo validators still point at the old root (see §4) until the
+cutover updates them.
+
 ## Cutover (later, separately approved)
 
 Copying objects does not rewire the pipeline. After a verified copy, a
