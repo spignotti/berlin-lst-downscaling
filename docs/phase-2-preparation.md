@@ -225,8 +225,14 @@ over them.
 
 ## Next steps (separate session)
 
-- WB3 training: consume `training/v1` (features, eligibility, splits,
-  cells, scaler) — patch geometry, samplers, model training, spatial CV
-  and Zarr materialisation are WB3 scope.
-- Later: 2026 inference-preparation (V3 features for 2026 + trained-model
-  application).
+- WB3 training scaffold: delivered — the published patch index, the
+  contract-conforming reader (prior, target, eligibility mask, scaler),
+  the 10 m U-Net with masked L1 / masked MAE checkpoint selection, the
+  naive prior-expand baseline, a GCS-free contract-shaped synthetic gate
+  (`nox -s smoke-modeling-contract`), and a bounded real two-arm smoke
+  (`nox -s smoke-real-comparison`). These are technical gates: they prove
+  the lifecycle and the released-source wiring, not training quality.
+- Remaining WB3 scope: the full Stage-1 training run, dataset/sampler
+  iteration at scale, spatial CV, and Zarr materialisation.
+- Later: the pending GCS account move and 2026 inference-preparation (V3
+  features for 2026 + trained-model application).

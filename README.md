@@ -52,9 +52,15 @@ Preprocessing is complete: manifest selection, ARD, static and dynamic
 context, and the per-anchor feature stacks (V3) are delivered and
 validated, with the Stage-1 raw-input and Stage-2 feature-stack QA gates
 green. Training-data preparation is delivered as the `training/v1`
-release: eligibility masks, temporal splits, the cell index, and the
-train-only scaler. The modelling stack is a scaffold that exercises the
-model lifecycle on synthetic data; real-data training is next.
+release — eligibility masks, temporal splits, the cell index, and the
+train-only scaler — together with the WB3 patch index
+(`training/patch-index/v1`). The modelling stack implements the pseudo-pair
+contract: a fixed 2D U-Net predicts LST at 10 m from the 28 feature
+channels plus the coarse prior, checkpointed on the cell-weighted masked
+MAE at 100 m, with a naive prior-expand baseline scored through the same
+reader, mask, and metric. The scaffolding gates below prove the lifecycle
+and the released-source wiring; a full Stage-1 training run is the next
+step.
 
 ## Setup
 
@@ -63,9 +69,39 @@ uv sync
 uv run nox -s lint typecheck
 ```
 
-Local smoke gates (`uv run nox -s smoke-*`) need Google Cloud ADC and, for
-the dynamic pipeline, a Copernicus CDS API key. Heavy production runs execute
-on a GCP VM against GCS; managed model training will run on Vertex AI.
+Local smoke gates (`uv run nox -s smoke-*`) may need Google Cloud ADC: the
+modelling contract smokes run without credentials, while the real two-arm
+comparison and the pipeline smokes read GCS. The dynamic pipeline also needs
+a Copernicus CDS API key. Heavy production runs execute on a GCP VM against
+GCS; managed model training will run on Vertex AI.
+
+### Modelling gates
+
+All three are technical checks, not quality thresholds.
+
+```bash
+# Deterministic synthetic MSE lifecycle (no GCS, no credentials)
+uv run nox -s smoke-modeling
+
+# Contract-shaped synthetic fixture through the masked-L1/masked-MAE
+# lifecycle (no GCS): 28x160x160 features + prior, 16x16 target/mask
+uv run nox -s smoke-modeling-contract
+
+# Opt-in, requires Google Cloud ADC: one bounded read-only epoch over four
+# published patches per split, the naive baseline on the identical patch
+# universe, and the independent baseline validator
+uv run nox -s smoke-real-comparison
+```
+
+Source roots are Hydra values and can be overridden per run, which is how a
+bucket cutover is applied without editing the configs:
+
+```bash
+uv run python scripts/runners/run_modeling.py --config-name real_smoke \
+  patch_index_root=gs://<bucket>/training/patch-index/v1 \
+  training_root=gs://<bucket>/training/v1 \
+  ard_root=gs://<bucket>/ard/full/<release>
+```
 
 ## Entrypoints
 
@@ -86,6 +122,6 @@ the `google-access` OpenCode skill, not in the repository.
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest
   and product contracts.
 - `docs/pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
-  contract for real-data training (WB3), not yet implemented.
+  contract for real-data training (WB3), implemented by `modeling/`.
 - `docs/gcs-inventory-and-transfer.md` — GCS bucket inventory and the
   copy-first mirror runbook for a later account move.
