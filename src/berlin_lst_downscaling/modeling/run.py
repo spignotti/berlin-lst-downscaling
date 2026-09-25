@@ -26,20 +26,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from lightning.pytorch import Trainer
+from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.data.io import log_event, run_context_path
-from berlin_lst_downscaling.modeling.contracts import validate_real_batch
+from berlin_lst_downscaling.data.training.contracts import split_for_year
+from berlin_lst_downscaling.modeling.contracts import (
+    REAL_PATCH_CELLS,
+    REAL_PATCH_PX,
+    validate_real_batch,
+)
 from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
 from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     patch_index_fingerprints,
 )
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask, RealPatchDataModule
-from berlin_lst_downscaling.modeling.synthetic import SyntheticDataModule
+from berlin_lst_downscaling.modeling.synthetic import (
+    ContractSyntheticDataModule,
+    SyntheticDataModule,
+)
 from berlin_lst_downscaling.modeling.task import LSTRegressionTask
 
 _logger = logging.getLogger(__name__)
@@ -67,7 +75,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     path and only as ``"success"`` after the reload validation passes.
     """
     seed = int(cfg.seed)
-    torch.manual_seed(seed)
+    seed_everything(seed)
 
     data_module = SyntheticDataModule(
         n_active_channels=int(cfg.data.n_active_channels),
@@ -220,30 +228,53 @@ def real_source_config(cfg: DictConfig) -> RealSourceConfig:
     )
 
 
-def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
-    """Execute the contract-conforming real training lifecycle.
+def contract_invariants(cfg: DictConfig) -> None:
+    """Assert the declared frozen contract invariants; fail closed on drift.
 
-    Selects the checkpoint on ``validation/mae_100m`` (cell-weighted masked MAE
-    at 100 m) and logs SSIM alongside it. Fails closed exactly like the
-    synthetic lifecycle: any fit error, missing checkpoint, or reload mismatch
-    raises and the runner translates it into a non-zero exit.
+    ``configs/modeling/_base.yaml`` declares the frozen geometry, temporal
+    split, Stage-1 loss, and feature order so they are visible in every
+    resolved config. They are not free parameters: a mismatch with the
+    contract constants raises instead of silently training on a drifted
+    geometry or loss. The split mapping itself stays a policy constant and is
+    only probed here for the two holdout years.
+    """
+    declared = cfg.get("contract")
+    if declared is None:
+        raise ValueError("config is missing the frozen 'contract' block")
+    expected: dict[str, object] = {
+        "split": "temporal",
+        "patch_px": REAL_PATCH_PX,
+        "patch_cells": REAL_PATCH_CELLS,
+        "loss": "masked_l1",
+        "feature_order": "v3_first_c",
+    }
+    for key, value in expected.items():
+        actual = declared.get(key)
+        if actual != value:
+            raise ValueError(
+                f"contract.{key} = {actual!r} contradicts the frozen contract "
+                f"value {value!r}"
+            )
+    if split_for_year(2024) != "validation" or split_for_year(2025) != "test":
+        raise RuntimeError("temporal split contract no longer maps 2024/2025 as frozen")
 
-    The scope of the data read is whatever the config bounds it to; a full
-    train/validation run over every published patch is an explicit invocation,
-    not something this function decides.
+
+def _fit_contract_lifecycle(
+    cfg: DictConfig,
+    run_id: str,
+    *,
+    data_module: RealPatchDataModule | ContractSyntheticDataModule,
+    source_metadata: dict,
+    reproducibility: str,
+) -> ModelingRunResult:
+    """Fit, select on ``validation/mae_100m``, and reload-verify.
+
+    Shared by the contract-shaped synthetic and real paths so the fit loop,
+    checkpoint selection, reload check, and W&B lifecycle cannot drift apart.
+    Only the data module and the source-specific metadata differ.
     """
     seed = int(cfg.seed)
-    torch.manual_seed(seed)
-
-    source = real_source_config(cfg)
-    scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
-    max_patches = cfg.data.get("max_patches_per_split") or None
-    data_module = RealPatchDataModule(
-        source,
-        batch_size=int(cfg.data.batch_size),
-        max_patches_per_split=None if max_patches is None else int(max_patches),
-        scene_ids=scene_ids or None,
-    )
+    seed_everything(seed)
 
     task = RealLSTTask(
         n_active_channels=int(cfg.data.n_active_channels),
@@ -287,6 +318,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
 
     trainer = Trainer(
         max_epochs=int(cfg.trainer.max_epochs),
+        accelerator=str(cfg.trainer.accelerator),
+        devices=cfg.trainer.devices,
         deterministic=True,
         benchmark=False,
         logger=wandb_logger,
@@ -299,10 +332,6 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     metadata = {
         "resolved_config": resolved,
         "data_release_id": str(cfg.data_release_id),
-        "patch_index_root": source.patch_index_root,
-        "features_root": source.features_root,
-        "ard_root": source.ard_root,
-        "patch_index_fingerprints": patch_index_fingerprints(source.patch_index_root),
         "seed": seed,
         "selection_metric": monitored,
         "data_scope": {
@@ -314,12 +343,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         "git_revision": _git_revision_from_context(
             run_context_path(str(cfg.output_root), "modeling", run_id)
         ),
-        "reproducibility": (
-            "deterministic kernels requested (Trainer deterministic=True); "
-            "byte identity is environment/hardware/library dependent; the prior "
-            "for train/validation/test is the 1000 m block-expanded native LST, "
-            "so the scores are a comparison under the pseudo-pair construction"
-        ),
+        "reproducibility": reproducibility,
+        **source_metadata,
     }
     log_event(_logger, logging.INFO, "run_start", **metadata)
 
@@ -388,19 +413,96 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     )
 
 
-def run_modeling(cfg: DictConfig, run_id: str) -> ModelingRunResult:
-    """Dispatch to the synthetic or the contract-conforming training lifecycle.
+def run_contract_synthetic_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
+    """Execute the contract-shaped synthetic lifecycle (no GCS, no credentials).
 
-    ``data.kind`` selects the path: ``synthetic`` (the CI lifecycle fixture) or
-    ``real`` (the WB3 patch-index path). An unknown value raises rather than
+    Runs deterministic fixture tensors matching the pseudo-pair contract
+    through the same :class:`RealLSTTask`, masked L1 loss, and masked-MAE
+    checkpoint selection as the real path, so the masked lifecycle is proven
+    without reading published sources.
+    """
+    contract_invariants(cfg)
+    data_module = ContractSyntheticDataModule(
+        n_active_channels=int(cfg.data.n_active_channels),
+        batch_size=int(cfg.data.batch_size),
+        n_train=int(cfg.data.n_train),
+        n_val=int(cfg.data.n_val),
+        n_test=int(cfg.data.n_test),
+        seed=int(cfg.seed),
+    )
+    return _fit_contract_lifecycle(
+        cfg,
+        run_id,
+        data_module=data_module,
+        source_metadata={"synthetic_source": "contract_fixture"},
+        reproducibility=(
+            "deterministic kernels requested (Trainer deterministic=True); "
+            "byte identity is environment/hardware/library dependent; the data is "
+            "a contract-shaped synthetic fixture, not a model of LST, so a finite "
+            "loss proves tensor/loss/lifecycle wiring, not training quality"
+        ),
+    )
+
+
+def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
+    """Execute the contract-conforming real training lifecycle.
+
+    Selects the checkpoint on ``validation/mae_100m`` (cell-weighted masked MAE
+    at 100 m) and logs SSIM alongside it. Fails closed exactly like the
+    synthetic lifecycle: any fit error, missing checkpoint, or reload mismatch
+    raises and the runner translates it into a non-zero exit.
+
+    The scope of the data read is whatever the config bounds it to; a full
+    train/validation run over every published patch is an explicit invocation,
+    not something this function decides.
+    """
+    contract_invariants(cfg)
+    source = real_source_config(cfg)
+    scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
+    max_patches = cfg.data.get("max_patches_per_split") or None
+    data_module = RealPatchDataModule(
+        source,
+        batch_size=int(cfg.data.batch_size),
+        max_patches_per_split=None if max_patches is None else int(max_patches),
+        scene_ids=scene_ids or None,
+    )
+    return _fit_contract_lifecycle(
+        cfg,
+        run_id,
+        data_module=data_module,
+        source_metadata={
+            "patch_index_root": source.patch_index_root,
+            "features_root": source.features_root,
+            "ard_root": source.ard_root,
+            "patch_index_fingerprints": patch_index_fingerprints(source.patch_index_root),
+        },
+        reproducibility=(
+            "deterministic kernels requested (Trainer deterministic=True); "
+            "byte identity is environment/hardware/library dependent; the prior "
+            "for train/validation/test is the 1000 m block-expanded native LST, "
+            "so the scores are a comparison under the pseudo-pair construction"
+        ),
+    )
+
+
+def run_modeling(cfg: DictConfig, run_id: str) -> ModelingRunResult:
+    """Dispatch on ``data.kind`` to the matching training lifecycle.
+
+    ``synthetic`` is the all-valid MSE fixture (the CI lifecycle smoke),
+    ``synthetic_contract`` is the GCS-free contract-shaped fixture, and
+    ``real`` is the WB3 patch-index path. An unknown value raises rather than
     silently training on the wrong data.
     """
     kind = str(cfg.data.get("kind", "synthetic"))
     if kind == "synthetic":
         return run_training(cfg, run_id=run_id)
+    if kind == "synthetic_contract":
+        return run_contract_synthetic_training(cfg, run_id=run_id)
     if kind == "real":
         return run_real_training(cfg, run_id=run_id)
-    raise ValueError(f"data.kind must be 'synthetic' or 'real', got {kind!r}")
+    raise ValueError(
+        f"data.kind must be 'synthetic', 'synthetic_contract', or 'real', got {kind!r}"
+    )
 
 
 def _finalize_wandb(wandb_logger: WandbLogger, metadata: dict, success: bool) -> None:
@@ -412,7 +514,9 @@ def _finalize_wandb(wandb_logger: WandbLogger, metadata: dict, success: bool) ->
 
 __all__ = [
     "ModelingRunResult",
+    "contract_invariants",
     "real_source_config",
+    "run_contract_synthetic_training",
     "run_modeling",
     "run_real_training",
     "run_training",

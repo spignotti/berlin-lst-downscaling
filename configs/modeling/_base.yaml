@@ -1,10 +1,22 @@
 # @package _global_
 # Shared base config for the WB3 modeling scaffold. ``data.kind`` selects the
-# lifecycle: ``synthetic`` (the deterministic CI fixture) or ``real`` (the
-# contract-conforming path reading the published WB3 patch index). The base
-# defaults to synthetic; the ``real_*`` configs override it.
+# lifecycle: ``synthetic`` (the deterministic all-valid MSE fixture),
+# ``synthetic_contract`` (the GCS-free contract-shaped fixture), or ``real``
+# (the contract-conforming path reading the published WB3 patch index). The
+# base defaults to ``synthetic``; the other configs override it.
 defaults:
   - _self_
+
+# ── frozen Stage-1 contract invariants ────────────────────────────────
+# Declared here so every resolved config shows the geometry, split, loss, and
+# feature order it is bound to. These are NOT free parameters: ``run.py``
+# asserts them against the contract constants and fails closed on drift.
+contract:
+  split: "temporal"            # 2017-2023 train / 2024 val / 2025 test (frozen)
+  patch_px: 160                # 10 m prediction extent (frozen)
+  patch_cells: 16              # 100 m supervision extent (frozen)
+  loss: "masked_l1"            # Stage-1 loss (frozen)
+  feature_order: "v3_first_c"  # first-C of the fixed V3 28-channel order
 
 # Canonical data-release identifier this scaffold is wired to consume
 # (immutable WB2c-4 training-data release; features on the V3 28-channel
@@ -24,7 +36,7 @@ seed: 0
 
 # ── data ──────────────────────────────────────────────────────────────
 data:
-  kind: synthetic         # synthetic | real
+  kind: synthetic         # synthetic | synthetic_contract | real
   n_active_channels: 28   # first-C of the fixed V3 28-channel order
   batch_size: 8
   patch_size: 32          # synthetic only; H == W, divisible by 2 ** model.depth
@@ -44,6 +56,8 @@ trainer:
   max_epochs: 5
   learning_rate: 1.0e-3
   weight_decay: 0.0
+  accelerator: "auto"     # cpu | gpu | mps | auto
+  devices: "auto"         # auto, an int, or a device list
 
 # ── output ────────────────────────────────────────────────────────────
 # Local output root (smoke: data/smoke/modeling). GCS output is out of

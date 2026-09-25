@@ -1,0 +1,27 @@
+# @package _global_
+# Contract-shaped synthetic smoke: deterministic fixture tensors matching the
+# pseudo-pair tensor contract (28x160x160 features + prior, 16x16 target/mask)
+# through the real masked-L1 lifecycle — no GCS, no credentials. W&B offline,
+# local ephemeral output under data/smoke/modeling-contract (removed by the
+# nox session, never uploaded).
+defaults:
+  - _base
+  - _self_
+
+data:
+  kind: synthetic_contract
+  batch_size: 2
+  n_train: 4
+  n_val: 4
+  n_test: 2
+
+model:
+  depth: 4                   # 160 px / 2**4 = 10 px bottleneck
+
+trainer:
+  max_epochs: 2
+
+output_root: "data/smoke/modeling-contract"
+
+wandb:
+  mode: "offline"
