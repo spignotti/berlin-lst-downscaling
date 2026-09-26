@@ -441,6 +441,32 @@ The stale `features/v2` references (the smoke baselines in `noxfile.py`,
 cutover: the dead V2→V3 comparison blocks were removed, since `features/v2`
 was retired on 2026-08-25 and cannot serve as a baseline.
 
+## Old-account retirement (executed 2026-09-26)
+
+After the cutover had been verified and re-verified, the old account was
+retired under two separate approvals:
+
+- Billing for project `masterarbeit-berlin-lst-v2` was unlinked
+  (`billingEnabled: false`).
+- The project was deleted (`gcloud projects delete masterarbeit-berlin-lst-v2`),
+  reaching `DELETE_REQUESTED`: a 30-day recovery window and a permanently
+  reserved project ID. Google may purge bucket data earlier than the window
+  ends.
+
+Immediately before deletion the source and destination were compared once
+more with the transfer record's serialization: 12,572 objects /
+246,174,902,157 bytes and an identical SHA-256 over sorted
+`(object key, size, crc32c)` tuples
+(`8e18de99c26a51e766d9c22503d0ce583e1d7ccf93507ca86662ab4d5ec56f5d`).
+After deletion the old bucket is unreachable and
+`gs://berlin-lst-training-data` is the sole copy.
+
+Operator-local leftovers, outside this repo: the legacy key file moved to
+`~/.config/gcp-keys/retired/`, the old runner service account revoked from
+`gcloud`, and the old VM's `~/.ssh/google_compute_known_hosts` trust anchor
+removed. `~/.config/earthengine/credentials` still names the old project and
+should be repointed if Earth Engine is used again.
+
 ## Non-goals for the old account
 
 - No full Stage-1 or ablation training runs.

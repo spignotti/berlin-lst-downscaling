@@ -45,13 +45,11 @@ Canonical account since the 2026-09-25 GCS cutover (see
 | Service account (VM) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
 | Auth method | user ADC via `gcloud auth application-default login` for local runs; the VM uses its attached SA through the metadata server |
 
-Legacy (old account, read-only fallback until its credit ends
-2026-09-27): project `masterarbeit-berlin-lst-v2`, bucket
+Legacy: the old account (project `masterarbeit-berlin-lst-v2`, bucket
 `gs://berlin-lst-data`, service account
-`masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com`.
-The old account has **no** access to the new bucket, and the new account
-has no access to the old project. Do not point the pipeline at the old
-account.
+`masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com`) was
+retired on 2026-09-26 — billing unlinked and the project deleted. There is no
+old-account fallback any more.
 
 ## Configuration Files
 
@@ -285,10 +283,9 @@ has `storage.objectAdmin` on `gs://berlin-lst-training-data` only, so
 | Labels | `purpose=berlin-lst-runner,owner=silas` |
 
 The old-account VM (`masterarbeit-berlin-lst-v2`, instance ID
-`8456019039456721311`, `europe-west3-a`) still exists, is `TERMINATED`, and
-stays identity-pinned only in this record. The pinned constants below no
-longer match it, so every `run-*-vm.sh` launcher fails closed rather than
-silently starting the old VM.
+`8456019039456721311`, `europe-west3-a`) no longer exists: its project was
+deleted on 2026-09-26. The pinned constants below match only the new VM, so
+every `run-*-vm.sh` launcher fails closed rather than targeting anything else.
 
 ### Fail-closed lifecycle
 
@@ -439,6 +436,11 @@ authenticated channel — never by accepting whatever the VM presents.
      mount the clone read-only and inspect `/etc/ssh/ssh_host_*_key.pub`.
    - Or use an authenticated GCP console session to read guest attributes
      (requires guest attributes enabled on the instance).
+   - Or, as done for the 2026-09-26 new VM, add a startup script that prints
+     `/etc/ssh/ssh_host_*_key.pub` to the serial console, read it with
+     `gcloud compute instances get-serial-port-output` from an authenticated
+     project session, then remove the `startup-script` metadata. The trust
+     basis is the authenticated GCP API, not the network SSH handshake.
 3. Compute the fingerprint of the presented key and compare it with the
    offline-obtained fingerprint. If they differ: **STOP** — do not connect.
 4. Back up `~/.ssh/google_compute_known_hosts`.
@@ -453,6 +455,15 @@ authenticated channel — never by accepting whatever the VM presents.
    ```
 7. Re-run `ssh-vm.sh --check` to confirm.
 
+A freshly created VM has no login key, and `ssh-vm.sh` never provisions one.
+Add the operator's public key to the instance before the first connection:
+
+```bash
+gcloud compute instances add-metadata berlin-lst-vm --zone=europe-west3-b \
+  --project=berlin-lst-training \
+  --metadata=ssh-keys="silas:$(cat ~/.ssh/google_compute_engine.pub)"
+```
+
 If no independent fingerprint source exists: **halt**, do not trust the key.
 
 ### One-time provisioning (inside the VM)
@@ -464,8 +475,11 @@ git clone https://github.com/spignotti/berlin-lst-downscaling.git /workspace/app
 cd /workspace/app && uv sync
 
 # .env (only EARTHDATA_TOKEN needed; ADC handles GCS auth)
+# The token value must be carried over manually from the local secret source
+# (never through the repo or chat): `security` is a macOS command and is not
+# present on the Debian VM, so the recipe below would otherwise write MISSING.
 cat > .env <<EOF
-EARTHDATA_TOKEN=$(security find-generic-password -s earthdata -w 2>/dev/null || echo MISSING)
+EARTHDATA_TOKEN=<paste the token here>
 EOF
 chmod 600 .env
 ```
@@ -485,7 +499,7 @@ need to resume a run.
 
 | File | Purpose |
 |------|---------|
-| `~/.config/gcp-keys/masterarbeit-berlin-lst-v2.json` | legacy old-account key (private key); only for the old-bucket fallback |
-| `~/.config/rclone/rclone.conf` | rclone remote config |
-| `~/.zshrc` | `GOOGLE_APPLICATION_CREDENTIALS` env var |
+| `~/.config/gcp-keys/retired/masterarbeit-berlin-lst-v2.json` | obsolete old-account key, quarantined after the 2026-09-26 project deletion; safe to delete after the 30-day recovery window |
+| `~/.config/rclone/rclone.conf` | rclone remote config (ADC, new project number) |
+| `~/.zshrc` | GCS mount and `gcs-*` aliases; no credential exports (ADC is used) |
 | `~/.mnt/berlin-lst/` | rclone mount point |
