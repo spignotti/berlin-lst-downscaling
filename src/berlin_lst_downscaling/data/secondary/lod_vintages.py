@@ -1065,8 +1065,8 @@ def publish_geometry_mapping(
     metadata_root: str,
     *,
     vintage_artifacts: dict[int, dict],
-    legacy_source_root: str = "gs://berlin-lst-data/static/sources/full",
-    legacy_derived_root: str = "gs://berlin-lst-data/static/derived/full",
+    legacy_source_root: str = "gs://berlin-lst-training-data/static/sources/full",
+    legacy_derived_root: str = "gs://berlin-lst-training-data/static/derived/full",
     published_at: str | None = None,
 ) -> str:
     """Publish the year → vintage carry-forward mapping artefact.

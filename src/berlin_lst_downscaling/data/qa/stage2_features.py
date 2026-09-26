@@ -57,7 +57,12 @@ from berlin_lst_downscaling.data.features.paths import (
     feature_stac,
     ledger_path,
 )
-from berlin_lst_downscaling.data.io import atomic_write, log_event, read_bytes
+from berlin_lst_downscaling.data.io import (
+    atomic_write,
+    log_event,
+    read_bytes,
+    resolve_canonical_uri,
+)
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
 from berlin_lst_downscaling.data.qa.inventory import (
     INFERENCE_EXCLUSION_REASON,
@@ -200,7 +205,7 @@ def _check_sidecars(
             fv_bands = assets["feature_valid"].get("raster:bands", [])
             if not fv_bands or fv_bands[0].get("data_type") != "uint8":
                 errors.append(f"{scene_id}: STAC feature_valid asset not uint8")
-            if assets["data"].get("href") != cog_uri:
+            if resolve_canonical_uri(str(assets["data"].get("href") or "")) != cog_uri:
                 errors.append(f"{scene_id}: STAC data href does not match COG URI")
     except Exception as exc:  # noqa: BLE001
         errors.append(f"{scene_id}: STAC unreadable: {exc}")

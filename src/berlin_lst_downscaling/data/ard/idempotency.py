@@ -91,20 +91,24 @@ def _files_exist(row: LedgerRow) -> bool:
     Checks: data COG, flag COG (when flag_mode=separate), STAC,
     provenance, and completion marker.
     """
-    from berlin_lst_downscaling.data.io import exists
+    from berlin_lst_downscaling.data.io import exists, resolve_canonical_uri
 
-    if row.path_cog and not exists(row.path_cog):
+    # decision: map the stored ledger URIs so a mirrored canonical product is
+    # recognised as present and is never reprocessed after the old account's
+    # credit ends. Alternative: leave raw, which marks every mirrored scene
+    # missing and triggers a full ARD re-run — rejected.
+    if row.path_cog and not exists(resolve_canonical_uri(row.path_cog)):
         return False
-    if row.path_flag and not exists(row.path_flag):
+    if row.path_flag and not exists(resolve_canonical_uri(row.path_flag)):
         return False
-    if row.path_stac and not exists(row.path_stac):
+    if row.path_stac and not exists(resolve_canonical_uri(row.path_stac)):
         return False
 
     # Derive provenance and completion paths from the scene directory
     if row.path_cog:
         import os
 
-        scene_dir = os.path.dirname(row.path_cog)
+        scene_dir = os.path.dirname(resolve_canonical_uri(row.path_cog))
         prov = f"{scene_dir}/provenance.json"
         comp = f"{scene_dir}/complete.json"
         if not exists(prov):

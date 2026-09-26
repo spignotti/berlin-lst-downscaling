@@ -27,7 +27,7 @@ share implementation with ``data/qa/stage2_features.py``.
 Usage
 -----
     uv run python scripts/validators/validate_qa_stage2_features.py \
-        --run-prefix gs://berlin-lst-data/qa/stage2_features/<run-id>
+        --run-prefix gs://berlin-lst-training-data/qa/stage2_features/<run-id>
     uv run python scripts/validators/validate_qa_stage2_features.py \
         --run-prefix data/smoke/qa-stage2/<run-id>
 """
@@ -46,7 +46,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNEL_NAMES,
     FEATURE_CHANNELS,
 )
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.data.qa.inventory import INFERENCE_EXCLUSION_REASON
 
 _BUCKET_LABELS = ("0-25", "25-50", "50-75", "75-90", "90-99", "99-100", "100")
@@ -132,7 +132,7 @@ def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[
             errors.append(f"source {label}: no verifiable URI in report inputs")
             continue
         try:
-            actual = sha256_bytes(read_bytes(uri))[:16]
+            actual = sha256_bytes(read_bytes(resolve_canonical_uri(uri)))[:16]
             declared = expected.get(label)
             if declared != actual:
                 errors.append(

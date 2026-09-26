@@ -11,7 +11,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from berlin_lst_downscaling.data.io import atomic_write, exists
+from berlin_lst_downscaling.data.io import atomic_write, exists, resolve_canonical_uri
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
 
 
@@ -35,18 +35,30 @@ def secondary_qa_report(
         rows = ledger.items_for_source(src)
 
         output_ok = sum(
-            1 for r in rows if r.status == "done" and r.output_uri and exists(r.output_uri)
+            1
+            for r in rows
+            if r.status == "done"
+            and r.output_uri
+            and exists(resolve_canonical_uri(r.output_uri))
         )
         output_missing = sum(
-            1 for r in rows if r.status == "done" and (not r.output_uri or not exists(r.output_uri))
+            1
+            for r in rows
+            if r.status == "done"
+            and (not r.output_uri or not exists(resolve_canonical_uri(r.output_uri)))
         )
         completed = sum(
-            1 for r in rows if r.status == "done" and r.completion_uri and exists(r.completion_uri)
+            1
+            for r in rows
+            if r.status == "done"
+            and r.completion_uri
+            and exists(resolve_canonical_uri(r.completion_uri))
         )
         incomplete = sum(
             1
             for r in rows
-            if r.status == "done" and (not r.completion_uri or not exists(r.completion_uri))
+            if r.status == "done"
+            and (not r.completion_uri or not exists(resolve_canonical_uri(r.completion_uri)))
         )
 
         per_source[src] = {

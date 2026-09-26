@@ -7,5 +7,5 @@ defaults:
   - _base
   - _self_
 
-source_root: "gs://berlin-lst-data/training/v1"
-output_root: "gs://berlin-lst-data/training/patch-index/v1"
+source_root: "gs://berlin-lst-training-data/training/v1"
+output_root: "gs://berlin-lst-training-data/training/patch-index/v1"

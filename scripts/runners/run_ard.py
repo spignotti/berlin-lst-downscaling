@@ -12,7 +12,7 @@ Usage
         manifest_uri=data/smoke/primary/manifest.parquet
 
     # Production
-    #   manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet
+    #   manifest_uri=gs://berlin-lst-training-data/manifests/v3/...-r2/manifest.parquet
     uv run python scripts/runners/run_ard.py --config-name full_all
 """
 
@@ -37,7 +37,7 @@ def main(cfg: DictConfig) -> int:
     if not manifest_uri:
         raise SystemExit(
             "manifest_uri is required — provide the published bundle, e.g.\n"
-            "  manifest_uri=gs://berlin-lst-data/manifests/v3/...-r2/manifest.parquet"
+            "  manifest_uri=gs://berlin-lst-training-data/manifests/v3/...-r2/manifest.parquet"
         )
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)

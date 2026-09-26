@@ -27,7 +27,7 @@ the composer or pipeline implementation. It writes nothing.
 Usage
 -----
     uv run python scripts/validators/validate_feature_stacks.py \
-        --root gs://berlin-lst-data/features/v2
+        --root gs://berlin-lst-training-data/features/v3
     uv run python scripts/validators/validate_feature_stacks.py --root data/smoke/features
 """
 
@@ -46,7 +46,7 @@ from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES, FEATURE_CHANNELS
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 
 _N_EXPECTED_BANDS = 28
 _TILE = 1024  # blockwise scan tile (multiple of COG 512px blocks)
@@ -258,9 +258,18 @@ def _check_sidecars(scene_id: str, cog_uri: str, mask_uri: str, prov_uri: str,
     fv_bands = assets["feature_valid"].get("raster:bands", [])
     if not fv_bands or fv_bands[0].get("data_type") != "uint8":
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")
-    if assets["data"].get("href") != cog_uri:
+    # The STAC sidecar records the bucket of its publication time; the ledger
+    # URI is resolved to the current canonical bucket. Normalise both so the
+    # comparison still checks the object path, not the bucket era.
+    try:
+        data_href = resolve_canonical_uri(str(assets["data"].get("href") or ""))
+        fv_href = resolve_canonical_uri(str(assets["feature_valid"].get("href") or ""))
+    except ValueError as exc:
+        errors.append(f"{scene_id}: STAC asset href not on a canonical bucket: {exc}")
+        return
+    if data_href != cog_uri:
         errors.append(f"{scene_id}: STAC data href does not match ledger COG")
-    if assets["feature_valid"].get("href") != mask_uri:
+    if fv_href != mask_uri:
         errors.append(f"{scene_id}: STAC feature_valid href does not match ledger mask")
 
 
@@ -325,10 +334,10 @@ def main() -> int:
             {
                 "scene_id": str(cols["period_or_vintage"][i]),
                 "config_hash": str(cols["config_hash"][i] or ""),
-                "cog": str(cols["output_uri"][i] or ""),
-                "stac": str(cols["stac_uri"][i] or ""),
-                "prov": str(cols["provenance_uri"][i] or ""),
-                "comp": str(cols["completion_uri"][i] or ""),
+                "cog": resolve_canonical_uri(str(cols["output_uri"][i] or "")),
+                "stac": resolve_canonical_uri(str(cols["stac_uri"][i] or "")),
+                "prov": resolve_canonical_uri(str(cols["provenance_uri"][i] or "")),
+                "comp": resolve_canonical_uri(str(cols["completion_uri"][i] or "")),
             }
         )
 

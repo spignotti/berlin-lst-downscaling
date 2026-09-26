@@ -152,8 +152,9 @@ compare domain counts to object counts.
   source objects.
 - A completed copy does not authorize a cutover. Changing readers is a
   later, separately approved step (see below).
-- The destination project and bucket are not known yet. They are
-  preflight inputs that must be recorded before the copy starts.
+- The destination project and bucket are recorded under §1 below
+  (2026-09-25). They stay preflight inputs and are fixed before a copy
+  starts.
 - The remaining old-account credit and its expiry are only visible in the
   Cloud Billing Console. Confirm them and record the cutoff date; they
   cannot be read from an API.
@@ -176,6 +177,45 @@ compare domain counts to object counts.
    an explicit decision on the historical roots.
 6. The bucket snapshot refreshed at copy time (see below), so the
    destination can be checked against the exact source state.
+
+### Destination (recorded 2026-09-25)
+
+| Field | Value |
+|---|---|
+| New account identity | new account owner (personal Google identity; deliberately not named in this public repo). It has no access to the old project or bucket. |
+| Billing | new billing linked; budget `berlin-lst-training budget` at 250 EUR with alerts at 50/90/100 %. Billing-account ID is deliberately not recorded in this public repo. |
+| New credit | active, expires 2026-12-25 |
+| Old credit cutoff | expires Sunday 2026-09-27 (console-only value; the deadline for the mirror) |
+| Project ID | `berlin-lst-training` |
+| Project number | `996559849187` |
+| Bucket | `gs://berlin-lst-training-data` |
+| Location | `EUROPE-WEST3` (regional, same as source) |
+| Default storage class | `STANDARD` |
+| Uniform bucket-level access | enabled |
+| Object versioning | disabled |
+| Soft-delete retention | 7 days (604800 s, matches source) |
+| Copy principal (service account email) | `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com` |
+| Role on the source bucket | pre-existing `roles/storage.objectAdmin` (the old project's runner SA; the source owner grants are untouched) |
+| Role on the destination bucket | `roles/storage.objectAdmin` and `roles/storage.legacyBucketReader` — granted for the copy, **revoked 2026-09-25** once the mirror was verified |
+| Role on the destination project | `roles/serviceusage.serviceUsageConsumer` (quota-project access only) — granted for the copy, **revoked 2026-09-25** with the bucket bindings |
+| New VM principal (service account email) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
+| Role of the new VM principal | `roles/storage.objectAdmin` on the destination bucket only; no source access |
+
+The new account cannot read the old project, so the old project's runner
+service account was the copy principal: it already holds read/write on the
+source bucket and received a **temporary** destination grant (bucket
+`objectAdmin` + `legacyBucketReader`, plus project
+`serviceusage.serviceUsageConsumer`) that was **revoked on 2026-09-25, as
+soon as the mirror was verified** — see §7. This avoided creating a
+credential or touching the old project's IAM. The new VM principal is a
+separate identity with destination-only access.
+
+Asymmetry to respect: the copy principal can **write and delete on the
+source bucket** (its pre-existing `objectAdmin`, which this runbook does
+not narrow). The "no source write/delete" rule is therefore procedural,
+not IAM-enforced. Every copy command must be direction-checked before it
+runs, and verification includes a source spot-checksum to show the source
+bytes did not change.
 
 ### 2. Refresh the source inventory
 
@@ -274,12 +314,80 @@ cutover only. Until the cutover completes, do not start:
 Record the cutoff date during preflight and treat it as the deadline for
 the mirror and verification steps.
 
-## Cutover (later, separately approved)
+### 7. Transfer record (executed 2026-09-25)
 
-Copying objects does not rewire the pipeline. After a verified copy, a
-cutover must update every reference to the old bucket. These are the
-known references; treat the list as a starting point and re-grep before
-the cutover.
+Source bucket `gs://berlin-lst-data` → destination
+`gs://berlin-lst-training-data`, same region `EUROPE-WEST3`. The old
+pipeline VM (`berlin-lst-vm`) was confirmed `TERMINATED` before the copy,
+so no writer changed the source during the transfer.
+
+Fresh source inventory at `2026-09-25T10:47:58Z`:
+**12,572 objects / 246,174,902,157 bytes (229.27 GiB)**. Compared with the
+2026-09-23 snapshot this is +5 objects / +127,355 bytes, all of it the
+later-published `training/patch-index/v1/` (5 objects). Every non-empty
+object sat under a classified prefix; the `*/smoke/` roots were empty.
+The mirror set was therefore the whole bucket.
+
+Copy tool: `gcloud storage rsync` (server-side bucket-to-bucket, no
+client-side data path), **without** `--delete-unmatched-destination-objects`.
+The destination was empty; a dry-run first reported 12,572 objects to copy
+with no errors.
+
+Independent verification (separate full listings of both sides):
+
+| Check | Result |
+|---|---|
+| Object keys | 12,572 source = 12,572 destination; 0 missing, 0 extra |
+| Byte size per object | 0 differences |
+| `crc32c` per object | 0 differences |
+| `md5Hash` per object | 0 differences |
+| Total bytes | source = destination = 246,174,902,157 |
+| Per-prefix counts/bytes | all 11 top-level prefixes reconcile |
+
+Marker and ledger readback at the destination (all present and parsing):
+`training/v1/complete.json`, the `-r2` `manifest_report.json`,
+`qa/stage2_features/cc00406a/summary.json`,
+`training/patch-index/v1/complete.json` and `patch_index_qa.json`; the
+features, training, ARD, static, and dynamic ledgers under their roots.
+
+Source-unchanged evidence: a second full source listing after the copy
+matched the pre-copy listing on object keys, sizes, and object
+generations — 0 changed, added, or removed objects. The source was
+neither written nor deleted.
+
+The destination is accepted. No reader was cut over in this step; the
+copy principal's temporary destination grants were **revoked on
+2026-09-25, immediately after acceptance** (bucket `objectAdmin` +
+`legacyBucketReader` and project `serviceusage.serviceUsageConsumer`
+removed). Verified afterwards: the copy principal is denied on the
+destination bucket but can still read the source, and the new VM
+principal keeps destination access. The old project's runner SA therefore
+holds no residual grant in the new account. The repo validators still
+point at the old root (see §4) until the cutover updates them.
+
+## Cutover (executed 2026-09-25)
+
+Copying objects does not rewire the pipeline. After the verified copy, the
+cutover updated every active reference to the old bucket. The list below
+records what was changed; a repo-wide re-grep after the cutover found no
+remaining active reference — the only deliberate occurrence of the old
+bucket string is the mapping constant in
+`src/berlin_lst_downscaling/data/io/uri_mapping.py`.
+
+Canonical account after the cutover: project `berlin-lst-training`, bucket
+`gs://berlin-lst-training-data`, VM `berlin-lst-vm` in `europe-west3-b`
+(instance ID `6236232769523665407`, deletion protection on, boot disk not
+auto-delete). The old account stays read-only until its credit ends
+2026-09-27; its `features/v2` root was already retired.
+
+Stored asset URIs inside the copied artifacts still name the old bucket —
+provenance is not rewritten. Readers map only the exact old canonical
+prefix onto the new bucket at read time (`resolve_canonical_uri` in
+`data/io/uri_mapping.py`), applied in `modeling/patches.py`,
+`data/qa/inventory.py`, `data/training/patch_index.py`, and
+`scripts/validators/validate_real_patches.py`. A `gs://` URI on any other
+bucket raises instead of falling back to the old account. No global
+redirect was added to `data/io/storage.py`.
 
 - Configuration roots: `configs/features/_base.yaml`,
   `configs/training/_base.yaml`, `configs/qa/_base.yaml`,
@@ -298,17 +406,40 @@ the cutover.
   `scripts/operators/compare_feature_releases.py`, `noxfile.py`.
   Smoke configs and smoke baselines are also affected: the
   `configs/*/smoke*.yaml` files and the smoke sessions in `noxfile.py`.
-- Local and VM access: the bucket name in the `google-access` skill, the
-  rclone remote `gcs-masterarbeit`, the ADC service-account key path, and
-  the VM service account's bucket access.
+- Local and VM access: the `google-access` skill was updated to the new
+  project, bucket, and VM; the rclone remote and the local ADC setting are
+  operator-local config outside this repo (see below).
 - Provenance records under the copied roots reference the old bucket in
   historical metadata. Those are records of past runs; do not rewrite
   them to match the new bucket.
 
-Also note that some existing references point at `features/v2`, which no
-longer exists (for example the smoke baselines in `noxfile.py` and
-`scripts/operators/compare_feature_releases.py`). Those are stale
-regardless of the transfer and should be resolved by the cutover.
+### Operator-local config (outside the repo)
+
+Not versioned here; switch these on the machine for the new account:
+
+- `~/.config/rclone/rclone.conf` — point the remote at
+  `gs://berlin-lst-training-data` with project number `996559849187`.
+- `GOOGLE_APPLICATION_CREDENTIALS` in `~/.zshrc` — it pointed at the legacy
+  old-account key. Prefer the ADC file
+  (`~/.config/gcloud/application_default_credentials.json`) after
+  `gcloud auth application-default login`, or unset the variable. GDAL/
+  rasterio needs this file (or another GDAL credential) to read `gs://`
+  COGs; a stale old-account value fails closed because that principal no
+  longer has new-bucket access.
+- The `gcloud` default account and project — set to the new account.
+
+### Historical documents (deliberately not rewritten)
+
+`docs/phase-1-delivery.md` and `docs/phase-2-preparation.md` record the
+old-account era and keep the paths of their time; they are history, not the
+current canonical root. `docs/data-sources-and-contracts.md` is a contract
+and was updated to the new canonical bucket.
+
+The stale `features/v2` references (the smoke baselines in `noxfile.py`,
+`scripts/operators/compare_feature_releases.py`, and
+`scripts/operators/retire_feature_release.py`) were resolved by the
+cutover: the dead V2→V3 comparison blocks were removed, since `features/v2`
+was retired on 2026-08-25 and cannot serve as a baseline.
 
 ## Non-goals for the old account
 

@@ -33,10 +33,10 @@ Nothing is written and no canonical artifact is touched.
 Usage
 -----
     uv run python scripts/validators/validate_real_patches.py \
-        --patch-index-root gs://berlin-lst-data/training/patch-index/v1 \
-        --training-root gs://berlin-lst-data/training/v1 \
-        --features-root gs://berlin-lst-data/features/v3 \
-        --ard-root gs://berlin-lst-data/ard/full/2017-2026-cutoff-20260717T235959Z \
+        --patch-index-root gs://berlin-lst-training-data/training/patch-index/v1 \
+        --training-root gs://berlin-lst-training-data/training/v1 \
+        --features-root gs://berlin-lst-training-data/features/v3 \
+        --ard-root gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-20260717T235959Z \
         --per-split 2
 """
 
@@ -50,7 +50,7 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 
-from berlin_lst_downscaling.data.io import read_bytes
+from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
@@ -217,7 +217,7 @@ def _check_patch(
         target = src.read(
             1, window=Window.from_slices((r0, r0 + _PATCH_CELLS), (c0, c0 + _PATCH_CELLS))
         ).astype(np.float32)
-    with rasterio.open(ref.eligibility_mask) as msk:
+    with rasterio.open(resolve_canonical_uri(ref.eligibility_mask)) as msk:
         moff = _canon_offset(msk.transform, _CELL_100)
         if moff != (dcol100, drow100):
             errors.append(f"{ref.patch_id}: eligibility mask is not aligned with the analysis grid")

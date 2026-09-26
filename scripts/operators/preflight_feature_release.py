@@ -93,8 +93,8 @@ def main() -> int:
     from google.cloud import storage
 
     output_root = str(cfg.output_root)
-    prefix = f"{output_root.removeprefix('gs://berlin-lst-data/')}/"
-    bucket = storage.Client().get_bucket("berlin-lst-data")
+    prefix = f"{output_root.removeprefix('gs://berlin-lst-training-data/')}/"
+    bucket = storage.Client().get_bucket("berlin-lst-training-data")
     blobs = list(bucket.list_blobs(prefix=prefix))
     if blobs:
         failures.append(

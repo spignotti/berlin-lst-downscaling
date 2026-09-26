@@ -27,7 +27,7 @@ Usage
 -----
     uv run python scripts/validators/validate_lod_coverage.py
     uv run python scripts/validators/validate_lod_coverage.py \\
-        --static-sources-root gs://berlin-lst-data/static/sources/full \\
+        --static-sources-root gs://berlin-lst-training-data/static/sources/full \\
         --bbox 13.35,52.45,13.55,52.60
 """
 
@@ -184,7 +184,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--static-sources-root",
-        default="gs://berlin-lst-data/static/sources/full",
+        default="gs://berlin-lst-training-data/static/sources/full",
         help="Published static source root",
     )
     parser.add_argument(

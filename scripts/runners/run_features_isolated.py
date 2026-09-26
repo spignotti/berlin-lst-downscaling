@@ -92,15 +92,17 @@ def assessable_scene_ids(cfg: OmegaConf) -> list[str]:
 def _scene_done(output_root: str, scene_id: str) -> bool:
     """True when the scene's ledger row is done and its artifacts exist."""
     from berlin_lst_downscaling.data.features.paths import ledger_path
-    from berlin_lst_downscaling.data.io import exists
+    from berlin_lst_downscaling.data.io import exists, resolve_canonical_uri
     from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
 
     led = SecondaryLedger.open(ledger_path(output_root))
     row = led.get(f"feature_{scene_id}", "feature_stack", scene_id)
     if row is None or row.status != "done":
         return False
-    output_ok = row.output_uri and exists(row.output_uri)
-    completion_ok = row.completion_uri and exists(row.completion_uri)
+    output_ok = row.output_uri and exists(resolve_canonical_uri(row.output_uri))
+    completion_ok = row.completion_uri and exists(
+        resolve_canonical_uri(row.completion_uri)
+    )
     return output_ok and completion_ok
 
 
@@ -114,7 +116,7 @@ def _coverage_summary(output_root: str, scene_ids: list[str]) -> dict:
     sparse-support diagnostic.
     """
     from berlin_lst_downscaling.data.features.paths import ledger_path
-    from berlin_lst_downscaling.data.io import read_bytes
+    from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
     from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
 
     led = SecondaryLedger.open(ledger_path(output_root))
@@ -125,7 +127,7 @@ def _coverage_summary(output_root: str, scene_ids: list[str]) -> dict:
         if row is None or row.status != "done" or not row.provenance_uri:
             continue
         try:
-            prov = json.loads(read_bytes(row.provenance_uri))
+            prov = json.loads(read_bytes(resolve_canonical_uri(row.provenance_uri)))
         except Exception as exc:  # coverage summary is best-effort, never fatal
             _logger.warning("coverage summary: could not read provenance for %s: %s",
                             scene_id, exc)

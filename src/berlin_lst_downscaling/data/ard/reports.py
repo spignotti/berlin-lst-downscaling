@@ -8,7 +8,7 @@ from typing import Any
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.ard.ledger import Ledger
-from berlin_lst_downscaling.data.io import exists
+from berlin_lst_downscaling.data.io import exists, resolve_canonical_uri
 
 
 def qa_report(
@@ -37,11 +37,11 @@ def qa_report(
         for r in rows:
             if r.status != "done":
                 continue
-            if r.path_cog and exists(r.path_cog):
+            if r.path_cog and exists(resolve_canonical_uri(r.path_cog)):
                 cog_ok += 1
             else:
                 cog_missing += 1
-            if r.path_stac and exists(r.path_stac):
+            if r.path_stac and exists(resolve_canonical_uri(r.path_stac)):
                 stac_ok += 1
             else:
                 stac_missing += 1
@@ -52,11 +52,11 @@ def qa_report(
         for r in rows:
             if r.status != "done":
                 continue
-            if r.path_flag and exists(r.path_flag):
+            if r.path_flag and exists(resolve_canonical_uri(r.path_flag)):
                 flag_ok += 1
             elif r.path_cog:
                 # Flag path follows deterministic naming
-                flag_uri = r.path_cog.replace(".tif", ".flag.tif")
+                flag_uri = resolve_canonical_uri(r.path_cog).replace(".tif", ".flag.tif")
                 if exists(flag_uri):
                     flag_ok += 1
                 else:

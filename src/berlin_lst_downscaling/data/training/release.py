@@ -51,9 +51,9 @@ from berlin_lst_downscaling.data.training.scaler import fit_scaler
 _logger = logging.getLogger(__name__)
 
 # Only Feature Release V3 may be consumed (user-mandated). The canonical
-# root is ``gs://berlin-lst-data/features/v3``; smoke configs use the same
+# root is ``gs://berlin-lst-training-data/features/v3``; smoke configs use the same
 # published root (they read real GCS stacks).
-V3_FEATURES_ROOT = "gs://berlin-lst-data/features/v3"
+V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v3"
 
 
 # ── V3 release gate ───────────────────────────────────────────────────

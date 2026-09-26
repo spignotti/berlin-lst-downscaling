@@ -8,12 +8,12 @@ dynamic run root.
 Usage::
 
     uv run python scripts/validators/validate_dynamic.py \\
-        --output-root gs://berlin-lst-data/dynamic/full \\
+        --output-root gs://berlin-lst-training-data/dynamic/full \\
         --expected-role anchor \\
         --expected-scenes 324
 
     uv run python scripts/validators/validate_dynamic.py \\
-        --output-root gs://berlin-lst-data/dynamic/inference/2026 \\
+        --output-root gs://berlin-lst-training-data/dynamic/inference/2026 \\
         --expected-role inference \\
         --expected-scenes 21
 """
@@ -27,6 +27,8 @@ import sys
 from collections import Counter
 
 import pyarrow.parquet as pq
+
+from berlin_lst_downscaling.data.io import resolve_canonical_uri
 
 # ── ERA5 8-band contract ─────────────────────────────────────────────
 
@@ -237,6 +239,8 @@ def main() -> int:
         for row_dict in era5_done[:sample_size]:
             cog_uri = row_dict.get("output_uri", [None])[0]
             prov_uri = row_dict.get("provenance_uri", [None])[0]
+            cog_uri = resolve_canonical_uri(cog_uri) if cog_uri else cog_uri
+            prov_uri = resolve_canonical_uri(prov_uri) if prov_uri else prov_uri
             if cog_uri:
                 errs = _validate_cog_bands(cog_uri)
                 if errs:

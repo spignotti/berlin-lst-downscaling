@@ -23,7 +23,7 @@ source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 BRANCH="${1:-main}"
 PIPELINE_LABEL="Training data release"
 MARKER_CONFIG="training_full"
-RELEASE_ROOT="gs://berlin-lst-data/training/v1"
+RELEASE_ROOT="gs://berlin-lst-training-data/training/v1"
 REMOTE_CMD="uv run python scripts/runners/run_training_data.py --config-name full"
 
 vm_init_run "training-data"

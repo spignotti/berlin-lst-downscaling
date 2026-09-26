@@ -22,7 +22,7 @@ contract:
 # (immutable WB2c-4 training-data release; features on the V3 28-channel
 # interface). No real data is read by the synthetic path.
 data_release_id: "training/v1"
-features_root: "gs://berlin-lst-data/features/v3"
+features_root: "gs://berlin-lst-training-data/features/v3"
 
 # ── published roots for the real path (data.kind=real) ────────────────
 # Required only by the real lifecycle; the synthetic path never reads them.

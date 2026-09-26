@@ -15,11 +15,11 @@
 set -euo pipefail
 
 # ── pinned identity — change only when the instance is knowingly re-created ──
-VM_PROJECT="masterarbeit-berlin-lst-v2"
-VM_ZONE="europe-west3-a"
+VM_PROJECT="berlin-lst-training"
+VM_ZONE="europe-west3-b"
 VM_NAME="berlin-lst-vm"
-VM_EXPECTED_ID="8456019039456721311"
-VM_SA="masterarbeit-vertex@${VM_PROJECT}.iam.gserviceaccount.com"
+VM_EXPECTED_ID="6236232769523665407"
+VM_SA="berlin-lst-vertex@${VM_PROJECT}.iam.gserviceaccount.com"
 VM_MACHINE="n2-highmem-2"
 VM_DISK_DEVICE="persistent-disk-0"  # attachment device name; disk resource name is ${VM_NAME}
 # Note: `gcloud compute instances set-disk-auto-delete` takes --disk=<resource name>
@@ -121,6 +121,20 @@ assert_vm_identity() {
   if [[ "$disk_auto_delete" == "True" ]]; then
     echo "WARNING: Boot disk is set to auto-delete on instance deletion." >&2
     echo "  Deleting the instance would destroy the boot disk." >&2
+  fi
+
+  # ── service account ──────────────────────────────────────────────────
+  if [[ "$actual_sa" != "$VM_SA" ]]; then
+    echo "ERROR: service account mismatch." >&2
+    echo "  Expected: $VM_SA" >&2
+    echo "  Actual:   $actual_sa" >&2
+    return 1
+  fi
+
+  # ── deletion protection ──────────────────────────────────────────────
+  if [[ "$_protection" != "True" ]]; then
+    echo "ERROR: instance deletion protection is not enabled." >&2
+    return 1
   fi
 
   # ── export for callers ───────────────────────────────────────────────

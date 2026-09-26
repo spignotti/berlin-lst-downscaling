@@ -37,8 +37,8 @@ class OutputLocation:
     --------
     >>> OutputLocation("data/ard/ledger.parquet")
     OutputLocation(uri='data/ard/ledger.parquet', scheme='local')
-    >>> OutputLocation("gs://berlin-lst-data/ard/ledger.parquet")
-    OutputLocation(uri='gs://berlin-lst-data/ard/ledger.parquet', scheme='gcs')
+    >>> OutputLocation("gs://berlin-lst-training-data/ard/ledger.parquet")
+    OutputLocation(uri='gs://berlin-lst-training-data/ard/ledger.parquet', scheme='gcs')
     >>> OutputLocation("~/.mnt/berlin-lst/ard/ledger.parquet")
     OutputLocation(uri='~/.mnt/berlin-lst/ard/ledger.parquet', scheme='mounted')
     """

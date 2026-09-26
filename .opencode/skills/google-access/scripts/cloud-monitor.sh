@@ -62,7 +62,7 @@ monitor_bucket() {
   echo "BUCKET CONTENTS"
   _separator
   if command -v gcloud >/dev/null 2>&1; then
-    gcloud storage ls "gs://berlin-lst-data/" --project=masterarbeit-berlin-lst-v2 2>&1 || true
+    gcloud storage ls "gs://berlin-lst-training-data/" --project=berlin-lst-training 2>&1 || true
   else
     echo "gcloud not available — cannot list bucket"
   fi

@@ -22,8 +22,8 @@ never the composer or pipeline implementation.
 Usage
 -----
     uv run python scripts/operators/compare_feature_releases.py \\
-        --baseline-root gs://berlin-lst-data/features/v2 \\
-        --candidate-root gs://berlin-lst-data/features/v3
+        --baseline-root gs://berlin-lst-training-data/features/<prior-release> \\
+        --candidate-root gs://berlin-lst-training-data/features/v3
     uv run python scripts/operators/compare_feature_releases.py \\
         --baseline-root data/smoke/features \\
         --candidate-root data/smoke/features

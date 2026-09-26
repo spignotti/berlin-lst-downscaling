@@ -115,11 +115,11 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
 
         # Building horizon
         horizon_uri = (
-            f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+            f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
             f"horizon_building/{geom_id}/horizon_building_{geom_id}.tif"
         )
         horizon_comp = (
-            f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+            f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
             f"horizon_building/{geom_id}/complete.json"
         )
         if not exists(horizon_uri) or not exists(horizon_comp):
@@ -130,15 +130,15 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
     # Vegetation horizon (fixed VH-2020)
     vh_geom_id = "dgm1-2021__lod2-2024__vh-2020"
     vh_uri = (
-        f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+        f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
         f"horizon_vegetation/{vh_geom_id}/horizon_vegetation_{vh_geom_id}.tif"
     )
     vh_comp = (
-        f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+        f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
         f"horizon_vegetation/{vh_geom_id}/complete.json"
     )
     vh_prov = (
-        f"gs://berlin-lst-data/static/derived/full/ard/static/derived/"
+        f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
         f"horizon_vegetation/{vh_geom_id}/provenance.json"
     )
     if not exists(vh_uri) or not exists(vh_comp):

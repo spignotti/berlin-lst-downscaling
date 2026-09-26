@@ -20,7 +20,7 @@ import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.dynamic.geometry import load_geometry_mapping
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.data.qa.contracts import (
     STATIC_DERIVED_MORPHOLOGY_PRODUCTS,
     STATIC_DERIVED_OPTIONAL_PRODUCTS,
@@ -166,7 +166,9 @@ def build_inventory(
             output_uri = row.get("output_uri")
             if output_uri:
                 item_id = str(row["item_id"])
-                static_sources[f"{source}/{row['period_or_vintage']}"] = str(output_uri)
+                static_sources[f"{source}/{row['period_or_vintage']}"] = resolve_canonical_uri(
+                    str(output_uri)
+                )
                 source_rows[item_id] = row
     else:
         errors.append(f"static sources ledger missing: {src_ledger_uri}")
@@ -293,8 +295,8 @@ def _resolve_scene(
             exclusion_reason="ard landsat not done",
             errors=errors,
         )
-    ls_cog = str(ls_row.get("path_cog") or "")
-    ls_flag = str(ls_row.get("path_flag") or "")
+    ls_cog = resolve_canonical_uri(str(ls_row.get("path_cog") or ""))
+    ls_flag = resolve_canonical_uri(str(ls_row.get("path_flag") or ""))
     if not ls_cog or not ls_flag:
         errors.append(f"landsat {ls_id}: missing COG/flag path in ARD ledger")
 
@@ -304,8 +306,8 @@ def _resolve_scene(
     if s2_row is None or s2_row["status"] != "done":
         exclusion = "ard sentinel2 not done"
     else:
-        s2_cog = str(s2_row.get("path_cog") or "")
-        s2_flag = str(s2_row.get("path_flag") or "")
+        s2_cog = resolve_canonical_uri(str(s2_row.get("path_cog") or ""))
+        s2_flag = resolve_canonical_uri(str(s2_row.get("path_flag") or ""))
         if not s2_cog or not s2_flag:
             errors.append(f"sentinel2 {s2_id}: missing COG/flag path in ARD ledger")
 
@@ -332,11 +334,11 @@ def _resolve_scene(
         for product in (*STATIC_DERIVED_MORPHOLOGY_PRODUCTS, *STATIC_DERIVED_OPTIONAL_PRODUCTS):
             row = derived_rows.get((product, geometry_id))
             if row is not None and row["status"] == "done" and row.get("output_uri"):
-                static_derived[product] = str(row["output_uri"])
+                static_derived[product] = resolve_canonical_uri(str(row["output_uri"]))
         for product in _METADATA_DERIVED_PRODUCTS:
             row = derived_rows.get((product, geometry_id))
             if row is not None and row["status"] == "done" and row.get("output_uri"):
-                static_derived_meta[product] = str(row["output_uri"])
+                static_derived_meta[product] = resolve_canonical_uri(str(row["output_uri"]))
 
     # ── static source products (feature-stack morphology inputs) ───────
     # Resolved per scene year → vintage for the three semantic predictor
@@ -351,17 +353,19 @@ def _resolve_scene(
                 item_id = f"lod2_morphology_{lod_vintage}"
                 row = source_rows.get(item_id)
                 if row is not None and row.get("output_uri"):
-                    static_src["lod2_morphology"] = str(row["output_uri"])
+                    static_src["lod2_morphology"] = resolve_canonical_uri(
+                        str(row["output_uri"])
+                    )
         # Vegetation height — fixed 2020 carry-forward
         vh_row = source_rows.get("vegetation_height_2020")
         if vh_row is not None and vh_row.get("output_uri"):
-            static_src["vegetation_height"] = str(vh_row["output_uri"])
+            static_src["vegetation_height"] = resolve_canonical_uri(str(vh_row["output_uri"]))
         # Imperviousness — year-dependent vintage
         imp_vintage = vintage_for_scene_year(year)
         item_id = f"imperviousness_{imp_vintage}"
         imp_row = source_rows.get(item_id)
         if imp_row is not None and imp_row.get("output_uri"):
-            static_src["imperviousness"] = str(imp_row["output_uri"])
+            static_src["imperviousness"] = resolve_canonical_uri(str(imp_row["output_uri"]))
 
     # ── dynamic products ───────────────────────────────────────────────
     dynamic: dict[str, str] = {}
@@ -375,7 +379,7 @@ def _resolve_scene(
             if exclusion is None:
                 exclusion = INFERENCE_EXCLUSION_REASON
             continue
-        dynamic[source] = str(row["output_uri"])
+        dynamic[source] = resolve_canonical_uri(str(row["output_uri"]))
 
     return ResolvedScene(
         scene_id=ls_id,

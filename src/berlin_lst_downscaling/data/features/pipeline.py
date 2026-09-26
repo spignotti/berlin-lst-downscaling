@@ -49,7 +49,12 @@ from berlin_lst_downscaling.data.features.stack import (
     compose_feature_stack,
     load_aoi_mask_on_grid,
 )
-from berlin_lst_downscaling.data.io import atomic_write, log_event, read_bytes
+from berlin_lst_downscaling.data.io import (
+    atomic_write,
+    log_event,
+    read_bytes,
+    resolve_canonical_uri,
+)
 from berlin_lst_downscaling.data.qa.inventory import ResolvedScene, build_inventory
 from berlin_lst_downscaling.data.qa.stage1_raw import analysis_grid_10m
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
@@ -550,7 +555,7 @@ def _existing_coverage(
     try:
         import json
 
-        prov = json.loads(read_bytes(row.provenance_uri))
+        prov = json.loads(read_bytes(resolve_canonical_uri(row.provenance_uri)))
     except Exception as exc:  # noqa: BLE001 — wrap with context
         raise RuntimeError(
             f"scene {scene_id}: cannot read provenance at {row.provenance_uri}: {exc}"

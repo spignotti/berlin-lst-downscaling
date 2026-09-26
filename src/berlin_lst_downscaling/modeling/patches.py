@@ -52,7 +52,7 @@ from rasterio.windows import Window
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
 from berlin_lst_downscaling.data.features.paths import feature_cog
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
 from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_X,
@@ -387,7 +387,9 @@ def load_landsat_uris(ard_root: str, scene_ids: set[str]) -> dict[str, tuple[str
         if not cog or not flag:
             raise RuntimeError(f"landsat {scene_id}: missing COG/flag path in the ARD ledger")
         seen.add(scene_id)
-        out[scene_id] = (cog, flag)
+        # The ARD ledger records the bucket that existed at publication time;
+        # map the stored URIs onto the current canonical bucket at read time.
+        out[scene_id] = (resolve_canonical_uri(cog), resolve_canonical_uri(flag))
     return out
 
 
@@ -649,7 +651,9 @@ class RealPatchReader:
             )
             target = src.read(1, window=window).astype(np.float32)
 
-        mask_path = ref.eligibility_mask
+        # The patch index stores the mask URI written at publication time;
+        # resolve it to the current canonical bucket before opening.
+        mask_path = resolve_canonical_uri(ref.eligibility_mask)
         with rasterio.open(mask_path) as msk:
             off = _canonical_offset(msk.transform, _LANDSAT_RES_M)
             if off != (self._dcol100, self._drow100):

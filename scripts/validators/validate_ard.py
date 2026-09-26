@@ -14,8 +14,8 @@ COG contract, STAC extensions, provenance, and completion marker.
 Usage
 -----
     uv run python scripts/validators/validate_ard.py \
-        --ledger gs://berlin-lst-data/ard/full/.../ledger.parquet \
-        --manifest gs://berlin-lst-data/manifests/v3/.../manifest.parquet
+        --ledger gs://berlin-lst-training-data/ard/full/.../ledger.parquet \
+        --manifest gs://berlin-lst-training-data/manifests/v3/.../manifest.parquet
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ import sys
 from dataclasses import dataclass, field
 
 import pyarrow.parquet as pq
+
+from berlin_lst_downscaling.data.io import resolve_canonical_uri
 
 
 @dataclass
@@ -134,9 +136,10 @@ def main() -> int:
     for row_dict in done_rows:
         scene_id = row_dict["scene_id"][0]
         source = row_dict["source"][0]
-        path_cog = row_dict["path_cog"][0]
+        path_cog = resolve_canonical_uri(str(row_dict["path_cog"][0] or ""))
         path_flag = row_dict.get("path_flag", [None])[0]
-        path_stac = row_dict["path_stac"][0]
+        path_flag = resolve_canonical_uri(str(path_flag)) if path_flag else path_flag
+        path_stac = resolve_canonical_uri(str(row_dict["path_stac"][0] or ""))
         schema_version = row_dict.get("schema_version", [None])[0]
 
         res = SceneResult(scene_id=scene_id, source=source)
