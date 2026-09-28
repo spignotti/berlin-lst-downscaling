@@ -58,9 +58,11 @@ train-only scaler — together with the WB3 patch index
 contract: a fixed 2D U-Net predicts LST at 10 m from the 28 feature
 channels plus the coarse prior, checkpointed on the cell-weighted masked
 MAE at 100 m, with a naive prior-expand baseline scored through the same
-reader, mask, and metric. The scaffolding gates below prove the lifecycle
-and the released-source wiring; a full Stage-1 training run is the next
-step.
+reader, mask, and metric. The real path admits each selected patch once, then
+reads the split either eagerly (bounded smokes) or lazily through loader
+workers (`data.mode=stream`, the `real_full` default), so a full split is
+never held in memory. The scaffolding gates below prove the lifecycle and the
+released-source wiring; a full Stage-1 training run is the next step.
 
 ## Setup
 
@@ -87,9 +89,10 @@ uv run nox -s smoke-modeling
 # lifecycle (no GCS): 28x160x160 features + prior, 16x16 target/mask
 uv run nox -s smoke-modeling-contract
 
-# Opt-in, requires Google Cloud ADC: one bounded read-only epoch over four
-# published patches per split, the naive baseline on the identical patch
-# universe, and the independent baseline validator
+# Opt-in, requires Google Cloud ADC; run it on the compute host (loader
+# workers use the Linux process model): one bounded read-only epoch, a
+# non-training validator over the eager/streamed/worker read paths, the naive
+# baseline on the identical patch universe, and the independent validators
 uv run nox -s smoke-real-comparison
 ```
 

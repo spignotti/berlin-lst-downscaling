@@ -16,9 +16,15 @@ modelling package keeps its synthetic scaffold alongside the real path (see
 Verification surface: `scripts/validators/validate_real_patches.py` and
 `scripts/validators/validate_baseline.py` recompute the reader and the
 baseline artifact independently, and `nox -s smoke-real-comparison` (opt-in,
-requires ADC) runs both arms on one bounded real subset and asserts they
-share a patch universe. Full training runs and the 2025 test comparison are
-explicit invocations, not part of that gate.
+requires ADC) runs one bounded one-epoch model arm and the baseline on one
+real subset and asserts they share a patch universe. That gate also runs
+`scripts/validators/validate_streaming_patches.py`, a non-training check that
+builds the eager, streamed-in-process, and worker-plus-shuffle read paths and
+asserts their admitted patch IDs, exclusions, skipped refs, tensors, and
+seeded train order are identical. Both are meant to run on the compute host
+(the loader workers use the Linux process model), not a workstation. Full
+training runs and the 2025 test comparison are explicit invocations, not part
+of that gate.
 
 ## Scope
 
@@ -36,9 +42,10 @@ Fixed here after the Stage-1 decision (issues #18/#19):
 
 Out of scope, left to later WB3 decisions:
 
-- the sampler,
+- scene-weighted or scene-capped sampling by `s2_scene_id`,
 - the concrete loss family beyond masked aggregation,
-- Zarr versus COG I/O.
+- Zarr versus COG I/O (COG-window streaming is the current read path),
+- augmentation (none by default; see *Patch streaming and the read scope*).
 
 ## Fixed inputs referenced, not restated
 
@@ -211,6 +218,44 @@ Batch convention `(B, ...)`; `H100 = H10 / 10` and `W100 = W10 / 10`.
 
 `prediction_100m` (the pooled prediction compared against `target_100m`)
 is an intermediate derived from `prediction_10m`, not a separate field.
+
+## Patch streaming and the read scope
+
+Added by issue #30. The dataset admits each selected patch once, before
+fitting, and records the outcome; only then does it read patches.
+
+- **Admission.** `RealPatchReader.admission_reason` runs the same prior,
+  footprint, and eligibility-mask checks as `read_patch` and records the
+  exclusion, but reads no feature window. The admitted refs are the comparison
+  universe; skipped refs are recorded per patch with their reason
+  (`skipped_refs`/`skipped_per_split`), and the exclusion counters are the same
+  ones `read_patch` reports. Nothing is invented for an unreadable window.
+- **Read modes (`data.mode`).** `eager` pre-collates every admitted patch into
+  memory: correct for the bounded smokes. `stream` reads each patch on demand
+  through a map-style dataset, so a full split is never resident at once; it is
+  the `real_full` default. Streaming opens a feature window only inside
+  `__getitem__` and changes neither the admitted universe, the mask, nor the
+  metric.
+- **Worker safety.** The reader is opened lazily per process and never shared
+  across a fork or spawn; each loader worker opens its own on first access and
+  preloads the scene ledger once.
+- **Order and shuffle.** Validation and test are always an ordered pass.
+  Training defaults to an ordered pass as well; `data.shuffle_train` enables a
+  shuffle whose `RandomSampler` is seeded from the run `seed`, and the
+  resulting epoch-1 train order is recorded in `data_scope.json`
+  (`train_shuffle_order`) as reproducibility evidence. The recorded order is
+  produced by the same sampler the loader uses. This assumes a single-device
+  run; a multi-device lifecycle would substitute a `DistributedSampler`.
+- **Augmentation.** None by default: shadow and sun-geometry channels make
+  naive flips unsafe without transforming those bands.
+- **Per-patch provenance.** `RealSampleMeta` carries `patch_id`, `scene_id`,
+  `split`, `year`, the global canonical 100 m `row`/`col` anchor, and
+  `filled_feature_pixels` (invalid predictor pixels zero-filled at the model
+  boundary). It is the metadata of each collated batch and the basis of the
+  recorded patch IDs.
+
+Scene-weighted sampling and Zarr I/O stay deferred until after a stable
+Stage-1 smoke on COG streaming.
 
 ## Variant C (optional later baseline)
 

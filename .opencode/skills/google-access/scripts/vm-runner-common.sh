@@ -28,6 +28,8 @@
 #                        comma, inserted before the "started" field
 #     RUN_PREFIX_GREP    grep pattern (BRE) to discover the evidence/run
 #                        prefix from the remote log; sets RUN_PREFIX
+#     POLL_MAX_SECONDS   optional overall poll budget in seconds; on expiry
+#                        the VM is left RUNNING for operator inspection
 #     vm_discover_run_id()  optional function; called by vm_finish to
 #                           discover a pipeline-specific run id
 
@@ -287,7 +289,7 @@ vm_launch_detached() {
 
 vm_poll() {
   echo "Polling for $PIPELINE_LABEL completion ($WRAP_RUN_ID)..."
-  local poll_failures=0 terminal="" is_running=""
+  local poll_failures=0 terminal="" is_running="" poll_started_at=$SECONDS
   while true; do
     sleep 60
 
@@ -300,6 +302,21 @@ vm_poll() {
         echo "  [$(date +%H:%M:%S)] $PIPELINE_LABEL exited with code $terminal."
       fi
       break
+    fi
+
+    # An optional overall budget bounds a run whose completion is uncertain.
+    # Expiry is ambiguous, not failed: leave the VM for operator inspection.
+    if [[ -n "${POLL_MAX_SECONDS:-}" ]] \
+      && (( SECONDS - poll_started_at >= POLL_MAX_SECONDS )); then
+      echo "  [$(date +%H:%M:%S)] Poll budget ${POLL_MAX_SECONDS}s exceeded."
+      echo ""
+      echo "POLL TIMEOUT — remote process may still be running."
+      echo "  Run ID:     $WRAP_RUN_ID"
+      echo "  Remote PID: $REMOTE_PID"
+      echo "  Marker:     $MARKER"
+      echo "The VM will NOT be stopped automatically."
+      leave_running=1
+      exit 2
     fi
 
     is_running=$(ssh_cmd "

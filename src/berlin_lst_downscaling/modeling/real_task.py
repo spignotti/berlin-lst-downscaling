@@ -236,6 +236,7 @@ class RealPatchDataModule(LightningDataModule):
                 for split, refs in self._admitted.items()
             },
             "skipped_refs": self._skipped,
+            "skipped_per_split": {split: len(refs) for split, refs in self._skipped.items()},
             "exclusions": dict(self.reader.exclusions),
             "train_shuffle_order": self._train_shuffle_order(),
         }
