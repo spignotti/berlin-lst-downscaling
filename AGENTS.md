@@ -84,6 +84,7 @@ Opt-out reason: none
 - `docs/phase-1-delivery.md` — delivered data products and phase-2 handoff.
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger contracts.
 - `docs/phase-2-preparation.md` — phase-2 preparation state.
+- `docs/patch-read-timing.md` — real patch read timing measurement and its no-optimization decision.
 
 ## Notion Integration
 
