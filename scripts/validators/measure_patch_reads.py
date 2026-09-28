@@ -317,26 +317,32 @@ def main() -> int:
         print("FAIL: no ref admitted — cannot measure the read path")
         return 1
 
-    read_passes = []
-    pass_reads = []
+    read_passes: list[dict[str, Any]] = []
     for _ in range(args.repeats):
         delta, read = _time_read_pass(reader, admitted, deadline)
-        read_passes.append(delta)
-        pass_reads.append(read)
+        read_passes.append({**delta, "read_refs": read, "truncated": read < len(admitted)})
 
     first_read = read_passes[0]
-    first_read_n = pass_reads[0]
-    warm_reads = read_passes[1:] or read_passes
-    warm_reads_n = pass_reads[1:] or pass_reads
-    warm_total = {
-        "n": len(warm_reads),
-        "median_total_s": _median([p["total_s"] for p in warm_reads]),
-        "median_target_mask_s": _median([p["target_mask_s"] for p in warm_reads]),
-        "median_features_s": _median([p["features_s"] for p in warm_reads]),
-        "median_prior_s": _median([p["prior_s"] for p in warm_reads]),
-    }
+    first_read_n = int(first_read["read_refs"])
+    warm_reads = read_passes[1:]
+    warm_total = (
+        {
+            "n": len(warm_reads),
+            "median_total_s": _median([p["total_s"] for p in warm_reads]),
+            "median_target_mask_s": _median([p["target_mask_s"] for p in warm_reads]),
+            "median_features_s": _median([p["features_s"] for p in warm_reads]),
+            "median_prior_s": _median([p["prior_s"] for p in warm_reads]),
+        }
+        if warm_reads
+        else None
+    )
+    # Per-ref figures divide by what the pass actually read, so a pass
+    # truncated by --max-seconds is not under-reported.
     warm_target_mask_per_ref = [
-        p["target_mask_s"] / max(n, 1) for p, n in zip(warm_reads, warm_reads_n, strict=True)
+        p["target_mask_s"] / max(int(p["read_refs"]), 1) for p in warm_reads
+    ]
+    warm_total_per_ref = [
+        p["total_s"] / max(int(p["read_refs"]), 1) for p in warm_reads
     ]
 
     loader_runs = [
@@ -358,9 +364,11 @@ def main() -> int:
     # Duplicate cost is the read-pass target/mask time: admission already paid
     # the same two windows for every admitted ref.
     duplicate_per_ref_cold = first_read["target_mask_s"] / max(first_read_n, 1)
-    duplicate_per_ref_warm = _median(warm_target_mask_per_ref)
+    duplicate_per_ref_warm = _median(warm_target_mask_per_ref) if warm_reads else None
     data_phase_cold = admission["total_s"] + first_read["total_s"]
-    data_phase_warm = admission["total_s"] + warm_total["median_total_s"]
+    data_phase_warm = (
+        admission["total_s"] + warm_total["median_total_s"] if warm_total else None
+    )
 
     report: dict[str, Any] = {
         "sha": args.sha,
@@ -396,28 +404,34 @@ def main() -> int:
             "per_ref_s": first_read["total_s"] / max(first_read_n, 1),
             "target_mask_share": _share(first_read["target_mask_s"], first_read["total_s"]),
         },
-        "read_warm": {
-            **warm_total,
-            "per_ref_s": warm_total["median_total_s"] / max(len(admitted), 1),
-            "target_mask_per_ref_s": duplicate_per_ref_warm,
-            "target_mask_share": _share(
-                warm_total["median_target_mask_s"], warm_total["median_total_s"]
-            ),
-            "passes": read_passes,
-        },
+        "read_warm": (
+            {
+                **warm_total,
+                "per_ref_s": _median(warm_total_per_ref),
+                "target_mask_per_ref_s": duplicate_per_ref_warm,
+                "target_mask_share": _share(
+                    warm_total["median_target_mask_s"], warm_total["median_total_s"]
+                ),
+            }
+            if warm_total
+            else None
+        ),
+        "read_passes": read_passes,
         "duplicate_cost": {
             "per_ref_cold_s": duplicate_per_ref_cold,
             "per_ref_warm_s": duplicate_per_ref_warm,
             "share_of_admission_plus_read_cold": _share(
                 first_read["target_mask_s"], data_phase_cold
             ),
-            "share_of_admission_plus_read_warm": _share(
-                warm_total["median_target_mask_s"], data_phase_warm
+            "share_of_admission_plus_read_warm": (
+                _share(warm_total["median_target_mask_s"], data_phase_warm)
+                if warm_total and data_phase_warm
+                else None
             ),
         },
         "loader": loader_runs,
     }
-    report["extrapolation"] = _extrapolate(report, full_total)
+    report["extrapolation"] = _extrapolate(report, full_per_split)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -432,12 +446,18 @@ def main() -> int:
         f"target/mask {admission['target_mask_s']:.2f}s, "
         f"prior builds {admission['prior_builds']}"
     )
-    print(
-        f"  read cold: {first_read['total_s']:.2f}s "
-        f"(target/mask {first_read['target_mask_s']:.2f}s) | "
-        f"warm median: {warm_total['median_total_s']:.2f}s "
-        f"(target/mask {warm_total['median_target_mask_s']:.2f}s)"
-    )
+    if warm_total:
+        print(
+            f"  read cold: {first_read['total_s']:.2f}s "
+            f"(target/mask {first_read['target_mask_s']:.2f}s) | "
+            f"warm median: {warm_total['median_total_s']:.2f}s "
+            f"(target/mask {warm_total['median_target_mask_s']:.2f}s)"
+        )
+    else:
+        print(
+            f"  read cold only (no warm pass): {first_read['total_s']:.2f}s "
+            f"(target/mask {first_read['target_mask_s']:.2f}s)"
+        )
     for run in loader_runs:
         print(
             f"  loader workers={run['num_workers']}: passes={run['passes']} "
@@ -462,21 +482,34 @@ def _count_per_split(refs: list[PatchRef], splits: tuple[str, ...]) -> dict[str,
     return counts
 
 
-def _extrapolate(report: dict[str, Any], full_refs: int) -> dict[str, Any]:
+def _extrapolate(report: dict[str, Any], full_per_split: dict[str, int]) -> dict[str, Any]:
     """Approximate full-index duplicate cost from the sample's unit costs.
 
     Only the duplicate target/mask windows are extrapolated; the admission
     share is not, so the figure is a lower bound on any saving and an upper
-    bound on the duplicate cost itself.
+    bound on the duplicate cost itself. Training reads the train and
+    validation splits, not the test split, so both scopes are reported.
     """
     per_ref_warm = report["duplicate_cost"]["per_ref_warm_s"]
     per_ref_cold = report["duplicate_cost"]["per_ref_cold_s"]
+    full_refs = sum(full_per_split.values())
+    trained_refs = full_per_split.get("train", 0) + full_per_split.get("validation", 0)
+
+    def _scope(refs: int) -> dict[str, Any]:
+        warm = None if per_ref_warm is None else per_ref_warm * refs
+        return {
+            "refs": refs,
+            "duplicate_seconds_warm_s": warm,
+            "duplicate_seconds_cold_s": per_ref_cold * refs,
+            "duplicate_minutes_warm": None if warm is None else warm / 60.0,
+            "duplicate_minutes_cold": per_ref_cold * refs / 60.0,
+        }
+
     return {
         "full_refs": full_refs,
-        "duplicate_seconds_full_warm_s": per_ref_warm * full_refs,
-        "duplicate_seconds_full_cold_s": per_ref_cold * full_refs,
-        "duplicate_minutes_full_warm": per_ref_warm * full_refs / 60.0,
-        "duplicate_minutes_full_cold": per_ref_cold * full_refs / 60.0,
+        "train_plus_validation_refs": trained_refs,
+        "all_splits": _scope(full_refs),
+        "train_plus_validation": _scope(trained_refs),
         "caveat": (
             "sample unit cost applied to the full ref count; the full-index "
             "admitted share is unknown, so both figures are approximations"

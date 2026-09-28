@@ -20,6 +20,10 @@
 #
 # Usage:
 #   run-patch-read-timing-vm.sh [branch] [extra probe args...]
+#
+# Extra probe args are interpolated into REMOTE_CMD as a shell string, so pass
+# only simple `--flag value` pairs; do not pass values containing quotes or
+# shell metacharacters.
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
@@ -41,6 +45,9 @@ echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
 # ── start VM + deploy ────────────────────────────────────────────────
 vm_start_and_wait_ssh
 vm_push_deploy
+# The report must name the exact deployed commit. REMOTE_CMD is expanded at
+# launch time, so appending after deploy records the verified SHA.
+REMOTE_CMD="$REMOTE_CMD --sha $DEPLOYED_SHA"
 vm_write_marker "$MARKER_CONFIG"
 
 # ── launch + poll ────────────────────────────────────────────────────
