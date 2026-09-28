@@ -291,9 +291,13 @@ vm_launch_detached() {
     exit 1
   fi
 
-  ssh_cmd "
-    sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
-  " 2>/dev/null || true
+  # Only a numeric pid may be substituted; otherwise the marker would be
+  # rewritten with an empty value and stop being valid JSON.
+  if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]]; then
+    ssh_cmd "
+      sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
+    " 2>/dev/null || true
+  fi
 }
 
 # ── poll for completion ──────────────────────────────────────────────
