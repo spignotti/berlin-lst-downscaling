@@ -152,6 +152,8 @@ class RealPatchDataModule(LightningDataModule):
         super().__init__()
         if mode not in ("eager", "stream"):
             raise ValueError(f"data mode {mode!r} is not one of 'eager', 'stream'")
+        if shuffle_train and mode != "stream":
+            raise ValueError("shuffle_train is only supported by the streaming mode")
         self.source = source
         self.batch_size = batch_size
         self.max_patches_per_split = max_patches_per_split
@@ -238,8 +240,23 @@ class RealPatchDataModule(LightningDataModule):
             "train_shuffle_order": self._train_shuffle_order(),
         }
 
+    def _train_sampler(self, dataset: RealPatchDataset) -> RandomSampler:
+        """A dedicated seeded sampler, so the train order is reproducible.
+
+        A dedicated ``RandomSampler`` is used instead of ``shuffle=True`` so the
+        order `train_shuffle_order` records is exactly the order the train
+        loader yields: a ``shuffle=True`` loader draws its worker base seed from
+        the generator *before* the sampler permutes, so a plain ``RandomSampler``
+        reconstruction would not match. This assumes a single-device run; a
+        multi-device lifecycle would substitute a ``DistributedSampler``.
+        """
+        return RandomSampler(dataset, generator=torch.Generator().manual_seed(self.seed))
+
     def _train_shuffle_order(self) -> list[int] | None:
         """The seeded epoch-1 train index order, or ``None`` when unshuffled.
+
+        Produced by the same sampler the train loader uses, so the recorded
+        evidence is the order training actually sees.
 
         # decision: record the shuffled order as run evidence, because the plan
         # requires a verifiable same-seed replay and a shuffled stream is
@@ -249,9 +266,9 @@ class RealPatchDataModule(LightningDataModule):
         if self.mode != "stream" or not self.shuffle_train:
             return None
         dataset = self._datasets.get("train")
-        if dataset is None or len(dataset) == 0:
+        if not isinstance(dataset, RealPatchDataset) or len(dataset) == 0:
             return None
-        return list(RandomSampler(dataset, generator=torch.Generator().manual_seed(self.seed)))
+        return list(self._train_sampler(dataset))
 
     def _read_batches(self, reader: RealPatchReader, refs: list[PatchRef]) -> list[RealBatch]:
         """Read admitted patches and collate them in canonical order."""
@@ -278,14 +295,13 @@ class RealPatchDataModule(LightningDataModule):
         if isinstance(dataset, _BatchDataset):
             return DataLoader(dataset, batch_size=None, shuffle=False)
         shuffle = self.shuffle_train and split == "train"
-        generator = torch.Generator().manual_seed(self.seed) if shuffle else None
         loader = DataLoader(
             dataset,
             batch_size=self.batch_size,
-            shuffle=shuffle,
+            sampler=self._train_sampler(dataset) if shuffle else None,
             collate_fn=collate_real_batch,
             num_workers=self.num_workers,
-            generator=generator,
+            generator=torch.Generator().manual_seed(self.seed) if shuffle else None,
             persistent_workers=self.num_workers > 0,
         )
         # The dataset yields RealSample; ``collate_real_batch`` stacks each

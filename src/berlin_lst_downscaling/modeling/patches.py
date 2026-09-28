@@ -39,7 +39,6 @@ import io
 import json
 import logging
 from collections import Counter
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -759,14 +758,6 @@ class RealPatchReader:
         if filled:
             bands[~np.isfinite(bands)] = 0.0
         return bands, filled
-
-    def iter_samples(self, refs: list[PatchRef]) -> Iterator[RealSample]:
-        """Yield samples for the resolvable refs, skipping recorded exclusions."""
-        self.preload({ref.scene_id for ref in refs})
-        for ref in refs:
-            sample = self.read_patch(ref)
-            if sample is not None:
-                yield sample
 
 
 def collate_real_batch(samples: list[RealSample]) -> RealBatch:
