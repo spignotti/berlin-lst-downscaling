@@ -318,7 +318,7 @@ def _delete_gcs_prefix(prefix: str) -> bool:
     from google.cloud import storage
 
     client = storage.Client()
-    bucket = client.get_bucket("berlin-lst-training-data")
+    bucket = client.bucket("berlin-lst-training-data")
     try:
         blobs = list(bucket.list_blobs(prefix=prefix))
         if not blobs:
@@ -337,7 +337,7 @@ def _list_gcs_subdirs(prefix: str) -> list[str]:
     from google.cloud import storage
 
     client = storage.Client()
-    bucket = client.get_bucket("berlin-lst-training-data")
+    bucket = client.bucket("berlin-lst-training-data")
     it = bucket.list_blobs(prefix=prefix, delimiter="/")
     list(it)  # consume the iterator so .prefixes is populated
     return sorted(str(p).rstrip("/").split("/")[-1] for p in it.prefixes)
@@ -359,7 +359,7 @@ def _verify_gcs_artifacts(
         f"""import sys
 from google.cloud import storage
 client = storage.Client()
-bucket = client.get_bucket('berlin-lst-training-data')
+bucket = client.bucket('berlin-lst-training-data')
 prefix = '{prefix}'
 blobs = list(bucket.list_blobs(prefix=prefix))
 print(f'Outputs in gs://berlin-lst-training-data/{{prefix}}')

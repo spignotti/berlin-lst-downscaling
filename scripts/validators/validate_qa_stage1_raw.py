@@ -62,7 +62,7 @@ def _list_objects(prefix: str) -> list[str]:
 
         client = storage.Client()
         bucket_name, _, key = prefix.removeprefix("gs://").partition("/")
-        bucket = client.get_bucket(bucket_name)
+        bucket = client.bucket(bucket_name)
         return [
             f"gs://{bucket_name}/{blob.name}"
             for blob in bucket.list_blobs(prefix=key.rstrip("/") + "/")

@@ -90,27 +90,6 @@ def _read_table(uri: str):
     return pq.read_table(io.BytesIO(read_bytes(uri)))
 
 
-def _list_objects(prefix: str) -> list[str]:
-    """List object keys under a local dir or GCS prefix."""
-    if prefix.startswith("gs://"):
-        from google.cloud import storage  # type: ignore[import-untyped]
-
-        client = storage.Client()
-        bucket_name, _, key = prefix.removeprefix("gs://").partition("/")
-        bucket = client.get_bucket(bucket_name)
-        return [
-            f"gs://{bucket_name}/{blob.name}"
-            for blob in bucket.list_blobs(prefix=key.rstrip("/") + "/")
-        ]
-    import os
-
-    return [
-        os.path.join(prefix, name)
-        for name in sorted(os.listdir(prefix))
-        if os.path.isfile(os.path.join(prefix, name))
-    ]
-
-
 # ── per-scene eligibility COG ─────────────────────────────────────────
 
 
