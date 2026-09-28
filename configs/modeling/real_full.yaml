@@ -17,6 +17,9 @@ data:
   batch_size: 4
   max_patches_per_split: null   # unbounded: every published patch
   scene_ids: []                 # empty = all published scenes
+  mode: stream                  # read each patch on demand; never hold a split in memory
+  num_workers: 2                # one worker per vCPU on the 2-vCPU VM
+  shuffle_train: true           # seeded, deterministic train order
 
 model:
   depth: 4

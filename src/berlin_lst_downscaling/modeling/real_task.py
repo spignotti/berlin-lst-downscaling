@@ -18,11 +18,12 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from typing import cast
 
 import torch
 from lightning.pytorch import LightningDataModule, LightningModule
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, RandomSampler
 
 from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
@@ -50,6 +51,13 @@ from berlin_lst_downscaling.modeling.unet import UNet
 _REAL_SPLITS = ("train", "validation", "test")
 
 
+def _batch_count(n_patches: int, batch_size: int) -> int:
+    """Number of batches a split of ``n_patches`` collates into (ceil)."""
+    if n_patches == 0:
+        return 0
+    return (n_patches + batch_size - 1) // batch_size
+
+
 class _BatchDataset(Dataset[RealBatch]):
     """Pre-collated batches for one split (deterministic order)."""
 
@@ -63,15 +71,70 @@ class _BatchDataset(Dataset[RealBatch]):
         return self.batches[idx]
 
 
-class RealPatchDataModule(LightningDataModule):
-    """Bounded real patch batches for the contract-conforming path.
+class RealPatchDataset(Dataset[RealSample]):
+    """Lazy map-style dataset over admitted patch refs.
 
-    The subset is read eagerly at ``setup`` so a smoke run is a single
-    bounded pass over the published sources instead of repeated GCS reads.
-    ``max_patches_per_split`` bounds every split to its first N indexed rows
-    — the same ref-level bound the naive baseline uses, so the two arms cover
-    an identical requested universe. It defaults to unbounded, which is a
-    full-run choice and is expected to be invoked explicitly, not by CI.
+    Yields a :class:`RealSample` per indexed ref by reading its COG window on
+    demand, so a split's feature tensors are never all resident at once. Refs
+    are admitted before construction (see :meth:`RealPatchDataModule.setup`),
+    so under stable published sources no unreadable window reaches
+    ``__getitem__``; one that does raises rather than silently shrinking the
+    comparison universe.
+
+    The reader is created lazily per process, so a worker never inherits an
+    open ``rasterio`` dataset from the parent and each worker opens its own on
+    first access. This holds under both the ``fork`` and ``spawn`` start
+    methods.
+    """
+
+    def __init__(self, source: RealSourceConfig, refs: Sequence[PatchRef]) -> None:
+        self.source = source
+        self.refs = list(refs)
+        self._reader: RealPatchReader | None = None
+
+    def __len__(self) -> int:
+        return len(self.refs)
+
+    def __getitem__(self, idx: int) -> RealSample:
+        sample = self._reader_for_process().read_patch(self.refs[idx])
+        if sample is None:
+            ref = self.refs[idx]
+            raise RuntimeError(
+                f"admitted patch {ref.patch_id} is unreadable — published sources "
+                f"changed between admission and read"
+            )
+        return sample
+
+    def _reader_for_process(self) -> RealPatchReader:
+        """Return this process's reader, opening one on first access.
+
+        The scene ledger is preloaded once so worker access does not re-read it
+        per scene; the reader caches it for the life of the process.
+        """
+        if self._reader is None:
+            reader = RealPatchReader(self.source)
+            reader.preload({ref.scene_id for ref in self.refs})
+            self._reader = reader
+        return self._reader
+
+
+class RealPatchDataModule(LightningDataModule):
+    """Contract-conforming real patch batches.
+
+    ``setup`` admits every selected ref once — the same prior, footprint, and
+    eligibility-mask checks the reader applies at read time — and records which
+    patches entered each split and which were dropped, with a reason. That
+    pre-fit accounting is what keeps the model and the naive baseline
+    comparable; it reads no feature window.
+
+    ``mode="eager"`` then pre-collates every admitted patch (a bounded smoke
+    convenience). ``mode="stream"`` builds a lazy map-style dataset and reads
+    each patch on demand in the loader workers, so a full split is never held
+    in memory at once. ``max_patches_per_split`` bounds every split to its
+    first N indexed rows — the same ref-level bound the naive baseline uses,
+    so the two arms cover an identical requested universe. It defaults to
+    unbounded, which is a full-run choice and is expected to be invoked
+    explicitly, not by CI.
     """
 
     def __init__(
@@ -81,26 +144,40 @@ class RealPatchDataModule(LightningDataModule):
         batch_size: int = 4,
         max_patches_per_split: int | None = None,
         scene_ids: Sequence[str] | None = None,
+        mode: str = "eager",
+        num_workers: int = 0,
+        shuffle_train: bool = False,
+        seed: int = 0,
     ) -> None:
         super().__init__()
+        if mode not in ("eager", "stream"):
+            raise ValueError(f"data mode {mode!r} is not one of 'eager', 'stream'")
+        if shuffle_train and mode != "stream":
+            raise ValueError("shuffle_train is only supported by the streaming mode")
         self.source = source
         self.batch_size = batch_size
         self.max_patches_per_split = max_patches_per_split
         self.scene_ids = tuple(scene_ids) if scene_ids else None
+        self.mode = mode
+        self.num_workers = num_workers
+        self.shuffle_train = shuffle_train
+        self.seed = seed
         self.reader: RealPatchReader | None = None
-        self._datasets: dict[str, _BatchDataset] = {}
+        self._admitted: dict[str, list[PatchRef]] = {}
+        self._skipped: dict[str, list[dict[str, str]]] = {split: [] for split in _REAL_SPLITS}
+        self._datasets: dict[str, _BatchDataset | RealPatchDataset] = {}
 
     def setup(self, stage: str | None = None) -> None:
-        # Idempotent: the real read is expensive and the lifecycle may set the
+        # Idempotent: admission is expensive and the lifecycle may set the
         # module up explicitly (to record the read scope) before ``fit``.
         if self._datasets:
             return
         self.reader = RealPatchReader(self.source)
         refs = load_patch_refs(self.source, splits=_REAL_SPLITS, scene_ids=self.scene_ids)
-        by_split: dict[str, list[PatchRef]] = {split: [] for split in _REAL_SPLITS}
         # Bound the *refs* per split, before any exclusion, so the requested
         # universe matches the baseline's selection exactly.
         taken: Counter[str] = Counter()
+        requested: dict[str, list[PatchRef]] = {split: [] for split in _REAL_SPLITS}
         for ref in refs:
             if (
                 self.max_patches_per_split is not None
@@ -108,36 +185,102 @@ class RealPatchDataModule(LightningDataModule):
             ):
                 continue
             taken[ref.split] += 1
-            by_split[ref.split].append(ref)
-        for split, split_refs in by_split.items():
-            self._datasets[split] = _BatchDataset(
-                self._read_batches(self.reader, split_refs)
-            )
+            requested[ref.split].append(ref)
+
+        # Resolve every scene's Landsat COG/flag once, so the admission pass
+        # reads the ARD ledger a single time rather than once per scene.
+        self.reader.preload({ref.scene_id for ref in refs})
+        for split, split_refs in requested.items():
+            admitted = self._admit(self.reader, split, split_refs)
+            self._admitted[split] = admitted
+            if self.mode == "eager":
+                self._datasets[split] = _BatchDataset(
+                    self._read_batches(self.reader, admitted)
+                )
+            else:
+                self._datasets[split] = RealPatchDataset(self.source, admitted)
+
+    def _admit(
+        self, reader: RealPatchReader, split: str, refs: list[PatchRef]
+    ) -> list[PatchRef]:
+        """Keep the readable refs in canonical order; record the skipped ones."""
+        admitted: list[PatchRef] = []
+        for ref in refs:
+            reason = reader.admission_reason(ref)
+            if reason is None:
+                admitted.append(ref)
+            else:
+                self._skipped[split].append({"patch_id": ref.patch_id, "reason": reason})
+        return admitted
 
     def stats(self) -> dict[str, object]:
-        """Describe the real read: per-split batches, patch IDs, and exclusions.
+        """Describe the real read: per-split patches, IDs, skips, and exclusions.
 
-        Retained as run evidence so a comparison can be audited: which patches
-        entered each split, and which were dropped with which reason.
+        Counts and IDs come from the admitted refs in canonical index order,
+        never from loader iteration order, so a shuffled stream reports the
+        same universe as the eager path. Retained as run evidence so a
+        comparison can be audited: which patches entered each split, and which
+        were dropped with which reason.
         """
         if self.reader is None:
             raise RuntimeError("setup() must run before stats()")
-        patch_ids = {
-            split: [meta.patch_id for batch in dataset.batches for meta in batch.metadata]
-            for split, dataset in self._datasets.items()
-        }
         return {
-            "batches_per_split": {s: len(d) for s, d in self._datasets.items()},
-            "patches_per_split": {s: len(ids) for s, ids in patch_ids.items()},
-            "patch_ids": patch_ids,
+            "mode": self.mode,
+            "batches_per_split": {
+                split: _batch_count(len(refs), self.batch_size)
+                for split, refs in self._admitted.items()
+            },
+            "patches_per_split": {split: len(refs) for split, refs in self._admitted.items()},
+            "patch_ids": {
+                split: [ref.patch_id for ref in refs]
+                for split, refs in self._admitted.items()
+            },
+            "skipped_refs": self._skipped,
+            "skipped_per_split": {split: len(refs) for split, refs in self._skipped.items()},
             "exclusions": dict(self.reader.exclusions),
+            "train_shuffle_order": self._train_shuffle_order(),
         }
 
+    def _train_sampler(self, dataset: RealPatchDataset) -> RandomSampler:
+        """A dedicated seeded sampler, so the train order is reproducible.
+
+        A dedicated ``RandomSampler`` is used instead of ``shuffle=True`` so the
+        order `train_shuffle_order` records is exactly the order the train
+        loader yields: a ``shuffle=True`` loader draws its worker base seed from
+        the generator *before* the sampler permutes, so a plain ``RandomSampler``
+        reconstruction would not match. This assumes a single-device run; a
+        multi-device lifecycle would substitute a ``DistributedSampler``.
+        """
+        return RandomSampler(dataset, generator=torch.Generator().manual_seed(self.seed))
+
+    def _train_shuffle_order(self) -> list[int] | None:
+        """The seeded epoch-1 train index order, or ``None`` when unshuffled.
+
+        Produced by the same sampler the train loader uses, so the recorded
+        evidence is the order training actually sees.
+
+        # decision: record the shuffled order as run evidence, because the plan
+        # requires a verifiable same-seed replay and a shuffled stream is
+        # otherwise unobservable from canonical-order stats. Alternative:
+        # assert it only inside the smoke step (rejected — not retained).
+        """
+        if self.mode != "stream" or not self.shuffle_train:
+            return None
+        dataset = self._datasets.get("train")
+        if not isinstance(dataset, RealPatchDataset) or len(dataset) == 0:
+            return None
+        return list(self._train_sampler(dataset))
+
     def _read_batches(self, reader: RealPatchReader, refs: list[PatchRef]) -> list[RealBatch]:
-        """Read, filter exclusions, and collate in deterministic order."""
+        """Read admitted patches and collate them in canonical order."""
         batches: list[RealBatch] = []
         chunk: list[RealSample] = []
-        for sample in reader.iter_samples(refs):
+        for ref in refs:
+            sample = reader.read_patch(ref)
+            if sample is None:
+                raise RuntimeError(
+                    f"admitted patch {ref.patch_id} became unreadable during the eager read"
+                )
             chunk.append(sample)
             if len(chunk) == self.batch_size:
                 batches.append(collate_real_batch(chunk))
@@ -150,7 +293,21 @@ class RealPatchDataModule(LightningDataModule):
         dataset = self._datasets.get(split)
         if dataset is None or len(dataset) == 0:
             raise RuntimeError(f"real path has no {split} batch to train on")
-        return DataLoader(dataset, batch_size=None, shuffle=False)
+        if isinstance(dataset, _BatchDataset):
+            return DataLoader(dataset, batch_size=None, shuffle=False)
+        shuffle = self.shuffle_train and split == "train"
+        loader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            sampler=self._train_sampler(dataset) if shuffle else None,
+            collate_fn=collate_real_batch,
+            num_workers=self.num_workers,
+            generator=torch.Generator().manual_seed(self.seed) if shuffle else None,
+            persistent_workers=self.num_workers > 0,
+        )
+        # The dataset yields RealSample; ``collate_real_batch`` stacks each
+        # batch into RealBatch, so the loader's yielded type is RealBatch.
+        return cast(DataLoader[RealBatch], loader)
 
     def train_dataloader(self) -> DataLoader[RealBatch]:
         return self._loader("train")

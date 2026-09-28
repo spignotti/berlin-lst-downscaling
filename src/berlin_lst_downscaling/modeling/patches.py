@@ -39,7 +39,6 @@ import io
 import json
 import logging
 from collections import Counter
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -524,6 +523,14 @@ class RealSample:
     mask_100m: np.ndarray  # (1, 16, 16) bool
 
 
+@dataclass(frozen=True)
+class _TargetMask:
+    """The native 100 m target and its eligibility mask for one admitted ref."""
+
+    target: np.ndarray  # (16, 16) float32, native Kelvin
+    mask: np.ndarray  # (16, 16) bool
+
+
 def prior_model_channel(prior_k: np.ndarray) -> np.ndarray:
     """Map the physical Kelvin prior to the model's fixed affine channel."""
     return ((prior_k - PRIOR_AFFINE_OFFSET_K) / PRIOR_AFFINE_SCALE_K).astype(np.float32)
@@ -596,22 +603,45 @@ class RealPatchReader:
         self._priors[scene_id] = prior
         return prior
 
+    # ── admission (no feature read) ───────────────────────────────────
+
+    def admission_reason(self, ref: PatchRef) -> str | None:
+        """Return why ``ref`` cannot be read, or ``None`` when it can.
+
+        Runs the same prior, footprint, and eligibility-mask checks as
+        :meth:`read_patch` and records the exclusion, but reads no feature
+        window. A caller can therefore pre-filter a split into readable refs
+        without retaining split-wide feature tensors. The recorded exclusion
+        is the one :meth:`read_patch` would report, so admission and read
+        accounting cannot drift apart.
+        """
+        prior = self._prior_for(ref.scene_id)
+        if prior is None:
+            return self._record_exclusion(NO_LANDSAT_REASON)
+        if prior.window(row=ref.row, col=ref.col) is None:
+            return self._record_exclusion(prior.unavailable_reason(row=ref.row, col=ref.col))
+        target_mask, reason = self._read_target_and_mask(ref, prior)
+        if target_mask is None:
+            return self._record_exclusion(reason)
+        return None
+
     # ── reading ───────────────────────────────────────────────────────
 
     def read_patch(self, ref: PatchRef) -> RealSample | None:
         """Read one patch, or return ``None`` after recording an exclusion."""
         prior = self._prior_for(ref.scene_id)
         if prior is None:
-            self.exclusions[NO_LANDSAT_REASON] += 1
+            self._record_exclusion(NO_LANDSAT_REASON)
             return None
 
         prior_k = prior.window(row=ref.row, col=ref.col)
         if prior_k is None:
-            self.exclusions[prior.unavailable_reason(row=ref.row, col=ref.col)] += 1
+            self._record_exclusion(prior.unavailable_reason(row=ref.row, col=ref.col))
             return None
 
-        target, mask = self._read_target_and_mask(ref, prior)
-        if target is None or mask is None:
+        target_mask, reason = self._read_target_and_mask(ref, prior)
+        if target_mask is None:
+            self._record_exclusion(reason)
             return None
 
         features, filled = self._read_features(ref)
@@ -627,13 +657,26 @@ class RealPatchReader:
             ),
             features=features,
             lst_prior_k=prior_k[None].astype(np.float32),
-            target_100m=target[None].astype(np.float32),
-            mask_100m=mask[None],
+            target_100m=target_mask.target[None].astype(np.float32),
+            mask_100m=target_mask.mask[None],
         )
+
+    def _record_exclusion(self, reason: str | None) -> str:
+        """Count one exclusion and return its reason (never silently dropped)."""
+        if reason is None:
+            raise RuntimeError("an exclusion must carry a reason")
+        self.exclusions[reason] += 1
+        return reason
 
     def _read_target_and_mask(
         self, ref: PatchRef, prior: ScenePrior
-    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+    ) -> tuple[_TargetMask | None, str | None]:
+        """Read the native target and eligibility mask, or return the reason.
+
+        Returns ``(None, reason)`` when the patch window lies outside the
+        scene footprint or carries no eligible cell; the caller records the
+        reason. Grid misalignment and index/mask drift still raise.
+        """
         r0 = ref.row - prior.row0
         c0 = ref.col - prior.col0
         outside = (
@@ -643,8 +686,7 @@ class RealPatchReader:
             or c0 + REAL_PATCH_CELLS > prior.width
         )
         if outside:
-            self.exclusions[TARGET_OUTSIDE_REASON] += 1
-            return None, None
+            return None, TARGET_OUTSIDE_REASON
         with rasterio.open(prior.landsat_cog) as src:
             window = Window.from_slices(
                 (r0, r0 + REAL_PATCH_CELLS), (c0, c0 + REAL_PATCH_CELLS)
@@ -676,9 +718,8 @@ class RealPatchReader:
                 f"published mask holds {n_mask} — index/mask drift"
             )
         if n_mask == 0:
-            self.exclusions[EMPTY_MASK_REASON] += 1
-            return None, None
-        return target, mask == 1
+            return None, EMPTY_MASK_REASON
+        return _TargetMask(target=target, mask=mask == 1), None
 
     def _read_features(self, ref: PatchRef) -> tuple[np.ndarray, int]:
         uri = feature_cog(self.cfg.features_root, ref.scene_id)
@@ -717,14 +758,6 @@ class RealPatchReader:
         if filled:
             bands[~np.isfinite(bands)] = 0.0
         return bands, filled
-
-    def iter_samples(self, refs: list[PatchRef]) -> Iterator[RealSample]:
-        """Yield samples for the resolvable refs, skipping recorded exclusions."""
-        self.preload({ref.scene_id for ref in refs})
-        for ref in refs:
-            sample = self.read_patch(ref)
-            if sample is not None:
-                yield sample
 
 
 def collate_real_batch(samples: list[RealSample]) -> RealBatch:

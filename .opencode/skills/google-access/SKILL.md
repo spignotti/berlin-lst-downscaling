@@ -15,6 +15,7 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Run Training:   `.opencode/skills/google-access/scripts/run-training-data-vm.sh [branch]`
 - Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
 - Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
+- Run Model Smoke: `.opencode/skills/google-access/scripts/run-modeling-smoke-vm.sh [branch]`
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
 - Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
 - Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
@@ -469,10 +470,17 @@ If no independent fingerprint source exists: **halt**, do not trust the key.
 ### One-time provisioning (inside the VM)
 
 ```bash
-sudo apt-get update -qq && sudo apt-get install -y python3.12 python3.12-venv git curl
+# Debian 12 (bookworm) does not package python3.12; uv provides the managed
+# CPython 3.12 the project requires.
+sudo apt-get update -qq && sudo apt-get install -y git curl
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# The non-interactive ssh PATH is /usr/local/bin:/usr/bin:/bin:/usr/games, so
+# uv's default ~/.local/bin is NOT reachable from the launchers.
+sudo ln -sf "$HOME/.local/bin/uv" /usr/local/bin/uv
+sudo ln -sf "$HOME/.local/bin/uvx" /usr/local/bin/uvx
+sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace
 git clone https://github.com/spignotti/berlin-lst-downscaling.git /workspace/app
-cd /workspace/app && uv sync
+cd /workspace/app && uv sync --frozen
 
 # .env (only EARTHDATA_TOKEN needed; ADC handles GCS auth)
 # The token value must be carried over manually from the local secret source

@@ -299,8 +299,10 @@ def _fit_contract_lifecycle(
         _logger,
         logging.INFO,
         "data_read",
+        mode=scope.get("mode", ""),
         batches_per_split=scope["batches_per_split"],
         patches_per_split=scope["patches_per_split"],
+        skipped_per_split=scope.get("skipped_per_split", {}),
         exclusions=scope["exclusions"],
         patch_ids_uri=str(scope_uri),
     )
@@ -335,8 +337,10 @@ def _fit_contract_lifecycle(
         "seed": seed,
         "selection_metric": monitored,
         "data_scope": {
+            "mode": scope.get("mode", ""),
             "batches_per_split": scope["batches_per_split"],
             "patches_per_split": scope["patches_per_split"],
+            "skipped_per_split": scope.get("skipped_per_split", {}),
             "exclusions": scope["exclusions"],
             "patch_ids_uri": str(scope_uri),
         },
@@ -454,7 +458,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
 
     The scope of the data read is whatever the config bounds it to; a full
     train/validation run over every published patch is an explicit invocation,
-    not something this function decides.
+    not something this function decides. ``data.mode`` reads that scope either
+    eagerly (a bounded smoke) or lazily through loader workers (a full run).
     """
     contract_invariants(cfg)
     source = real_source_config(cfg)
@@ -465,6 +470,10 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         batch_size=int(cfg.data.batch_size),
         max_patches_per_split=None if max_patches is None else int(max_patches),
         scene_ids=scene_ids or None,
+        mode=str(cfg.data.get("mode", "eager")),
+        num_workers=int(cfg.data.get("num_workers", 0)),
+        shuffle_train=bool(cfg.data.get("shuffle_train", False)),
+        seed=int(cfg.seed),
     )
     return _fit_contract_lifecycle(
         cfg,

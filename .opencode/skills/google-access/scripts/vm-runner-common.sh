@@ -28,6 +28,8 @@
 #                        comma, inserted before the "started" field
 #     RUN_PREFIX_GREP    grep pattern (BRE) to discover the evidence/run
 #                        prefix from the remote log; sets RUN_PREFIX
+#     POLL_MAX_SECONDS   optional overall poll budget in seconds; on expiry
+#                        the VM is left RUNNING for operator inspection
 #     vm_discover_run_id()  optional function; called by vm_finish to
 #                           discover a pipeline-specific run id
 
@@ -271,23 +273,38 @@ vm_launch_detached() {
     pipeline_launched=1
     REMOTE_PID="$remote_pid"
     echo "Remote PID: $REMOTE_PID (launch verified)"
+  elif [[ -n "$(ssh_cmd "cat '$STATUS_FILE' 2>/dev/null" 2>/dev/null || true)" ]]; then
+    # A short job can finish before this check. A written exit status proves
+    # it launched and completed, so hand off to vm_poll instead of declaring
+    # a pre-launch failure and stopping the VM.
+    pipeline_launched=1
+    # Keep the marker's pid numeric-only, as the live branch does.
+    REMOTE_PID=""
+    if [[ "$remote_pid" =~ ^[0-9]+$ ]]; then
+      REMOTE_PID="$remote_pid"
+    fi
+    echo "Remote PID: ${REMOTE_PID:-unknown} (already finished; exit status present)"
   else
-    # Reachable but no live process behind the pid file: nothing was
-    # launched or it died instantly — safe pre-launch failure.
+    # Reachable but no live process and no exit status: nothing was
+    # launched or it died without recording — safe pre-launch failure.
     echo "ERROR: could not confirm the remote pipeline is running."
     exit 1
   fi
 
-  ssh_cmd "
-    sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
-  " 2>/dev/null || true
+  # Only a numeric pid may be substituted; otherwise the marker would be
+  # rewritten with an empty value and stop being valid JSON.
+  if [[ "$REMOTE_PID" =~ ^[0-9]+$ ]]; then
+    ssh_cmd "
+      sed -i 's/\"pid\": 0/\"pid\": $REMOTE_PID/' '$MARKER'
+    " 2>/dev/null || true
+  fi
 }
 
 # ── poll for completion ──────────────────────────────────────────────
 
 vm_poll() {
   echo "Polling for $PIPELINE_LABEL completion ($WRAP_RUN_ID)..."
-  local poll_failures=0 terminal="" is_running=""
+  local poll_failures=0 terminal="" is_running="" poll_started_at=$SECONDS
   while true; do
     sleep 60
 
@@ -300,6 +317,21 @@ vm_poll() {
         echo "  [$(date +%H:%M:%S)] $PIPELINE_LABEL exited with code $terminal."
       fi
       break
+    fi
+
+    # An optional overall budget bounds a run whose completion is uncertain.
+    # Expiry is ambiguous, not failed: leave the VM for operator inspection.
+    if [[ -n "${POLL_MAX_SECONDS:-}" ]] \
+      && (( SECONDS - poll_started_at >= POLL_MAX_SECONDS )); then
+      echo "  [$(date +%H:%M:%S)] Poll budget ${POLL_MAX_SECONDS}s exceeded."
+      echo ""
+      echo "POLL TIMEOUT — remote process may still be running."
+      echo "  Run ID:     $WRAP_RUN_ID"
+      echo "  Remote PID: $REMOTE_PID"
+      echo "  Marker:     $MARKER"
+      echo "The VM will NOT be stopped automatically."
+      leave_running=1
+      exit 2
     fi
 
     is_running=$(ssh_cmd "

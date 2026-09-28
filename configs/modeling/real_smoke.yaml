@@ -13,6 +13,8 @@ data:
   kind: real
   batch_size: 2
   max_patches_per_split: 4   # first 4 indexed rows per split: a bounded pass
+  mode: eager                # preload the bounded subset: one pass, no workers
+  num_workers: 0
 
 model:
   depth: 4                   # 160 px / 2**4 = 10 px bottleneck

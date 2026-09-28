@@ -280,7 +280,13 @@ print('All required artifacts present.')
 
 
 def _preflight_gcs(session: nox.Session) -> None:
-    """Confirm ADC + the bucket are reachable before a cloud run."""
+    """Confirm ADC + object access to the bucket before a cloud run.
+
+    Checks object listing, not bucket metadata: the VM's service account is
+    scoped to ``storage.objectAdmin`` and holds no ``storage.buckets.get``, so
+    a ``get_bucket`` metadata read would fail closed on a host that can read
+    every object it needs.
+    """
     session.run(
         "uv",
         "run",
@@ -289,8 +295,11 @@ def _preflight_gcs(session: nox.Session) -> None:
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-training-data'); "
-            "print('Bucket reachable:', bucket.name)"
+            "bucket = client.bucket('berlin-lst-training-data'); "
+            "count = sum(1 for _ in bucket.list_blobs(max_results=1)); "
+            "print('Bucket reachable:', bucket.name, '| objects listed:', count); "
+            "raise SystemExit("
+            "0 if count else 'bucket listed no objects — check the ADC principal')"
         ),
         external=True,
     )
@@ -1539,17 +1548,22 @@ def smoke_modeling_contract(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none", name="smoke-real-comparison")
 def smoke_real_comparison(session: nox.Session) -> None:
-    """Score the model and the naive baseline on the same real patch subset.
+    """Validate the real streaming path and score the two arms on one subset.
 
     Opt-in and deliberately outside the default session set: it reads the
-    published WB3 sources over GCS (requires ADC), trains a bounded 1-epoch
-    model, evaluates the naive prior-expand baseline, asserts that both arms
-    cover an identical patch universe, and runs the independent baseline
-    validator. Local ephemeral output is removed in ``finally`` and never
-    uploaded.
+    published patch index and, per split, the first four indexed rows. It runs
+    ONE bounded one-epoch model arm (streamed, two loader workers, seeded
+    shuffle) to prove the Lightning lifecycle, checkpoint, and reload path, then
+    the non-training streaming validator (eager versus streamed versus workers,
+    seeded-order replay), then the naive prior-expand baseline and its
+    independent validator. The model and baseline arms must admit the identical
+    patch universe. Local output is removed in ``finally``.
 
-    This is not a training-quality gate. It proves the two arms are wired to
-    one reader, mask, and metric, not that either is good.
+    Run this on the compute host, not a workstation: the loader workers use the
+    Linux process model.
+
+    This is not a training-quality gate. It proves the read path, and that the
+    two arms are wired to one reader, mask, and metric, not that either is good.
     """
     import glob
     import json
@@ -1565,22 +1579,50 @@ def smoke_real_comparison(session: nox.Session) -> None:
             if os.path.isdir(path):
                 shutil.rmtree(path)
 
+    def _run_model(overrides: list[str]) -> dict:
+        """Run the bounded real model arm and return its scope plus MAE."""
+        if os.path.isdir(model_root):
+            shutil.rmtree(model_root)
+        session.run(
+            "uv", "run", "python", "scripts/runners/run_modeling.py",
+            "--config-name", "real_smoke", *overrides, external=True,
+        )
+        with open(os.path.join(model_root, "data_scope.json"), encoding="utf-8") as fh:
+            scope = json.load(fh)
+        best = glob.glob(os.path.join(model_root, "checkpoints", "best-*.ckpt"))
+        if len(best) != 1:
+            session.error(f"expected exactly one model checkpoint, found {best}")
+        match = re.search(r"best-\d+-([0-9.]+)\.ckpt", os.path.basename(best[0]))
+        if match is None:
+            session.error(f"unparseable best checkpoint name: {best[0]}")
+        scope["mae"] = float(match.group(1))
+        return scope
+
     # Fail loudly and early when ADC is unavailable, before any reading.
     _preflight_gcs(session)
 
     try:
         _clean()
-        session.run(
-            "uv", "run", "python", "scripts/runners/run_modeling.py",
-            "--config-name", "real_smoke", external=True,
+        # One bounded model arm proves the Lightning fit/checkpoint/reload path
+        # on a real streamed subset; the stream-invariance of the read path
+        # itself is proved by the non-training validator below.
+        scope = _run_model(
+            ["data.mode=stream", "data.num_workers=2", "data.shuffle_train=true"]
         )
+        if scope.get("mode") != "stream":
+            session.error(f"model arm did not run in stream mode: {scope.get('mode')!r}")
+        if not scope.get("train_shuffle_order"):
+            session.error("model arm recorded no train shuffle order")
+
+        session.run(
+            "uv", "run", "python", "scripts/validators/validate_streaming_patches.py",
+            external=True,
+        )
+
         session.run(
             "uv", "run", "python", "scripts/runners/run_baseline.py",
             "--config-name", "baseline_smoke", external=True,
         )
-
-        with open(os.path.join(model_root, "data_scope.json"), encoding="utf-8") as fh:
-            model_scope = json.load(fh)
         with open(
             os.path.join(baseline_root, "baseline_report.json"), encoding="utf-8"
         ) as fh:
@@ -1590,21 +1632,13 @@ def smoke_real_comparison(session: nox.Session) -> None:
         baseline_ids: dict[str, list[str]] = {}
         for record in report["patches"]:
             baseline_ids.setdefault(record["split"], []).append(record["patch_id"])
-        model_ids: dict[str, list[str]] = model_scope["patch_ids"]
-        for split in sorted(model_ids):
-            if model_ids[split] != baseline_ids.get(split, []):
+        for split in sorted(scope["patch_ids"]):
+            if scope["patch_ids"][split] != baseline_ids.get(split, []):
                 session.error(
                     f"arms disagree on the {split} patch universe: "
-                    f"{len(model_ids[split])} model vs {len(baseline_ids.get(split, []))} baseline"
+                    f"{len(scope['patch_ids'][split])} model vs "
+                    f"{len(baseline_ids.get(split, []))} baseline"
                 )
-
-        best = glob.glob(os.path.join(model_root, "checkpoints", "best-*.ckpt"))
-        if len(best) != 1:
-            session.error(f"expected exactly one model checkpoint, found {best}")
-        match = re.search(r"best-\d+-([0-9.]+)\.ckpt", os.path.basename(best[0]))
-        if match is None:
-            session.error(f"unparseable best checkpoint name: {best[0]}")
-        model_mae = float(match.group(1))
 
         session.run(
             "uv", "run", "python", "scripts/validators/validate_baseline.py",
@@ -1612,8 +1646,8 @@ def smoke_real_comparison(session: nox.Session) -> None:
             "--max-patches", "4", external=True,
         )
 
-        print("Real two-arm comparison (identical admitted patch universe):")
-        print(f"  model (1 epoch, untrained) : validation MAE {model_mae:.4f} K")
+        print("Real comparison (one model arm plus the streaming validator):")
+        print(f"  model stream/2+shuffle (1 epoch) : validation MAE {scope['mae']:.4f} K")
         for split in sorted(report["splits"]):
             summary = report["splits"][split]
             mae = "n/a" if summary["mae"] is None else f"{summary['mae']:.4f}"
@@ -1624,7 +1658,7 @@ def smoke_real_comparison(session: nox.Session) -> None:
             )
         print(
             "Note: the model arm is an untrained 1-epoch smoke; this run proves "
-            "shared wiring, not model quality."
+            "shared wiring and a stream-invariant read path, not model quality."
         )
     finally:
         _clean()
