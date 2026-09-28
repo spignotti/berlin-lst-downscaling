@@ -280,7 +280,13 @@ print('All required artifacts present.')
 
 
 def _preflight_gcs(session: nox.Session) -> None:
-    """Confirm ADC + the bucket are reachable before a cloud run."""
+    """Confirm ADC + object access to the bucket before a cloud run.
+
+    Checks object listing, not bucket metadata: the VM's service account is
+    scoped to ``storage.objectAdmin`` and holds no ``storage.buckets.get``, so
+    a ``get_bucket`` metadata read would fail closed on a host that can read
+    every object it needs.
+    """
     session.run(
         "uv",
         "run",
@@ -289,8 +295,11 @@ def _preflight_gcs(session: nox.Session) -> None:
         (
             "from google.cloud import storage; "
             "client = storage.Client(); "
-            "bucket = client.get_bucket('berlin-lst-training-data'); "
-            "print('Bucket reachable:', bucket.name)"
+            "bucket = client.bucket('berlin-lst-training-data'); "
+            "count = sum(1 for _ in bucket.list_blobs(max_results=1)); "
+            "print('Bucket reachable:', bucket.name, '| objects listed:', count); "
+            "raise SystemExit("
+            "0 if count else 'bucket listed no objects — check the ADC principal')"
         ),
         external=True,
     )
