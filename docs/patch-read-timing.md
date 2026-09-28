@@ -57,7 +57,7 @@ Admission and read phases, seconds for the 180-ref sample:
 |---|---|---|---|---|
 | Admission | 16.47 | 5.50 (180 calls) | - | 10.93 (46 builds) |
 | Read, first pass | 98.24 | 9.74 | 88.44 | 0.00 |
-| Read, warm median (passes 2-3) | 89.50 | 10.42 | 79.03 | 0.00 |
+| Read, warm (passes 2-3) | 89.50 | 10.42 | 79.03 | 0.00 |
 
 The read-pass target/mask time is the duplicate cost: admission already paid
 the same two windows for every admitted ref.
@@ -111,6 +111,9 @@ opens are not the lever they were suspected to be.
   approximate.
 - Loader wall time includes collation and worker IPC, not only COG reads, and
   the worker arm runs one concatenated dataset rather than per-split modules.
+- With two warm passes the reported warm figure is the upper of the two
+  sorted values, not an interpolated median, so it leans slightly toward
+  overstating the duplicate cost.
 - The measurement excludes model fitting by design.
 
 ## Reproduce
