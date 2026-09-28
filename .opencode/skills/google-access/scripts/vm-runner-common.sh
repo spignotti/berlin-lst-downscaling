@@ -273,9 +273,20 @@ vm_launch_detached() {
     pipeline_launched=1
     REMOTE_PID="$remote_pid"
     echo "Remote PID: $REMOTE_PID (launch verified)"
+  elif [[ -n "$(ssh_cmd "cat '$STATUS_FILE' 2>/dev/null" 2>/dev/null || true)" ]]; then
+    # A short job can finish before this check. A written exit status proves
+    # it launched and completed, so hand off to vm_poll instead of declaring
+    # a pre-launch failure and stopping the VM.
+    pipeline_launched=1
+    # Keep the marker's pid numeric-only, as the live branch does.
+    REMOTE_PID=""
+    if [[ "$remote_pid" =~ ^[0-9]+$ ]]; then
+      REMOTE_PID="$remote_pid"
+    fi
+    echo "Remote PID: ${REMOTE_PID:-unknown} (already finished; exit status present)"
   else
-    # Reachable but no live process behind the pid file: nothing was
-    # launched or it died instantly — safe pre-launch failure.
+    # Reachable but no live process and no exit status: nothing was
+    # launched or it died without recording — safe pre-launch failure.
     echo "ERROR: could not confirm the remote pipeline is running."
     exit 1
   fi
