@@ -224,13 +224,17 @@ def main() -> int:
 
     # ── materialize every arm; every batch must satisfy the tensor contract ──
     batches: dict[str, dict[str, list[RealBatch]]] = {}
+    failed: set[tuple[str, str]] = set()
     for name, module in modules.items():
         batches[name] = {}
         for split in _SPLITS:
             try:
                 loaded = _load_batches(module, split)
             except RuntimeError as exc:
-                errors.append(f"{name}/{split}: no batches to validate: {exc}")
+                # Either the split admitted nothing or an admitted patch became
+                # unreadable; the message carries which, and either is loud.
+                errors.append(f"{name}/{split}: loader unavailable: {exc}")
+                failed.add((name, split))
                 batches[name][split] = []
                 continue
             try:
@@ -240,39 +244,48 @@ def main() -> int:
                 errors.append(f"{name}/{split}: contract violation: {exc}")
             batches[name][split] = loaded
 
+    def _usable(name: str, split: str) -> bool:
+        """True when both sides of a comparison actually loaded."""
+        return (name, split) not in failed
+
     # ── eager and streamed-in-process must be identical in canonical order ──
     for split in _SPLITS:
-        _compare_batches(
-            "eager", "stream/0", batches["eager"][split], batches["stream/0"][split], errors
-        )
+        if _usable("eager", split) and _usable("stream/0", split):
+            _compare_batches(
+                "eager", "stream/0", batches["eager"][split], batches["stream/0"][split], errors
+            )
 
     # ── shuffled arm: validation/test identical; train is the recorded permutation ──
     shuffled_name = "stream/2+shuffle"
     for split in ("validation", "test"):
-        _compare_batches(
-            "eager", shuffled_name, batches["eager"][split], batches[shuffled_name][split], errors
-        )
+        if _usable("eager", split) and _usable(shuffled_name, split):
+            _compare_batches(
+                "eager",
+                shuffled_name,
+                batches["eager"][split],
+                batches[shuffled_name][split],
+                errors,
+            )
 
-    observed = _batch_ids(batches[shuffled_name]["train"])
     admitted = list(eager["patch_ids"]["train"])
-    if sorted(observed) != sorted(admitted):
+    recorded = scopes[shuffled_name]["train_shuffle_order"]
+    train_loaded = _usable(shuffled_name, "train")
+    observed = _batch_ids(batches[shuffled_name]["train"])
+    if train_loaded and sorted(observed) != sorted(admitted):
         errors.append(
             f"{shuffled_name}: train batch IDs are not a permutation of the admitted train set "
             f"({len(observed)} vs {len(admitted)})"
         )
-    recorded = scopes[shuffled_name]["train_shuffle_order"]
     if not recorded:
         errors.append(f"{shuffled_name}: no train shuffle order recorded")
-    else:
-        if len(recorded) != len(admitted):
-            errors.append(
-                f"{shuffled_name}: recorded order length {len(recorded)} != "
-                f"admitted {len(admitted)}"
-            )
-        else:
-            expected_order = [admitted[i] for i in recorded]
-            if observed != expected_order:
-                errors.append(f"{shuffled_name}: loader batch order != recorded sampler order")
+    elif len(recorded) != len(admitted):
+        errors.append(
+            f"{shuffled_name}: recorded order length {len(recorded)} != admitted {len(admitted)}"
+        )
+    elif train_loaded:
+        expected_order = [admitted[i] for i in recorded]
+        if observed != expected_order:
+            errors.append(f"{shuffled_name}: loader batch order != recorded sampler order")
 
     # ── a freshly seeded module must replay the same shuffled order ──
     replay = _arm(
@@ -289,7 +302,7 @@ def main() -> int:
         errors.append(f"{shuffled_name}: recorded order not reproduced by a fresh module")
     try:
         replay_order = _batch_ids(_load_batches(replay, "train"))
-        if replay_order != observed:
+        if train_loaded and replay_order != observed:
             errors.append(f"{shuffled_name}: fresh loader did not replay the same train order")
     except RuntimeError as exc:
         errors.append(f"{shuffled_name}: replay loader unavailable: {exc}")
