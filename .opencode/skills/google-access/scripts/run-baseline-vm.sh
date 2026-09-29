@@ -109,14 +109,14 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   jq -r '.splits | to_entries[] | "  \(.key): patches \(.value.evaluated_patches)/\(.value.requested_patches) | cells \(.value.valid_cells) | MAE \(.value.mae) | SSIM \(.value.ssim)"' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || true
   echo "  exclusions (top-level + per split): $REPORT_EXCLUSIONS"
 
-  # A full-run anchor needs: validator success, the exact split set, the
-  # deployed SHA, a zero-exclusion universe (the validator's selection check
-  # cannot identify excluded patch IDs), and positive valid cells per split.
+  # A full-run anchor needs: validator success (the amended validator proves
+  # every missing row is a contract-permitted exclusion, so a nonzero count is
+  # acceptable only when it passes), the exact split set, the deployed SHA, and
+  # positive valid cells per split.
   if [[ "$VALIDATION_RC" -eq 0 \
     && "$REPORT_METHOD" == "naive_prior_expand" \
     && "$REPORT_SPLITS" == "test,validation" \
     && "$REPORT_REV" == "$DEPLOYED_SHA" \
-    && "$REPORT_EXCLUSIONS" == "0" \
     && "$VALID_CELLS_VALIDATION" -gt 0 \
     && "$VALID_CELLS_TEST" -gt 0 ]]; then
     EVIDENCE_OK=0
