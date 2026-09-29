@@ -101,19 +101,26 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   REPORT_METHOD=$(jq -r '.method' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   REPORT_SPLITS=$(jq -r '.splits | keys | join(",")' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   REPORT_REV=$(jq -r '.git_revision' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
-  REPORT_EXCLUSIONS=$(jq -r '[.exclusions, (.splits[] | .exclusions)] | map(length) | add' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
+  REPORT_EXCLUSIONS=$(jq -r '.exclusions | [.[]] | add // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   VALID_CELLS_VALIDATION=$(jq -r '.splits.validation.valid_cells // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo 0)
   VALID_CELLS_TEST=$(jq -r '.splits.test.valid_cells // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo 0)
 
   echo "Report: method=$REPORT_METHOD | splits=$REPORT_SPLITS | git_revision=$REPORT_REV"
   jq -r '.splits | to_entries[] | "  \(.key): patches \(.value.evaluated_patches)/\(.value.requested_patches) | cells \(.value.valid_cells) | MAE \(.value.mae) | SSIM \(.value.ssim)"' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || true
-  echo "  exclusions (top-level + per split): $REPORT_EXCLUSIONS"
+  echo "  excluded patches (top-level): $REPORT_EXCLUSIONS"
 
   # A full-run anchor needs: validator success (the amended validator proves
   # every missing row is a contract-permitted exclusion, so a nonzero count is
-  # acceptable only when it passes), the exact split set, the deployed SHA, and
-  # positive valid cells per split.
+  # acceptable only when it passes), FULL coverage of both requested splits
+  # (the validator accepts a bounded report, so this gate must reject one),
+  # the exact split set, the deployed SHA, and positive valid cells per split.
+  FULL_COVERAGE=1
+  if printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection test: full' \
+    && printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection validation: full'; then
+    FULL_COVERAGE=0
+  fi
   if [[ "$VALIDATION_RC" -eq 0 \
+    && "$FULL_COVERAGE" -eq 0 \
     && "$REPORT_METHOD" == "naive_prior_expand" \
     && "$REPORT_SPLITS" == "test,validation" \
     && "$REPORT_REV" == "$DEPLOYED_SHA" \

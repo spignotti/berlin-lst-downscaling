@@ -208,12 +208,14 @@ def _prove_prior_gap(
         empty: list[tuple[int, int]] = []
         for b in required:
             # The Landsat COG is native 100 m, so one 1000 m block covers
-            # ``_BLOCK_CELLS`` raster rows/columns - never 10 m pixels.
-            r_start = max(b[0] * _BLOCK_CELLS - row0, 0)
-            c_start = max(b[1] * _BLOCK_CELLS - col0, 0)
+            # ``_BLOCK_CELLS`` raster rows/columns - never 10 m pixels. The end
+            # comes from the unclamped start so an edge block is never widened
+            # into its neighbour.
+            r_start = b[0] * _BLOCK_CELLS - row0
+            c_start = b[1] * _BLOCK_CELLS - col0
             window = Window.from_slices(
-                (r_start, min(r_start + _BLOCK_CELLS, src.height)),
-                (c_start, min(c_start + _BLOCK_CELLS, src.width)),
+                (max(r_start, 0), min(r_start + _BLOCK_CELLS, src.height)),
+                (max(c_start, 0), min(c_start + _BLOCK_CELLS, src.width)),
             )
             if window.height <= 0 or window.width <= 0:
                 return None

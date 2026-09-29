@@ -87,11 +87,16 @@ split. A matching count alone is not sufficient.
 ## Reproduce
 
 ```bash
-# The baseline run is expensive and is not repeated here.
+# The baseline run is expensive and is not repeated here. It removes the VM's
+# ephemeral output on success, so the run id and hash above belong to this
+# delivered artifact only; a new run needs its own run id and hash.
 .opencode/skills/google-access/scripts/run-baseline-vm.sh <branch>
 
-# Re-validate the retained artifact against the pinned report hash.
-.opencode/skills/google-access/scripts/run-baseline-validation-vm.sh <branch> \
-  baseline-full-20260929T084243Z-29A5F946 \
-  5a0daca809055195028c6688da7f337b4448723038c07bc4b30c24c9353d62d6
+# Re-read the committed artifact against the published sources (needs working
+# ADC). The VM-side output of run baseline-full-20260929T084243Z-29A5F946 was
+# removed after re-validation, so the VM launcher path no longer applies to it:
+#   .opencode/skills/google-access/scripts/run-baseline-validation-vm.sh <branch> <run-id> <report-sha256>
+uv run python scripts/validators/validate_baseline.py \
+  --report docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json \
+  --max-patches 25
 ```

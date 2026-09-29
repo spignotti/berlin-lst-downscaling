@@ -37,7 +37,7 @@ if [[ -z "$BRANCH" || -z "$RUN_ID_ARG" || -z "$EXPECT_SHA" ]]; then
 fi
 # The run id is interpolated into remote shell commands (including rm -rf), so
 # it must be shell-safe, exactly like BRANCH in vm_init_run.
-if [[ ! "$RUN_ID_ARG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+if [[ ! "$RUN_ID_ARG" =~ ^[A-Za-z0-9._-]+$ || "$RUN_ID_ARG" == "." || "$RUN_ID_ARG" == ".." ]]; then
   echo "ERROR: invalid run id: $RUN_ID_ARG" >&2
   exit 1
 fi
