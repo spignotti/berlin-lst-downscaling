@@ -205,14 +205,15 @@ def _prove_prior_gap(
         ]
         if outside:
             return "prior_window_outside_scene", f"blocks outside the scene grid: {outside[:3]}"
-        px_col0, px_row0 = _canon_offset(src.transform, 10.0)
         empty: list[tuple[int, int]] = []
         for b in required:
-            r_start = max(b[0] * _BLOCK_PX - px_row0, 0)
-            c_start = max(b[1] * _BLOCK_PX - px_col0, 0)
+            # The Landsat COG is native 100 m, so one 1000 m block covers
+            # ``_BLOCK_CELLS`` raster rows/columns - never 10 m pixels.
+            r_start = max(b[0] * _BLOCK_CELLS - row0, 0)
+            c_start = max(b[1] * _BLOCK_CELLS - col0, 0)
             window = Window.from_slices(
-                (r_start, min(r_start + _BLOCK_PX, src.height)),
-                (c_start, min(c_start + _BLOCK_PX, src.width)),
+                (r_start, min(r_start + _BLOCK_CELLS, src.height)),
+                (c_start, min(c_start + _BLOCK_CELLS, src.width)),
             )
             if window.height <= 0 or window.width <= 0:
                 return None
@@ -387,6 +388,11 @@ def main() -> int:
     by_split: dict[str, list[dict]] = {}
     for record in report["patches"]:
         by_split.setdefault(str(record["split"]), []).append(record)
+    orphan_splits = sorted(set(by_split) - set(report["splits"]))
+    if orphan_splits:
+        errors.append(
+            f"patch records exist for splits absent from the split summary: {orphan_splits}"
+        )
 
     # ── selection + exclusion audit: every requested row is scored or proven ──
     # The report records scored patches and exclusion counts, never per-patch

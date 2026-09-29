@@ -35,6 +35,12 @@ if [[ -z "$BRANCH" || -z "$RUN_ID_ARG" || -z "$EXPECT_SHA" ]]; then
   echo "Usage: $0 <branch> <run-id> <expected-report-sha256>" >&2
   exit 1
 fi
+# The run id is interpolated into remote shell commands (including rm -rf), so
+# it must be shell-safe, exactly like BRANCH in vm_init_run.
+if [[ ! "$RUN_ID_ARG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "ERROR: invalid run id: $RUN_ID_ARG" >&2
+  exit 1
+fi
 
 PIPELINE_LABEL="Baseline report validation"
 MARKER_CONFIG="baseline_validation"
@@ -74,11 +80,16 @@ VALIDATOR_OK=1
 TRANSFER_OK=1
 EVIDENCE_OK=1
 
-REMOTE_REPORT_SHA=$(ssh_cmd "sha256sum '$REMOTE_REPORT'" | cut -d' ' -f1)
-echo "  Retained report sha256: $REMOTE_REPORT_SHA"
-if [[ "$REMOTE_REPORT_SHA" == "$EXPECT_SHA" ]]; then
-  SHA_OK=0
+REMOTE_REPORT_SHA=""
+if ssh_cmd "test -f '$REMOTE_REPORT'"; then
+  REMOTE_REPORT_SHA=$(ssh_cmd "sha256sum '$REMOTE_REPORT'" | cut -d' ' -f1)
 else
+  echo "ERROR: retained report not found at $REMOTE_REPORT"
+fi
+echo "  Retained report sha256: ${REMOTE_REPORT_SHA:-missing}"
+if [[ -n "$REMOTE_REPORT_SHA" && "$REMOTE_REPORT_SHA" == "$EXPECT_SHA" ]]; then
+  SHA_OK=0
+elif [[ -n "$REMOTE_REPORT_SHA" ]]; then
   echo "ERROR: retained report sha256 does not match the expected value."
 fi
 
