@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_DIR="$(cd -P "$(dirname "$0")" && pwd -P)"
 RUN_ID_WAIT_SECONDS=120
 
 # ── preflight ────────────────────────────────────────────────────────
@@ -31,32 +31,47 @@ if [[ -z "$LAUNCHER" ]]; then
   echo "Usage: $0 <launcher> [args...]" >&2
   echo "Approved launchers: run-dynamic-vm.sh run-features-vm.sh" >&2
   echo "  run-training-data-vm.sh run-qa-stage1-vm.sh run-qa-stage2-vm.sh" >&2
+  echo "  run-modeling-smoke-vm.sh run-patch-read-timing-vm.sh" >&2
+  echo "  run-baseline-vm.sh run-baseline-validation-vm.sh" >&2
   exit 1
 fi
 shift
 
-# Resolve launcher path (allow bare names by resolving against SCRIPTS_DIR)
+# Resolve bare names against SCRIPTS_DIR; an absolute path is normalized by the
+# containment check below.
 if [[ "$LAUNCHER" != /* ]]; then
   LAUNCHER="$SCRIPTS_DIR/$LAUNCHER"
 fi
 
-# Allowlist: only the existing fail-closed launchers
-BASENAME="$(basename "$LAUNCHER")"
+# Allowlist: only the existing fail-closed launchers, and only the approved
+# file inside this scripts directory. A basename match alone is not enough — an
+# outside path could otherwise borrow an approved name.
+BASENAME="$(basename -- "$LAUNCHER")"
+APPROVED="$SCRIPTS_DIR/$BASENAME"
 case "$BASENAME" in
-  run-dynamic-vm.sh|run-features-vm.sh|run-training-data-vm.sh|run-qa-stage1-vm.sh|run-qa-stage2-vm.sh)
+  run-dynamic-vm.sh|run-features-vm.sh|run-training-data-vm.sh|run-qa-stage1-vm.sh|run-qa-stage2-vm.sh|run-modeling-smoke-vm.sh|run-patch-read-timing-vm.sh|run-baseline-vm.sh|run-baseline-validation-vm.sh)
     ;;
   *)
     echo "ERROR: not an approved launcher: $BASENAME" >&2
     echo "Approved: run-dynamic-vm.sh, run-features-vm.sh, run-training-data-vm.sh," >&2
-    echo "  run-qa-stage1-vm.sh, run-qa-stage2-vm.sh" >&2
+    echo "  run-qa-stage1-vm.sh, run-qa-stage2-vm.sh, run-modeling-smoke-vm.sh," >&2
+    echo "  run-patch-read-timing-vm.sh, run-baseline-vm.sh," >&2
+    echo "  run-baseline-validation-vm.sh" >&2
     exit 1
     ;;
 esac
 
-if [[ ! -f "$LAUNCHER" ]]; then
-  echo "ERROR: launcher not found: $LAUNCHER" >&2
+if [[ ! -f "$APPROVED" ]]; then
+  echo "ERROR: launcher not found: $APPROVED" >&2
   exit 1
 fi
+
+LAUNCHER_DIR="$(cd -P "$(dirname -- "$LAUNCHER")" 2>/dev/null && pwd -P)" || LAUNCHER_DIR=""
+if [[ "$LAUNCHER_DIR" != "$SCRIPTS_DIR" || ! "$LAUNCHER" -ef "$APPROVED" ]]; then
+  echo "ERROR: launcher must be the approved file in $SCRIPTS_DIR: $LAUNCHER" >&2
+  exit 1
+fi
+LAUNCHER="$APPROVED"
 
 WORKSPACE_ID="${HERDR_WORKSPACE_ID:?}"
 

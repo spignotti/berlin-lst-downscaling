@@ -18,6 +18,7 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Run Model Smoke: `.opencode/skills/google-access/scripts/run-modeling-smoke-vm.sh [branch]`
 - Run Baseline:   `.opencode/skills/google-access/scripts/run-baseline-vm.sh [branch]`
 - Validate Baseline: `.opencode/skills/google-access/scripts/run-baseline-validation-vm.sh <branch> <run-id> <report-sha256>`
+- Run Patch Timing: `.opencode/skills/google-access/scripts/run-patch-read-timing-vm.sh [branch] [extra args...]`
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
 - Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
 - Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
@@ -382,6 +383,7 @@ process from the agent pane and create dedicated monitoring panels:
 .opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-vm.sh full main
 .opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-vm.sh main
 .opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-data-vm.sh main
+.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-baseline-vm.sh main
 ```
 
 The launcher:
@@ -391,8 +393,11 @@ The launcher:
 4. Splits read-only snapshot panes: VM status, bucket contents, run status
 
 Approved launchers only: `run-dynamic-vm.sh`, `run-features-vm.sh`,
-`run-training-data-vm.sh`, `run-qa-stage1-vm.sh`, `run-qa-stage2-vm.sh`.
-Arbitrary executables are rejected.
+`run-training-data-vm.sh`, `run-qa-stage1-vm.sh`, `run-qa-stage2-vm.sh`,
+`run-modeling-smoke-vm.sh`, `run-patch-read-timing-vm.sh`, `run-baseline-vm.sh`,
+`run-baseline-validation-vm.sh`. The approved file must be the one inside this
+scripts directory; a path elsewhere that borrows an approved basename is
+rejected.
 
 ### Billing visibility
 
