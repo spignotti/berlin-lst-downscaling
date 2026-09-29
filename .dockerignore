@@ -1,0 +1,23 @@
+# Build context exclusions for the Vertex acceptance image. The image must not
+# carry Git metadata, credentials, local data, or run artifacts.
+.git
+.github
+.venv
+.nox
+.opencode
+.herdr
+.tmp
+.env
+.env.*
+!.env.example
+__pycache__
+*.py[cod]
+*.egg-info
+*.log
+data
+logs
+outputs
+wandb
+docs
+tests
+*.md

@@ -259,6 +259,54 @@ def contract_invariants(cfg: DictConfig) -> None:
         raise RuntimeError("temporal split contract no longer maps 2024/2025 as frozen")
 
 
+def assert_vertex_smoke_bounds(cfg: DictConfig) -> None:
+    """Fail closed unless the resolved config is the bounded Vertex GPU smoke.
+
+    The Vertex acceptance run is a paid, one-shot GPU job. The worker must
+    refuse to start if the resolved config drifted from the bounded smoke
+    contract — a silent fall back to CPU, an unbounded split, or a full-length
+    run would waste the job. Called before any source read when the resolved
+    config sets ``vertex_smoke_bounds: true``; the guarded launcher enforces the
+    same bounds before submitting.
+    """
+    problems: list[str] = []
+    if str(cfg.data.get("kind")) != "real":
+        problems.append(f"data.kind={cfg.data.get('kind')!r} (expected 'real')")
+    if str(cfg.data.get("mode")) != "stream":
+        problems.append(f"data.mode={cfg.data.get('mode')!r} (expected 'stream')")
+
+    bound = cfg.data.get("max_patches_per_split")
+    if isinstance(bound, bool) or not isinstance(bound, int) or not 1 <= bound <= 4:
+        problems.append(
+            f"data.max_patches_per_split={bound!r} (expected an int in [1, 4])"
+        )
+
+    epochs = cfg.trainer.get("max_epochs")
+    if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs != 1:
+        problems.append(f"trainer.max_epochs={epochs!r} (expected 1)")
+
+    if str(cfg.trainer.get("accelerator")) != "gpu":
+        problems.append(
+            f"trainer.accelerator={cfg.trainer.get('accelerator')!r} (expected 'gpu')"
+        )
+
+    devices = cfg.trainer.get("devices")
+    if isinstance(devices, bool) or not isinstance(devices, int) or devices != 1:
+        problems.append(f"trainer.devices={devices!r} (expected 1)")
+
+    if str(cfg.wandb.get("mode")) != "online":
+        problems.append(f"wandb.mode={cfg.wandb.get('mode')!r} (expected 'online')")
+
+    output_root = str(cfg.get("output_root", ""))
+    if not output_root or output_root.startswith("gs://"):
+        problems.append(
+            f"output_root={output_root!r} (expected a non-empty local path)"
+        )
+
+    if problems:
+        raise ValueError("vertex smoke config is out of bounds: " + "; ".join(problems))
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -293,6 +341,17 @@ def _fit_contract_lifecycle(
     # which were dropped, with reasons. Retained beside the run.
     data_module.setup()
     scope = data_module.stats()
+    # Fail closed on an empty split: a run with no admitted train or validation
+    # patch cannot train or select a checkpoint, so it must not proceed.
+    raw_counts = scope["patches_per_split"]
+    per_split = (
+        {str(k): int(v) for k, v in raw_counts.items()} if isinstance(raw_counts, dict) else {}
+    )
+    empty_splits = [s for s in ("train", "validation") if per_split.get(s, 0) <= 0]
+    if empty_splits:
+        raise RuntimeError(
+            f"no patches admitted for split(s) {empty_splits}; refusing to train"
+        )
     scope_uri = output_root / "data_scope.json"
     scope_uri.write_text(json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8")
     log_event(
@@ -464,11 +523,20 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     contract_invariants(cfg)
     source = real_source_config(cfg)
     scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
-    max_patches = cfg.data.get("max_patches_per_split") or None
+    # ``null`` means unbounded (a full run); ``0`` would otherwise be falsy and
+    # silently become unbounded, so reject it explicitly.
+    max_patches = cfg.data.get("max_patches_per_split")
+    if max_patches is not None:
+        if isinstance(max_patches, bool) or int(max_patches) <= 0:
+            raise ValueError(
+                "data.max_patches_per_split must be a positive int or null "
+                f"(unbounded), got {max_patches!r}"
+            )
+        max_patches = int(max_patches)
     data_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
-        max_patches_per_split=None if max_patches is None else int(max_patches),
+        max_patches_per_split=max_patches,
         scene_ids=scene_ids or None,
         mode=str(cfg.data.get("mode", "eager")),
         num_workers=int(cfg.data.get("num_workers", 0)),
@@ -502,6 +570,8 @@ def run_modeling(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     ``real`` is the WB3 patch-index path. An unknown value raises rather than
     silently training on the wrong data.
     """
+    if bool(cfg.get("vertex_smoke_bounds", False)):
+        assert_vertex_smoke_bounds(cfg)
     kind = str(cfg.data.get("kind", "synthetic"))
     if kind == "synthetic":
         return run_training(cfg, run_id=run_id)
@@ -523,6 +593,7 @@ def _finalize_wandb(wandb_logger: WandbLogger, metadata: dict, success: bool) ->
 
 __all__ = [
     "ModelingRunResult",
+    "assert_vertex_smoke_bounds",
     "contract_invariants",
     "real_source_config",
     "run_contract_synthetic_training",
