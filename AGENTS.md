@@ -30,12 +30,16 @@ Git policy: `feature-pr` — direct-main for personal/local repos (commit on def
 
 `data-pipeline`
 
-## Validation
+## Verification
+
+How to establish that a change is done, using non-mutating commands or named manual probes:
 
 - `uv run nox` — full validation gate; run before every commit
 - `nox -s lint` — docs, config, comment-only changes
 - `nox -s lint typecheck` — structural changes (new modules, imports, type signatures)
 - No test session — tests are opt-in. Quality validated via real-data QA gates (smoke, spike scripts), not unit tests.
+
+PR CI: `expected`
 
 ## Data Safety
 
@@ -85,6 +89,7 @@ Opt-out reason: none
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger contracts.
 - `docs/phase-2-preparation.md` — phase-2 preparation state.
 - `docs/patch-read-timing.md` — real patch read timing measurement and its no-optimization decision.
+- `docs/baseline-full-results.md` — full validation/test naive baseline anchor (issue #39) with its run artifact.
 
 ## Notion Integration
 
@@ -102,6 +107,8 @@ Mode: basic
 
 ## Merge Workflow
 
-Standard profile without Security CI: merges are decided by human review plus local validation (`uv run nox`) and GitHub mergeability (`CLEAN`/`MERGEABLE`) with no failing visible checks.
+Merges are decided by human review plus local validation (`uv run nox`) and GitHub mergeability (`CLEAN`/`MERGEABLE`) with no failing visible checks.
 
-The basic PR-review gate is active. `/pr-review` resolves the mode marker from the verified PR base SHA, so this mode applies to subsequent issue-backed PRs but not to the PR that first introduces the marker. PRs that do not qualify for the basic gate continue under the human-review rule above.
+Post-PR review is Build-managed for a PR whose verified base commit carries the `PR CI: expected` declaration above: Build waits for the pull-request checks on the exact head, reports the readiness evidence, then asks once and performs the squash merge. The merge is never unattended — that confirmation is always required.
+
+The `Mode: basic` gate above remains the `/pr-review` path for issue-backed PRs that do not resolve a Build-managed readiness case. Both resolve their mode from the verified PR base SHA, so the `PR CI: expected` declaration applies to PRs based on a `main` that already contains it, not to the PR that introduces it.

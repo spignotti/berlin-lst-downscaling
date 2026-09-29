@@ -16,6 +16,8 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
 - Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
 - Run Model Smoke: `.opencode/skills/google-access/scripts/run-modeling-smoke-vm.sh [branch]`
+- Run Baseline:   `.opencode/skills/google-access/scripts/run-baseline-vm.sh [branch]`
+- Validate Baseline: `.opencode/skills/google-access/scripts/run-baseline-validation-vm.sh <branch> <run-id> <report-sha256>`
 - Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
 - Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
 - Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`

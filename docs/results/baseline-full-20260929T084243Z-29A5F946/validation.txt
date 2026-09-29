@@ -1,0 +1,4 @@
+3:  selection test: full, 1803 scored, 0 missing, 0 recorded exclusions
+4:  selection validation: full, 1341 scored, 1 missing, 1 recorded exclusions
+5:  gap LC08_L2SP_192023_20240513_02_T1:E394790N5812810: no_valid_prior_block (blocks with 0 native-valid cells: [(27, 25)]); mask cells 244
+56:OK: baseline report valid (50 patches recomputed, 1 exclusion(s) independently proven)
