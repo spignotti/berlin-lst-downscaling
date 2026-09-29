@@ -89,6 +89,7 @@ Opt-out reason: none
 - `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger contracts.
 - `docs/phase-2-preparation.md` — phase-2 preparation state.
 - `docs/patch-read-timing.md` — real patch read timing measurement and its no-optimization decision.
+- `docs/baseline-full-results.md` — full validation/test naive baseline anchor (issue #39) with its run artifact.
 
 ## Notion Integration
 
