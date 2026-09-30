@@ -48,12 +48,13 @@ COPY scripts ./scripts
 COPY configs ./configs
 RUN uv sync --frozen --no-dev
 
-# Writable local output surface for the non-root runtime user: checkpoints,
-# logs, data_scope.json, and the W&B save dir all live under the run's local
-# output root (data/runs/vertex-smoke/<label>).
+# Writable surface for the non-root runtime user. Hydra writes its own log to
+# the process working directory (`/app`), and checkpoints, run logs,
+# data_scope.json, and the W&B save dir live under the run's local output root
+# beneath it, so the whole app tree must be writable by `runner`.
 RUN useradd --create-home --uid 1000 runner \
     && mkdir -p /app/data/runs/vertex-smoke \
-    && chown -R runner:runner /app/data
+    && chown -R runner:runner /app
 USER runner
 
 ENTRYPOINT ["/app/scripts/operators/vertex_entrypoint.sh"]
