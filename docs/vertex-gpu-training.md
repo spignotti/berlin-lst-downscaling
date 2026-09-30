@@ -98,11 +98,11 @@ with `gcloud ai custom-jobs cancel <resource-name> --region=europe-west3`.
 - Machine: one on-demand `n1-standard-4` + one `NVIDIA_TESLA_T4` in
   `europe-west3`.
 - Server-side job `timeout` 2700 s (45 min) and `disable_retries` enforce the
-  bounds; single worker pool; no persistent resource. `max_wait_duration`
-  (600 s) is also set, but it only takes effect under a dynamic-workload
-  strategy (`DWS_FLEX_START`); under the default on-demand strategy it is
-  dormant, and the client-side wait budget plus the exposure ceiling cover the
-  queue window conservatively.
+  bounds; single worker pool; no persistent resource. Vertex rejects
+  `max_wait_duration` unless the scheduling strategy is `DWS_FLEX_START`, so the
+  600 s queue allowance is enforced client-side: the launcher stops waiting past
+  its budget but leaves the job for `--status`/cancel, and nothing is billed
+  while the job is QUEUED.
 - The launcher refuses to submit when the projected exposure
   (`hourly_rate × (timeout + max_wait)`) exceeds `--max-exposure-usd`
   (default $3.00). Billing starts when resources are provisioned and runs until

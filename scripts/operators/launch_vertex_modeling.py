@@ -126,7 +126,6 @@ def _submit(
     env: list[tuple[str, str]],
     service_account: str,
     timeout_seconds: int,
-    max_wait_seconds: int,
 ) -> str:
     """Create the job and return its full resource name.
 
@@ -134,6 +133,11 @@ def _submit(
     before any waiting — a disconnected client reconnects with ``--status``
     instead of resubmitting. No ``base_output_directory`` is set, so no GCS
     staging bucket is involved.
+
+    Only ``timeout`` and ``disable_retries`` are set: Vertex rejects
+    ``max_wait_duration`` unless the scheduling strategy is ``FLEX_START``, so
+    the queue allowance is enforced client-side instead and nothing is billed
+    while the job is still QUEUED.
     """
     custom_job = CustomJob(
         display_name=display_name,
@@ -143,7 +147,6 @@ def _submit(
             service_account=service_account,
             scheduling=Scheduling(
                 timeout=Duration(seconds=timeout_seconds),
-                max_wait_duration=Duration(seconds=max_wait_seconds),
                 disable_retries=True,
             ),
         ),
@@ -196,7 +199,12 @@ def main() -> int:
     parser.add_argument("--project", default=PROJECT)
     parser.add_argument("--region", default=REGION)
     parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
-    parser.add_argument("--max-wait-seconds", type=int, default=DEFAULT_MAX_WAIT_SECONDS)
+    parser.add_argument(
+        "--max-wait-seconds",
+        type=int,
+        default=DEFAULT_MAX_WAIT_SECONDS,
+        help="client-side queue/provisioning wait budget (not sent to Vertex)",
+    )
     parser.add_argument("--hourly-rate-usd", type=float, default=DEFAULT_HOURLY_RATE_USD)
     parser.add_argument("--max-exposure-usd", type=float, default=DEFAULT_MAX_EXPOSURE_USD)
     parser.add_argument("--evidence-prefix", default=EVIDENCE_PREFIX)
@@ -273,7 +281,6 @@ def main() -> int:
         env=env,
         service_account=args.service_account,
         timeout_seconds=args.timeout_seconds,
-        max_wait_seconds=args.max_wait_seconds,
     )
     print(f"submitted job: {resource_name}", flush=True)
 
