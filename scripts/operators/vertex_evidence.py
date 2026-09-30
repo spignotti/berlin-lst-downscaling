@@ -26,8 +26,9 @@ _RESULT_TAIL_LINES = 20
 
 
 def _read_json(path: Path) -> dict | None:
-    """Read a JSON file, warning (never silently) on an unreadable/corrupt file."""
+    """Read a JSON file, warning (never silently) on a missing/unreadable file."""
     if not path.is_file():
+        print(f"WARNING: {path} not found", file=sys.stderr)
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))

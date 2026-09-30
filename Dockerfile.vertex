@@ -47,7 +47,7 @@ RUN uv sync --frozen --no-dev
 # output root (data/runs/vertex-smoke/<label>).
 RUN useradd --create-home --uid 1000 runner \
     && mkdir -p /app/data/runs/vertex-smoke \
-    && chown -R runner:runner /app
+    && chown -R runner:runner /app/data
 USER runner
 
 ENTRYPOINT ["/app/scripts/operators/vertex_entrypoint.sh"]
