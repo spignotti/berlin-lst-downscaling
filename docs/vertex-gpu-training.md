@@ -81,10 +81,17 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
   --status <projects/.../locations/europe-west3/customJobs/...>
 ```
 
-The launcher captures the job resource name immediately and polls to a terminal
-state. If the client disconnects, the job keeps running server-side; reconnect
-with `--status <resource-name>`. Cancel a runaway job with
-`gcloud ai custom-jobs cancel <resource-name> --region=europe-west3`.
+Submission uses the low-level Vertex `JobServiceClient` with an explicit
+`CustomJobSpec` (single worker pool, `service_account`, and `Scheduling` with
+`timeout`/`max_wait_duration`/`disable_retries`). No `base_output_directory` is
+set, so no GCS staging bucket is involved and the worker writes only its local
+output root plus the create-only QA evidence object.
+
+The launcher captures the job resource name from the create response before
+polling, so a disconnected client reconnects with `--status <resource-name>`
+instead of resubmitting. If the client disconnects, the job keeps running
+server-side; reconnect with `--status <resource-name>`. Cancel a runaway job
+with `gcloud ai custom-jobs cancel <resource-name> --region=europe-west3`.
 
 ## Bounds and cost
 

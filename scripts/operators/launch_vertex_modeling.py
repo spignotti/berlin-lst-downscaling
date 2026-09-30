@@ -26,9 +26,18 @@ import re
 import time
 from pathlib import Path
 
-from google.cloud import aiplatform
-from google.cloud.aiplatform import CustomJob
-from google.cloud.aiplatform_v1.types import JobState
+from google.cloud import aiplatform_v1
+from google.cloud.aiplatform_v1.types import (
+    ContainerSpec,
+    CustomJob,
+    CustomJobSpec,
+    EnvVar,
+    JobState,
+    MachineSpec,
+    Scheduling,
+    WorkerPoolSpec,
+)
+from google.protobuf.duration_pb2 import Duration
 from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.run import assert_vertex_smoke_bounds
@@ -84,30 +93,74 @@ def _exposure_usd(hourly_rate: float, timeout: int, max_wait: int) -> float:
     return hourly_rate * (timeout + max_wait) / 3600.0
 
 
-def _worker_pool_spec(image_uri: str, env: list[dict[str, str]]) -> dict:
-    return {
-        "replica_count": 1,
-        "machine_spec": {
-            "machine_type": MACHINE_TYPE,
-            "accelerator_type": ACCELERATOR_TYPE,
-            "accelerator_count": 1,
-        },
-        "container_spec": {"image_uri": image_uri, "env": env},
-    }
+def _client(region: str) -> aiplatform_v1.JobServiceClient:
+    return aiplatform_v1.JobServiceClient(
+        client_options={"api_endpoint": f"{region}-aiplatform.googleapis.com"}
+    )
 
 
-def _state_name(state: object) -> str:
-    try:
-        return JobState(state).name
-    except ValueError:
-        return str(state)
+def _worker_pool_spec(image_uri: str, env: list[tuple[str, str]]) -> WorkerPoolSpec:
+    return WorkerPoolSpec(
+        replica_count=1,
+        machine_spec=MachineSpec(
+            machine_type=MACHINE_TYPE,
+            accelerator_type=ACCELERATOR_TYPE,
+            accelerator_count=1,
+        ),
+        container_spec=ContainerSpec(
+            image_uri=image_uri,
+            env=[EnvVar(name=name, value=value) for name, value in env],
+        ),
+    )
 
 
-def _poll_until_terminal(resource_name: str, deadline: float) -> JobState:
+def _state(job: CustomJob) -> JobState:
+    return JobState(job.state)
+
+
+def _submit(
+    client: aiplatform_v1.JobServiceClient,
+    *,
+    display_name: str,
+    image_uri: str,
+    env: list[tuple[str, str]],
+    service_account: str,
+    timeout_seconds: int,
+    max_wait_seconds: int,
+) -> str:
+    """Create the job and return its full resource name.
+
+    The create response is returned directly, so the resource name is available
+    before any waiting — a disconnected client reconnects with ``--status``
+    instead of resubmitting. No ``base_output_directory`` is set, so no GCS
+    staging bucket is involved.
+    """
+    custom_job = CustomJob(
+        display_name=display_name,
+        labels={"purpose": "vertex-smoke"},
+        job_spec=CustomJobSpec(
+            worker_pool_specs=[_worker_pool_spec(image_uri, env)],
+            service_account=service_account,
+            scheduling=Scheduling(
+                timeout=Duration(seconds=timeout_seconds),
+                max_wait_duration=Duration(seconds=max_wait_seconds),
+                disable_retries=True,
+            ),
+        ),
+    )
+    created = client.create_custom_job(
+        parent=f"projects/{PROJECT}/locations/{REGION}", custom_job=custom_job
+    )
+    return created.name
+
+
+def _poll_until_terminal(
+    client: aiplatform_v1.JobServiceClient, resource_name: str, deadline: float
+) -> JobState:
     last = ""
     while True:
-        job = CustomJob.get(resource_name=resource_name, project=PROJECT, location=REGION)
-        state = JobState(job.state)
+        job = client.get_custom_job(name=resource_name)
+        state = _state(job)
         if state.name != last:
             print(f"  state: {state.name}", flush=True)
             last = state.name
@@ -123,8 +176,8 @@ def _poll_until_terminal(resource_name: str, deadline: float) -> JobState:
 
 
 def _print_status(resource_name: str) -> int:
-    job = CustomJob.get(resource_name=resource_name, project=PROJECT, location=REGION)
-    state = JobState(job.state)
+    job = _client(REGION).get_custom_job(name=resource_name)
+    state = _state(job)
     print(f"job:   {resource_name}")
     print(f"state: {state.name}")
     return 0 if state == JobState.JOB_STATE_SUCCEEDED else 1
@@ -187,15 +240,15 @@ def main() -> int:
 
     evidence_uri = f"{args.evidence_prefix.rstrip('/')}/{args.run_label}/evidence.json"
     env = [
-        {"name": "VERTEX_RUN_LABEL", "value": args.run_label},
-        {"name": "VERTEX_SOURCE_SHA", "value": args.source_sha},
-        {"name": "VERTEX_IMAGE_DIGEST", "value": args.image_uri.split("@", 1)[1]},
-        {"name": "VERTEX_EVIDENCE_URI", "value": evidence_uri},
-        {"name": "VERTEX_OUTPUT_ROOT", "value": f"data/runs/vertex-smoke/{args.run_label}"},
-        {"name": "INFISICAL_MACHINE_IDENTITY_ID", "value": args.infisical_identity},
-        {"name": "INFISICAL_PROJECT_ID", "value": args.infisical_project},
-        {"name": "INFISICAL_ENV", "value": args.infisical_env},
-        {"name": "INFISICAL_SECRET_PATH", "value": args.infisical_path},
+        ("VERTEX_RUN_LABEL", args.run_label),
+        ("VERTEX_SOURCE_SHA", args.source_sha),
+        ("VERTEX_IMAGE_DIGEST", args.image_uri.split("@", 1)[1]),
+        ("VERTEX_EVIDENCE_URI", evidence_uri),
+        ("VERTEX_OUTPUT_ROOT", f"data/runs/vertex-smoke/{args.run_label}"),
+        ("INFISICAL_MACHINE_IDENTITY_ID", args.infisical_identity),
+        ("INFISICAL_PROJECT_ID", args.infisical_project),
+        ("INFISICAL_ENV", args.infisical_env),
+        ("INFISICAL_SECRET_PATH", args.infisical_path),
     ]
 
     display_name = f"vertex-smoke-{args.run_label}"
@@ -212,26 +265,20 @@ def main() -> int:
         print("preflight only: no job submitted")
         return 0
 
-    aiplatform.init(project=PROJECT, location=REGION)
-    job = CustomJob(
+    client = _client(REGION)
+    resource_name = _submit(
+        client,
         display_name=display_name,
-        worker_pool_specs=[_worker_pool_spec(args.image_uri, env)],
-        labels={"purpose": "vertex-smoke"},
-    )
-    # Create with sync=False so the resource name is captured before waiting; a
-    # disconnected client can then reconnect with --status instead of resubmitting.
-    job.run(
+        image_uri=args.image_uri,
+        env=env,
         service_account=args.service_account,
-        sync=False,
-        timeout=args.timeout_seconds,
-        max_wait_duration=args.max_wait_seconds,
-        disable_retries=True,
+        timeout_seconds=args.timeout_seconds,
+        max_wait_seconds=args.max_wait_seconds,
     )
-    resource_name = job.resource_name
     print(f"submitted job: {resource_name}", flush=True)
 
     deadline = time.monotonic() + args.timeout_seconds + args.max_wait_seconds + 300
-    final = _poll_until_terminal(resource_name, deadline)
+    final = _poll_until_terminal(client, resource_name, deadline)
     print(f"final state: {final.name}")
     if final == JobState.JOB_STATE_SUCCEEDED:
         print(f"SUCCESS: bounded vertex smoke completed. Evidence: {evidence_uri}")
