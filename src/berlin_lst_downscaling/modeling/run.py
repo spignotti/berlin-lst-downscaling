@@ -157,7 +157,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
 
         # Recoverable selected model state: reload the best checkpoint and
         # verify it predicts (finite, matching extent).
-        reloaded = LSTRegressionTask.load_from_checkpoint(best_checkpoint)
+        reloaded = LSTRegressionTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
         sample = next(iter(data_module.val_dataloader()))
         with torch.inference_mode():
             prediction = reloaded(sample)
@@ -428,7 +428,9 @@ def _fit_contract_lifecycle(
         # it predicts on the contract shape, and recompute the selection metric
         # over the validation batches in eval mode. The saved score is checked,
         # not assumed.
-        reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint)
+        # Verify on CPU: the validation batches below are CPU tensors, so the
+        # reloaded module must match them regardless of the training device.
+        reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
         reloaded.eval()
         recheck = MaskedMAE()
         with torch.inference_mode():
