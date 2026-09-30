@@ -18,9 +18,15 @@ ENV PYTHONUNBUFFERED=1 \
 COPY --from=ghcr.io/astral-sh/uv:0.7.2@sha256:3b898ca84fbe7628c5adcd836c1de78a0f1ded68344d019af8478d4358417399 /uv /uvx /usr/local/bin/
 
 # Pinned, checksum-verified Infisical CLI for runtime secret injection.
+#
+# Runtime system libraries the rasterio/GDAL and scientific wheels load from the
+# OS (the wheels bundle GDAL itself, but not every transitive system library).
 ARG INFISICAL_CLI_VERSION=0.43.137
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        libexpat1 libsqlite3-0 zlib1g libzstd1 liblzma5 libjpeg62-turbo \
+        libpng16-16 libtiff6 libcurl4 libxml2 \
     && rm -rf /var/lib/apt/lists/* \
     && cd /tmp \
     && curl -fsSLO "https://github.com/Infisical/cli/releases/download/v${INFISICAL_CLI_VERSION}/cli_${INFISICAL_CLI_VERSION}_linux_amd64.tar.gz" \
