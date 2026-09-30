@@ -24,7 +24,9 @@ set -euo pipefail
 : "${INFISICAL_PROJECT_ID:?INFISICAL_PROJECT_ID is required}"
 : "${INFISICAL_ENV:?INFISICAL_ENV is required}"
 
-export INFISICAL_API_URL="${INFISICAL_API_URL:-https://eu.infisical.com}"
+# EU Cloud: a machine identity login does not persist the instance, so the
+# domain must be set explicitly or every command would go to US Cloud.
+export INFISICAL_DOMAIN="${INFISICAL_DOMAIN:-https://eu.infisical.com}"
 export INFISICAL_DISABLE_UPDATE_CHECK=true
 
 OUTPUT_ROOT="${VERTEX_OUTPUT_ROOT:-data/runs/vertex-smoke/$VERTEX_RUN_LABEL}"
