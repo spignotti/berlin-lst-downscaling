@@ -21,17 +21,17 @@ invocation.
 
 ## Region
 
-- **Acceptance smoke: `europe-west4`.** `europe-west3` (Frankfurt) is where the
-  bucket and the image live, but it has **no Vertex T4 training quota**, so the
-  T4 job cannot start there. `europe-west4` has T4 training quota.
-- Running in `europe-west4` while the bucket and Artifact Registry repository
-  stay in `europe-west3` adds **cross-region transfer** (`$0.02/GiB` within
-  Europe for both Cloud Storage and Artifact Registry) — small for the bounded
-  smoke, but additive to the compute estimate.
-- **This is a smoke-only choice.** The full Stage-1 run should return to
-  `europe-west3` once its T4 quota is granted, to avoid repeated cross-region
-  transfer at full split size. A T4 quota increase for `europe-west3` has been
-  requested; until it is decided, the full run is blocked on capacity.
+- **Both the smoke and the full run use `europe-west3`** (Frankfurt), where the
+  bucket and the image live and where the Vertex T4 **training** quota is now
+  granted.
+- History: the first submission attempts (`europe-west3`, then `europe-west4`)
+  were rejected at admission with
+  `429 aiplatform.googleapis.com/custom_model_training_nvidia_t4_gpus`. The
+  Vertex *training* quota is separate from the Compute Engine `NVIDIA_T4_GPUS`
+  quota (which read 1) and was 0 in both regions. A quota increase for
+  `europe-west3` was requested and approved; `europe-west4` is not used.
+- Because bucket, registry, and job share one region, there is **no
+  cross-region** Cloud Storage or Artifact Registry transfer for this path.
 
 ## Identities
 
@@ -90,9 +90,12 @@ gcloud builds submit --project=berlin-lst-training \
 Image digest in use:
 `europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:1b803e57baaca5c8463b6ac4128b953b6097f1dc41f658107c05ff3c00fa57c7`
 
-The launcher refuses an unpinned image. The image contains the worker code and
-configs at build time; rebuild and record a new digest if any of
-`Dockerfile.vertex`, `configs/modeling/`, `src/`, or `scripts/operators/` change.
+The launcher refuses an unpinned image. The image bakes the **worker runtime**
+(`vertex_entrypoint.sh`, `vertex_evidence.py`, the runner, `src/`, and
+`configs/`) at build time; rebuild and record a new digest if any of those
+change. The launcher itself (`scripts/operators/launch_vertex_modeling.py`) runs
+on the workstation, never inside the container, so a launcher-only edit does
+**not** require a rebuild even though `scripts/` is copied into the image.
 
 ## Launch, status, cancel, reconnect
 
@@ -111,7 +114,7 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 
 # Reconnect / inspect an existing job (do NOT resubmit):
 uv run --group operators python scripts/operators/launch_vertex_modeling.py \
-  --status projects/<n>/locations/europe-west4/customJobs/<id>
+  --status projects/<n>/locations/europe-west3/customJobs/<id>
 ```
 
 Submission uses the low-level Vertex `JobServiceClient` with an explicit
@@ -125,20 +128,20 @@ and nothing is billed while the job is QUEUED.
 The launcher captures the job resource name from the create response before
 polling, so a disconnected client reconnects with `--status <resource-name>`
 instead of resubmitting. Cancel a runaway job with
-`gcloud ai custom-jobs cancel <resource-name> --region=europe-west4`.
+`gcloud ai custom-jobs cancel <resource-name> --region=europe-west3`.
 
 ## Bounds and cost
 
 - Machine: one on-demand `n1-standard-4` + one `NVIDIA_TESLA_T4` in
-  `europe-west4` (smoke region).
+  `europe-west3`.
 - Server-side job `timeout` 2700 s (45 min) and `disable_retries` enforce the
   bounds; single worker pool; no persistent resource. The timeout is the hard
   ceiling on compute time.
 - The launcher refuses to submit when the projected **compute** exposure
   (`hourly_rate × (timeout + max_wait)`) exceeds `--max-exposure-usd`
-  (default $3.00). This is compute only: cross-region Cloud Storage reads and
-  the image pull from `europe-west3` (`$0.02/GiB` within Europe) are additive,
-  and the worker may read whole Landsat scenes during admission.
+  (default $3.00). The bucket and image are in the same region, so there is no
+  cross-region transfer; only compute (and negligible same-region storage /
+  logging) applies.
 - Pass the verified regional rate with `--hourly-rate-usd`; the default $0.75/h
   is an **unverified estimate**. Google does not enforce a hard spending cap on
   a running job, so the timeout and the launcher's exposure check — not a

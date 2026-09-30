@@ -1,15 +1,14 @@
 """Guarded launcher for the bounded Vertex GPU acceptance smoke (issue #38).
 
 Submits exactly one on-demand ``n1-standard-4`` + ``NVIDIA_TESLA_T4`` Vertex
-Custom Job in ``europe-west4`` that runs the bounded ``vertex_smoke`` config
+Custom Job in ``europe-west3`` that runs the bounded ``vertex_smoke`` config
 through the existing Hydra/Lightning/W&B runner. Server-side job limits, a
 single worker pool, no persistent resource, and no retries are set here so a
 disconnected client cannot leave an unbounded or repeated GPU job.
 
-``europe-west4`` is the acceptance-smoke region only: ``europe-west3`` (the
-bucket and image region) had no Vertex T4 training quota. The full Stage-1 run
-is a separate decision and should return to ``europe-west3`` once its quota is
-granted (see docs/vertex-gpu-training.md).
+``europe-west3`` is where the bucket and image live and now carries the approved
+Vertex T4 *training* quota. A west4 attempt was rejected at admission
+(``custom_model_training_nvidia_t4_gpus`` 429); see docs/vertex-gpu-training.md.
 
 The launcher never handles a secret: it passes only non-secret identifiers to
 the worker, which resolves ``WANDB_API_KEY`` from the Infisical vault using its
@@ -48,9 +47,10 @@ from hydra import compose, initialize_config_dir
 from berlin_lst_downscaling.modeling.run import assert_vertex_smoke_bounds
 
 PROJECT = "berlin-lst-training"
-# Acceptance-smoke region: europe-west3 (bucket + image region) has no Vertex T4
-# training quota; europe-west4 does. See docs/vertex-gpu-training.md.
-REGION = "europe-west4"
+# Acceptance-smoke region: europe-west3 (bucket + image region). Its Vertex T4
+# *training* quota was granted after a west4 attempt failed at admission. See
+# docs/vertex-gpu-training.md.
+REGION = "europe-west3"
 MACHINE_TYPE = "n1-standard-4"
 ACCELERATOR_TYPE = "NVIDIA_TESLA_T4"
 EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
@@ -59,9 +59,8 @@ EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
 DEFAULT_TIMEOUT_SECONDS = 2700
 DEFAULT_MAX_WAIT_SECONDS = 600
 # Approximate on-demand n1-standard-4 + T4 compute rate. An estimate only: pass
-# the verified regional SKU with --hourly-rate-usd before submitting. This is
-# compute only — cross-region GCS reads and image pulls from europe-west3 are
-# additive and are not included in this rate (see docs/vertex-gpu-training.md).
+# the verified regional SKU with --hourly-rate-usd before submitting. The bucket
+# and image share this region, so no cross-region transfer applies.
 DEFAULT_HOURLY_RATE_USD = 0.75
 DEFAULT_MAX_EXPOSURE_USD = 3.0
 POLL_SECONDS = 20
