@@ -188,6 +188,10 @@ def _poll_until_terminal(
 
 
 def _print_status(resource_name: str) -> int:
+    # The pinned client targets REGION; a resource name from another location
+    # would be queried against the wrong endpoint and fail server-side.
+    if f"/locations/{REGION}/" not in resource_name:
+        raise SystemExit(f"ERROR: job resource name is not in {REGION}: {resource_name}")
     job = _client(REGION).get_custom_job(name=resource_name)
     state = _state(job)
     print(f"job:   {resource_name}")

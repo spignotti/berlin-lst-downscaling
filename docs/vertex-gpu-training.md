@@ -70,13 +70,21 @@ ard_root:         gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-202607
 ## Build and push the image
 
 The acceptance image was built with **Cloud Build** (the local Docker export
-hung on this workstation) from code SHA `7ad2a9d`:
+hung on this workstation) from code SHA `7ad2a9d`. Pass a throwaway config
+(Cloud Build workers are linux/amd64, so no `--platform` is needed):
 
 ```bash
-# cloudbuild config runs: docker build -f Dockerfile.vertex -t ${_IMAGE} .
-gcloud builds submit --config=<cloudbuild.yaml> \
-  --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> \
-  --project=berlin-lst-training .
+cat > /tmp/cloudbuild-vertex.yaml <<'YAML'
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, Dockerfile.vertex, -t, ${_IMAGE}, .]
+images:
+  - ${_IMAGE}
+YAML
+
+gcloud builds submit --project=berlin-lst-training \
+  --config=/tmp/cloudbuild-vertex.yaml \
+  --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
 ```
 
 Image digest in use:
