@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,20 +25,22 @@ from google.cloud import storage
 _RESULT_TAIL_LINES = 20
 
 
-def _read_json(path: Path) -> dict:
+def _read_json(path: Path) -> dict | None:
+    """Read a JSON file, warning (never silently) on an unreadable/corrupt file."""
     if not path.is_file():
-        return {}
+        return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"WARNING: could not read {path}: {exc}", file=sys.stderr)
+        return None
 
 
 def _run_context(run_root: Path) -> dict:
     contexts = sorted((run_root / "logs" / "modeling").glob("*.context.json"))
     if not contexts:
         return {}
-    return _read_json(contexts[-1])
+    return _read_json(contexts[-1]) or {}
 
 
 def _result_tail(result_file: Path | None) -> list[str]:
@@ -56,7 +59,7 @@ def build_record(
     result_file: Path | None,
 ) -> dict:
     """Build the compact, non-secret evidence record."""
-    scope = _read_json(run_root / "data_scope.json")
+    scope = _read_json(run_root / "data_scope.json") or {}
     context = _run_context(run_root)
     return {
         "run_label": run_label,
