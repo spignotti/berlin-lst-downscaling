@@ -1,0 +1,50 @@
+# @package _global_
+# Stage-1 bounded learning probe (issue #45). A short, real-streamed run that
+# shows whether the frozen Stage-1 method actually learns, before the full
+# temporal run. It inherits the locked scientific choices from `stage1_locked`
+# (first 10 V3 channels, depth 4, width 32, LR 1e-3, weight decay 0, seed 0,
+# temporal split, masked L1) and overrides only the *scope* of the read.
+#
+# `stage1_lock` is intentionally false here: that marker belongs to the
+# 20-epoch, unbounded full profile. The probe carries `stage1_probe: true` and
+# its own fail-closed guard (`modeling/run.py:assert_stage1_probe`), which
+# re-asserts the same frozen method values plus the exact probe bounds before
+# any source read.
+#
+# Frozen method: do not tune. Probe bounds: the cohort, epochs, and device.
+defaults:
+  - stage1_locked
+  - _self_
+
+stage1_lock: false
+stage1_probe: true
+
+data:
+  # Train/validation only: the 2025 test split is never read, let alone scored.
+  splits: ["train", "validation"]
+  # Scene-spread selection replaces the first-N index bound; keep unbounded.
+  max_patches_per_split: null
+  probe:
+    max_refs_per_split:      # requested refs per split, before admission
+      train: 128
+      validation: 64
+    max_refs_per_scene: 8    # cap per scene so the cohort spans many scenes
+    min_admitted_per_split:  # fail closed if admission drops below the cohort
+      train: 120
+      validation: 60
+    min_scenes_per_split:
+      train: 16
+      validation: 8
+    min_train_years: 3       # a single train year would not show learning
+
+trainer:
+  max_epochs: 6
+  accelerator: "gpu"
+  devices: 1
+
+# Local ephemeral output on the worker disk; the Vertex launcher overrides it
+# with a job-scoped path. Never a canonical or retained root.
+output_root: "data/runs/stage1-probe"
+
+wandb:
+  mode: "online"

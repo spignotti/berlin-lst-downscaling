@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import partial
 from typing import cast
 
@@ -36,6 +37,7 @@ from berlin_lst_downscaling.modeling.metrics import (
     MaskedMAE,
     MaskedSSIM,
     SupportedWindows,
+    ValidCells,
     masked_l1_loss,
     masked_ssim_stats,
     pool_10m_to_100m,
@@ -51,6 +53,21 @@ from berlin_lst_downscaling.modeling.patches import (
 from berlin_lst_downscaling.modeling.unet import UNet
 
 _REAL_SPLITS = ("train", "validation", "test")
+
+
+@dataclass(frozen=True)
+class ProbeScope:
+    """Bounded, scene-spread selection for the Stage-1 learning probe.
+
+    Replaces the first-N index bound with a round-robin over scenes in
+    canonical ``(scene_id, row, col)`` order, so a bounded cohort is not
+    dominated by one or two contiguous scene blocks. The per-split target and
+    the per-scene cap are declared here and asserted against the resolved
+    config by ``run.py:assert_stage1_probe`` before any source read.
+    """
+
+    max_refs_per_split: dict[str, int]
+    max_refs_per_scene: int
 
 
 def _batch_count(n_patches: int, batch_size: int) -> int:
@@ -136,7 +153,10 @@ class RealPatchDataModule(LightningDataModule):
     first N indexed rows — the same ref-level bound the naive baseline uses,
     so the two arms cover an identical requested universe. It defaults to
     unbounded, which is a full-run choice and is expected to be invoked
-    explicitly, not by CI.
+    explicitly, not by CI. ``probe_scope`` replaces that first-N bound with a
+    scene-spread selection (see :class:`ProbeScope`). ``splits`` restricts which
+    published splits are even read; the Stage-1 probe passes train/validation
+    only, so no test ref is ever loaded.
     """
 
     def __init__(
@@ -151,12 +171,17 @@ class RealPatchDataModule(LightningDataModule):
         num_workers: int = 0,
         shuffle_train: bool = False,
         seed: int = 0,
+        splits: Sequence[str] = _REAL_SPLITS,
+        probe_scope: ProbeScope | None = None,
     ) -> None:
         super().__init__()
         if mode not in ("eager", "stream"):
             raise ValueError(f"data mode {mode!r} is not one of 'eager', 'stream'")
         if shuffle_train and mode != "stream":
             raise ValueError("shuffle_train is only supported by the streaming mode")
+        unknown_splits = sorted(set(splits) - set(_REAL_SPLITS))
+        if unknown_splits:
+            raise ValueError(f"unknown split(s) {unknown_splits}; expected {_REAL_SPLITS}")
         self.source = source
         self.batch_size = batch_size
         self.n_active_channels = n_active_channels
@@ -166,10 +191,65 @@ class RealPatchDataModule(LightningDataModule):
         self.num_workers = num_workers
         self.shuffle_train = shuffle_train
         self.seed = seed
+        self.splits = tuple(splits)
+        self.probe_scope = probe_scope
         self.reader: RealPatchReader | None = None
         self._admitted: dict[str, list[PatchRef]] = {}
-        self._skipped: dict[str, list[dict[str, str]]] = {split: [] for split in _REAL_SPLITS}
+        self._requested: dict[str, list[PatchRef]] = {split: [] for split in self.splits}
+        self._skipped: dict[str, list[dict[str, str]]] = {split: [] for split in self.splits}
         self._datasets: dict[str, _BatchDataset | RealPatchDataset] = {}
+
+    def _select_refs(self, refs: list[PatchRef]) -> dict[str, list[PatchRef]]:
+        """Bound the requested refs per split, before any exclusion.
+
+        The naive baseline and the model must cover an identical requested
+        universe, so selection happens on refs and admission never refills a
+        dropped row. ``probe_scope`` selects a deterministic scene-spread
+        cohort; otherwise the first-N bound matches the baseline exactly.
+        """
+        if self.probe_scope is None:
+            taken: Counter[str] = Counter()
+            requested: dict[str, list[PatchRef]] = {split: [] for split in self.splits}
+            for ref in refs:
+                if (
+                    self.max_patches_per_split is not None
+                    and taken[ref.split] >= self.max_patches_per_split
+                ):
+                    continue
+                taken[ref.split] += 1
+                requested[ref.split].append(ref)
+            return requested
+
+        by_split_scene: dict[str, dict[str, list[PatchRef]]] = {
+            split: {} for split in self.splits
+        }
+        for ref in refs:
+            by_split_scene.get(ref.split, {}).setdefault(ref.scene_id, []).append(ref)
+
+        requested = {split: [] for split in self.splits}
+        for split in self.splits:
+            target = self.probe_scope.max_refs_per_split.get(split)
+            if target is None or target <= 0:
+                continue
+            scenes = by_split_scene[split]
+            per_scene = {
+                scene_id: rows[: self.probe_scope.max_refs_per_scene]
+                for scene_id, rows in scenes.items()
+            }
+            index = 0
+            while len(requested[split]) < target:
+                progressed = False
+                for scene_id in scenes:
+                    rows = per_scene[scene_id]
+                    if index < len(rows):
+                        requested[split].append(rows[index])
+                        progressed = True
+                        if len(requested[split]) >= target:
+                            break
+                if not progressed:
+                    break
+                index += 1
+        return requested
 
     def setup(self, stage: str | None = None) -> None:
         # Idempotent: admission is expensive and the lifecycle may set the
@@ -177,19 +257,11 @@ class RealPatchDataModule(LightningDataModule):
         if self._datasets:
             return
         self.reader = RealPatchReader(self.source)
-        refs = load_patch_refs(self.source, splits=_REAL_SPLITS, scene_ids=self.scene_ids)
+        refs = load_patch_refs(self.source, splits=self.splits, scene_ids=self.scene_ids)
         # Bound the *refs* per split, before any exclusion, so the requested
         # universe matches the baseline's selection exactly.
-        taken: Counter[str] = Counter()
-        requested: dict[str, list[PatchRef]] = {split: [] for split in _REAL_SPLITS}
-        for ref in refs:
-            if (
-                self.max_patches_per_split is not None
-                and taken[ref.split] >= self.max_patches_per_split
-            ):
-                continue
-            taken[ref.split] += 1
-            requested[ref.split].append(ref)
+        requested = self._select_refs(refs)
+        self._requested = requested
 
         # Resolve every scene's Landsat COG/flag once, so the admission pass
         # reads the ARD ledger a single time rather than once per scene.
@@ -235,6 +307,17 @@ class RealPatchDataModule(LightningDataModule):
                 for split, refs in self._admitted.items()
             },
             "patches_per_split": {split: len(refs) for split, refs in self._admitted.items()},
+            "requested_per_split": {
+                split: len(refs) for split, refs in self._requested.items()
+            },
+            "scenes_per_split": {
+                split: sorted({ref.scene_id for ref in refs})
+                for split, refs in self._admitted.items()
+            },
+            "years_per_split": {
+                split: sorted({ref.year for ref in refs})
+                for split, refs in self._admitted.items()
+            },
             "patch_ids": {
                 split: [ref.patch_id for ref in refs]
                 for split, refs in self._admitted.items()
@@ -351,6 +434,7 @@ class RealLSTTask(LightningModule):
         depth: int = 4,
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
+        record_probe_metrics: bool = False,
     ) -> None:
         super().__init__()
         self.model = UNet(
@@ -359,10 +443,12 @@ class RealLSTTask(LightningModule):
         self.n_active_channels = n_active_channels
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
+        self.record_probe_metrics = record_probe_metrics
         self.train_mae = MaskedMAE()
         self.val_mae = MaskedMAE()
         self.val_ssim = MaskedSSIM()
         self.val_ssim_windows = SupportedWindows()
+        self.val_valid_cells = ValidCells()
         # Reconstructible model/loss configuration for load_from_checkpoint.
         self.save_hyperparameters()
 
@@ -390,6 +476,7 @@ class RealLSTTask(LightningModule):
         )
         self.val_ssim.update(ssim_sum, ssim_count)
         self.val_ssim_windows.update(ssim_count)
+        self.val_valid_cells.update(batch.mask_100m)
         # Masked MAE is the selection metric; SSIM is logged only.
         self.log(
             "validation/mae_100m", self.val_mae, on_step=False, on_epoch=True, prog_bar=True
@@ -398,6 +485,10 @@ class RealLSTTask(LightningModule):
         self.log(
             "validation/ssim_windows", self.val_ssim_windows, on_step=False, on_epoch=True
         )
+        if self.record_probe_metrics:
+            self.log(
+                "validation/valid_cells", self.val_valid_cells, on_step=False, on_epoch=True
+            )
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(

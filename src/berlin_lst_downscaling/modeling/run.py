@@ -26,8 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from lightning.pytorch import Trainer, seed_everything
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch import LightningModule, Trainer, seed_everything
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
@@ -43,7 +43,12 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     patch_index_fingerprints,
 )
-from berlin_lst_downscaling.modeling.real_task import RealLSTTask, RealPatchDataModule
+from berlin_lst_downscaling.modeling.real_task import (
+    _REAL_SPLITS,
+    ProbeScope,
+    RealLSTTask,
+    RealPatchDataModule,
+)
 from berlin_lst_downscaling.modeling.synthetic import (
     ContractSyntheticDataModule,
     SyntheticDataModule,
@@ -202,6 +207,14 @@ def _git_revision_from_context(context_uri: str) -> str:
         return str(json.load(fh).get("git_commit", "unknown"))
 
 
+def _best_epoch_from_path(path: str) -> int | None:
+    """Recover the selected epoch from a ``best-<epoch>-<metric>.ckpt`` name."""
+    parts = Path(path).stem.split("-")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return None
+    return int(parts[1])
+
+
 def _logger_for(cfg: DictConfig, output_root: Path) -> WandbLogger:
     """Build the W&B logger for the configured mode."""
     wandb_mode = str(cfg.wandb.mode)
@@ -354,6 +367,172 @@ def assert_stage1_lock(cfg: DictConfig) -> None:
         raise ValueError("stage1_locked config is off-contract: " + "; ".join(problems))
 
 
+# The selected config name that carries the bounded Stage-1 learning probe.
+STAGE1_PROBE_CONFIG_NAME = "stage1_probe"
+
+_STAGE1_PROBE_SPLITS = ("train", "validation")
+
+# Frozen Stage-1 scientific values the probe shares with the full profile. The
+# probe's own scope keys (epochs, per-split ref target, per-scene cap, minima)
+# are asserted separately below: they are the probe's bounds, not the method.
+_STAGE1_PROBE_FROZEN: dict[str, object] = {
+    "data.kind": "real",
+    "data.mode": "stream",
+    "data.n_active_channels": 10,
+    "data.shuffle_train": True,
+    "data.max_patches_per_split": None,
+    "model.depth": 4,
+    "model.base_width": 32,
+    "trainer.learning_rate": 1.0e-3,
+    "trainer.weight_decay": 0.0,
+    "trainer.accelerator": "gpu",
+    "trainer.devices": 1,
+    "seed": 0,
+}
+
+_STAGE1_PROBE_SCOPE: dict[str, object] = {
+    "max_refs_per_scene": 8,
+    "max_refs_per_split": {"train": 128, "validation": 64},
+    "min_admitted_per_split": {"train": 120, "validation": 60},
+    "min_scenes_per_split": {"train": 16, "validation": 8},
+    "min_train_years": 3,
+}
+
+
+def assert_stage1_probe(cfg: DictConfig) -> None:
+    """Fail closed unless the resolved config is the bounded Stage-1 probe.
+
+    The probe must not become a full run, read the 2025 test split, or quietly
+    drop the frozen Stage-1 method. Checked before ``RunLogSession`` opens the
+    output path and before any source read, so a drifted invocation cannot
+    create a run directory, touch GCS, or start a paid GPU job.
+    """
+    problems: list[str] = []
+    if cfg.get("stage1_probe") is not True:
+        problems.append("stage1_probe is not true (the probe marker was removed or overridden)")
+    for key, expected in _STAGE1_PROBE_FROZEN.items():
+        actual = OmegaConf.select(cfg, key)
+        if actual != expected:
+            problems.append(f"{key}={actual!r} (expected {expected!r})")
+
+    if list(cfg.data.get("splits") or []) != list(_STAGE1_PROBE_SPLITS):
+        problems.append(
+            f"data.splits={cfg.data.get('splits')!r} (expected {list(_STAGE1_PROBE_SPLITS)!r})"
+        )
+    if cfg.data.get("scene_ids"):
+        problems.append(
+            f"data.scene_ids={cfg.data.get('scene_ids')!r} (expected empty; the probe "
+            "selects its cohort deterministically)"
+        )
+
+    probe = cfg.data.get("probe")
+    if probe is None:
+        problems.append("data.probe block is missing")
+    else:
+        per_scene = probe.get("max_refs_per_scene")
+        if per_scene != _STAGE1_PROBE_SCOPE["max_refs_per_scene"]:
+            problems.append(
+                f"data.probe.max_refs_per_scene={per_scene!r} "
+                f"(expected {_STAGE1_PROBE_SCOPE['max_refs_per_scene']!r})"
+            )
+        for scope_key in ("max_refs_per_split", "min_admitted_per_split", "min_scenes_per_split"):
+            actual_scope = dict(probe.get(scope_key) or {})
+            expected_scope = _STAGE1_PROBE_SCOPE[scope_key]
+            if actual_scope != expected_scope:
+                problems.append(
+                    f"data.probe.{scope_key}={actual_scope!r} (expected {expected_scope!r})"
+                )
+        min_years = probe.get("min_train_years")
+        if min_years != _STAGE1_PROBE_SCOPE["min_train_years"]:
+            problems.append(
+                f"data.probe.min_train_years={min_years!r} "
+                f"(expected {_STAGE1_PROBE_SCOPE['min_train_years']!r})"
+            )
+
+    epochs = cfg.trainer.get("max_epochs")
+    if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs != 6:
+        problems.append(f"trainer.max_epochs={epochs!r} (expected 6 for the probe)")
+
+    output_root = str(cfg.get("output_root", ""))
+    if not output_root or output_root.startswith("gs://") or "/runs/" not in output_root:
+        problems.append(
+            f"output_root={output_root!r} (expected a job-local path under data/runs/)"
+        )
+
+    if str(cfg.wandb.get("mode")) != "online":
+        problems.append(f"wandb.mode={cfg.wandb.get('mode')!r} (expected 'online')")
+
+    if problems:
+        raise ValueError("stage1_probe config is off-contract: " + "; ".join(problems))
+
+
+def assert_probe_minima(cfg: DictConfig, scope: dict) -> None:
+    """Fail closed unless the realized probe cohort meets the declared minima."""
+    probe = cfg.data.probe
+    admitted_raw = scope.get("patches_per_split")
+    scenes_raw = scope.get("scenes_per_split")
+    years_raw = scope.get("years_per_split")
+    admitted = admitted_raw if isinstance(admitted_raw, dict) else {}
+    scenes = scenes_raw if isinstance(scenes_raw, dict) else {}
+    years = years_raw if isinstance(years_raw, dict) else {}
+
+    problems: list[str] = []
+    extra = sorted(set(admitted) - set(_STAGE1_PROBE_SPLITS))
+    if extra:
+        problems.append(f"unexpected split(s) loaded: {extra} (probe is train/validation only)")
+    for split in _STAGE1_PROBE_SPLITS:
+        need_admitted = int(probe.min_admitted_per_split[split])
+        got_admitted = int(admitted.get(split, 0))
+        if got_admitted < need_admitted:
+            problems.append(f"{split} admitted {got_admitted} < required {need_admitted}")
+        need_scenes = int(probe.min_scenes_per_split[split])
+        got_scenes = len(scenes.get(split, []))
+        if got_scenes < need_scenes:
+            problems.append(f"{split} covers {got_scenes} scenes < required {need_scenes}")
+    need_years = int(probe.min_train_years)
+    got_years = len(years.get("train", []))
+    if got_years < need_years:
+        problems.append(f"train covers {got_years} years < required {need_years}")
+
+    if problems:
+        raise ValueError("stage1_probe cohort is out of bounds: " + "; ".join(problems))
+
+
+class EpochMetricsRecorder(Callback):
+    """Write the per-epoch train/validation metrics for a bounded probe.
+
+    The W&B run holds the curve, but a retained, self-contained evidence record
+    needs the numbers locally. One JSON object per validation epoch, rewritten
+    after each epoch so a run that dies mid-fit still leaves the completed epochs
+    for the operator to read.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.epochs: list[dict[str, object]] = []
+
+    def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        metrics = trainer.callback_metrics
+
+        def read(key: str) -> float | None:
+            value = metrics.get(key)
+            return None if value is None else float(value.detach().cpu())
+
+        self.epochs.append(
+            {
+                "epoch": int(trainer.current_epoch) + 1,
+                "train_mae_100m": read("train/mae_100m"),
+                "validation_mae_100m": read("validation/mae_100m"),
+                "validation_valid_cells": read("validation/valid_cells"),
+                "validation_ssim_100m": read("validation/ssim_100m"),
+                "validation_ssim_windows": read("validation/ssim_windows"),
+            }
+        )
+        self.path.write_text(
+            json.dumps(self.epochs, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -371,12 +550,14 @@ def _fit_contract_lifecycle(
     seed = int(cfg.seed)
     seed_everything(seed)
 
+    is_probe = bool(cfg.get("stage1_probe", False))
     task = RealLSTTask(
         n_active_channels=int(cfg.data.n_active_channels),
         base_width=int(cfg.model.base_width),
         depth=int(cfg.model.depth),
         learning_rate=float(cfg.trainer.learning_rate),
         weight_decay=float(cfg.trainer.weight_decay),
+        record_probe_metrics=is_probe,
     )
 
     output_root = Path(str(cfg.output_root))
@@ -399,6 +580,8 @@ def _fit_contract_lifecycle(
         raise RuntimeError(
             f"no patches admitted for split(s) {empty_splits}; refusing to train"
         )
+    if is_probe:
+        assert_probe_minima(cfg, scope)
     scope_uri = output_root / "data_scope.json"
     scope_uri.write_text(json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8")
     log_event(
@@ -424,6 +607,15 @@ def _fit_contract_lifecycle(
         auto_insert_metric_name=False,
     )
 
+    # The epoch recorder is a probe-only artifact: a full run keeps its previous
+    # on-disk surface unchanged.
+    recorder = (
+        EpochMetricsRecorder(output_root / "epoch_metrics.json") if is_probe else None
+    )
+    callbacks: list[Callback] = [checkpoint_callback]
+    if recorder is not None:
+        callbacks.append(recorder)
+
     trainer = Trainer(
         max_epochs=int(cfg.trainer.max_epochs),
         accelerator=str(cfg.trainer.accelerator),
@@ -431,7 +623,7 @@ def _fit_contract_lifecycle(
         deterministic=True,
         benchmark=False,
         logger=wandb_logger,
-        callbacks=[checkpoint_callback],
+        callbacks=callbacks,
         num_sanity_val_steps=0,
         enable_progress_bar=True,
     )
@@ -501,6 +693,21 @@ def _fit_contract_lifecycle(
             raise RuntimeError(
                 f"reloaded checkpoint validation MAE {recomputed:.6f} != selected "
                 f"{best_metric:.6f} (tolerance {tolerance:.6f})"
+            )
+
+        if recorder is not None:
+            summary = {
+                "profile": STAGE1_PROBE_CONFIG_NAME,
+                "epochs_completed": len(recorder.epochs),
+                "max_epochs": int(cfg.trainer.max_epochs),
+                "selection_metric": monitored,
+                "best_epoch": _best_epoch_from_path(best_checkpoint),
+                "best_metric": best_metric,
+                "reload_recomputed": recomputed,
+                "resolved_config": OmegaConf.to_container(cfg, resolve=True),
+            }
+            (output_root / "probe_summary.json").write_text(
+                json.dumps(summary, indent=2, sort_keys=True, default=str), encoding="utf-8"
             )
 
         success = True
@@ -582,6 +789,18 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
                 f"(unbounded), got {max_patches!r}"
             )
         max_patches = int(max_patches)
+    splits = tuple(str(s) for s in (cfg.data.get("splits") or _REAL_SPLITS))
+    probe_cfg = cfg.data.get("probe")
+    probe_scope = (
+        ProbeScope(
+            max_refs_per_split={
+                str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()
+            },
+            max_refs_per_scene=int(probe_cfg.max_refs_per_scene),
+        )
+        if probe_cfg is not None
+        else None
+    )
     data_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
@@ -592,6 +811,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         shuffle_train=bool(cfg.data.get("shuffle_train", False)),
         seed=int(cfg.seed),
         n_active_channels=int(cfg.data.n_active_channels),
+        splits=splits,
+        probe_scope=probe_scope,
     )
     return _fit_contract_lifecycle(
         cfg,
@@ -612,6 +833,22 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     )
 
 
+def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
+    """Run the config-identity guards before any run directory or source read.
+
+    The runner calls this before ``RunLogSession`` opens the output path, so a
+    drifted invocation cannot create a run directory or begin a paid GPU run.
+    Re-invoked by :func:`run_modeling` for programmatic callers; the guards are
+    pure assertions and idempotent.
+    """
+    if config_name == STAGE1_LOCKED_CONFIG_NAME:
+        assert_stage1_lock(cfg)
+    if config_name == STAGE1_PROBE_CONFIG_NAME:
+        assert_stage1_probe(cfg)
+    if bool(cfg.get("vertex_smoke_bounds", False)):
+        assert_vertex_smoke_bounds(cfg)
+
+
 def run_modeling(
     cfg: DictConfig, run_id: str, *, config_name: str | None = None
 ) -> ModelingRunResult:
@@ -623,13 +860,10 @@ def run_modeling(
     silently training on the wrong data.
 
     ``config_name`` is the Hydra-selected config identity. It triggers the
-    fail-closed Stage-1 lock guard before any source read, so the named profile
-    cannot be silently run off-contract.
+    fail-closed Stage-1 lock and probe guards before any source read, so the
+    named profile cannot be silently run off-contract.
     """
-    if config_name == STAGE1_LOCKED_CONFIG_NAME:
-        assert_stage1_lock(cfg)
-    if bool(cfg.get("vertex_smoke_bounds", False)):
-        assert_vertex_smoke_bounds(cfg)
+    guard_modeling_config(cfg, config_name)
     kind = str(cfg.data.get("kind", "synthetic"))
     if kind == "synthetic":
         return run_training(cfg, run_id=run_id)
@@ -650,10 +884,14 @@ def _finalize_wandb(wandb_logger: WandbLogger, metadata: dict, success: bool) ->
 
 
 __all__ = [
+    "EpochMetricsRecorder",
     "ModelingRunResult",
+    "assert_probe_minima",
     "assert_stage1_lock",
+    "assert_stage1_probe",
     "assert_vertex_smoke_bounds",
     "contract_invariants",
+    "guard_modeling_config",
     "real_source_config",
     "run_contract_synthetic_training",
     "run_modeling",
