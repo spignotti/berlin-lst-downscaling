@@ -87,13 +87,28 @@ def check_bounds() -> None:
 
 
 def _validate_run_label(run_label: str) -> None:
-    if not _LABEL_RE.match(run_label) or run_label in (".", ".."):
+    # fullmatch (not match): "$" also matches before a trailing newline.
+    if not _LABEL_RE.fullmatch(run_label) or run_label in (".", ".."):
         raise SystemExit(f"ERROR: invalid run label: {run_label!r}")
 
 
 def _validate_image_uri(image_uri: str) -> None:
     if "@sha256:" not in image_uri:
         raise SystemExit("ERROR: --image-uri must be pinned by digest (@sha256:...)")
+
+
+def _evidence_exists(evidence_uri: str) -> bool:
+    """True if the create-only evidence object already exists (label must be unique)."""
+    bucket_name, _, object_name = evidence_uri[len("gs://") :].partition("/")
+    try:
+        from google.cloud import storage
+
+        return storage.Client().bucket(bucket_name).blob(object_name).exists()
+    except Exception as exc:
+        # A failed probe must not silently allow a label reuse.
+        raise SystemExit(
+            f"ERROR: could not check the evidence prefix {evidence_uri}: {exc}"
+        ) from exc
 
 
 def _exposure_usd(hourly_rate: float, timeout: int, max_wait: int) -> float:
@@ -259,6 +274,11 @@ def main() -> int:
         )
 
     evidence_uri = f"{args.evidence_prefix.rstrip('/')}/{args.run_label}/evidence.json"
+    if _evidence_exists(evidence_uri):
+        raise SystemExit(
+            f"ERROR: evidence already exists at {evidence_uri}; the run label "
+            "must never be reused (the create-only upload would fail after the run)"
+        )
     env = [
         ("VERTEX_RUN_LABEL", args.run_label),
         ("VERTEX_SOURCE_SHA", args.source_sha),

@@ -70,7 +70,9 @@ def build_record(
         "run": {
             "pipeline": context.get("pipeline"),
             "run_id": context.get("run_id"),
-            "git_commit": context.get("git_commit"),
+            # The image excludes .git, so the container's context git fields are
+            # null; the operator-supplied source SHA is the authoritative revision.
+            "git_commit": context.get("git_commit") or source_sha,
             "git_dirty": context.get("git_dirty"),
         },
         "data_scope": {
