@@ -204,6 +204,9 @@ submission:
 ```bash
 uv run python scripts/validators/validate_stage1_full.py --self-check
 uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json>
+# optional: also verify the downloaded checkpoint's bytes against its recorded sha256
+uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json> \
+  --checkpoint <downloaded best.ckpt>
 ```
 
 Exit codes: `0` GO, `2` usable anchor, `3` NO-GO, `1` incomplete/undecidable.

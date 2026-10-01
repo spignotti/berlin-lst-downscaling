@@ -22,11 +22,14 @@ human summary.
 Usage:
     uv run python scripts/validators/validate_stage1_full.py --self-check
     uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json>
+    uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json> \
+        --checkpoint <downloaded best.ckpt>
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -86,6 +89,11 @@ def _classify(
     if not all(_finite(v) for v in train_maes + val_maes):
         return "no-go", ["non-finite train/validation MAE (catastrophic fit)"]
 
+    # A missing test score means the run did not complete, independent of the
+    # learning curve, so it is technical incomplete rather than a NO-GO.
+    if test_mae is None or not _finite(test_mae):
+        return "incomplete", ["one-shot 2025 test score is missing or non-finite"]
+
     first_train, last_train = train_maes[0], train_maes[-1]
     last_val = val_maes[-1]
     best_val = min(val_maes)
@@ -110,9 +118,6 @@ def _classify(
         )
     if failures:
         return "no-go", failures
-
-    if test_mae is None or not _finite(test_mae):
-        return "incomplete", ["one-shot 2025 test score is missing or non-finite"]
 
     if best_val <= val_naive and float(test_mae) <= test_naive:
         return "go", []
@@ -256,6 +261,15 @@ def validate(evidence: dict, baseline: dict) -> tuple[str, list[str], list[str]]
     if evidence.get("profile") != EVIDENCE_PROFILE:
         return "incomplete", [f"evidence profile is not {EVIDENCE_PROFILE!r}"], notes
 
+    base_splits = baseline.get("splits") or {}
+    if not all(
+        isinstance(base_splits.get(s), dict)
+        and "mae" in base_splits[s]
+        and "valid_cells" in base_splits[s]
+        for s in ("validation", "test")
+    ):
+        return "incomplete", ["baseline report is missing validation/test aggregates"], notes
+
     scope = evidence.get("data_scope")
     full = evidence.get("full")
     if not isinstance(scope, dict) or not isinstance(full, dict):
@@ -312,50 +326,71 @@ def validate(evidence: dict, baseline: dict) -> tuple[str, list[str], list[str]]
             notes,
         )
 
-    for split in ("validation", "test"):
-        expected = _baseline_ids(baseline, split)
-        got = {str(p) for p in patch_ids.get(split, [])}
-        if got != expected:
-            return (
-                "incomplete",
-                [
-                    f"{split}: admitted patch IDs differ from the baseline universe "
-                    f"(model {len(got)}, baseline {len(expected)}, "
-                    f"missing {len(expected - got)}, extra {len(got - expected)})"
-                ],
-                notes,
-            )
-        model_skip = Counter(str(r.get("reason")) for r in skipped.get(split, []))
-        base_excl = _baseline_exclusions(baseline, split)
-        if dict(model_skip) != base_excl:
-            return (
-                "incomplete",
-                [f"{split}: skipped reasons {dict(model_skip)} != baseline exclusions {base_excl}"],
-                notes,
-            )
-        if int(requested.get(split, -1)) != int(
-            (baseline.get("splits") or {}).get(split, {}).get("requested_patches", -1)
-        ):
-            return (
-                "incomplete",
-                [f"{split}: requested {requested.get(split)} != baseline requested universe"],
-                notes,
-            )
-
-    fingerprints = baseline.get("fingerprints") or {}
-    total = int(fingerprints.get("patches_total", 0))
-    val_req = int((baseline.get("splits") or {}).get("validation", {}).get("requested_patches", 0))
-    test_req = int((baseline.get("splits") or {}).get("test", {}).get("requested_patches", 0))
-    expected_train = total - val_req - test_req
-    if total and int(requested.get("train", -1)) != expected_train:
-        return (
-            "incomplete",
-            [f"train: requested {requested.get('train')} != derived {expected_train}"],
-            notes,
-        )
-
     if not isinstance(test_scope, dict) or sorted(test_scope.get("patch_ids") or {}) != ["test"]:
         return "incomplete", ["test_scope is missing or is not a test-only read"], notes
+
+    # The fit scope reconciles validation; the separate test-only module's
+    # retained scope reconciles test. The fit never admits the test split.
+    reconciliation = {
+        "validation": (patch_ids, skipped, requested),
+        "test": (
+            test_scope.get("patch_ids") or {},
+            test_scope.get("skipped_refs") or {},
+            test_scope.get("requested_per_split") or {},
+        ),
+    }
+    try:
+        for split, (ids_by_split, skipped_by_split, counts_by_split) in reconciliation.items():
+            expected = _baseline_ids(baseline, split)
+            got = {str(p) for p in ids_by_split.get(split, [])}
+            if got != expected:
+                return (
+                    "incomplete",
+                    [
+                        f"{split}: admitted patch IDs differ from the baseline universe "
+                        f"(model {len(got)}, baseline {len(expected)}, "
+                        f"missing {len(expected - got)}, extra {len(got - expected)})"
+                    ],
+                    notes,
+                )
+            model_skip = Counter(str(r.get("reason")) for r in skipped_by_split.get(split, []))
+            base_excl = _baseline_exclusions(baseline, split)
+            if dict(model_skip) != base_excl:
+                return (
+                    "incomplete",
+                    [
+                        f"{split}: skipped reasons {dict(model_skip)} != baseline exclusions "
+                        f"{base_excl}"
+                    ],
+                    notes,
+                )
+            if int(counts_by_split.get(split, -1)) != int(
+                (baseline.get("splits") or {}).get(split, {}).get("requested_patches", -1)
+            ):
+                return (
+                    "incomplete",
+                    [
+                        f"{split}: requested {counts_by_split.get(split)} != "
+                        "baseline requested universe"
+                    ],
+                    notes,
+                )
+
+        fingerprints = baseline.get("fingerprints") or {}
+        total = int(fingerprints.get("patches_total", 0))
+        val_req = int(
+            (baseline.get("splits") or {}).get("validation", {}).get("requested_patches", 0)
+        )
+        test_req = int((baseline.get("splits") or {}).get("test", {}).get("requested_patches", 0))
+        expected_train = total - val_req - test_req
+        if total and int(requested.get("train", -1)) != expected_train:
+            return (
+                "incomplete",
+                [f"train: requested {requested.get('train')} != derived {expected_train}"],
+                notes,
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        return "incomplete", [f"comparison universe could not be reconciled: {exc}"], notes
 
     # ── epoch curve and one-shot test numbers ─────────────────────────
     train_maes: list[float] = []
@@ -456,11 +491,35 @@ def validate(evidence: dict, baseline: dict) -> tuple[str, list[str], list[str]]
 _TIER_EXIT = {"go": 0, "usable": 2, "no-go": 3, "incomplete": 1}
 
 
+def _checkpoint_matches(evidence: dict, path: Path) -> str | None:
+    """Return ``None`` when ``path`` hashes to the evidence checkpoint sha256.
+
+    A local copy of the retained checkpoint lets the validator verify the
+    hosted object's bytes, not just the recorded hash format.
+    """
+    checkpoint = evidence.get("checkpoint")
+    recorded = str((checkpoint or {}).get("sha256", ""))
+    if not _SHA256_RE.match(recorded):
+        return "evidence has no valid checkpoint sha256 to verify against"
+    if not path.is_file():
+        return f"checkpoint copy not found: {path}"
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != recorded:
+        return f"checkpoint sha256 mismatch: local {digest} != evidence {recorded}"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-check", action="store_true")
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--baseline", default=DEFAULT_BASELINE, type=Path)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="optional local copy of the selected checkpoint to hash against the evidence sha256",
+    )
     args = parser.parse_args()
 
     if args.self_check:
@@ -480,6 +539,13 @@ def main() -> int:
     if not isinstance(evidence, dict) or not isinstance(baseline, dict):
         print("FAIL: evidence and baseline must be JSON objects")
         return 1
+
+    if args.checkpoint is not None:
+        mismatch = _checkpoint_matches(evidence, args.checkpoint)
+        if mismatch is not None:
+            print(f"FAIL: {mismatch}")
+            return 1
+        print(f"  checkpoint sha256 verified against {args.checkpoint}")
 
     tier, failures, notes = validate(evidence, baseline)
     for note in notes:

@@ -416,6 +416,15 @@ def main() -> int:
             f"ERROR: evidence already exists at {evidence_uri}; the run label "
             "must never be reused (the create-only upload would fail after the run)"
         )
+    run_prefix = evidence_uri.rsplit("/", 1)[0]
+    if args.mode == "full" and _evidence_exists(f"{run_prefix}/best.ckpt"):
+        # A previous full run may have died after the checkpoint upload but
+        # before the manifest; that orphaned checkpoint would fail create-only
+        # after burning a new paid job, so refuse the label here.
+        raise SystemExit(
+            f"ERROR: checkpoint already exists at {run_prefix}/best.ckpt; the run "
+            "label must never be reused"
+        )
     env = [
         ("VERTEX_RUN_LABEL", args.run_label),
         ("VERTEX_SOURCE_SHA", args.source_sha),
