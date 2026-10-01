@@ -59,7 +59,8 @@ MACHINE_TYPE = "n1-standard-4"
 ACCELERATOR_TYPE = "NVIDIA_TESLA_T4"
 # Both profiles write under the already-approved QA root: the probe keeps the
 # `vertex-smoke` prefix (distinguished by its `stage1-probe-*` label) so it does
-# not require a new IAM grant. The prefix is confined to APPROVED_EVIDENCE_ROOT.
+# not require a new IAM grant. The prefix is confined to APPROVED_EVIDENCE_ROOT,
+# which keeps its trailing slash so `.../modeling-evil` cannot pass the check.
 EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
 APPROVED_EVIDENCE_ROOT = "gs://berlin-lst-training-data/qa/modeling/"
 
@@ -325,7 +326,8 @@ def main() -> int:
 
     _validate_image_uri(args.image_uri)
     _validate_run_label(args.run_label)
-    if not args.evidence_prefix.rstrip("/").startswith(APPROVED_EVIDENCE_ROOT.rstrip("/")):
+    prefix = args.evidence_prefix.rstrip("/") + "/"
+    if not prefix.startswith(APPROVED_EVIDENCE_ROOT):
         raise SystemExit(
             f"ERROR: --evidence-prefix must stay under {APPROVED_EVIDENCE_ROOT}, "
             f"got {args.evidence_prefix!r}"
