@@ -70,7 +70,7 @@ ard_root:         gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-202607
 ## Build and push the image
 
 The acceptance image was built with **Cloud Build** (the local Docker export
-hung on this workstation) from code SHA `7ad2a9d`. Pass a throwaway config
+hung on this workstation) from code SHA `ef80930`. Pass a throwaway config
 (Cloud Build workers are linux/amd64, so no `--platform` is needed):
 
 ```bash
@@ -87,8 +87,16 @@ gcloud builds submit --project=berlin-lst-training \
   --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
 ```
 
-Image digest in use:
-`europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:1b803e57baaca5c8463b6ac4128b953b6097f1dc41f658107c05ff3c00fa57c7`
+Image digest in use (the GPU-verified acceptance image):
+`europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea`
+
+The image must expose the NVIDIA driver at runtime. The T4 device nodes are
+attached, but a slim base does not set the driver library path, so
+`Dockerfile.vertex` sets the standard NVIDIA container variables
+(`NVIDIA_VISIBLE_DEVICES=all`, `NVIDIA_DRIVER_CAPABILITIES=compute,utility`,
+`LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64`). Without them
+`torch.cuda.is_available()` is `False` and Lightning raises
+`No supported gpu backend found!`.
 
 The launcher refuses an unpinned image. The image bakes the **worker runtime**
 (`vertex_entrypoint.sh`, `vertex_evidence.py`, the runner, `src/`, and
@@ -133,7 +141,8 @@ instead of resubmitting. Cancel a runaway job with
 ## Bounds and cost
 
 - Machine: one on-demand `n1-standard-4` + one `NVIDIA_TESLA_T4` in
-  `europe-west3`.
+  `europe-west3`. The GPU is confirmed visible to the container (`torch 2.2.2+cu121`,
+  `torch.cuda.is_available() == True`).
 - Server-side job `timeout` 2700 s (45 min) and `disable_retries` enforce the
   bounds; single worker pool; no persistent resource. The timeout is the hard
   ceiling on compute time.
@@ -185,6 +194,32 @@ overwritten and the run label must never be reused.
 
 ## Acceptance record
 
-Filled in after the authorized run: job resource name, region, source SHA, image
-digest, terminal state, measured duration, evidence URI, W&B run reference, and
-limitations. Status: **pending** (no acceptance run has been performed yet).
+Status: **passed** (2026-10-01).
+
+| Field | Value |
+|---|---|
+| Job | `projects/996559849187/locations/europe-west3/customJobs/3326855828958347264` |
+| Region | `europe-west3` (T4, `n1-standard-4`) |
+| Source SHA | `ef80930a202e82bc99cec12655e6d600004e9d1a` |
+| Image digest | `sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea` |
+| Terminal state | `JOB_STATE_SUCCEEDED` |
+| Timing | created 00:07:08Z, started 00:13:17Z, ended 00:14:18Z (≈11 min wall, ≈1 min compute after provisioning) |
+| Evidence | `gs://berlin-lst-training-data/qa/modeling/vertex-smoke/vertex-smoke-20261001T000657Z-139d32/evidence.json` |
+| W&B run | `comfy-energy-26` — https://wandb.ai/pignottisilas-berliner-hochschule-f-r-technik/berlin-lst-downscaling/runs/4w4rkp7k |
+
+Verified: real streamed reads from the published roots (4 indexed refs admitted
+per split, 0 exclusions), one epoch on the GPU (`train/loss=304.0`,
+`validation/mae_100m=302.0`), best-checkpoint selection and CPU reload check,
+W&B online with the vault key injected at runtime, create-only QA evidence,
+clean teardown and no persistent GPU.
+
+Failure history resolved along the way (each a separate, bounded attempt): the
+`slim` base lacked `libexpat1` (rasterio import); Hydra could not write its log
+to a root-owned `/app`; the container had no NVIDIA driver library path; the
+checkpoint-reload check fed CPU batches to a GPU model. All four are fixed in
+the image/worker; no full Stage-1 run was performed.
+
+Limitations: this proves the GPU execution path and lifecycle, not model
+quality. Cost is compute for seven short jobs (a few minutes of T4 total);
+the exact billed amount appears in Cloud Billing, not here. The full Stage-1
+temporal run remains a separate, explicitly scheduled invocation.
