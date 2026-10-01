@@ -38,3 +38,11 @@ hydra:
     dir: .
   job:
     chdir: false
+  # Disable Hydra's job file handler; logs persist only via RunLogSession
+  # under <output_root>/logs/<pipeline>/ (AGENTS.md data-safety rule). This
+  # content form is used because a base included via a relative path
+  # (`../_base`) rejects `override hydra/job_logging` in the defaults list.
+  job_logging:
+    version: 1
+    root: null
+    disable_existing_loggers: false
