@@ -139,16 +139,23 @@ def _guard_self_check() -> int:
         failures.append(f"minima at cohort: {exc}")
         print(f"  FAIL minima: cohort at minima ({exc})")
 
-    # The residual marker must be rejected off the probe configs, so it cannot
-    # silently upgrade the locked full method (integration review, #47).
+    # After the issue #47 GO the residual representation is frozen into the lock
+    # too, so it is accepted on the lock and the two probes, and must still be
+    # rejected on any unrelated config.
+    try:
+        guard_modeling_config(compose_cfg("stage1_locked", []), "stage1_locked")
+        print("  PASS guard: full guard accepts stage1_locked (residual frozen)")
+    except ValueError as exc:  # pragma: no cover - self-check reporting
+        failures.append(f"full guard rejected stage1_locked: {exc}")
+        print(f"  FAIL guard: full guard accepts stage1_locked ({exc})")
     try:
         guard_modeling_config(
-            compose_cfg("stage1_locked", ["+stage1_residual_prior=true"]), "stage1_locked"
+            compose_cfg("contract_smoke", ["+stage1_residual_prior=true"]), "contract_smoke"
         )
-        failures.append("residual marker accepted on stage1_locked")
-        print("  FAIL guard: residual marker rejected off-probe")
+        failures.append("residual marker accepted on contract_smoke")
+        print("  FAIL guard: residual marker rejected off-lock/probe")
     except ValueError:
-        print("  PASS guard: residual marker rejected off-probe")
+        print("  PASS guard: residual marker rejected off-lock/probe")
     try:
         guard_modeling_config(compose_cfg("stage1_probe", []), "stage1_probe")
         print("  PASS guard: full guard accepts stage1_probe")

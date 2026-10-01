@@ -346,6 +346,9 @@ _STAGE1_LOCK_EXPECTED: dict[str, object] = {
     "trainer.weight_decay": 0.0,
     "trainer.max_epochs": 20,
     "seed": 0,
+    # The residual representation is frozen into the full method after the
+    # issue #47 recovery GO (docs/stage1-debug-results.md §6/§7).
+    "stage1_residual_prior": True,
 }
 
 
@@ -991,12 +994,13 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             f"({config_name!r}); the probe guard would not run"
         )
     if bool(cfg.get("stage1_residual_prior", False)) and config_name not in (
+        STAGE1_LOCKED_CONFIG_NAME,
         STAGE1_PROBE_CONFIG_NAME,
         STAGE1_PROBE_LR3_CONFIG_NAME,
     ):
         raise ValueError(
-            "stage1_residual_prior is the probe-only recovery representation "
-            f"(issue #47) but is set on config {config_name!r}; refusing to run"
+            "stage1_residual_prior is the Stage-1 recovery representation "
+            f"(issues #40/#47) but is set on config {config_name!r}; refusing to run"
         )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
         assert_stage1_lock(cfg)

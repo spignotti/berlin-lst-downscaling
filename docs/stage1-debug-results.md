@@ -165,3 +165,80 @@ triggered), and record GO/NO-GO in this document. The Stage-1 full lock
 (`configs/modeling/stage1_locked.yaml`) is updated to the residual method **only
 on GO**; on NO-GO it stays the old, unfrozen-as-approved method and the recovery
 mode remains experimental.
+
+## 6. Trial 1 result — GO
+
+**Decision: GO for the residual representation.** The bounded residual probe
+clears every pre-registered screen and, unlike #45, actually beats the
+same-cohort naive prior. No second trial is triggered (trial 2 runs only when
+trial 1 is finite and stable but flat; see §3).
+
+| Field | Value |
+|---|---|
+| Config | `stage1_probe` (residual representation, LR 1e-3, scene-spread 128/64) |
+| Vertex job | `projects/996559849187/locations/europe-west3/customJobs/2755039413770649600` |
+| Region / machine | `europe-west3` / `n1-standard-4` + 1× `NVIDIA_TESLA_T4` (on-demand) |
+| Source SHA | `0a2495675cba8da745d971364457ce37555cc6ad` |
+| Image | `europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:b690a6e7b6773de2c008c62c83d3f094d35681e4d1f4ae79d5511bfdf299f50e` |
+| Run label | `stage1-probe-20261001T144604Z-recovery` |
+| Terminal state | `JOB_STATE_SUCCEEDED` |
+| Evidence | `gs://berlin-lst-training-data/qa/modeling/vertex-smoke/stage1-probe-20261001T144604Z-recovery/evidence.json` |
+| Exposure | ~$2.85 projected / ~$0.15 actual compute at $0.90/h (one job) |
+
+### Curve (cell-weighted masked MAE @ 100 m, valid cells 16,112/epoch)
+
+| Epoch | train | validation |
+|---|---|---|
+| 1 | 1.4382 | 24.2345 |
+| 2 | 1.3433 | 1.5293 |
+| 3 | 1.2763 | 1.4735 |
+| 4 | 1.2428 | 1.2955 |
+| 5 | 1.1944 | **1.1929** (selected) |
+| 6 | 1.1573 | 1.3350 |
+
+The epoch-1 validation spike is the BatchNorm running-statistics warm-up (the
+zero-init head makes epoch 1 the first pass that populates them); it settles from
+epoch 2. Checkpoint reload reproduced the selected score exactly
+(`reload_recomputed = 1.1929 = best_metric`).
+
+### Screen
+
+| Criterion | Result |
+|---|---|
+| All six train/val MAE finite; reload reproduced | pass |
+| Final train MAE ≤ 0.95 × epoch 1 | pass — 1.1573 ≤ 1.3663 (19.5% below) |
+| Best val MAE ≤ min(1.5 × naive, 8 K) | pass — 1.1929 ≤ 2.2892 |
+| Final val MAE ≤ 1.25 × best val | pass — 1.3350 ≤ 1.4911 |
+| Not a passthrough (pooled correction ≥ 5% naive) | pass — 1.2255 K ≥ 0.0763 K |
+| Identity at init ≤ 0.001 K | pass — `residual_identity_mae_k = 0.0` |
+
+Same-cohort naive validation MAE: **1.5261 K** (64 matched patches, identical to
+the #45 cohort). Novel model **beats naive**: 1.1929 K vs 1.5261 K (**1.28×
+better**). Against the #45 absolute-representation result (294.8369 K) this is a
+**247× improvement**.
+
+`uv run python scripts/validators/validate_stage1_recovery.py --evidence <evidence.json>`
+→ **GO (exit 0)**. The historical `validate_stage1_probe.py` correctly returns
+INCONCLUSIVE for `probe-residual` (no cross-screening).
+
+### Interpretation
+
+- The prediction is now a genuine learned correction over the physical prior
+  (pooled mean |correction| 1.23 K), not a passthrough (identity 0.0 K at init).
+- Train and validation curves track and improve monotonically to epoch 5; the
+  small epoch-6 validation uptick is within the no-divergence cap.
+- This is a **screening result on the pseudo-pair construction**, not an
+  operational accuracy claim or a 10 m-detail result (see §4).
+
+## 7. Frozen method after the GO
+
+The residual representation is carried into the locked full method:
+`stage1_residual_prior: true` and the zero-init head become part of
+`configs/modeling/stage1_locked.yaml` and its guard (`assert_stage1_lock`), so the
+full Stage-1 temporal run uses the representation proven here. The learning rate
+stays at the locked **1e-3** (trial 2 was not needed). Batch size, AMP precision,
+workers, and patience remain operational retunes; capacity and the spectral block
+stay as frozen. No full temporal run is performed in this issue — the capability
+and the frozen representation are delivered, the unbounded run stays a separate,
+explicitly scheduled invocation.
+
