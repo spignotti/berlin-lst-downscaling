@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from berlin_lst_downscaling.modeling.real_task import (
     ProbeScope,
     RealLSTTask,
     RealPatchDataModule,
+    reconstruct_prior_kelvin,
 )
 from berlin_lst_downscaling.modeling.synthetic import (
     ContractSyntheticDataModule,
@@ -373,14 +375,19 @@ def assert_stage1_lock(cfg: DictConfig) -> None:
         raise ValueError("stage1_locked config is off-contract: " + "; ".join(problems))
 
 
-# The selected config name that carries the bounded Stage-1 learning probe.
+# The selected config names that carry the bounded Stage-1 recovery probe
+# (issue #47). Both share one frozen method; only the learning rate differs.
 STAGE1_PROBE_CONFIG_NAME = "stage1_probe"
+STAGE1_PROBE_LR3_CONFIG_NAME = "stage1_probe_lr3"
 
 _STAGE1_PROBE_SPLITS = ("train", "validation")
 
-# Frozen Stage-1 scientific values the probe shares with the full profile. The
+# Frozen recovery-probe method (issues #45/#47): the spectral block, backbone,
+# residual representation, seed, and probe bounds the two trials share. The
 # probe's own scope keys (epochs, per-split ref target, per-scene cap, minima)
 # are asserted separately below: they are the probe's bounds, not the method.
+# The learning rate is the single deliberate variable between the two trials and
+# is asserted per config name via ``_STAGE1_PROBE_LR``.
 _STAGE1_PROBE_FROZEN: dict[str, object] = {
     "data.kind": "real",
     "data.mode": "stream",
@@ -389,11 +396,18 @@ _STAGE1_PROBE_FROZEN: dict[str, object] = {
     "data.max_patches_per_split": None,
     "model.depth": 4,
     "model.base_width": 32,
-    "trainer.learning_rate": 1.0e-3,
     "trainer.weight_decay": 0.0,
     "trainer.accelerator": "gpu",
     "trainer.devices": 1,
     "seed": 0,
+    "stage1_residual_prior": True,
+}
+
+# Learning rate per trial config. Trial 2 is only ever run when trial 1 is
+# finite and stable but flat (docs/stage1-debug-results.md pre-registration).
+_STAGE1_PROBE_LR: dict[str, float] = {
+    STAGE1_PROBE_CONFIG_NAME: 1.0e-3,
+    STAGE1_PROBE_LR3_CONFIG_NAME: 3.0e-3,
 }
 
 _STAGE1_PROBE_SCOPE: dict[str, object] = {
@@ -405,13 +419,14 @@ _STAGE1_PROBE_SCOPE: dict[str, object] = {
 }
 
 
-def assert_stage1_probe(cfg: DictConfig) -> None:
-    """Fail closed unless the resolved config is the bounded Stage-1 probe.
+def _assert_stage1_probe(cfg: DictConfig, *, config_name: str) -> None:
+    """Fail closed unless the resolved config is a bounded residual probe.
 
-    The probe must not become a full run, read the 2025 test split, or quietly
-    drop the frozen Stage-1 method. Checked before ``RunLogSession`` opens the
-    output path and before any source read, so a drifted invocation cannot
-    create a run directory, touch GCS, or start a paid GPU job.
+    The recovery probe must not become a full run, read the 2025 test split,
+    drop the residual representation, or drift the frozen method. Checked before
+    ``RunLogSession`` opens the output path and before any source read, so a
+    drifted invocation cannot create a run directory, touch GCS, or start a paid
+    GPU job.
     """
     problems: list[str] = []
     if cfg.get("stage1_probe") is not True:
@@ -420,6 +435,13 @@ def assert_stage1_probe(cfg: DictConfig) -> None:
         actual = OmegaConf.select(cfg, key)
         if actual != expected:
             problems.append(f"{key}={actual!r} (expected {expected!r})")
+
+    expected_lr = _STAGE1_PROBE_LR[config_name]
+    actual_lr = OmegaConf.select(cfg, "trainer.learning_rate")
+    if actual_lr != expected_lr:
+        problems.append(
+            f"trainer.learning_rate={actual_lr!r} (expected {expected_lr!r} for {config_name})"
+        )
 
     if list(cfg.data.get("splits") or []) != list(_STAGE1_PROBE_SPLITS):
         problems.append(
@@ -470,6 +492,16 @@ def assert_stage1_probe(cfg: DictConfig) -> None:
 
     if problems:
         raise ValueError("stage1_probe config is off-contract: " + "; ".join(problems))
+
+
+def assert_stage1_probe(cfg: DictConfig) -> None:
+    """Fail closed unless the resolved config is the residual probe at LR 1e-3."""
+    _assert_stage1_probe(cfg, config_name=STAGE1_PROBE_CONFIG_NAME)
+
+
+def assert_stage1_probe_lr3(cfg: DictConfig) -> None:
+    """Fail closed unless the resolved config is the residual probe at LR 3e-3."""
+    _assert_stage1_probe(cfg, config_name=STAGE1_PROBE_LR3_CONFIG_NAME)
 
 
 def assert_probe_minima(cfg: DictConfig, scope: dict) -> None:
@@ -561,6 +593,54 @@ class EpochMetricsRecorder(Callback):
         return [self._epochs[key] for key in sorted(self._epochs)]
 
 
+# Pre-registered identity tolerance for the residual probe (issue #47): the
+# zero-initialized correction head must reproduce the pooled prior arm to within
+# this before any paid epoch (docs/stage1-debug-results.md).
+RESIDUAL_IDENTITY_TOLERANCE_K = 1e-3
+
+
+def _residual_identity_mae(task: RealLSTTask, val_loader) -> float:
+    """Masked MAE between the zero-init residual output and the pooled prior arm.
+
+    Both sides use the shared 10x10 pooling and the same validation mask, on the
+    validation cohort the run reads. A non-zero-initialized or mis-wired residual
+    head shows up here, before any paid epoch.
+    """
+    metric = MaskedMAE()
+    with torch.inference_mode():
+        for batch in val_loader:
+            validate_real_batch(batch, n_active_channels=task.n_active_channels)
+            prior_k = reconstruct_prior_kelvin(batch.lst_prior)
+            metric.update(
+                pool_10m_to_100m(task(batch)),
+                pool_10m_to_100m(prior_k),
+                batch.mask_100m,
+            )
+    return float(metric.compute())
+
+
+def _residual_correction_mean_abs(reloaded: RealLSTTask, val_loader) -> float:
+    """Mean absolute *pooled* Kelvin correction over valid validation cells.
+
+    The correction is the model's own delta (prediction minus reconstructed
+    prior), pooled and scored with the shared path. Near zero means the selected
+    checkpoint is still a prior passthrough.
+    """
+    total = 0.0
+    cells = 0.0
+    with torch.inference_mode():
+        for batch in val_loader:
+            validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
+            delta = reloaded(batch) - reconstruct_prior_kelvin(batch.lst_prior)
+            pooled = pool_10m_to_100m(delta)
+            valid = batch.mask_100m.bool()
+            total += float(pooled[valid].abs().sum())
+            cells += float(valid.sum())
+    if cells <= 0.0:
+        raise RuntimeError("no valid validation cell for the residual correction check")
+    return total / cells
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -579,6 +659,7 @@ def _fit_contract_lifecycle(
     seed_everything(seed)
 
     is_probe = bool(cfg.get("stage1_probe", False))
+    residual_prior = bool(cfg.get("stage1_residual_prior", False))
     task = RealLSTTask(
         n_active_channels=int(cfg.data.n_active_channels),
         base_width=int(cfg.model.base_width),
@@ -586,6 +667,7 @@ def _fit_contract_lifecycle(
         learning_rate=float(cfg.trainer.learning_rate),
         weight_decay=float(cfg.trainer.weight_decay),
         record_probe_metrics=is_probe,
+        residual_prior=residual_prior,
     )
 
     output_root = Path(str(cfg.output_root))
@@ -610,6 +692,23 @@ def _fit_contract_lifecycle(
         )
     if is_probe:
         assert_probe_minima(cfg, scope)
+
+    # Residual wiring check (issue #47): a zero-initialized correction head must
+    # reproduce the pooled prior arm before any paid epoch. The value is retained
+    # in the probe summary so the validator can screen it.
+    residual_identity_mae: float | None = None
+    if residual_prior:
+        residual_identity_mae = _residual_identity_mae(task, data_module.val_dataloader())
+        if (
+            not math.isfinite(residual_identity_mae)
+            or residual_identity_mae > RESIDUAL_IDENTITY_TOLERANCE_K
+        ):
+            raise RuntimeError(
+                f"residual identity check failed: pooled zero-init output vs prior arm "
+                f"MAE {residual_identity_mae:.6f} K exceeds "
+                f"{RESIDUAL_IDENTITY_TOLERANCE_K} K"
+            )
+
     scope_uri = output_root / "data_scope.json"
     scope_uri.write_text(json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8")
     log_event(
@@ -725,13 +824,20 @@ def _fit_contract_lifecycle(
 
         if recorder is not None:
             summary = {
-                "profile": STAGE1_PROBE_CONFIG_NAME,
+                "profile": "probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME,
                 "epochs_completed": len(recorder.epochs),
                 "max_epochs": int(cfg.trainer.max_epochs),
                 "selection_metric": monitored,
                 "best_epoch": _best_epoch_from_path(best_checkpoint),
                 "best_metric": best_metric,
                 "reload_recomputed": recomputed,
+                "residual_prior": residual_prior,
+                "residual_identity_mae_k": residual_identity_mae,
+                "residual_correction_mean_abs_k": (
+                    _residual_correction_mean_abs(reloaded, data_module.val_dataloader())
+                    if residual_prior
+                    else None
+                ),
                 "resolved_config": OmegaConf.to_container(cfg, resolve=True),
             }
             (output_root / "probe_summary.json").write_text(
@@ -869,7 +975,10 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     Re-invoked by :func:`run_modeling` for programmatic callers; the guards are
     pure assertions and idempotent.
     """
-    if bool(cfg.get("stage1_probe", False)) and config_name != STAGE1_PROBE_CONFIG_NAME:
+    if bool(cfg.get("stage1_probe", False)) and config_name not in (
+        STAGE1_PROBE_CONFIG_NAME,
+        STAGE1_PROBE_LR3_CONFIG_NAME,
+    ):
         raise ValueError(
             "stage1_probe marker is set on a non-probe config "
             f"({config_name!r}); the probe guard would not run"
@@ -878,6 +987,8 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         assert_stage1_lock(cfg)
     if config_name == STAGE1_PROBE_CONFIG_NAME:
         assert_stage1_probe(cfg)
+    if config_name == STAGE1_PROBE_LR3_CONFIG_NAME:
+        assert_stage1_probe_lr3(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
         assert_vertex_smoke_bounds(cfg)
 
@@ -922,6 +1033,7 @@ __all__ = [
     "assert_probe_minima",
     "assert_stage1_lock",
     "assert_stage1_probe",
+    "assert_stage1_probe_lr3",
     "assert_vertex_smoke_bounds",
     "contract_invariants",
     "guard_modeling_config",

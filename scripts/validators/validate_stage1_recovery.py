@@ -1,23 +1,26 @@
-"""Independently validate a retained Stage-1 probe evidence record (issue #45).
+"""Independently validate a retained Stage-1 recovery-probe evidence record (#47).
 
-Reconciles the probe's admitted cohort and per-epoch metrics against the
-published comparison universe and a **same-cohort** naive baseline, then applies
-the predeclared go/no-go screen. It re-derives the decision from the retained
-numbers; it never trusts the run's own success flag.
+Screens the **residual** probe (evidence ``profile == "probe-residual"``) against
+the pre-registered go/no-go criteria in ``docs/stage1-debug-results.md``: a
+learning-off-init check, a same-cohort naive factor cap, a no-divergence cap, a
+non-passthrough correction-amplitude floor, and the zero-init identity check. It
+re-derives the decision from the retained numbers and the committed baseline
+report; it never trusts the run's own success flag.
 
 Inputs are local files:
 
-- the probe evidence JSON uploaded by ``scripts/operators/vertex_evidence.py``
-  (``profile="probe"``);
+- the recovery evidence JSON uploaded by ``scripts/operators/vertex_evidence.py``
+  (``profile="probe-residual"``);
 - the committed naive-baseline report
   ``docs/results/baseline-full-<run>/baseline_report.json``.
 
 Exit codes: 0 = go, 2 = valid evidence but no-go, 1 = evidence missing,
-malformed, or incomplete (cannot decide). ``print()`` is the human summary.
+malformed, incomplete, or the wrong profile (cannot decide). ``print()`` is the
+human summary.
 
 Usage:
-    uv run python scripts/validators/validate_stage1_probe.py \
-        --evidence path/to/evidence.json
+    uv run python scripts/validators/validate_stage1_recovery.py --self-check
+    uv run python scripts/validators/validate_stage1_recovery.py --evidence <evidence.json>
 """
 
 from __future__ import annotations
@@ -33,18 +36,23 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     load_patch_refs,
 )
-from berlin_lst_downscaling.modeling.run import assert_probe_minima, assert_stage1_probe
+from berlin_lst_downscaling.modeling.run import (
+    assert_probe_minima,
+    assert_stage1_probe,
+    assert_stage1_probe_lr3,
+)
 
-# Predeclared go/no-go screen. These are screening thresholds for whether the
-# frozen method learns enough to justify the full run — not model-quality
-# claims. The full-validation 1.61010 K anchor is not comparable to a subset, so
-# the naive comparator below is computed over the probe's exact admitted cohort.
+# Pre-registered recovery screen (docs/stage1-debug-results.md). Screening
+# thresholds only — not model-quality claims.
 EXPECTED_EPOCHS = 6
 TRAIN_IMPROVEMENT = 0.05  # final train MAE at least 5% below epoch one
-VAL_IMPROVEMENT = 0.05  # best val MAE at least 5% below epoch one
+VAL_NAIVE_FACTOR_CAP = 1.5  # best val MAE at most 1.5x the same-cohort naive
+VAL_ABS_CAP_K = 8.0  # ... and at most this absolute value
 VAL_REGRESSION_CAP = 1.25  # final val MAE at most 1.25x the best val MAE
-NAIVE_FACTOR_CAP = 10.0  # best val MAE at most 10x the same-cohort naive MAE
+CORRECTION_MIN_FRACTION = 0.05  # pooled |correction| at least 5% of naive
+IDENTITY_TOLERANCE_K = 1e-3  # zero-init output vs prior arm
 RECHECK_TOLERANCE = 1e-3
+EVIDENCE_PROFILE = "probe-residual"
 
 DEFAULT_BASELINE = (
     "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
@@ -54,30 +62,59 @@ _CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs" / "modeling")
 
 
 def _guard_self_check() -> int:
-    """Exercise the fail-closed probe guards on the shipped config and on drift.
+    """Exercise the recovery-probe guards on the shipped configs and on drift.
 
     Positive and negative cases, composed locally with no source read and no
-    submission. This is the "positive and deliberately invalid config probe"
-    the plan requires before paid work; it is separate from evidence validation.
+    submission, plus deliberately invalid/valid screen evidence for the
+    threshold logic.
     """
-    def compose_probe(overrides: list[str]):
+    def compose_cfg(config_name: str, overrides: list[str]):
         with initialize_config_dir(config_dir=_CONFIG_DIR, version_base=None):
-            return compose(config_name="stage1_probe", overrides=overrides)
+            return compose(config_name=config_name, overrides=overrides)
 
     guard_cases = [
-        ("shipped stage1_probe", [], True),
-        ("changed LR", ["trainer.learning_rate=0.01"], False),
-        ("removed marker", ["stage1_probe=false"], False),
-        ("unbounded cohort", ["data.probe.max_refs_per_split.train=1000000"], False),
-        ("test split included", ['data.splits=["train","validation","test"]'], False),
-        ("gcs output", ["output_root=gs://bucket/runs/x"], False),
-        ("epochs drift", ["trainer.max_epochs=20"], False),
-        ("depth drift", ["model.depth=3"], False),
+        ("shipped stage1_probe", "stage1_probe", [], assert_stage1_probe, True),
+        (
+            "residual dropped",
+            "stage1_probe",
+            ["stage1_residual_prior=false"],
+            assert_stage1_probe,
+            False,
+        ),
+        (
+            "probe LR drift",
+            "stage1_probe",
+            ["trainer.learning_rate=0.01"],
+            assert_stage1_probe,
+            False,
+        ),
+        (
+            "lr3 cannot carry probe LR",
+            "stage1_probe_lr3",
+            ["trainer.learning_rate=1.0e-3"],
+            assert_stage1_probe_lr3,
+            False,
+        ),
+        ("shipped stage1_probe_lr3", "stage1_probe_lr3", [], assert_stage1_probe_lr3, True),
+        (
+            "lr3 residual dropped",
+            "stage1_probe_lr3",
+            ["stage1_residual_prior=false"],
+            assert_stage1_probe_lr3,
+            False,
+        ),
+        (
+            "test split included",
+            "stage1_probe",
+            ['data.splits=["train","validation","test"]'],
+            assert_stage1_probe,
+            False,
+        ),
     ]
     failures: list[str] = []
-    for label, overrides, should_pass in guard_cases:
+    for label, config_name, overrides, guard, should_pass in guard_cases:
         try:
-            assert_stage1_probe(compose_probe(overrides))
+            guard(compose_cfg(config_name, overrides))
             accepted = True
         except Exception:
             accepted = False
@@ -86,57 +123,122 @@ def _guard_self_check() -> int:
             failures.append(label)
         print(f"  {status} guard: {label} (accepted={accepted}, expected={should_pass})")
 
-    cfg = compose_probe([])
+    cfg = compose_cfg("stage1_probe", [])
     good_scope = {
         "patches_per_split": {"train": 128, "validation": 64},
         "scenes_per_split": {"train": list(range(16)), "validation": list(range(8))},
         "years_per_split": {"train": [2017, 2018, 2019], "validation": [2024]},
     }
-    minima_cases = [
-        ("cohort at minima", good_scope, True),
-        (
-            "cohort under-admitted",
-            {**good_scope, "patches_per_split": {"train": 100, "validation": 64}},
-            False,
-        ),
-        (
-            "cohort too few scenes",
-            {
-                **good_scope,
-                "scenes_per_split": {
-                    "train": list(range(15)),
-                    "validation": list(range(8)),
-                },
-            },
-            False,
-        ),
-        (
-            "cohort too few years",
-            {**good_scope, "years_per_split": {"train": [2017, 2018], "validation": [2024]}},
-            False,
-        ),
-        (
-            "cohort includes test",
-            {**good_scope, "patches_per_split": {"train": 128, "validation": 64, "test": 1}},
-            False,
-        ),
-    ]
-    for label, scope, should_pass in minima_cases:
-        try:
-            assert_probe_minima(cfg, scope)
-            accepted = True
-        except Exception:
-            accepted = False
-        status = "PASS" if accepted == should_pass else "FAIL"
-        if accepted != should_pass:
-            failures.append(label)
-        print(f"  {status} minima: {label} (accepted={accepted}, expected={should_pass})")
+    try:
+        assert_probe_minima(cfg, good_scope)
+        print("  PASS minima: cohort at minima")
+    except Exception as exc:  # pragma: no cover - self-check reporting
+        failures.append(f"minima at cohort: {exc}")
+        print(f"  FAIL minima: cohort at minima ({exc})")
+
+    screen_failures = _screen_self_check()
+    failures.extend(screen_failures)
 
     if failures:
         print(f"SELF-CHECK FAILED: {failures}")
         return 1
-    print("SELF-CHECK OK: probe guards accept the shipped config and reject drift")
+    print("SELF-CHECK OK: recovery guards and screen accept the shipped config and reject drift")
     return 0
+
+
+def _screen_evidence(
+    *,
+    train_maes: list[float],
+    val_maes: list[float],
+    residual_prior: bool,
+    identity_k: float | None,
+    correction_k: float | None,
+    cohort_naive: float,
+) -> list[str]:
+    """Apply the recovery screen to already-extracted numbers (no I/O).
+
+    Shared by the evidence path and the self-check, so the thresholds are proven
+    to accept a GO-shaped record and reject each failure mode.
+    """
+    failures: list[str] = []
+    if len(train_maes) != EXPECTED_EPOCHS or len(val_maes) != EXPECTED_EPOCHS:
+        return ["epoch curve has the wrong length"]
+    if not all(_finite(v) for v in train_maes + val_maes):
+        return ["non-finite train/val MAE"]
+
+    first_train, last_train = train_maes[0], train_maes[-1]
+    last_val = val_maes[-1]
+    best_val = min(val_maes)
+
+    if last_train > (1.0 - TRAIN_IMPROVEMENT) * first_train:
+        failures.append(
+            f"train MAE did not improve by {TRAIN_IMPROVEMENT:.0%} "
+            f"({first_train:.4f} -> {last_train:.4f}): flat"
+        )
+    cap = min(VAL_NAIVE_FACTOR_CAP * cohort_naive, VAL_ABS_CAP_K)
+    if best_val > cap:
+        failures.append(
+            f"best val MAE {best_val:.4f} > min({VAL_NAIVE_FACTOR_CAP}x naive "
+            f"{VAL_NAIVE_FACTOR_CAP * cohort_naive:.4f}, {VAL_ABS_CAP_K})"
+        )
+    if last_val > VAL_REGRESSION_CAP * best_val:
+        failures.append(
+            f"final val MAE {last_val:.4f} > {VAL_REGRESSION_CAP}x best {best_val:.4f}"
+        )
+    if residual_prior is not True:
+        failures.append("summary does not report the residual representation")
+    if not _finite(identity_k) or float(identity_k) > IDENTITY_TOLERANCE_K:
+        failures.append(
+            f"residual identity MAE {identity_k!r} exceeds {IDENTITY_TOLERANCE_K} K"
+        )
+    floor = CORRECTION_MIN_FRACTION * cohort_naive
+    if not _finite(correction_k) or float(correction_k) < floor:
+        failures.append(
+            f"selected pooled correction {correction_k!r} < {CORRECTION_MIN_FRACTION:.0%} "
+            f"of naive ({floor:.4f} K): prior passthrough"
+        )
+    return failures
+
+
+def _screen_self_check() -> list[str]:
+    """Prove the screen accepts a GO record and rejects each failure mode."""
+    failures: list[str] = []
+    naive = 1.5261
+    go = {
+        "train_maes": [2.8, 2.5, 2.2, 2.0, 1.9, 1.8],
+        "val_maes": [2.0, 1.9, 1.85, 1.8, 1.78, 1.79],
+        "residual_prior": True,
+        "identity_k": 0.0,
+        "correction_k": 0.5,
+        "cohort_naive": naive,
+    }
+    cases = [("go-shaped record", go, False)]
+    cases.append(
+        (
+            "flat train",
+            {**go, "train_maes": [2.8, 2.8, 2.8, 2.79, 2.79, 2.78]},
+            True,
+        )
+    )
+    cases.append(
+        (
+            "far-from-naive val",
+            {**go, "val_maes": [320.0, 318.0, 316.0, 315.0, 314.0, 313.0]},
+            True,
+        )
+    )
+    cases.append(("not residual", {**go, "residual_prior": False}, True))
+    cases.append(("bad identity", {**go, "identity_k": 5.0}, True))
+    cases.append(("passthrough correction", {**go, "correction_k": 0.0}, True))
+    cases.append(("diverging val", {**go, "val_maes": [1.9, 1.8, 1.7, 1.6, 1.7, 2.6]}, True))
+
+    for label, kwargs, should_fail in cases:
+        failed = bool(_screen_evidence(**kwargs))
+        status = "PASS" if failed == should_fail else "FAIL"
+        if failed != should_fail:
+            failures.append(label)
+        print(f"  {status} screen: {label} (rejected={failed}, expected={should_fail})")
+    return failures
 
 
 def _load_json(path: Path) -> object:
@@ -160,26 +262,18 @@ def _finite(value: object) -> bool:
 
 
 def _baseline_index(report: dict) -> dict[str, dict]:
-    index: dict[str, dict] = {}
-    for entry in report.get("patches", []):
-        index[str(entry["patch_id"])] = entry
-    return index
+    return {str(entry["patch_id"]): entry for entry in report.get("patches", [])}
 
 
 def _published_index(resolved: dict) -> dict[str, str]:
-    """Patch id -> split, read independently from the published patch index.
-
-    Reconciles train *and* held-out IDs; the naive-baseline report only scores
-    the validation and test splits.
-    """
+    """Patch id -> split, read independently from the published patch index."""
     source = RealSourceConfig(
         patch_index_root=str(resolved["patch_index_root"]),
         training_root=str(resolved["training_root"]),
         features_root=str(resolved["features_root"]),
         ard_root=str(resolved["ard_root"]),
     )
-    refs = load_patch_refs(source)
-    return {ref.patch_id: ref.split for ref in refs}
+    return {ref.patch_id: ref.split for ref in load_patch_refs(source)}
 
 
 def _cohort_naive_mae(
@@ -203,21 +297,16 @@ def _cohort_naive_mae(
 def validate(
     evidence: dict, baseline: dict, published: dict[str, str]
 ) -> tuple[bool, list[str], list[str]]:
-    """Return ``(decidable, failures, notes)``.
-
-    ``decidable`` is False when the evidence is structurally incomplete: the
-    result is inconclusive, never a pass. ``published`` maps every published
-    patch id to its split and is the authoritative reconciliation universe.
-    """
+    """Return ``(decidable, failures, notes)`` for a recovery evidence record."""
     failures: list[str] = []
     notes: list[str] = []
 
-    if evidence.get("profile") != "probe":
+    if evidence.get("profile") != EVIDENCE_PROFILE:
         return (
             False,
             [
-                "evidence profile is not 'probe' (this validates the historical #45 "
-                "probe; use validate_stage1_recovery.py for 'probe-residual')"
+                f"evidence profile is not {EVIDENCE_PROFILE!r} "
+                "(the historical #45 validator handles profile='probe')"
             ],
             notes,
         )
@@ -232,7 +321,6 @@ def validate(
         return False, ["no epoch_metrics retained (run incomplete or evidence lost)"], notes
     if not isinstance(summary, dict) or not summary:
         return False, ["no probe summary retained"], notes
-
     if len(epochs) != EXPECTED_EPOCHS:
         return False, [f"retained {len(epochs)} epochs, expected {EXPECTED_EPOCHS}"], notes
     if probe.get("epochs_complete") is not True:
@@ -242,15 +330,14 @@ def validate(
     patch_ids = scope.get("patch_ids")
     admitted = scope.get("patches_per_split")
     scenes = scope.get("scenes_per_split")
+    years = scope.get("years_per_split")
     if not isinstance(patch_ids, dict) or not isinstance(admitted, dict):
         return False, ["data_scope is missing patch_ids/patches_per_split"], notes
     if sorted(patch_ids) != ["train", "validation"]:
         failures.append(f"admitted splits {sorted(patch_ids)} are not train/validation only")
 
     resolved = summary.get("resolved_config")
-    probe_cfg = (
-        resolved.get("data", {}).get("probe") if isinstance(resolved, dict) else None
-    )
+    probe_cfg = resolved.get("data", {}).get("probe") if isinstance(resolved, dict) else None
     if not isinstance(probe_cfg, dict):
         return False, ["summary.resolved_config has no data.probe block"], notes
     expected_admitted = probe_cfg.get("min_admitted_per_split", {})
@@ -273,23 +360,26 @@ def validate(
             need_scenes = int(expected_scenes.get(split, 0))
             if got_scenes < need_scenes:
                 failures.append(f"{split}: {got_scenes} scenes < required {need_scenes}")
-        derived_scenes: dict[str, int] = {}
+        derived: dict[str, int] = {}
         for patch_id in ids:
-            derived_scenes[_scene_id(patch_id)] = derived_scenes.get(_scene_id(patch_id), 0) + 1
-        over_cap = {s: c for s, c in derived_scenes.items() if c > per_scene_cap}
+            derived[_scene_id(patch_id)] = derived.get(_scene_id(patch_id), 0) + 1
+        over_cap = {s: c for s, c in derived.items() if c > per_scene_cap}
         if over_cap:
             failures.append(
                 f"{split}: scene(s) exceed the per-scene cap {per_scene_cap}: {over_cap}"
             )
 
     train_years = {
-        y for y in (_scene_year(_scene_id(str(p))) for p in patch_ids.get("train", []))
+        y
+        for y in (_scene_year(_scene_id(str(p))) for p in patch_ids.get("train", []))
         if y is not None
     }
     if len(train_years) < expected_years:
-        failures.append(
-            f"train covers {len(train_years)} years < required {expected_years}"
-        )
+        failures.append(f"train covers {len(train_years)} years < required {expected_years}")
+    if isinstance(years, dict):
+        for split in ("train", "validation"):
+            if not years.get(split):
+                failures.append(f"{split}: no year recorded")
 
     # ── independent reconciliation against the published index ────────
     baseline_index = _baseline_index(baseline)
@@ -316,53 +406,39 @@ def validate(
             continue
         train_maes.append(float(train))
         val_maes.append(float(val))
-
     if len(train_maes) != EXPECTED_EPOCHS:
         failures.append("epoch curve has non-finite or missing values; cannot screen")
         return False, failures, notes
-
-    first_train, last_train = train_maes[0], train_maes[-1]
-    first_val, last_val = val_maes[0], val_maes[-1]
-    best_val = min(val_maes)
-    best_epoch = val_maes.index(best_val) + 1
-
-    notes.append(f"train MAE: {first_train:.4f} -> {last_train:.4f}")
-    notes.append(
-        f"val MAE:   {first_val:.4f} -> {last_val:.4f} "
-        f"(best {best_val:.4f} @ epoch {best_epoch})"
-    )
-
-    if last_train > (1.0 - TRAIN_IMPROVEMENT) * first_train:
-        failures.append(
-            f"train MAE did not improve by {TRAIN_IMPROVEMENT:.0%} "
-            f"({first_train:.4f} -> {last_train:.4f}): flat or diverging"
-        )
-    if best_val > (1.0 - VAL_IMPROVEMENT) * first_val:
-        failures.append(
-            f"best val MAE did not improve by {VAL_IMPROVEMENT:.0%} "
-            f"({first_val:.4f} -> {best_val:.4f})"
-        )
-    if last_val > VAL_REGRESSION_CAP * best_val:
-        failures.append(
-            f"final val MAE {last_val:.4f} > {VAL_REGRESSION_CAP}x best {best_val:.4f}"
-        )
 
     cohort_naive, matched = _cohort_naive_mae(
         baseline_index, [str(p) for p in patch_ids["validation"]], "validation"
     )
     notes.append(
-        f"same-cohort naive validation MAE: {cohort_naive:.4f} "
-        f"({matched} matched patches)"
+        f"same-cohort naive validation MAE: {cohort_naive:.4f} ({matched} matched patches)"
     )
     if matched != int(admitted.get("validation", 0)):
         failures.append(
             f"cohort naive matched {matched} patches != admitted "
             f"{admitted.get('validation')}"
         )
-    if best_val > NAIVE_FACTOR_CAP * cohort_naive:
-        failures.append(
-            f"best val MAE {best_val:.4f} > {NAIVE_FACTOR_CAP}x cohort naive {cohort_naive:.4f}"
+
+    best_val = min(val_maes)
+    best_epoch = val_maes.index(best_val) + 1
+    notes.append(
+        f"train MAE: {train_maes[0]:.4f} -> {train_maes[-1]:.4f}; "
+        f"val MAE: {val_maes[0]:.4f} -> {val_maes[-1]:.4f} (best {best_val:.4f} @ {best_epoch})"
+    )
+
+    failures.extend(
+        _screen_evidence(
+            train_maes=train_maes,
+            val_maes=val_maes,
+            residual_prior=summary.get("residual_prior"),
+            identity_k=summary.get("residual_identity_mae_k"),
+            correction_k=summary.get("residual_correction_mean_abs_k"),
+            cohort_naive=cohort_naive,
         )
+    )
 
     # ── selected checkpoint consistency ───────────────────────────────
     selected_epoch = summary.get("best_epoch")
@@ -375,20 +451,19 @@ def validate(
     if not _finite(recomputed):
         failures.append("summary reload_recomputed is missing or non-finite")
     elif _finite(best_metric) and abs(float(recomputed) - float(best_metric)) > RECHECK_TOLERANCE:
-        failures.append(
-            f"reload recheck {recomputed!r} != selected {best_metric!r}"
-        )
+        failures.append(f"reload recheck {recomputed!r} != selected {best_metric!r}")
 
+    notes.append(
+        f"identity {summary.get('residual_identity_mae_k')} K; "
+        f"pooled correction {summary.get('residual_correction_mean_abs_k')} K "
+        f"(floor {CORRECTION_MIN_FRACTION * cohort_naive:.4f} K)"
+    )
     return True, failures, notes
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--self-check",
-        action="store_true",
-        help="exercise the probe guards (positive/negative) and exit; no evidence needed",
-    )
+    parser.add_argument("--self-check", action="store_true")
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--baseline", default=DEFAULT_BASELINE, type=Path)
     args = parser.parse_args()
@@ -419,7 +494,6 @@ def main() -> int:
     try:
         published = _published_index(resolved)
     except Exception as exc:
-        # A read failure (ADC, network, stale index) must surface, not crash.
         print(f"FAIL: could not read the published patch index: {exc}")
         return 1
 
@@ -434,7 +508,7 @@ def main() -> int:
         for failure in failures:
             print(f"NO-GO: {failure}")
         return 2
-    print("GO: probe evidence is complete and the frozen method clears the screen")
+    print("GO: residual probe evidence clears the pre-registered recovery screen")
     return 0
 
 

@@ -1,15 +1,23 @@
 # @package _global_
-# Stage-1 bounded learning probe (issue #45). A short, real-streamed run that
-# shows whether the frozen Stage-1 method actually learns, before the full
-# temporal run. It inherits the locked scientific choices from `stage1_locked`
-# (first 10 V3 channels, depth 4, width 32, LR 1e-3, weight decay 0, seed 0,
-# temporal split, masked L1) and overrides only the *scope* of the read.
+# Stage-1 bounded learning probe (issues #45/#47). A short, real-streamed run
+# that shows whether the Stage-1 method actually learns, before the full
+# temporal run. It inherits the frozen Stage-1 scientific choices from
+# `stage1_locked` (first 10 V3 channels, depth 4, width 32, weight decay 0,
+# seed 0, temporal split, masked L1) and overrides the *representation* and the
+# *scope* of the read.
+#
+# Representation (issue #47 recovery): the U-Net predicts a Kelvin correction
+# added to the reconstructed prior, with a zero-initialized head, so the model
+# starts exactly at the prior-expand arm. `assert_stage1_probe` fails closed
+# unless `stage1_residual_prior` is true. Target, masked L1, pooling, mask, and
+# the published data are unchanged. The learning rate is 1e-3 here; the only
+# alternate trial is `stage1_probe_lr3` (3e-3), run only on a predeclared trigger.
 #
 # `stage1_lock` is intentionally false here: that marker belongs to the
 # 20-epoch, unbounded full profile. The probe carries `stage1_probe: true` and
 # its own fail-closed guard (`modeling/run.py:assert_stage1_probe`), which
-# re-asserts the same frozen method values plus the exact probe bounds before
-# any source read.
+# re-asserts the frozen method values plus the exact probe bounds before any
+# source read.
 #
 # Frozen method: do not tune. Probe bounds: the cohort, epochs, and device.
 defaults:
@@ -18,6 +26,7 @@ defaults:
 
 stage1_lock: false
 stage1_probe: true
+stage1_residual_prior: true
 
 data:
   # Train/validation only: the 2025 test split is never read, let alone scored.
