@@ -208,11 +208,17 @@ def _git_revision_from_context(context_uri: str) -> str:
 
 
 def _best_epoch_from_path(path: str) -> int | None:
-    """Recover the selected epoch from a ``best-<epoch>-<metric>.ckpt`` name."""
+    """Recover the selected epoch (1-based) from a ``best-<epoch>-<metric>.ckpt``.
+
+    # decision: add one, because Lightning writes ``epoch`` into the checkpoint
+    # filename as ``trainer.current_epoch`` (0-based), while the recorded curve
+    # and the validator use 1-based epoch numbers. Alternative: store 0-based
+    # everywhere (rejected — worse for a human readout).
+    """
     parts = Path(path).stem.split("-")
     if len(parts) < 2 or not parts[1].isdigit():
         return None
-    return int(parts[1])
+    return int(parts[1]) + 1
 
 
 def _logger_for(cfg: DictConfig, output_root: Path) -> WandbLogger:
@@ -502,35 +508,57 @@ class EpochMetricsRecorder(Callback):
     """Write the per-epoch train/validation metrics for a bounded probe.
 
     The W&B run holds the curve, but a retained, self-contained evidence record
-    needs the numbers locally. One JSON object per validation epoch, rewritten
-    after each epoch so a run that dies mid-fit still leaves the completed epochs
-    for the operator to read.
+    needs the numbers locally. Validation metrics are read at
+    ``on_validation_epoch_end``; the epoch-aggregated ``train/mae_100m`` is read
+    at ``on_train_epoch_end``, because Lightning commits that reduced metric at
+    the end of the *training* epoch — which runs after the in-epoch validation —
+    so reading it at validation end would record the previous epoch (or nothing
+    on epoch one). The file is rewritten on every hook so a run that dies
+    mid-fit still leaves the completed epochs for the operator to read.
     """
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.epochs: list[dict[str, object]] = []
+        self._epochs: dict[int, dict[str, object]] = {}
+
+    def _entry(self, epoch: int) -> dict[str, object]:
+        return self._epochs.setdefault(
+            epoch,
+            {
+                "epoch": epoch,
+                "train_mae_100m": None,
+                "validation_mae_100m": None,
+                "validation_valid_cells": None,
+                "validation_ssim_100m": None,
+                "validation_ssim_windows": None,
+            },
+        )
+
+    def _read(self, trainer: Trainer, key: str) -> float | None:
+        value = trainer.callback_metrics.get(key)
+        return None if value is None else float(value.detach().cpu())
 
     def on_validation_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        metrics = trainer.callback_metrics
+        entry = self._entry(int(trainer.current_epoch) + 1)
+        entry["validation_mae_100m"] = self._read(trainer, "validation/mae_100m")
+        entry["validation_valid_cells"] = self._read(trainer, "validation/valid_cells")
+        entry["validation_ssim_100m"] = self._read(trainer, "validation/ssim_100m")
+        entry["validation_ssim_windows"] = self._read(trainer, "validation/ssim_windows")
+        self._write()
 
-        def read(key: str) -> float | None:
-            value = metrics.get(key)
-            return None if value is None else float(value.detach().cpu())
+    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        entry = self._entry(int(trainer.current_epoch) + 1)
+        entry["train_mae_100m"] = self._read(trainer, "train/mae_100m")
+        self._write()
 
-        self.epochs.append(
-            {
-                "epoch": int(trainer.current_epoch) + 1,
-                "train_mae_100m": read("train/mae_100m"),
-                "validation_mae_100m": read("validation/mae_100m"),
-                "validation_valid_cells": read("validation/valid_cells"),
-                "validation_ssim_100m": read("validation/ssim_100m"),
-                "validation_ssim_windows": read("validation/ssim_windows"),
-            }
-        )
+    def _write(self) -> None:
         self.path.write_text(
             json.dumps(self.epochs, indent=2, sort_keys=True), encoding="utf-8"
         )
+
+    @property
+    def epochs(self) -> list[dict[str, object]]:
+        return [self._epochs[key] for key in sorted(self._epochs)]
 
 
 def _fit_contract_lifecycle(
@@ -841,6 +869,11 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     Re-invoked by :func:`run_modeling` for programmatic callers; the guards are
     pure assertions and idempotent.
     """
+    if bool(cfg.get("stage1_probe", False)) and config_name != STAGE1_PROBE_CONFIG_NAME:
+        raise ValueError(
+            "stage1_probe marker is set on a non-probe config "
+            f"({config_name!r}); the probe guard would not run"
+        )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
         assert_stage1_lock(cfg)
     if config_name == STAGE1_PROBE_CONFIG_NAME:

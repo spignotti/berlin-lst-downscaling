@@ -57,7 +57,11 @@ PROJECT = "berlin-lst-training"
 REGION = "europe-west3"
 MACHINE_TYPE = "n1-standard-4"
 ACCELERATOR_TYPE = "NVIDIA_TESLA_T4"
+# Both profiles write under the already-approved QA root: the probe keeps the
+# `vertex-smoke` prefix (distinguished by its `stage1-probe-*` label) so it does
+# not require a new IAM grant. The prefix is confined to APPROVED_EVIDENCE_ROOT.
 EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
+APPROVED_EVIDENCE_ROOT = "gs://berlin-lst-training-data/qa/modeling/"
 
 # Server-side bounds (seconds). The job timeout is the run's hard cost ceiling.
 DEFAULT_TIMEOUT_SECONDS = 2700
@@ -321,6 +325,11 @@ def main() -> int:
 
     _validate_image_uri(args.image_uri)
     _validate_run_label(args.run_label)
+    if not args.evidence_prefix.rstrip("/").startswith(APPROVED_EVIDENCE_ROOT.rstrip("/")):
+        raise SystemExit(
+            f"ERROR: --evidence-prefix must stay under {APPROVED_EVIDENCE_ROOT}, "
+            f"got {args.evidence_prefix!r}"
+        )
     check_bounds(config_name)
 
     exposure = _exposure_usd(hourly_rate, timeout_seconds, args.max_wait_seconds)

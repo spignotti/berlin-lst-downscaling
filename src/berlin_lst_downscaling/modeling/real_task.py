@@ -310,6 +310,16 @@ class RealPatchDataModule(LightningDataModule):
             "requested_per_split": {
                 split: len(refs) for split, refs in self._requested.items()
             },
+            # Only the bounded probe retains the requested IDs; a full run would
+            # duplicate the admitted list and bloat its data_scope.json.
+            "requested_patch_ids": (
+                {
+                    split: [ref.patch_id for ref in refs]
+                    for split, refs in self._requested.items()
+                }
+                if self.probe_scope is not None
+                else None
+            ),
             "scenes_per_split": {
                 split: sorted({ref.scene_id for ref in refs})
                 for split, refs in self._admitted.items()

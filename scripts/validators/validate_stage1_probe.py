@@ -27,10 +27,13 @@ import json
 import math
 from pathlib import Path
 
+from hydra import compose, initialize_config_dir
+
 from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     load_patch_refs,
 )
+from berlin_lst_downscaling.modeling.run import assert_probe_minima, assert_stage1_probe
 
 # Predeclared go/no-go screen. These are screening thresholds for whether the
 # frozen method learns enough to justify the full run — not model-quality
@@ -46,6 +49,94 @@ RECHECK_TOLERANCE = 1e-3
 DEFAULT_BASELINE = (
     "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
 )
+
+_CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs" / "modeling")
+
+
+def _guard_self_check() -> int:
+    """Exercise the fail-closed probe guards on the shipped config and on drift.
+
+    Positive and negative cases, composed locally with no source read and no
+    submission. This is the "positive and deliberately invalid config probe"
+    the plan requires before paid work; it is separate from evidence validation.
+    """
+    def compose_probe(overrides: list[str]):
+        with initialize_config_dir(config_dir=_CONFIG_DIR, version_base=None):
+            return compose(config_name="stage1_probe", overrides=overrides)
+
+    guard_cases = [
+        ("shipped stage1_probe", [], True),
+        ("changed LR", ["trainer.learning_rate=0.01"], False),
+        ("removed marker", ["stage1_probe=false"], False),
+        ("unbounded cohort", ["data.probe.max_refs_per_split.train=1000000"], False),
+        ("test split included", ['data.splits=["train","validation","test"]'], False),
+        ("gcs output", ["output_root=gs://bucket/runs/x"], False),
+        ("epochs drift", ["trainer.max_epochs=20"], False),
+        ("depth drift", ["model.depth=3"], False),
+    ]
+    failures: list[str] = []
+    for label, overrides, should_pass in guard_cases:
+        try:
+            assert_stage1_probe(compose_probe(overrides))
+            accepted = True
+        except Exception:
+            accepted = False
+        status = "PASS" if accepted == should_pass else "FAIL"
+        if accepted != should_pass:
+            failures.append(label)
+        print(f"  {status} guard: {label} (accepted={accepted}, expected={should_pass})")
+
+    cfg = compose_probe([])
+    good_scope = {
+        "patches_per_split": {"train": 128, "validation": 64},
+        "scenes_per_split": {"train": list(range(16)), "validation": list(range(8))},
+        "years_per_split": {"train": [2017, 2018, 2019], "validation": [2024]},
+    }
+    minima_cases = [
+        ("cohort at minima", good_scope, True),
+        (
+            "cohort under-admitted",
+            {**good_scope, "patches_per_split": {"train": 100, "validation": 64}},
+            False,
+        ),
+        (
+            "cohort too few scenes",
+            {
+                **good_scope,
+                "scenes_per_split": {
+                    "train": list(range(15)),
+                    "validation": list(range(8)),
+                },
+            },
+            False,
+        ),
+        (
+            "cohort too few years",
+            {**good_scope, "years_per_split": {"train": [2017, 2018], "validation": [2024]}},
+            False,
+        ),
+        (
+            "cohort includes test",
+            {**good_scope, "patches_per_split": {"train": 128, "validation": 64, "test": 1}},
+            False,
+        ),
+    ]
+    for label, scope, should_pass in minima_cases:
+        try:
+            assert_probe_minima(cfg, scope)
+            accepted = True
+        except Exception:
+            accepted = False
+        status = "PASS" if accepted == should_pass else "FAIL"
+        if accepted != should_pass:
+            failures.append(label)
+        print(f"  {status} minima: {label} (accepted={accepted}, expected={should_pass})")
+
+    if failures:
+        print(f"SELF-CHECK FAILED: {failures}")
+        return 1
+    print("SELF-CHECK OK: probe guards accept the shipped config and reject drift")
+    return 0
 
 
 def _load_json(path: Path) -> object:
@@ -286,10 +377,20 @@ def validate(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--evidence", required=True, type=Path)
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="exercise the probe guards (positive/negative) and exit; no evidence needed",
+    )
+    parser.add_argument("--evidence", type=Path)
     parser.add_argument("--baseline", default=DEFAULT_BASELINE, type=Path)
     args = parser.parse_args()
 
+    if args.self_check:
+        return _guard_self_check()
+    if args.evidence is None:
+        print("FAIL: --evidence is required (or pass --self-check)")
+        return 1
     if not args.evidence.is_file():
         print(f"FAIL: evidence not found: {args.evidence}")
         return 1

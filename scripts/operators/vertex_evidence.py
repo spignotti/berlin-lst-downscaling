@@ -94,8 +94,10 @@ def build_record(
         "data_scope": {
             "mode": scope.get("mode"),
             "requested_per_split": scope.get("requested_per_split"),
+            "requested_patch_ids": scope.get("requested_patch_ids"),
             "patches_per_split": scope.get("patches_per_split"),
             "skipped_per_split": scope.get("skipped_per_split"),
+            "skipped_refs": scope.get("skipped_refs"),
             "scenes_per_split": scope.get("scenes_per_split"),
             "years_per_split": scope.get("years_per_split"),
             "exclusions": scope.get("exclusions"),
