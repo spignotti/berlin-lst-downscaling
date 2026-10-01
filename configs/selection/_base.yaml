@@ -2,11 +2,6 @@
 # Base config for Szenen-Selektion & Kopplung.
 # Extends nothing — self-contained parameters for the selection pipeline.
 
-# Suppress Hydra's job file handler: logs persist only via RunLogSession
-# under <output_root>/logs/<pipeline>/ (AGENTS.md data-safety rule).
-defaults:
-  - override hydra/job_logging: none
-
 # ── Spatial / Temporal ───────────────────────────────────────────────────────
 bbox: [13.08, 52.34, 13.76, 52.68]   # WGS84 Berlin bbox (minx, miny, maxx, maxy)
 years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
@@ -75,3 +70,11 @@ hydra:
     dir: .
   job:
     chdir: false
+  # Disable Hydra's job file handler; logs persist only via RunLogSession
+  # under <output_root>/logs/<pipeline>/ (AGENTS.md data-safety rule). This
+  # content form is used because a base included via a relative path
+  # (`../_base`) rejects `override hydra/job_logging` in the defaults list.
+  job_logging:
+    version: 1
+    root: null
+    disable_existing_loggers: false
