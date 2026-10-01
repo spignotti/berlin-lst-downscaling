@@ -90,7 +90,8 @@ Opt-out reason: none
 - `docs/phase-2-preparation.md` — phase-2 preparation state.
 - `docs/patch-read-timing.md` — real patch read timing measurement and its no-optimization decision.
 - `docs/baseline-full-results.md` — full validation/test naive baseline anchor (issue #39) with its run artifact.
-- `docs/vertex-gpu-training.md` — bounded Vertex GPU acceptance-smoke launch recipe (issue #38): image, identities, secret ownership, cost bounds, evidence.
+- `docs/vertex-gpu-training.md` — Vertex GPU launch recipe: bounded acceptance smoke (issue #38) and bounded Stage-1 probe (issue #45) — image, identities, secret ownership, cost bounds, evidence.
+- `docs/stage1-probe-results.md` — bounded Stage-1 learning probe result (issue #45): cohort, six-epoch curve, predeclared screen, go/no-go.
 
 ## Notion Integration
 

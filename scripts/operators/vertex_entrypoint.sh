@@ -13,7 +13,8 @@
 # Required env (nonsecret, supplied by the guarded launcher):
 #   VERTEX_RUN_LABEL, VERTEX_SOURCE_SHA, VERTEX_IMAGE_DIGEST, VERTEX_EVIDENCE_URI,
 #   INFISICAL_MACHINE_IDENTITY_ID, INFISICAL_PROJECT_ID, INFISICAL_ENV
-# Optional: INFISICAL_SECRET_PATH (default "/"), VERTEX_OUTPUT_ROOT
+# Optional: INFISICAL_SECRET_PATH (default "/"), VERTEX_OUTPUT_ROOT,
+#   VERTEX_CONFIG_NAME (default "vertex_smoke"), VERTEX_PROFILE (default "smoke")
 set -euo pipefail
 
 : "${VERTEX_RUN_LABEL:?VERTEX_RUN_LABEL is required}"
@@ -29,7 +30,9 @@ set -euo pipefail
 export INFISICAL_DOMAIN="${INFISICAL_DOMAIN:-https://eu.infisical.com}"
 export INFISICAL_DISABLE_UPDATE_CHECK=true
 
-OUTPUT_ROOT="${VERTEX_OUTPUT_ROOT:-data/runs/vertex-smoke/$VERTEX_RUN_LABEL}"
+OUTPUT_ROOT="${VERTEX_OUTPUT_ROOT:-data/runs/smoke/$VERTEX_RUN_LABEL}"
+CONFIG_NAME="${VERTEX_CONFIG_NAME:-vertex_smoke}"
+PROFILE="${VERTEX_PROFILE:-smoke}"
 mkdir -p "$OUTPUT_ROOT"
 RESULT_FILE="$OUTPUT_ROOT/result.txt"
 
@@ -44,12 +47,12 @@ set +e
 infisical run --projectId="$INFISICAL_PROJECT_ID" --env="$INFISICAL_ENV" \
   --path="${INFISICAL_SECRET_PATH:-/}" -- \
   uv run python scripts/runners/run_modeling.py \
-  --config-name vertex_smoke "output_root=$OUTPUT_ROOT" 2>&1 | tee "$RESULT_FILE"
+  --config-name "$CONFIG_NAME" "output_root=$OUTPUT_ROOT" 2>&1 | tee "$RESULT_FILE"
 rc=${PIPESTATUS[0]}
 set -e
 
 if [[ "$rc" -ne 0 ]]; then
-  echo "vertex smoke run failed (rc=$rc); no evidence uploaded"
+  echo "vertex $PROFILE run failed (rc=$rc); no evidence uploaded"
   exit "$rc"
 fi
 
@@ -59,4 +62,5 @@ uv run python scripts/operators/vertex_evidence.py \
   --run-label "$VERTEX_RUN_LABEL" \
   --source-sha "$VERTEX_SOURCE_SHA" \
   --image-digest "$VERTEX_IMAGE_DIGEST" \
+  --profile "$PROFILE" \
   --result-file "$RESULT_FILE"

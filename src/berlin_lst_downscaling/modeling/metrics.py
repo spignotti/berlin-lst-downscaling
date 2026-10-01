@@ -210,6 +210,27 @@ class SupportedWindows(Metric):
         return self.window_count
 
 
+class ValidCells(Metric):
+    """Sum of valid 100 m cells over an epoch — the masked MAE's support.
+
+    The masked MAE's own ``valid_cells`` state is consumed (and reset) when the
+    epoch value is computed, so it cannot be read back as run evidence. This
+    separate accumulator keeps the support observable per epoch alongside the
+    metric it weights.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_state("cell_count", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def update(self, mask_100m: Tensor) -> None:
+        """Accumulate one batch's valid-cell count."""
+        self.cell_count = self.cell_count + mask_100m.sum()
+
+    def compute(self) -> Tensor:
+        return self.cell_count
+
+
 __all__ = [
     "SSIM_DATA_RANGE",
     "SSIM_PAD",
@@ -217,6 +238,7 @@ __all__ = [
     "MaskedMAE",
     "MaskedSSIM",
     "SupportedWindows",
+    "ValidCells",
     "masked_abs_error_sums",
     "masked_l1_loss",
     "masked_ssim_stats",

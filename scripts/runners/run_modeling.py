@@ -43,7 +43,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
-from berlin_lst_downscaling.modeling.run import run_modeling
+from berlin_lst_downscaling.modeling.run import guard_modeling_config, run_modeling
 
 _logger = logging.getLogger(__name__)
 
@@ -54,8 +54,13 @@ def main(cfg: DictConfig) -> int:
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
-    # The Hydra-selected config identity; drives the fail-closed Stage-1 lock.
+    # The Hydra-selected config identity; drives the fail-closed Stage-1 lock
+    # and probe guards.
     config_name = HydraConfig.get().job.config_name
+
+    # Guard before the session opens (or creates) the output path: a drifted
+    # config must not leave a run directory, touch GCS, or start a paid job.
+    guard_modeling_config(cfg, config_name)
 
     with RunLogSession(output_root, pipeline="modeling", run_id=run_id, level=level):
         log_event(

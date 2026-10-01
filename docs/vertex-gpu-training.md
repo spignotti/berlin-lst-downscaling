@@ -2,10 +2,11 @@
 
 The repo trains on the CPU smoke VM (`berlin-lst-vm`) for pipeline and smoke
 work, and on **Vertex AI Custom Training** for GPU work (`AGENTS.md`
-§Compute Placement). This document is the launch recipe for the bounded GPU
-acceptance smoke of the real-data modeling path (issue #38). It does **not**
-cover the Stage-1 full temporal run, which remains a separate explicit
-invocation.
+§Compute Placement). This document is the launch recipe for two bounded Vertex
+jobs on the real-data modeling path: the GPU acceptance smoke (issue #38,
+`--mode smoke`) and the Stage-1 learning probe (issue #45, `--mode probe`,
+result in `docs/stage1-probe-results.md`). It does **not** cover the Stage-1
+full temporal run, which remains a separate explicit invocation.
 
 ## What the path is (and is not)
 
@@ -45,6 +46,18 @@ The worker must not reuse the VM's bucket-wide `objectAdmin` identity
 (`berlin-lst-vertex@…`). Secrets never appear in the image, the job spec, the
 command line, or logs.
 
+### Fixed, non-secret identifiers (reuse for every launch)
+
+These are identifiers, not secret values; keep them here so a launch does not
+have to look them up again. The vault value (`WANDB_API_KEY`) is never recorded.
+
+| Field | Value |
+|---|---|
+| Worker service account | `berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com` |
+| Infisical machine identity ID | `7ba603e5-b94d-42d1-bc57-d64658dde09d` |
+| Infisical project ID | `5da7dfb7-954d-4736-ba2e-4471ade9d766` |
+| Infisical environment / secret path | `dev` / `/vertex` |
+
 ## Secret ownership (human-only)
 
 `WANDB_API_KEY` lives in the **Infisical EU vault** in a dedicated project
@@ -77,9 +90,9 @@ hung on this workstation) from code SHA `ef80930`. Pass a throwaway config
 cat > /tmp/cloudbuild-vertex.yaml <<'YAML'
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: [build, -f, Dockerfile.vertex, -t, ${_IMAGE}, .]
+    args: [build, -f, Dockerfile.vertex, -t, '${_IMAGE}', .]
 images:
-  - ${_IMAGE}
+  - '${_IMAGE}'
 YAML
 
 gcloud builds submit --project=berlin-lst-training \
@@ -87,8 +100,9 @@ gcloud builds submit --project=berlin-lst-training \
   --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
 ```
 
-Image digest in use (the GPU-verified acceptance image):
-`europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea`
+GPU-verified image digests:
+- #38 acceptance smoke: `sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea`
+- #45 bounded Stage-1 probe (built from the probe tree): `sha256:78430e03643a328775897db9a99b296d70621db73b5019c0b72ea68bff74777e`
 
 The image must expose the NVIDIA driver at runtime. The T4 device nodes are
 attached, but a slim base does not set the driver library path, so
@@ -123,6 +137,36 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 # Reconnect / inspect an existing job (do NOT resubmit):
 uv run --group operators python scripts/operators/launch_vertex_modeling.py \
   --status projects/<n>/locations/europe-west3/customJobs/<id>
+```
+
+### Bounded Stage-1 probe (`--mode probe`)
+
+Add `--mode probe` to run the `stage1_probe` profile (six epochs, scene-spread
+128/64 cohort) instead of the four-ref, one-epoch smoke. It composes and asserts
+the probe guards, defaults the server timeout to 10,800 s, and **requires** the
+verified regional rate via `--hourly-rate-usd` (the built-in $0.75/h estimate is
+not accepted for a multi-epoch run). The evidence prefix is unchanged; the probe
+is distinguished by its `stage1-probe-*` run label. The projected Vertex compute
+exposure must stay at or below `--max-exposure-usd` ($3.00 default).
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode probe \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<probe-digest> \
+  --source-sha <clean-commit> --run-label stage1-probe-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 0.90 --timeout-seconds 10800 --max-wait-seconds 600 \
+  --preflight
+```
+
+Validate a retained probe result with no source read or submission:
+
+```bash
+uv run python scripts/validators/validate_stage1_probe.py --self-check
+uv run python scripts/validators/validate_stage1_probe.py --evidence <evidence.json>
 ```
 
 Submission uses the low-level Vertex `JobServiceClient` with an explicit

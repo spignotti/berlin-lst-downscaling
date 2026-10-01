@@ -26,6 +26,7 @@ Usage (workstation, ADC for the submitter account):
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import time
 from pathlib import Path
@@ -44,7 +45,10 @@ from google.cloud.aiplatform_v1.types import (
 from google.protobuf.duration_pb2 import Duration
 from hydra import compose, initialize_config_dir
 
-from berlin_lst_downscaling.modeling.run import assert_vertex_smoke_bounds
+from berlin_lst_downscaling.modeling.run import (
+    assert_stage1_probe,
+    assert_vertex_smoke_bounds,
+)
 
 PROJECT = "berlin-lst-training"
 # Acceptance-smoke region: europe-west3 (bucket + image region). Its Vertex T4
@@ -53,10 +57,19 @@ PROJECT = "berlin-lst-training"
 REGION = "europe-west3"
 MACHINE_TYPE = "n1-standard-4"
 ACCELERATOR_TYPE = "NVIDIA_TESLA_T4"
+# Both profiles write under the already-approved QA root: the probe keeps the
+# `vertex-smoke` prefix (distinguished by its `stage1-probe-*` label) so it does
+# not require a new IAM grant. The prefix is confined to APPROVED_EVIDENCE_ROOT,
+# which keeps its trailing slash so `.../modeling-evil` cannot pass the check.
 EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
+APPROVED_EVIDENCE_ROOT = "gs://berlin-lst-training-data/qa/modeling/"
 
 # Server-side bounds (seconds). The job timeout is the run's hard cost ceiling.
 DEFAULT_TIMEOUT_SECONDS = 2700
+# The bounded Stage-1 probe runs six epochs over a scene-spread cohort, so it
+# needs a larger ceiling than the one-epoch smoke. It stays under the same $3
+# projected-exposure check.
+PROBE_TIMEOUT_SECONDS = 10800
 DEFAULT_MAX_WAIT_SECONDS = 600
 # Approximate on-demand n1-standard-4 + T4 compute rate. An estimate only: pass
 # the verified regional SKU with --hourly-rate-usd before submitting. The bucket
@@ -64,6 +77,10 @@ DEFAULT_MAX_WAIT_SECONDS = 600
 DEFAULT_HOURLY_RATE_USD = 0.75
 DEFAULT_MAX_EXPOSURE_USD = 3.0
 POLL_SECONDS = 20
+
+# The two approved profiles. The probe is the bounded Stage-1 learning run; the
+# smoke is the #38 GPU acceptance path and is left unchanged.
+MODE_CONFIG_NAME = {"smoke": "vertex_smoke", "probe": "stage1_probe"}
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _TERMINAL = {
@@ -79,11 +96,21 @@ def _config_dir() -> str:
     return str((Path(__file__).resolve().parents[2] / "configs" / "modeling").resolve())
 
 
-def check_bounds() -> None:
-    """Assert the shipped vertex smoke config still satisfies the bounds."""
+def check_bounds(config_name: str) -> None:
+    """Assert the shipped config still satisfies its own profile bounds."""
     with initialize_config_dir(config_dir=_config_dir(), version_base=None):
-        cfg = compose(config_name="vertex_smoke")
-    assert_vertex_smoke_bounds(cfg)
+        cfg = compose(config_name=config_name)
+    if config_name == MODE_CONFIG_NAME["probe"]:
+        assert_stage1_probe(cfg)
+    else:
+        assert_vertex_smoke_bounds(cfg)
+
+
+def _require_positive_finite(label: str, value: float) -> float:
+    """Reject NaN/negative/zero numeric inputs that would defeat the cost guard."""
+    if not math.isfinite(value) or value <= 0:
+        raise SystemExit(f"ERROR: {label} must be a finite positive number, got {value!r}")
+    return value
 
 
 def _validate_run_label(run_label: str) -> None:
@@ -149,6 +176,7 @@ def _submit(
     env: list[tuple[str, str]],
     service_account: str,
     timeout_seconds: int,
+    profile: str,
 ) -> str:
     """Create the job and return its full resource name.
 
@@ -164,7 +192,7 @@ def _submit(
     """
     custom_job = CustomJob(
         display_name=display_name,
-        labels={"purpose": "vertex-smoke"},
+        labels={"purpose": profile},
         job_spec=CustomJobSpec(
             worker_pool_specs=[_worker_pool_spec(image_uri, env)],
             service_account=service_account,
@@ -219,20 +247,31 @@ def main() -> int:
     parser.add_argument("--source-sha")
     parser.add_argument("--run-label")
     parser.add_argument("--service-account")
+    parser.add_argument("--mode", choices=sorted(MODE_CONFIG_NAME), default="smoke")
     parser.add_argument("--infisical-identity", help="Infisical machine identity ID (non-secret)")
     parser.add_argument("--infisical-project", help="Infisical project ID (non-secret)")
     parser.add_argument("--infisical-env", default="dev")
     parser.add_argument("--infisical-path", default="/vertex")
     parser.add_argument("--project", default=PROJECT)
     parser.add_argument("--region", default=REGION)
-    parser.add_argument("--timeout-seconds", type=int, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=None,
+        help="server-side job timeout (default: 2700 smoke / 10800 probe)",
+    )
     parser.add_argument(
         "--max-wait-seconds",
         type=int,
         default=DEFAULT_MAX_WAIT_SECONDS,
         help="client-side queue/provisioning wait budget (not sent to Vertex)",
     )
-    parser.add_argument("--hourly-rate-usd", type=float, default=DEFAULT_HOURLY_RATE_USD)
+    parser.add_argument(
+        "--hourly-rate-usd",
+        type=float,
+        default=None,
+        help="verified regional on-demand rate; required for --mode probe",
+    )
     parser.add_argument("--max-exposure-usd", type=float, default=DEFAULT_MAX_EXPOSURE_USD)
     parser.add_argument("--evidence-prefix", default=EVIDENCE_PREFIX)
     parser.add_argument(
@@ -262,12 +301,41 @@ def main() -> int:
     if missing:
         raise SystemExit(f"ERROR: missing required options: {', '.join(missing)}")
 
+    config_name = MODE_CONFIG_NAME[args.mode]
+    timeout_seconds = (
+        args.timeout_seconds
+        if args.timeout_seconds is not None
+        else (PROBE_TIMEOUT_SECONDS if args.mode == "probe" else DEFAULT_TIMEOUT_SECONDS)
+    )
+    if args.mode == "probe" and args.hourly_rate_usd is None:
+        raise SystemExit(
+            "ERROR: --mode probe requires the verified regional rate via "
+            "--hourly-rate-usd (the built-in estimate is not acceptable for a "
+            "multi-epoch run)"
+        )
+    hourly_rate = (
+        args.hourly_rate_usd
+        if args.hourly_rate_usd is not None
+        else DEFAULT_HOURLY_RATE_USD
+    )
+    _require_positive_finite("--timeout-seconds", float(timeout_seconds))
+    _require_positive_finite("--hourly-rate-usd", float(hourly_rate))
+    _require_positive_finite("--max-exposure-usd", float(args.max_exposure_usd))
+    if not math.isfinite(float(args.max_wait_seconds)) or args.max_wait_seconds < 0:
+        raise SystemExit("ERROR: --max-wait-seconds must be a finite non-negative number")
+
     _validate_image_uri(args.image_uri)
     _validate_run_label(args.run_label)
-    check_bounds()
+    prefix = args.evidence_prefix.rstrip("/") + "/"
+    if not prefix.startswith(APPROVED_EVIDENCE_ROOT):
+        raise SystemExit(
+            f"ERROR: --evidence-prefix must stay under {APPROVED_EVIDENCE_ROOT}, "
+            f"got {args.evidence_prefix!r}"
+        )
+    check_bounds(config_name)
 
-    exposure = _exposure_usd(args.hourly_rate_usd, args.timeout_seconds, args.max_wait_seconds)
-    if exposure > args.max_exposure_usd:
+    exposure = _exposure_usd(hourly_rate, timeout_seconds, args.max_wait_seconds)
+    if not math.isfinite(exposure) or exposure > args.max_exposure_usd:
         raise SystemExit(
             f"ERROR: projected exposure ${exposure:.2f} exceeds the "
             f"${args.max_exposure_usd:.2f} ceiling; refusing to submit"
@@ -284,21 +352,24 @@ def main() -> int:
         ("VERTEX_SOURCE_SHA", args.source_sha),
         ("VERTEX_IMAGE_DIGEST", args.image_uri.split("@", 1)[1]),
         ("VERTEX_EVIDENCE_URI", evidence_uri),
-        ("VERTEX_OUTPUT_ROOT", f"data/runs/vertex-smoke/{args.run_label}"),
+        ("VERTEX_CONFIG_NAME", config_name),
+        ("VERTEX_PROFILE", args.mode),
+        ("VERTEX_OUTPUT_ROOT", f"data/runs/{args.mode}/{args.run_label}"),
         ("INFISICAL_MACHINE_IDENTITY_ID", args.infisical_identity),
         ("INFISICAL_PROJECT_ID", args.infisical_project),
         ("INFISICAL_ENV", args.infisical_env),
         ("INFISICAL_SECRET_PATH", args.infisical_path),
     ]
 
-    display_name = f"vertex-smoke-{args.run_label}"
+    display_name = f"{args.mode}-{args.run_label}"
     print("Planned Vertex Custom Job:")
     print(f"  project/region : {PROJECT}/{REGION}")
+    print(f"  mode/config    : {args.mode} / {config_name}")
     print(f"  machine        : {MACHINE_TYPE} + 1x {ACCELERATOR_TYPE} (on-demand)")
     print(f"  image          : {args.image_uri}")
     print(f"  service account: {args.service_account}")
-    print(f"  timeout        : {args.timeout_seconds}s  max-wait: {args.max_wait_seconds}s")
-    print(f"  exposure       : ~${exposure:.2f} (estimate at ${args.hourly_rate_usd}/h)")
+    print(f"  timeout        : {timeout_seconds}s  max-wait: {args.max_wait_seconds}s")
+    print(f"  exposure       : ~${exposure:.2f} (estimate at ${hourly_rate}/h)")
     print(f"  evidence       : {evidence_uri}")
 
     if args.preflight:
@@ -312,17 +383,18 @@ def main() -> int:
         image_uri=args.image_uri,
         env=env,
         service_account=args.service_account,
-        timeout_seconds=args.timeout_seconds,
+        timeout_seconds=timeout_seconds,
+        profile=args.mode,
     )
     print(f"submitted job: {resource_name}", flush=True)
 
-    deadline = time.monotonic() + args.timeout_seconds + args.max_wait_seconds + 300
+    deadline = time.monotonic() + timeout_seconds + args.max_wait_seconds + 300
     final = _poll_until_terminal(client, resource_name, deadline)
     print(f"final state: {final.name}")
     if final == JobState.JOB_STATE_SUCCEEDED:
-        print(f"SUCCESS: bounded vertex smoke completed. Evidence: {evidence_uri}")
+        print(f"SUCCESS: bounded vertex {args.mode} completed. Evidence: {evidence_uri}")
         return 0
-    print(f"FAIL: vertex smoke ended {final.name}. Query with --status {resource_name}")
+    print(f"FAIL: vertex {args.mode} ended {final.name}. Query with --status {resource_name}")
     return 1
 
 

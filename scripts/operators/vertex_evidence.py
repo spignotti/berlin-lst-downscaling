@@ -26,7 +26,13 @@ _RESULT_TAIL_LINES = 20
 
 
 def _read_json(path: Path) -> dict | None:
-    """Read a JSON file, warning (never silently) on a missing/unreadable file."""
+    """Read a JSON object, warning (never silently) on a missing/unreadable file."""
+    value = _read_json_any(path)
+    return value if isinstance(value, dict) else None
+
+
+def _read_json_any(path: Path) -> object:
+    """Read any JSON value, warning (never silently) on a missing/unreadable file."""
     if not path.is_file():
         print(f"WARNING: {path} not found", file=sys.stderr)
         return None
@@ -51,6 +57,17 @@ def _result_tail(result_file: Path | None) -> list[str]:
     return lines[-_RESULT_TAIL_LINES:]
 
 
+def _run_block(context: dict, source_sha: str) -> dict:
+    return {
+        "pipeline": context.get("pipeline"),
+        "run_id": context.get("run_id"),
+        # The image excludes .git, so the container's context git fields are
+        # null; the operator-supplied source SHA is the authoritative revision.
+        "git_commit": context.get("git_commit") or source_sha,
+        "git_dirty": context.get("git_dirty"),
+    }
+
+
 def build_record(
     run_root: Path,
     *,
@@ -58,32 +75,52 @@ def build_record(
     source_sha: str,
     image_digest: str,
     result_file: Path | None,
+    profile: str = "smoke",
 ) -> dict:
-    """Build the compact, non-secret evidence record."""
+    """Build the compact, non-secret evidence record.
+
+    ``profile="probe"`` retains the probe's cohort bounds, per-epoch metrics and
+    summary — the numbers a go/no-go decision needs — instead of a raw stdout
+    tail. ``profile="smoke"`` keeps the original bounded-tail record.
+    """
     scope = _read_json(run_root / "data_scope.json") or {}
     context = _run_context(run_root)
-    return {
+    record: dict = {
         "run_label": run_label,
         "source_sha": source_sha,
         "image_digest": image_digest,
         "generated_at": datetime.now(UTC).isoformat(),
-        "run": {
-            "pipeline": context.get("pipeline"),
-            "run_id": context.get("run_id"),
-            # The image excludes .git, so the container's context git fields are
-            # null; the operator-supplied source SHA is the authoritative revision.
-            "git_commit": context.get("git_commit") or source_sha,
-            "git_dirty": context.get("git_dirty"),
-        },
+        "run": _run_block(context, source_sha),
         "data_scope": {
             "mode": scope.get("mode"),
+            "requested_per_split": scope.get("requested_per_split"),
+            "requested_patch_ids": scope.get("requested_patch_ids"),
             "patches_per_split": scope.get("patches_per_split"),
             "skipped_per_split": scope.get("skipped_per_split"),
+            "skipped_refs": scope.get("skipped_refs"),
+            "scenes_per_split": scope.get("scenes_per_split"),
+            "years_per_split": scope.get("years_per_split"),
             "exclusions": scope.get("exclusions"),
             "patch_ids": scope.get("patch_ids"),
         },
-        "result_tail": _result_tail(result_file),
     }
+    if profile == "probe":
+        epochs = _read_json_any(run_root / "epoch_metrics.json")
+        summary = _read_json(run_root / "probe_summary.json")
+        record["profile"] = "probe"
+        record["probe"] = {
+            "epoch_metrics": epochs if isinstance(epochs, list) else [],
+            "summary": summary or {},
+            # A probe is only a valid learning signal if every requested epoch
+            # ran; surface a short run explicitly rather than as a pass.
+            "epochs_complete": isinstance(epochs, list)
+            and bool(summary)
+            and len(epochs) == int((summary or {}).get("max_epochs", -1)),
+        }
+    else:
+        record["profile"] = "smoke"
+        record["result_tail"] = _result_tail(result_file)
+    return record
 
 
 def _upload_create_only(uri: str, payload: bytes) -> None:
@@ -105,6 +142,7 @@ def main() -> None:
     parser.add_argument("--run-label", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--image-digest", required=True)
+    parser.add_argument("--profile", choices=["smoke", "probe"], default="smoke")
     parser.add_argument("--result-file", type=Path, default=None)
     args = parser.parse_args()
 
@@ -114,6 +152,7 @@ def main() -> None:
         source_sha=args.source_sha,
         image_digest=args.image_digest,
         result_file=args.result_file,
+        profile=args.profile,
     )
     payload = json.dumps(record, indent=2, sort_keys=True, default=str).encode("utf-8")
     _upload_create_only(args.evidence_uri, payload)
