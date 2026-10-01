@@ -1,0 +1,44 @@
+# @package _global_
+# Bounded Vertex GPU acceptance smoke: a few streamed real patches through the
+# contract-conforming lifecycle on one GPU, W&B online, local ephemeral output.
+#
+# This is a one-shot paid run. `modeling/run.py:assert_vertex_smoke_bounds`
+# refuses to start if the resolved config drifts from these bounds (streamed
+# real data, <= 4 refs per split, one epoch, one GPU, online W&B, local output
+# root), and the guarded launcher enforces the same bounds before submitting.
+# Checkpoints stay on the disposable worker disk; only a small metadata record
+# is retained under the approved QA prefix.
+defaults:
+  - _base
+  - _self_
+
+# Enables the fail-closed bounds check in the runner. Kept explicit so a direct
+# invocation of this config is self-guarding, not only the guarded launcher.
+vertex_smoke_bounds: true
+
+data:
+  kind: real
+  batch_size: 2
+  max_patches_per_split: 4   # first 4 indexed rows per split: a bounded pass
+  mode: stream               # read each patch on demand through loader workers
+  num_workers: 2
+  shuffle_train: true        # seeded, deterministic train order
+
+model:
+  depth: 4                   # 160 px / 2**4 = 10 px bottleneck
+
+trainer:
+  max_epochs: 1
+  accelerator: "gpu"
+  devices: 1
+
+# Local ephemeral output on the worker disk. The launcher overrides this with a
+# unique job-scoped path; it must never point at a canonical or retained root.
+output_root: "data/runs/vertex-smoke"
+
+wandb:
+  mode: "online"
+
+patch_index_root: "gs://berlin-lst-training-data/training/patch-index/v1"
+training_root: "gs://berlin-lst-training-data/training/v1"
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-20260717T235959Z"
