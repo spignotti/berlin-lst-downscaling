@@ -371,7 +371,8 @@ def validate(
         failures.append(f"admitted splits {sorted(patch_ids)} are not train/validation only")
 
     resolved = summary.get("resolved_config")
-    probe_cfg = resolved.get("data", {}).get("probe") if isinstance(resolved, dict) else None
+    data_cfg = resolved.get("data") if isinstance(resolved, dict) else None
+    probe_cfg = data_cfg.get("probe") if isinstance(data_cfg, dict) else None
     if not isinstance(probe_cfg, dict):
         return False, ["summary.resolved_config has no data.probe block"], notes
     expected_admitted = probe_cfg.get("min_admitted_per_split", {})
@@ -379,9 +380,8 @@ def validate(
     expected_years = int(probe_cfg.get("min_train_years", 0))
     per_scene_cap = int(probe_cfg.get("max_refs_per_scene", 0))
 
-    trial_lr = (
-        resolved.get("trainer", {}).get("learning_rate") if isinstance(resolved, dict) else None
-    )
+    trainer_cfg = resolved.get("trainer") if isinstance(resolved, dict) else None
+    trial_lr = trainer_cfg.get("learning_rate") if isinstance(trainer_cfg, dict) else None
     if trial_lr not in ALLOWED_TRIAL_LR:
         failures.append(
             f"resolved_config trainer.learning_rate={trial_lr!r} is not one of the "
@@ -457,7 +457,7 @@ def validate(
         cohort_naive, matched = _cohort_naive_mae(
             baseline_index, [str(p) for p in patch_ids["validation"]], "validation"
         )
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         return (
             False,
             [f"cannot recompute the same-cohort naive baseline: {exc}"],
