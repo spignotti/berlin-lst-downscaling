@@ -46,6 +46,8 @@ from google.protobuf.duration_pb2 import Duration
 from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.run import (
+    assert_stage1_full_bounds,
+    assert_stage1_lock,
     assert_stage1_probe,
     assert_stage1_probe_lr3,
     assert_vertex_smoke_bounds,
@@ -71,7 +73,19 @@ DEFAULT_TIMEOUT_SECONDS = 2700
 # needs a larger ceiling than the one-epoch smoke. It stays under the same $3
 # projected-exposure check.
 PROBE_TIMEOUT_SECONDS = 10800
+# The full temporal Stage-1 run (issue #53) runs 20 unbounded epochs; the
+# 48-hour server timeout is the hard ceiling. The projection assumes it is
+# roughly 2x the heuristic full-run wall clock, not a measured runtime.
+FULL_TIMEOUT_SECONDS = 172800
 DEFAULT_MAX_WAIT_SECONDS = 600
+
+# Full-run cost ceilings (issue #53). One on-demand n1-standard-4 + T4 for at
+# most 48h; the launcher refuses to submit above $50 projected compute. The
+# exposure is an admission estimate, never a provider spending cap.
+FULL_MAX_EXPOSURE_USD = 50.0
+# At $1.03/h the 48h+600s projection is $49.61, so a verified rate above this
+# cannot stay under the $50 ceiling and must stop for a budget decision.
+FULL_MAX_HOURLY_RATE_USD = 1.03
 # Approximate on-demand n1-standard-4 + T4 compute rate. An estimate only: pass
 # the verified regional SKU with --hourly-rate-usd before submitting. The bucket
 # and image share this region, so no cross-region transfer applies.
@@ -81,20 +95,25 @@ POLL_SECONDS = 20
 
 # The approved profiles. `probe` and `probe-lr3` are the two Stage-1 recovery
 # trials (issue #47) that share the residual method and differ only in learning
-# rate; the smoke is the #38 GPU acceptance path and is left unchanged.
+# rate; the smoke is the #38 GPU acceptance path and is left unchanged. `full`
+# is the unbounded 20-epoch Stage-1 temporal run (issue #53).
 MODE_CONFIG_NAME = {
     "smoke": "vertex_smoke",
     "probe": "stage1_probe",
     "probe-lr3": "stage1_probe_lr3",
+    "full": "stage1_locked",
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
 # historical #45 `probe` evidence stays distinguishable from the recovery runs.
 _PROBE_MODES = ("probe", "probe-lr3")
+# Modes that require the verified regional rate before submitting.
+_RATE_REQUIRED_MODES = ("probe", "probe-lr3", "full")
 MODE_EVIDENCE_PROFILE = {
     "smoke": "smoke",
     "probe": "probe-residual",
     "probe-lr3": "probe-residual",
+    "full": "full",
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -119,6 +138,9 @@ def check_bounds(config_name: str) -> None:
         assert_stage1_probe(cfg)
     elif config_name == MODE_CONFIG_NAME["probe-lr3"]:
         assert_stage1_probe_lr3(cfg)
+    elif config_name == MODE_CONFIG_NAME["full"]:
+        assert_stage1_lock(cfg)
+        assert_stage1_full_bounds(cfg)
     else:
         assert_vertex_smoke_bounds(cfg)
 
@@ -275,7 +297,7 @@ def main() -> int:
         "--timeout-seconds",
         type=int,
         default=None,
-        help="server-side job timeout (default: 2700 smoke / 10800 probe)",
+        help="server-side job timeout (default: 2700 smoke / 10800 probe / 172800 full)",
     )
     parser.add_argument(
         "--max-wait-seconds",
@@ -287,9 +309,14 @@ def main() -> int:
         "--hourly-rate-usd",
         type=float,
         default=None,
-        help="verified regional on-demand rate; required for --mode probe",
+        help="verified regional on-demand rate; required for --mode probe/probe-lr3/full",
     )
-    parser.add_argument("--max-exposure-usd", type=float, default=DEFAULT_MAX_EXPOSURE_USD)
+    parser.add_argument(
+        "--max-exposure-usd",
+        type=float,
+        default=None,
+        help="projected compute-exposure ceiling (default: $3, or $50 for --mode full)",
+    )
     parser.add_argument("--evidence-prefix", default=EVIDENCE_PREFIX)
     parser.add_argument(
         "--preflight", action="store_true", help="validate and print the plan without submitting"
@@ -319,27 +346,52 @@ def main() -> int:
         raise SystemExit(f"ERROR: missing required options: {', '.join(missing)}")
 
     config_name = MODE_CONFIG_NAME[args.mode]
-    timeout_seconds = (
-        args.timeout_seconds
-        if args.timeout_seconds is not None
-        else (PROBE_TIMEOUT_SECONDS if args.mode in _PROBE_MODES else DEFAULT_TIMEOUT_SECONDS)
-    )
-    if args.mode in _PROBE_MODES and args.hourly_rate_usd is None:
+    if args.timeout_seconds is not None:
+        timeout_seconds = args.timeout_seconds
+    elif args.mode == "full":
+        timeout_seconds = FULL_TIMEOUT_SECONDS
+    elif args.mode in _PROBE_MODES:
+        timeout_seconds = PROBE_TIMEOUT_SECONDS
+    else:
+        timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+    if args.mode in _RATE_REQUIRED_MODES and args.hourly_rate_usd is None:
         raise SystemExit(
-            "ERROR: --mode probe/probe-lr3 requires the verified regional rate via "
+            "ERROR: this mode requires the verified regional rate via "
             "--hourly-rate-usd (the built-in estimate is not acceptable for a "
             "multi-epoch run)"
         )
     hourly_rate = (
-        args.hourly_rate_usd
-        if args.hourly_rate_usd is not None
-        else DEFAULT_HOURLY_RATE_USD
+        args.hourly_rate_usd if args.hourly_rate_usd is not None else DEFAULT_HOURLY_RATE_USD
+    )
+    max_exposure = (
+        args.max_exposure_usd
+        if args.max_exposure_usd is not None
+        else (FULL_MAX_EXPOSURE_USD if args.mode == "full" else DEFAULT_MAX_EXPOSURE_USD)
     )
     _require_positive_finite("--timeout-seconds", float(timeout_seconds))
     _require_positive_finite("--hourly-rate-usd", float(hourly_rate))
-    _require_positive_finite("--max-exposure-usd", float(args.max_exposure_usd))
+    _require_positive_finite("--max-exposure-usd", float(max_exposure))
     if not math.isfinite(float(args.max_wait_seconds)) or args.max_wait_seconds < 0:
         raise SystemExit("ERROR: --max-wait-seconds must be a finite non-negative number")
+    if args.mode == "full":
+        # issue #53: one bounded job, 48-hour server timeout, $50 projected
+        # compute; the full run must not silently exceed either ceiling.
+        if timeout_seconds > FULL_TIMEOUT_SECONDS:
+            raise SystemExit(
+                f"ERROR: --mode full server timeout {timeout_seconds}s exceeds the "
+                f"{FULL_TIMEOUT_SECONDS}s ceiling"
+            )
+        if max_exposure > FULL_MAX_EXPOSURE_USD:
+            raise SystemExit(
+                f"ERROR: --mode full exposure ceiling ${max_exposure:.2f} exceeds "
+                f"${FULL_MAX_EXPOSURE_USD:.2f}"
+            )
+        if hourly_rate > FULL_MAX_HOURLY_RATE_USD:
+            raise SystemExit(
+                f"ERROR: verified rate ${hourly_rate}/h exceeds "
+                f"${FULL_MAX_HOURLY_RATE_USD}/h, which cannot stay under "
+                f"${FULL_MAX_EXPOSURE_USD:.2f} at the 48h ceiling; stop for a budget decision"
+            )
 
     _validate_image_uri(args.image_uri)
     _validate_run_label(args.run_label)
@@ -352,10 +404,10 @@ def main() -> int:
     check_bounds(config_name)
 
     exposure = _exposure_usd(hourly_rate, timeout_seconds, args.max_wait_seconds)
-    if not math.isfinite(exposure) or exposure > args.max_exposure_usd:
+    if not math.isfinite(exposure) or exposure > max_exposure:
         raise SystemExit(
             f"ERROR: projected exposure ${exposure:.2f} exceeds the "
-            f"${args.max_exposure_usd:.2f} ceiling; refusing to submit"
+            f"${max_exposure:.2f} ceiling; refusing to submit"
         )
 
     evidence_uri = f"{args.evidence_prefix.rstrip('/')}/{args.run_label}/evidence.json"

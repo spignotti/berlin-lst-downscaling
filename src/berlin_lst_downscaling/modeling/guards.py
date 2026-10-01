@@ -101,6 +101,10 @@ def assert_vertex_smoke_bounds(cfg: DictConfig) -> None:
 # The selected config name that carries the frozen Stage-1 experiment contract.
 STAGE1_LOCKED_CONFIG_NAME = "stage1_locked"
 
+# The full Stage-1 fit reads train/validation only; the 2025 test split is
+# scored once, after the selected checkpoint is frozen (issue #53).
+_STAGE1_FULL_SPLITS = ("train", "validation")
+
 # Frozen Stage-1 scientific values (issue #40). Batch size, AMP precision,
 # dataloader workers, and early-stopping patience are deliberately absent: they
 # are operational retunes, not method choices.
@@ -144,8 +148,43 @@ def assert_stage1_lock(cfg: DictConfig) -> None:
         problems.append(
             f"data.scene_ids={scene_ids!r} (expected empty = all published scenes)"
         )
+    if list(cfg.data.get("splits") or []) != list(_STAGE1_FULL_SPLITS):
+        problems.append(
+            f"data.splits={cfg.data.get('splits')!r} (expected {list(_STAGE1_FULL_SPLITS)!r}; "
+            "the fit must not admit the 2025 test split)"
+        )
     if problems:
         raise ValueError("stage1_locked config is off-contract: " + "; ".join(problems))
+
+
+def assert_stage1_full_bounds(cfg: DictConfig) -> None:
+    """Fail closed unless the resolved config is the full Stage-1 Vertex run.
+
+    Guards the operational bounds the full run shares with the smoke/probe: one
+    GPU, W&B online, and a job-local output root. The locked method and the
+    train/validation-only admission are asserted separately by
+    :func:`assert_stage1_lock`. Called by the Vertex launcher before submitting
+    and by the worker before ``RunLogSession`` opens the output path.
+    """
+    problems: list[str] = []
+    if cfg.get("stage1_full") is not True:
+        problems.append("stage1_full is not true (the full-run marker is missing)")
+    if str(cfg.trainer.get("accelerator")) != "gpu":
+        problems.append(
+            f"trainer.accelerator={cfg.trainer.get('accelerator')!r} (expected 'gpu')"
+        )
+    devices = cfg.trainer.get("devices")
+    if isinstance(devices, bool) or not isinstance(devices, int) or devices != 1:
+        problems.append(f"trainer.devices={devices!r} (expected 1)")
+    if str(cfg.wandb.get("mode")) != "online":
+        problems.append(f"wandb.mode={cfg.wandb.get('mode')!r} (expected 'online')")
+    output_root = str(cfg.get("output_root", ""))
+    if not output_root or output_root.startswith("gs://") or "/runs/" not in output_root:
+        problems.append(
+            f"output_root={output_root!r} (expected a job-local path under data/runs/)"
+        )
+    if problems:
+        raise ValueError("stage1 full config is out of bounds: " + "; ".join(problems))
 
 
 # The selected config names that carry the bounded Stage-1 recovery probe
@@ -334,8 +373,14 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "stage1_residual_prior is the Stage-1 recovery representation "
             f"(issues #40/#47) but is set on config {config_name!r}; refusing to run"
         )
+    if bool(cfg.get("stage1_full", False)) and config_name != STAGE1_LOCKED_CONFIG_NAME:
+        raise ValueError(
+            "stage1_full is the unbounded Stage-1 Vertex run marker "
+            f"(issue #53) but is set on config {config_name!r}; refusing to run"
+        )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
         assert_stage1_lock(cfg)
+        assert_stage1_full_bounds(cfg)
     if config_name == STAGE1_PROBE_CONFIG_NAME:
         assert_stage1_probe(cfg)
     if config_name == STAGE1_PROBE_LR3_CONFIG_NAME:
@@ -346,6 +391,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
 
 __all__ = [
     "assert_probe_minima",
+    "assert_stage1_full_bounds",
     "assert_stage1_lock",
     "assert_stage1_probe",
     "assert_stage1_probe_lr3",

@@ -1,9 +1,11 @@
-"""Assemble and upload the metadata-only Vertex acceptance evidence record.
+"""Assemble and upload the Vertex acceptance evidence record.
 
-Run inside the Vertex worker after a successful bounded smoke. The record is a
-small JSON object — no checkpoints, credentials, environment values, or the
-local run directory. It is uploaded create-only (``if_generation_match=0``) so a
-retained evidence object is never overwritten.
+Run inside the Vertex worker after a successful bounded run. The record is a
+small JSON object — no credentials, environment values, or the local run
+directory. For the full profile it also retains the epoch curve, summary, test
+scope, and a create-only reference to the selected checkpoint. It is uploaded
+create-only (``if_generation_match=0``) so a retained evidence object is never
+overwritten.
 
 Usage (worker-side, called by ``vertex_entrypoint.sh``):
     uv run python scripts/operators/vertex_evidence.py \
@@ -14,6 +16,7 @@ Usage (worker-side, called by ``vertex_entrypoint.sh``):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -76,13 +79,17 @@ def build_record(
     image_digest: str,
     result_file: Path | None,
     profile: str = "smoke",
+    checkpoint: dict | None = None,
 ) -> dict:
     """Build the compact, non-secret evidence record.
 
     ``profile="probe"`` (historical #45) and ``profile="probe-residual"``
     (issue #47 recovery) retain the probe's cohort bounds, per-epoch metrics and
     summary — the numbers a go/no-go decision needs — instead of a raw stdout
-    tail. ``profile="smoke"`` keeps the original bounded-tail record.
+    tail. ``profile="full"`` (issue #53) retains the full-run epoch curve,
+    selection/reload summary, one-shot test scope, and the create-only
+    checkpoint reference. ``profile="smoke"`` keeps the original bounded-tail
+    record.
     """
     scope = _read_json(run_root / "data_scope.json") or {}
     context = _run_context(run_root)
@@ -118,10 +125,49 @@ def build_record(
             and bool(summary)
             and len(epochs) == int((summary or {}).get("max_epochs", -1)),
         }
+    elif profile == "full":
+        epochs = _read_json_any(run_root / "epoch_metrics.json")
+        summary = _read_json(run_root / "full_summary.json")
+        test_scope = _read_json(run_root / "test_scope.json")
+        record["profile"] = "full"
+        record["full"] = {
+            "epoch_metrics": epochs if isinstance(epochs, list) else [],
+            "summary": summary or {},
+            "test_scope": test_scope or {},
+            # A full run is only decidable when every requested epoch ran and
+            # the selected checkpoint plus its test scope were retained.
+            "epochs_complete": isinstance(epochs, list)
+            and bool(summary)
+            and len(epochs) == int((summary or {}).get("max_epochs", -1)),
+        }
+        if checkpoint is not None:
+            record["checkpoint"] = checkpoint
     else:
         record["profile"] = "smoke"
         record["result_tail"] = _result_tail(result_file)
     return record
+
+
+def _upload_checkpoint_create_only(path: Path, uri: str) -> dict:
+    """Upload the selected checkpoint create-only and return its reference.
+
+    The checkpoint is uploaded before the evidence manifest, so a manifest that
+    references it can never precede it. ``if_generation_match=0`` keeps a
+    retained checkpoint from being overwritten.
+    """
+    if not uri.startswith("gs://"):
+        raise ValueError(f"checkpoint URI must be a gs:// path, got {uri!r}")
+    data = path.read_bytes()
+    bucket_name, _, object_name = uri[len("gs://") :].partition("/")
+    if not bucket_name or not object_name:
+        raise ValueError(f"checkpoint URI is missing a bucket or object path: {uri!r}")
+    blob = storage.Client().bucket(bucket_name).blob(object_name)
+    blob.upload_from_string(data, content_type="application/octet-stream", if_generation_match=0)
+    return {
+        "uri": uri,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "bytes": len(data),
+    }
 
 
 def _upload_create_only(uri: str, payload: bytes) -> None:
@@ -131,9 +177,7 @@ def _upload_create_only(uri: str, payload: bytes) -> None:
     if not bucket_name or not object_name:
         raise ValueError(f"evidence URI is missing a bucket or object path: {uri!r}")
     blob = storage.Client().bucket(bucket_name).blob(object_name)
-    blob.upload_from_string(
-        payload, content_type="application/json", if_generation_match=0
-    )
+    blob.upload_from_string(payload, content_type="application/json", if_generation_match=0)
 
 
 def main() -> None:
@@ -144,10 +188,33 @@ def main() -> None:
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--image-digest", required=True)
     parser.add_argument(
-        "--profile", choices=["smoke", "probe", "probe-residual"], default="smoke"
+        "--profile", choices=["smoke", "probe", "probe-residual", "full"], default="smoke"
     )
     parser.add_argument("--result-file", type=Path, default=None)
+    parser.add_argument(
+        "--checkpoint-path",
+        type=Path,
+        default=None,
+        help="selected checkpoint to upload create-only before the evidence manifest",
+    )
+    parser.add_argument(
+        "--checkpoint-uri",
+        default=None,
+        help="gs:// destination for --checkpoint-path (required with it)",
+    )
     args = parser.parse_args()
+
+    checkpoint = None
+    if args.checkpoint_path is not None:
+        if not args.checkpoint_uri:
+            raise SystemExit("ERROR: --checkpoint-path requires --checkpoint-uri")
+        if not args.checkpoint_uri.endswith(".ckpt"):
+            raise SystemExit("ERROR: --checkpoint-uri must end in '.ckpt'")
+        if not args.checkpoint_path.is_file():
+            raise SystemExit(f"ERROR: checkpoint not found: {args.checkpoint_path}")
+        # Upload the checkpoint before the manifest that references it.
+        checkpoint = _upload_checkpoint_create_only(args.checkpoint_path, args.checkpoint_uri)
+        print(f"checkpoint uploaded: {checkpoint['uri']} ({checkpoint['bytes']} bytes)")
 
     record = build_record(
         args.run_root,
@@ -156,6 +223,7 @@ def main() -> None:
         image_digest=args.image_digest,
         result_file=args.result_file,
         profile=args.profile,
+        checkpoint=checkpoint,
     )
     payload = json.dumps(record, indent=2, sort_keys=True, default=str).encode("utf-8")
     _upload_create_only(args.evidence_uri, payload)

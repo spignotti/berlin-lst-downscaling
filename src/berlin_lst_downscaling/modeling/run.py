@@ -37,6 +37,7 @@ from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
     assert_probe_minima,
+    assert_stage1_full_bounds,
     assert_stage1_lock,
     assert_stage1_probe,
     assert_stage1_probe_lr3,
@@ -302,9 +303,7 @@ class EpochMetricsRecorder(Callback):
         self._write()
 
     def _write(self) -> None:
-        self.path.write_text(
-            json.dumps(self.epochs, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        self.path.write_text(json.dumps(self.epochs, indent=2, sort_keys=True), encoding="utf-8")
 
     @property
     def epochs(self) -> list[dict[str, object]]:
@@ -359,6 +358,62 @@ def _residual_correction_mean_abs(reloaded: RealLSTTask, val_loader) -> float:
     return total / cells
 
 
+def _score_test_once(
+    cfg: DictConfig,
+    source: RealSourceConfig,
+    reloaded: RealLSTTask,
+    output_root: Path,
+) -> dict[str, object]:
+    """Score the 2025 test split once with the frozen selected checkpoint.
+
+    A test-only streamed data module reads the full published test split and
+    scores it through the same nested 10x10 pooling and cell-weighted masked MAE
+    used for validation. Callers invoke this only after the best checkpoint and
+    its validation reload have succeeded, so the test set cannot influence
+    checkpoint choice. The read scope is retained as ``test_scope.json``.
+    """
+    test_module = RealPatchDataModule(
+        source,
+        batch_size=int(cfg.data.batch_size),
+        max_patches_per_split=None,
+        scene_ids=None,
+        mode=str(cfg.data.get("mode", "eager")),
+        num_workers=int(cfg.data.get("num_workers", 0)),
+        shuffle_train=False,
+        seed=int(cfg.seed),
+        n_active_channels=int(cfg.data.n_active_channels),
+        splits=("test",),
+    )
+    test_module.setup()
+    scope = test_module.stats()
+    (output_root / "test_scope.json").write_text(
+        json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+    metric = MaskedMAE()
+    with torch.inference_mode():
+        for batch in test_module.test_dataloader():
+            validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
+            prediction = reloaded(batch)
+            expected = (batch.features.shape[0], 1) + tuple(batch.features.shape[2:])
+            if tuple(prediction.shape) != expected:
+                raise RuntimeError(
+                    f"test pass prediction shape mismatch: {tuple(prediction.shape)} != {expected}"
+                )
+            if not torch.isfinite(prediction).all():
+                raise RuntimeError("test pass produced non-finite predictions")
+            metric.update(pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m)
+
+    patches = scope.get("patches_per_split", {})
+    return {
+        "mae_100m": float(metric.compute()),
+        "abs_error_sum": float(metric.abs_error_sum),
+        "valid_cells": float(metric.valid_cells),
+        "patches": int(patches.get("test", 0)) if isinstance(patches, dict) else 0,
+        "scope_uri": str(output_root / "test_scope.json"),
+    }
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -377,6 +432,7 @@ def _fit_contract_lifecycle(
     seed_everything(seed)
 
     is_probe = bool(cfg.get("stage1_probe", False))
+    is_full = bool(cfg.get("stage1_full", False))
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     task = RealLSTTask(
         n_active_channels=int(cfg.data.n_active_channels),
@@ -405,9 +461,7 @@ def _fit_contract_lifecycle(
     )
     empty_splits = [s for s in ("train", "validation") if per_split.get(s, 0) <= 0]
     if empty_splits:
-        raise RuntimeError(
-            f"no patches admitted for split(s) {empty_splits}; refusing to train"
-        )
+        raise RuntimeError(f"no patches admitted for split(s) {empty_splits}; refusing to train")
     if is_probe:
         assert_probe_minima(cfg, scope)
 
@@ -459,10 +513,11 @@ def _fit_contract_lifecycle(
         auto_insert_metric_name=False,
     )
 
-    # The epoch recorder is a probe-only artifact: a full run keeps its previous
-    # on-disk surface unchanged.
+    # The epoch recorder is a probe/full artifact: the full Stage-1 run keeps
+    # the same retained curve so its readout does not depend on W&B alone. A
+    # plain local `real_full` invocation keeps its on-disk surface unchanged.
     recorder = (
-        EpochMetricsRecorder(output_root / "epoch_metrics.json") if is_probe else None
+        EpochMetricsRecorder(output_root / "epoch_metrics.json") if is_probe or is_full else None
     )
     callbacks: list[Callback] = [checkpoint_callback]
     if recorder is not None:
@@ -536,9 +591,7 @@ def _fit_contract_lifecycle(
                     )
                 if not torch.isfinite(prediction).all():
                     raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
-                recheck.update(
-                    pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m
-                )
+                recheck.update(pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m)
         recomputed = float(recheck.compute())
         tolerance = 1e-3 * max(1.0, abs(best_metric))
         if abs(recomputed - best_metric) > tolerance:
@@ -547,15 +600,29 @@ def _fit_contract_lifecycle(
                 f"{best_metric:.6f} (tolerance {tolerance:.6f})"
             )
 
+        # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
+        # only after the selected checkpoint and its validation reload are
+        # frozen. The test read is a separate test-only module; its score is
+        # never fed to the fit, callbacks, or checkpoint selection.
+        test_result: dict[str, object] | None = None
+        if is_full and isinstance(data_module, RealPatchDataModule):
+            test_result = _score_test_once(cfg, data_module.source, reloaded, output_root)
+
         if recorder is not None:
             summary = {
-                "profile": "probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME,
+                "profile": (
+                    "full"
+                    if is_full
+                    else ("probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME)
+                ),
                 "epochs_completed": len(recorder.epochs),
                 "max_epochs": int(cfg.trainer.max_epochs),
                 "selection_metric": monitored,
                 "best_epoch": _best_epoch_from_path(best_checkpoint),
                 "best_metric": best_metric,
                 "reload_recomputed": recomputed,
+                "validation_abs_error_sum": float(recheck.abs_error_sum),
+                "validation_valid_cells": float(recheck.valid_cells),
                 "residual_prior": residual_prior,
                 "residual_identity_mae_k": residual_identity_mae,
                 "residual_correction_mean_abs_k": (
@@ -565,7 +632,10 @@ def _fit_contract_lifecycle(
                 ),
                 "resolved_config": OmegaConf.to_container(cfg, resolve=True),
             }
-            (output_root / "probe_summary.json").write_text(
+            if test_result is not None:
+                summary["test"] = test_result
+            summary_name = "full_summary.json" if is_full else "probe_summary.json"
+            (output_root / summary_name).write_text(
                 json.dumps(summary, indent=2, sort_keys=True, default=str), encoding="utf-8"
             )
 
@@ -652,9 +722,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     probe_cfg = cfg.data.get("probe")
     probe_scope = (
         ProbeScope(
-            max_refs_per_split={
-                str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()
-            },
+            max_refs_per_split={str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()},
             max_refs_per_scene=int(probe_cfg.max_refs_per_scene),
         )
         if probe_cfg is not None
@@ -730,6 +798,7 @@ __all__ = [
     "EpochMetricsRecorder",
     "ModelingRunResult",
     "assert_probe_minima",
+    "assert_stage1_full_bounds",
     "assert_stage1_lock",
     "assert_stage1_probe",
     "assert_stage1_probe_lr3",

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Vertex acceptance-run entrypoint (issue #38).
+# Vertex run entrypoint (issues #38/#53).
 #
 # Injects WANDB_API_KEY from the Infisical EU vault using the worker's GCP
-# identity, runs the bounded modeling smoke, and uploads a metadata-only
-# evidence record on success.
+# identity, runs the launcher-selected modeling profile (smoke, probe, or full),
+# and uploads the evidence record on success. The full profile additionally
+# uploads its selected checkpoint create-only before the manifest.
 #
 # No secret is ever printed: the short-lived Infisical access token and the W&B
 # key live only in this process environment and are passed to the runner through
@@ -56,6 +57,21 @@ if [[ "$rc" -ne 0 ]]; then
   exit "$rc"
 fi
 
+# The full Stage-1 run (issue #53) retains its selected checkpoint beside the
+# manifest. The checkpoint is uploaded create-only before the evidence record,
+# so a manifest that references it cannot precede it.
+ckpt_args=()
+if [[ "$PROFILE" == "full" ]]; then
+  shopt -s nullglob
+  ckpts=("$OUTPUT_ROOT"/checkpoints/best-*.ckpt)
+  shopt -u nullglob
+  if [[ "${#ckpts[@]}" -ne 1 ]]; then
+    echo "expected exactly one best checkpoint under $OUTPUT_ROOT/checkpoints, found ${#ckpts[@]}"
+    exit 1
+  fi
+  ckpt_args=(--checkpoint-path "${ckpts[0]}" --checkpoint-uri "${VERTEX_EVIDENCE_URI%/*}/best.ckpt")
+fi
+
 uv run python scripts/operators/vertex_evidence.py \
   --run-root "$OUTPUT_ROOT" \
   --evidence-uri "$VERTEX_EVIDENCE_URI" \
@@ -63,4 +79,5 @@ uv run python scripts/operators/vertex_evidence.py \
   --source-sha "$VERTEX_SOURCE_SHA" \
   --image-digest "$VERTEX_IMAGE_DIGEST" \
   --profile "$PROFILE" \
-  --result-file "$RESULT_FILE"
+  --result-file "$RESULT_FILE" \
+  "${ckpt_args[@]}"

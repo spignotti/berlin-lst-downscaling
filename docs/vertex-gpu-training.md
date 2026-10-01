@@ -2,11 +2,11 @@
 
 The repo trains on the CPU smoke VM (`berlin-lst-vm`) for pipeline and smoke
 work, and on **Vertex AI Custom Training** for GPU work (`AGENTS.md`
-§Compute Placement). This document is the launch recipe for two bounded Vertex
+§Compute Placement). This document is the launch recipe for three bounded Vertex
 jobs on the real-data modeling path: the GPU acceptance smoke (issue #38,
-`--mode smoke`) and the Stage-1 learning probe (issue #45, `--mode probe`,
-result in `docs/stage1-probe-results.md`). It does **not** cover the Stage-1
-full temporal run, which remains a separate explicit invocation.
+`--mode smoke`), the Stage-1 learning probe (issue #45, `--mode probe`,
+result in `docs/stage1-probe-results.md`), and the Stage-1 full temporal run
+(issue #53, `--mode full`, pre-registration in `docs/stage1-full-results.md`).
 
 ## What the path is (and is not)
 
@@ -169,6 +169,45 @@ uv run python scripts/validators/validate_stage1_probe.py --self-check
 uv run python scripts/validators/validate_stage1_probe.py --evidence <evidence.json>
 ```
 
+### Full Stage-1 run (`--mode full`)
+
+Runs the `stage1_locked` profile — 20 unbounded epochs over every published
+train/validation patch — and then scores the 2025 test split once. The launcher
+composes and asserts both the locked method (`assert_stage1_lock`) and the
+full-run bounds (`assert_stage1_full_bounds`: one GPU, W&B online, job-local
+output root, train/validation-only admission) before submitting. It defaults the
+server timeout to **172,800 s (48 h)**, requires the verified regional rate via
+`--hourly-rate-usd`, and refuses to submit when the rate is above $1.03/h or the
+projected compute exposure exceeds **$50**. `docs/stage1-full-results.md` holds
+the pre-registered decision table and the results readout.
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode full \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<full-digest> \
+  --source-sha <clean-commit> --run-label stage1-full-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 0.90 --preflight
+```
+
+The client wait can outlast a session; if it expires the job keeps running
+server-side, so reconnect with `--status <resource-name>` (never resubmit) and
+cancel a runaway job with `gcloud ai custom-jobs cancel <resource-name>
+--region=europe-west3`. The 48 h server timeout is the hard ceiling.
+
+Validate a retained full-run result and re-derive its tier with no source read or
+submission:
+
+```bash
+uv run python scripts/validators/validate_stage1_full.py --self-check
+uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json>
+```
+
+Exit codes: `0` GO, `2` usable anchor, `3` NO-GO, `1` incomplete/undecidable.
+
 Submission uses the low-level Vertex `JobServiceClient` with an explicit
 `CustomJobSpec` (single worker pool, `service_account`, and `Scheduling` with
 `timeout` and `disable_retries`). No `base_output_directory` is set, so no GCS
@@ -215,7 +254,8 @@ instead of resubmitting. Cancel a runaway job with
 ## Retained evidence
 
 Checkpoints and the local run directory stay on the worker disk and are **not**
-retained. On success, the worker writes one small create-only object:
+retained by the smoke and probe profiles. On success, the worker writes one
+small create-only object:
 
 ```
 gs://berlin-lst-training-data/qa/modeling/vertex-smoke/<run-label>/evidence.json
@@ -226,6 +266,13 @@ Fields: `run_label`, `source_sha`, `image_digest`, `generated_at`, `run`
 skips, exclusions, patch IDs), and a bounded `result_tail` of the runner's
 stdout. Upload uses `if_generation_match=0`, so retained evidence is never
 overwritten and the run label must never be reused.
+
+The `full` profile additionally retains, under the same prefix, the selected
+checkpoint (`best.ckpt`, uploaded **first**) and `evidence.json` (uploaded
+**last**) with the epoch curve, full-run summary, fit and test `data_scope`,
+checkpoint SHA-256 and byte size. A manifest that references a checkpoint cannot
+precede it; a missing or checksum-invalid checkpoint means the package is
+incomplete and is not a GO.
 
 ## CPU VM versus Vertex
 
