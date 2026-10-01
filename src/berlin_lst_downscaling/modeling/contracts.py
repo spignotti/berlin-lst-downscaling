@@ -175,8 +175,9 @@ class RealBatch:
 
     Shapes (``H10 = W10 = REAL_PATCH_PX``, ``H100 = W100 = REAL_PATCH_CELLS``)
     -------------------------------------------------------------------------
-    features:   ``(B, 28, H10, W10)`` float32 — V3 order, train-only scaled,
-        finite (invalid predictor pixels zero-filled at the boundary).
+    features:   ``(B, C, H10, W10)`` float32 — first C of the fixed V3 order
+        (C = ``n_active_channels``; 28 reads the full stack), train-only
+        scaled, finite (invalid predictor pixels zero-filled at the boundary).
     lst_prior:  ``(B, 1, H10, W10)`` float32 — 1000 m block-expanded prior,
         normalized by the fixed affine above.
     target_100m: ``(B, 1, H100, W100)`` float32 — native Landsat LST in K.

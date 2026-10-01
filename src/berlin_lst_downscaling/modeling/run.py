@@ -307,6 +307,53 @@ def assert_vertex_smoke_bounds(cfg: DictConfig) -> None:
         raise ValueError("vertex smoke config is out of bounds: " + "; ".join(problems))
 
 
+# The selected config name that carries the frozen Stage-1 experiment contract.
+STAGE1_LOCKED_CONFIG_NAME = "stage1_locked"
+
+# Frozen Stage-1 scientific values (issue #40). Batch size, AMP precision,
+# dataloader workers, and early-stopping patience are deliberately absent: they
+# are operational retunes, not method choices.
+_STAGE1_LOCK_EXPECTED: dict[str, object] = {
+    "data.kind": "real",
+    "data.mode": "stream",
+    "data.n_active_channels": 10,
+    "data.max_patches_per_split": None,
+    "data.shuffle_train": True,
+    "model.depth": 4,
+    "model.base_width": 32,
+    "trainer.learning_rate": 1.0e-3,
+    "trainer.weight_decay": 0.0,
+    "trainer.max_epochs": 20,
+    "seed": 0,
+}
+
+
+def assert_stage1_lock(cfg: DictConfig) -> None:
+    """Fail closed unless the resolved config is the frozen Stage-1 profile.
+
+    The Stage-1 full run is the locked experiment contract (issue #40): a
+    silent drift in the spectral block, backbone, or optimisation defaults
+    would invalidate a later comparison. Called before any source read when the
+    selected config name is ``stage1_locked``; the lock marker is required too,
+    so overriding it away cannot disable the guard. The separate ``lst_prior``
+    input is not counted among the ten feature channels.
+    """
+    problems: list[str] = []
+    if cfg.get("stage1_lock") is not True:
+        problems.append("stage1_lock is not true (the lock marker was removed or overridden)")
+    for key, expected in _STAGE1_LOCK_EXPECTED.items():
+        actual = OmegaConf.select(cfg, key)
+        if actual != expected:
+            problems.append(f"{key}={actual!r} (expected {expected!r})")
+    scene_ids = cfg.data.get("scene_ids")
+    if scene_ids is None or len(scene_ids) != 0:
+        problems.append(
+            f"data.scene_ids={scene_ids!r} (expected empty = all published scenes)"
+        )
+    if problems:
+        raise ValueError("stage1_locked config is off-contract: " + "; ".join(problems))
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -544,6 +591,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         num_workers=int(cfg.data.get("num_workers", 0)),
         shuffle_train=bool(cfg.data.get("shuffle_train", False)),
         seed=int(cfg.seed),
+        n_active_channels=int(cfg.data.n_active_channels),
     )
     return _fit_contract_lifecycle(
         cfg,
@@ -564,14 +612,22 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     )
 
 
-def run_modeling(cfg: DictConfig, run_id: str) -> ModelingRunResult:
+def run_modeling(
+    cfg: DictConfig, run_id: str, *, config_name: str | None = None
+) -> ModelingRunResult:
     """Dispatch on ``data.kind`` to the matching training lifecycle.
 
     ``synthetic`` is the all-valid MSE fixture (the CI lifecycle smoke),
     ``synthetic_contract`` is the GCS-free contract-shaped fixture, and
     ``real`` is the WB3 patch-index path. An unknown value raises rather than
     silently training on the wrong data.
+
+    ``config_name`` is the Hydra-selected config identity. It triggers the
+    fail-closed Stage-1 lock guard before any source read, so the named profile
+    cannot be silently run off-contract.
     """
+    if config_name == STAGE1_LOCKED_CONFIG_NAME:
+        assert_stage1_lock(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
         assert_vertex_smoke_bounds(cfg)
     kind = str(cfg.data.get("kind", "synthetic"))
@@ -595,6 +651,7 @@ def _finalize_wandb(wandb_logger: WandbLogger, metadata: dict, success: bool) ->
 
 __all__ = [
     "ModelingRunResult",
+    "assert_stage1_lock",
     "assert_vertex_smoke_bounds",
     "contract_invariants",
     "real_source_config",

@@ -35,6 +35,7 @@ import logging
 from uuid import uuid4
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
@@ -49,6 +50,8 @@ def main(cfg: DictConfig) -> int:
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
+    # The Hydra-selected config identity; drives the fail-closed Stage-1 lock.
+    config_name = HydraConfig.get().job.config_name
 
     with RunLogSession(output_root, pipeline="modeling", run_id=run_id, level=level):
         log_event(
@@ -57,12 +60,12 @@ def main(cfg: DictConfig) -> int:
             "config",
             run_id=run_id,
             output_root=output_root,
-            config_name=cfg.get("_hydra", {}).get("job", {}).get("config_name", "full"),
+            config_name=str(config_name),
             data_release_id=str(cfg.get("data_release_id", "")),
             seed=int(cfg.get("seed", 0)),
             wandb_mode=str(cfg.get("wandb", {}).get("mode", "")),
         )
-        result = run_modeling(cfg, run_id=run_id)
+        result = run_modeling(cfg, run_id=run_id, config_name=config_name)
 
         print(f"Modeling — run {run_id}")
         print(f"  Best checkpoint : {result.best_checkpoint}")
