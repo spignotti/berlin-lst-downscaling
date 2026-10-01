@@ -79,7 +79,8 @@ def build_record(
 ) -> dict:
     """Build the compact, non-secret evidence record.
 
-    ``profile="probe"`` retains the probe's cohort bounds, per-epoch metrics and
+    ``profile="probe"`` (historical #45) and ``profile="probe-residual"``
+    (issue #47 recovery) retain the probe's cohort bounds, per-epoch metrics and
     summary — the numbers a go/no-go decision needs — instead of a raw stdout
     tail. ``profile="smoke"`` keeps the original bounded-tail record.
     """
@@ -104,10 +105,10 @@ def build_record(
             "patch_ids": scope.get("patch_ids"),
         },
     }
-    if profile == "probe":
+    if profile in ("probe", "probe-residual"):
         epochs = _read_json_any(run_root / "epoch_metrics.json")
         summary = _read_json(run_root / "probe_summary.json")
-        record["profile"] = "probe"
+        record["profile"] = profile
         record["probe"] = {
             "epoch_metrics": epochs if isinstance(epochs, list) else [],
             "summary": summary or {},
@@ -142,7 +143,9 @@ def main() -> None:
     parser.add_argument("--run-label", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--image-digest", required=True)
-    parser.add_argument("--profile", choices=["smoke", "probe"], default="smoke")
+    parser.add_argument(
+        "--profile", choices=["smoke", "probe", "probe-residual"], default="smoke"
+    )
     parser.add_argument("--result-file", type=Path, default=None)
     args = parser.parse_args()
 

@@ -30,6 +30,8 @@ from torch.utils.data import DataLoader, Dataset, RandomSampler
 
 from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
+    PRIOR_AFFINE_OFFSET_K,
+    PRIOR_AFFINE_SCALE_K,
     RealBatch,
     validate_real_batch,
 )
@@ -75,6 +77,16 @@ def _batch_count(n_patches: int, batch_size: int) -> int:
     if n_patches == 0:
         return 0
     return (n_patches + batch_size - 1) // batch_size
+
+
+def reconstruct_prior_kelvin(lst_prior: Tensor) -> Tensor:
+    """Recover the physical Kelvin prior from the model's normalized prior channel.
+
+    The inverse of the fixed affine in ``contracts.PRIOR_AFFINE_*`` (issue #47).
+    Only the prior input and the fixed constants are used, never the target, so
+    the reconstruction cannot leak supervision into the residual path.
+    """
+    return lst_prior * PRIOR_AFFINE_SCALE_K + PRIOR_AFFINE_OFFSET_K
 
 
 class _BatchDataset(Dataset[RealBatch]):
@@ -435,6 +447,11 @@ class RealLSTTask(LightningModule):
         contract's patch size requires ``depth <= 4``.
     learning_rate / weight_decay:
         AdamW optimizer settings.
+    residual_prior:
+        Recovery representation (issue #47). When True the U-Net predicts a
+        Kelvin *correction* added to the reconstructed prior, and the final head
+        is zero-initialized so the model starts exactly at the prior-expand arm.
+        The output, pooling, loss, and target are unchanged.
     """
 
     def __init__(
@@ -445,6 +462,7 @@ class RealLSTTask(LightningModule):
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
         record_probe_metrics: bool = False,
+        residual_prior: bool = False,
     ) -> None:
         super().__init__()
         self.model = UNet(
@@ -454,6 +472,12 @@ class RealLSTTask(LightningModule):
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.record_probe_metrics = record_probe_metrics
+        self.residual_prior = residual_prior
+        if residual_prior:
+            # Zero head only in the recovery mode: the initial output is then
+            # exactly the reconstructed prior, which the probe guard verifies.
+            for param in self.model.head.parameters():
+                param.detach().zero_()
         self.train_mae = MaskedMAE()
         self.val_mae = MaskedMAE()
         self.val_ssim = MaskedSSIM()
@@ -468,7 +492,10 @@ class RealLSTTask(LightningModule):
         """Predict the 10 m LST map from features concatenated with the prior."""
         validate_real_batch(batch, n_active_channels=self.n_active_channels)
         inputs = torch.cat([batch.features, batch.lst_prior], dim=1)
-        return self.model(inputs)
+        delta = self.model(inputs)
+        if not self.residual_prior:
+            return delta
+        return reconstruct_prior_kelvin(batch.lst_prior) + delta
 
     def training_step(self, batch: RealBatch, batch_idx: int) -> Tensor:
         prediction_100m = pool_10m_to_100m(self(batch))
@@ -508,4 +535,4 @@ class RealLSTTask(LightningModule):
         )
 
 
-__all__ = ["RealLSTTask", "RealPatchDataModule"]
+__all__ = ["RealLSTTask", "RealPatchDataModule", "reconstruct_prior_kelvin"]

@@ -47,6 +47,7 @@ from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.run import (
     assert_stage1_probe,
+    assert_stage1_probe_lr3,
     assert_vertex_smoke_bounds,
 )
 
@@ -78,9 +79,23 @@ DEFAULT_HOURLY_RATE_USD = 0.75
 DEFAULT_MAX_EXPOSURE_USD = 3.0
 POLL_SECONDS = 20
 
-# The two approved profiles. The probe is the bounded Stage-1 learning run; the
-# smoke is the #38 GPU acceptance path and is left unchanged.
-MODE_CONFIG_NAME = {"smoke": "vertex_smoke", "probe": "stage1_probe"}
+# The approved profiles. `probe` and `probe-lr3` are the two Stage-1 recovery
+# trials (issue #47) that share the residual method and differ only in learning
+# rate; the smoke is the #38 GPU acceptance path and is left unchanged.
+MODE_CONFIG_NAME = {
+    "smoke": "vertex_smoke",
+    "probe": "stage1_probe",
+    "probe-lr3": "stage1_probe_lr3",
+}
+
+# Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
+# historical #45 `probe` evidence stays distinguishable from the recovery runs.
+_PROBE_MODES = ("probe", "probe-lr3")
+MODE_EVIDENCE_PROFILE = {
+    "smoke": "smoke",
+    "probe": "probe-residual",
+    "probe-lr3": "probe-residual",
+}
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _TERMINAL = {
@@ -102,6 +117,8 @@ def check_bounds(config_name: str) -> None:
         cfg = compose(config_name=config_name)
     if config_name == MODE_CONFIG_NAME["probe"]:
         assert_stage1_probe(cfg)
+    elif config_name == MODE_CONFIG_NAME["probe-lr3"]:
+        assert_stage1_probe_lr3(cfg)
     else:
         assert_vertex_smoke_bounds(cfg)
 
@@ -305,11 +322,11 @@ def main() -> int:
     timeout_seconds = (
         args.timeout_seconds
         if args.timeout_seconds is not None
-        else (PROBE_TIMEOUT_SECONDS if args.mode == "probe" else DEFAULT_TIMEOUT_SECONDS)
+        else (PROBE_TIMEOUT_SECONDS if args.mode in _PROBE_MODES else DEFAULT_TIMEOUT_SECONDS)
     )
-    if args.mode == "probe" and args.hourly_rate_usd is None:
+    if args.mode in _PROBE_MODES and args.hourly_rate_usd is None:
         raise SystemExit(
-            "ERROR: --mode probe requires the verified regional rate via "
+            "ERROR: --mode probe/probe-lr3 requires the verified regional rate via "
             "--hourly-rate-usd (the built-in estimate is not acceptable for a "
             "multi-epoch run)"
         )
@@ -353,7 +370,7 @@ def main() -> int:
         ("VERTEX_IMAGE_DIGEST", args.image_uri.split("@", 1)[1]),
         ("VERTEX_EVIDENCE_URI", evidence_uri),
         ("VERTEX_CONFIG_NAME", config_name),
-        ("VERTEX_PROFILE", args.mode),
+        ("VERTEX_PROFILE", MODE_EVIDENCE_PROFILE[args.mode]),
         ("VERTEX_OUTPUT_ROOT", f"data/runs/{args.mode}/{args.run_label}"),
         ("INFISICAL_MACHINE_IDENTITY_ID", args.infisical_identity),
         ("INFISICAL_PROJECT_ID", args.infisical_project),

@@ -1,0 +1,16 @@
+# @package _global_
+# Stage-1 recovery probe, second trial (issue #47): identical to `stage1_probe`
+# (same residual representation, same frozen method, same cohort bounds) except
+# the learning rate, 3e-3 instead of 1e-3. This is the only other trial the
+# approved plan allows, and it runs only when trial 1 is finite and stable but
+# its train curve is flat (docs/stage1-debug-results.md).
+#
+# `assert_stage1_probe_lr3` fails closed unless the resolved config is this
+# profile, so the LR cannot drift and the config cannot be run under the wrong
+# guard.
+defaults:
+  - stage1_probe
+  - _self_
+
+trainer:
+  learning_rate: 3.0e-3

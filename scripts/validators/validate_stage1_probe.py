@@ -213,7 +213,14 @@ def validate(
     notes: list[str] = []
 
     if evidence.get("profile") != "probe":
-        failures.append("evidence profile is not 'probe'")
+        return (
+            False,
+            [
+                "evidence profile is not 'probe' (this validates the historical #45 "
+                "probe; use validate_stage1_recovery.py for 'probe-residual')"
+            ],
+            notes,
+        )
     scope = evidence.get("data_scope")
     probe = evidence.get("probe")
     if not isinstance(scope, dict) or not isinstance(probe, dict):

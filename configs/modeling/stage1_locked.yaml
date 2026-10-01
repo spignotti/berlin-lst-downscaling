@@ -19,6 +19,14 @@
 # The separate lst_prior input is an additional channel, never counted in the
 # ten feature channels.
 #
+#   stage1_residual_prior: true  The full Stage-1 method predicts a Kelvin
+#                                correction added to the reconstructed prior,
+#                                with a zero-initialized head. Proven by the
+#                                bounded recovery probe (issue #47,
+#                                docs/stage1-debug-results.md §6: GO, 1.1929 K val
+#                                vs 1.5261 K same-cohort naive). The absolute
+#                                representation is retired for Stage 1.
+#
 # Stage-1 operational retunes (allowed without reopening method choices):
 # batch size, AMP precision, dataloader workers, early-stopping patience.
 #
@@ -35,6 +43,7 @@ defaults:
 # Lock marker; the runner requires it when this profile is selected, so the
 # guard cannot be disabled by overriding it away.
 stage1_lock: true
+stage1_residual_prior: true
 
 data:
   n_active_channels: 10   # first 10 of the fixed V3 28-channel order
