@@ -40,6 +40,7 @@ from berlin_lst_downscaling.modeling.run import (
     assert_probe_minima,
     assert_stage1_probe,
     assert_stage1_probe_lr3,
+    guard_modeling_config,
 )
 
 # Pre-registered recovery screen (docs/stage1-debug-results.md). Screening
@@ -53,6 +54,8 @@ CORRECTION_MIN_FRACTION = 0.05  # pooled |correction| at least 5% of naive
 IDENTITY_TOLERANCE_K = 1e-3  # zero-init output vs prior arm
 RECHECK_TOLERANCE = 1e-3
 EVIDENCE_PROFILE = "probe-residual"
+# The only learning rates the two recovery trials may have been run at.
+ALLOWED_TRIAL_LR = (1.0e-3, 3.0e-3)
 
 DEFAULT_BASELINE = (
     "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
@@ -135,6 +138,23 @@ def _guard_self_check() -> int:
     except Exception as exc:  # pragma: no cover - self-check reporting
         failures.append(f"minima at cohort: {exc}")
         print(f"  FAIL minima: cohort at minima ({exc})")
+
+    # The residual marker must be rejected off the probe configs, so it cannot
+    # silently upgrade the locked full method (integration review, #47).
+    try:
+        guard_modeling_config(
+            compose_cfg("stage1_locked", ["+stage1_residual_prior=true"]), "stage1_locked"
+        )
+        failures.append("residual marker accepted on stage1_locked")
+        print("  FAIL guard: residual marker rejected off-probe")
+    except ValueError:
+        print("  PASS guard: residual marker rejected off-probe")
+    try:
+        guard_modeling_config(compose_cfg("stage1_probe", []), "stage1_probe")
+        print("  PASS guard: full guard accepts stage1_probe")
+    except Exception as exc:  # pragma: no cover - self-check reporting
+        failures.append(f"full guard rejected stage1_probe: {exc}")
+        print(f"  FAIL guard: full guard accepts stage1_probe ({exc})")
 
     screen_failures = _screen_self_check()
     failures.extend(screen_failures)
@@ -326,6 +346,20 @@ def validate(
     if probe.get("epochs_complete") is not True:
         failures.append("evidence reports epochs_complete=false")
 
+    # A missing or non-finite recovery-state field makes the record undecidable,
+    # not a NO-GO (docs/stage1-debug-results.md §3): the run fails closed before
+    # fit if the identity wiring is wrong, so a missing field means evidence drift.
+    if not isinstance(summary.get("residual_prior"), bool):
+        return False, ["recovery evidence is missing the residual representation flag"], notes
+    identity_k = summary.get("residual_identity_mae_k")
+    correction_k = summary.get("residual_correction_mean_abs_k")
+    if not _finite(identity_k) or not _finite(correction_k):
+        return (
+            False,
+            ["recovery evidence is missing or carries non-finite residual identity/correction"],
+            notes,
+        )
+
     # ── cohort structure ──────────────────────────────────────────────
     patch_ids = scope.get("patch_ids")
     admitted = scope.get("patches_per_split")
@@ -344,6 +378,15 @@ def validate(
     expected_scenes = probe_cfg.get("min_scenes_per_split", {})
     expected_years = int(probe_cfg.get("min_train_years", 0))
     per_scene_cap = int(probe_cfg.get("max_refs_per_scene", 0))
+
+    trial_lr = (
+        resolved.get("trainer", {}).get("learning_rate") if isinstance(resolved, dict) else None
+    )
+    if trial_lr not in ALLOWED_TRIAL_LR:
+        failures.append(
+            f"resolved_config trainer.learning_rate={trial_lr!r} is not one of the "
+            f"recovery-trial rates {ALLOWED_TRIAL_LR}"
+        )
 
     for split in ("train", "validation"):
         ids = [str(p) for p in patch_ids.get(split, [])]
@@ -410,9 +453,16 @@ def validate(
         failures.append("epoch curve has non-finite or missing values; cannot screen")
         return False, failures, notes
 
-    cohort_naive, matched = _cohort_naive_mae(
-        baseline_index, [str(p) for p in patch_ids["validation"]], "validation"
-    )
+    try:
+        cohort_naive, matched = _cohort_naive_mae(
+            baseline_index, [str(p) for p in patch_ids["validation"]], "validation"
+        )
+    except (ValueError, KeyError) as exc:
+        return (
+            False,
+            [f"cannot recompute the same-cohort naive baseline: {exc}"],
+            notes,
+        )
     notes.append(
         f"same-cohort naive validation MAE: {cohort_naive:.4f} ({matched} matched patches)"
     )
@@ -421,7 +471,6 @@ def validate(
             f"cohort naive matched {matched} patches != admitted "
             f"{admitted.get('validation')}"
         )
-
     best_val = min(val_maes)
     best_epoch = val_maes.index(best_val) + 1
     notes.append(
@@ -434,8 +483,8 @@ def validate(
             train_maes=train_maes,
             val_maes=val_maes,
             residual_prior=summary.get("residual_prior"),
-            identity_k=summary.get("residual_identity_mae_k"),
-            correction_k=summary.get("residual_correction_mean_abs_k"),
+            identity_k=identity_k,
+            correction_k=correction_k,
             cohort_naive=cohort_naive,
         )
     )
