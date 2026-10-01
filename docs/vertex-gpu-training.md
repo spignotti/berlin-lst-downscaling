@@ -45,6 +45,18 @@ The worker must not reuse the VM's bucket-wide `objectAdmin` identity
 (`berlin-lst-vertex@…`). Secrets never appear in the image, the job spec, the
 command line, or logs.
 
+### Fixed, non-secret identifiers (reuse for every launch)
+
+These are identifiers, not secret values; keep them here so a launch does not
+have to look them up again. The vault value (`WANDB_API_KEY`) is never recorded.
+
+| Field | Value |
+|---|---|
+| Worker service account | `berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com` |
+| Infisical machine identity ID | `7ba603e5-b94d-42d1-bc57-d64658dde09d` |
+| Infisical project ID | `5da7dfb7-954d-4736-ba2e-4471ade9d766` |
+| Infisical environment / secret path | `dev` / `/vertex` |
+
 ## Secret ownership (human-only)
 
 `WANDB_API_KEY` lives in the **Infisical EU vault** in a dedicated project
