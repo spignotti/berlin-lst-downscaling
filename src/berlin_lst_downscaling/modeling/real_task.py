@@ -1,7 +1,8 @@
 """Real contract-conforming Lightning path (WB3, issue #18).
 
-The model predicts at 10 m from the 28 frozen feature channels plus the
-separate ``lst_prior`` channel. Training compares the exact 10x10 pooled
+The model predicts at 10 m from the first C channels of the frozen V3
+28-channel order (C = 28 reads the full stack) plus the separate
+``lst_prior`` channel. Training compares the exact 10x10 pooled
 prediction against the native 100 m Landsat target under
 ``training_eligible@100m`` and selects checkpoints on the cell-weighted
 masked MAE. SSIM at 100 m is logged as a secondary diagnostic only.
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
+from functools import partial
 from typing import cast
 
 import torch
@@ -142,6 +144,7 @@ class RealPatchDataModule(LightningDataModule):
         source: RealSourceConfig,
         *,
         batch_size: int = 4,
+        n_active_channels: int = N_FEATURE_CHANNELS,
         max_patches_per_split: int | None = None,
         scene_ids: Sequence[str] | None = None,
         mode: str = "eager",
@@ -156,6 +159,7 @@ class RealPatchDataModule(LightningDataModule):
             raise ValueError("shuffle_train is only supported by the streaming mode")
         self.source = source
         self.batch_size = batch_size
+        self.n_active_channels = n_active_channels
         self.max_patches_per_split = max_patches_per_split
         self.scene_ids = tuple(scene_ids) if scene_ids else None
         self.mode = mode
@@ -283,10 +287,14 @@ class RealPatchDataModule(LightningDataModule):
                 )
             chunk.append(sample)
             if len(chunk) == self.batch_size:
-                batches.append(collate_real_batch(chunk))
+                batches.append(
+                    collate_real_batch(chunk, n_active_channels=self.n_active_channels)
+                )
                 chunk = []
         if chunk:
-            batches.append(collate_real_batch(chunk))
+            batches.append(
+                collate_real_batch(chunk, n_active_channels=self.n_active_channels)
+            )
         return batches
 
     def _loader(self, split: str) -> DataLoader[RealBatch]:
@@ -300,7 +308,9 @@ class RealPatchDataModule(LightningDataModule):
             dataset,
             batch_size=self.batch_size,
             sampler=self._train_sampler(dataset) if shuffle else None,
-            collate_fn=collate_real_batch,
+            collate_fn=partial(
+                collate_real_batch, n_active_channels=self.n_active_channels
+            ),
             num_workers=self.num_workers,
             generator=torch.Generator().manual_seed(self.seed) if shuffle else None,
             persistent_workers=self.num_workers > 0,

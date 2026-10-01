@@ -760,11 +760,26 @@ class RealPatchReader:
         return bands, filled
 
 
-def collate_real_batch(samples: list[RealSample]) -> RealBatch:
-    """Stack samples into a :class:`RealBatch` (prior normalized for the model)."""
+def collate_real_batch(
+    samples: list[RealSample], *, n_active_channels: int = N_FEATURE_CHANNELS
+) -> RealBatch:
+    """Stack samples into a :class:`RealBatch` (prior normalized for the model).
+
+    ``features`` keep the first ``n_active_channels`` of each sample's 28
+    channels: the reader has already scaled and zero-filled them, so the
+    selection here leaves the reader, its scaler, and the naive baseline on
+    their full 28-channel behavior. The ``lst_prior`` is a separate input and
+    is never counted in the selection.
+    """
     if not samples:
         raise ValueError("cannot collate an empty sample list")
-    features = torch.from_numpy(np.stack([s.features for s in samples]))
+    if not 1 <= n_active_channels <= N_FEATURE_CHANNELS:
+        raise ValueError(
+            f"n_active_channels must be in [1, {N_FEATURE_CHANNELS}], got {n_active_channels}"
+        )
+    features = torch.from_numpy(
+        np.stack([s.features[:n_active_channels] for s in samples])
+    )
     prior = torch.from_numpy(
         np.stack([prior_model_channel(s.lst_prior_k) for s in samples])
     )

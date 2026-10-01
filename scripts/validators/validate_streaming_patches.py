@@ -23,6 +23,11 @@ that the read path, not just the fit loop, is stream-invariant:
   universe, so any difference is a streaming defect.
 - **Tensor contract.** Every batch of every arm passes
   :func:`validate_real_batch` (geometry, prior channel, finiteness).
+- **First-C selection.** When the config selects fewer than the full 28
+  channels, the eager batches must equal the first C channels of a bounded
+  28-channel reference read, with identical prior/target/mask/metadata and the
+  same admitted IDs. The reader, its scaler, and the naive baseline stay on the
+  full stack; the selection happens at collation.
 - **Identical values.** Eager and streamed-in-process batches are compared
   field by field in canonical order: metadata, mask exactly, and the float
   tensors exactly with masked target ``NaN`` treated as equal.
@@ -32,9 +37,11 @@ that the read path, not just the fit loop, is stream-invariant:
   module. A shuffle is never required to differ from index order.
 
 No model is trained and nothing is written: this is the non-training half of
-``nox -s smoke-real-comparison``. Configuration (sources, batch size, bounds,
+``nox -s smoke-real-comparison``. Configuration (sources, batch size, channels,
 seed) is composed from the same Hydra config the runner uses, so the validator
-cannot drift from it.
+cannot drift from it. Reads are always bounded: an unbounded config (a full
+run) is capped to the first four indexed rows per split, never expanded to the
+whole split.
 
 Usage
 -----
@@ -52,9 +59,17 @@ import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig
 
-from berlin_lst_downscaling.modeling.contracts import RealBatch, validate_real_batch
+from berlin_lst_downscaling.modeling.contracts import (
+    N_FEATURE_CHANNELS,
+    RealBatch,
+    validate_real_batch,
+)
 from berlin_lst_downscaling.modeling.patches import RealSourceConfig
 from berlin_lst_downscaling.modeling.real_task import RealPatchDataModule
+
+# The validator is a bounded QA gate: it never reads a full split. An
+# unbounded config (a full run) is capped to the first four indexed rows.
+_VALIDATOR_MAX_PATCHES = 4
 
 _SPLITS = ("train", "validation", "test")
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "configs" / "modeling"
@@ -96,10 +111,12 @@ def _arm(
     batch_size: int,
     max_patches: int | None,
     seed: int,
+    n_active_channels: int,
 ) -> RealPatchDataModule:
     return RealPatchDataModule(
         source,
         batch_size=batch_size,
+        n_active_channels=n_active_channels,
         max_patches_per_split=max_patches,
         mode=mode,
         num_workers=num_workers,
@@ -146,6 +163,33 @@ def _batch_difference(a: RealBatch, b: RealBatch) -> str | None:
     return None
 
 
+def _first_c_difference(
+    a: RealBatch, b: RealBatch, n_active_channels: int
+) -> str | None:
+    """Return the first field where a first-C batch differs from a 28-channel one.
+
+    ``a`` is the selected-channel batch and ``b`` the full reference: the prior,
+    target, mask, and metadata must be identical, and ``a.features`` must equal
+    the first ``n_active_channels`` of ``b.features``.
+    """
+    if a.metadata != b.metadata:
+        return "metadata differs"
+    if not torch.equal(a.mask_100m, b.mask_100m):
+        return "mask_100m differs"
+    if not _float_values_equal(a.lst_prior, b.lst_prior):
+        return "lst_prior differs"
+    if not _float_values_equal(a.target_100m, b.target_100m):
+        return "target_100m differs"
+    if a.features.shape[1] != n_active_channels:
+        return (
+            f"selected batch carries {a.features.shape[1]} channels, "
+            f"expected {n_active_channels}"
+        )
+    if not _float_values_equal(a.features, b.features[:, :n_active_channels]):
+        return f"features[:{n_active_channels}] differs from the full 28-channel read"
+    return None
+
+
 def _compare_batches(
     name_a: str, name_b: str, a: list[RealBatch], b: list[RealBatch], errors: list[str]
 ) -> None:
@@ -175,14 +219,22 @@ def main() -> int:
     batch_size = int(cfg.data.batch_size)
     n_active = int(cfg.data.n_active_channels)
     raw_bound = cfg.data.get("max_patches_per_split")
-    max_patches = None if raw_bound is None else int(raw_bound)
+    # Never expand a full-run config into a full read: cap every config (bounded
+    # or unbounded) to the validator's own bound. The effective bound is
+    # reported so the evidence states what was read.
+    max_patches = (
+        _VALIDATOR_MAX_PATCHES
+        if raw_bound is None
+        else min(int(raw_bound), _VALIDATOR_MAX_PATCHES)
+    )
 
     errors: list[str] = []
     print(f"Validating real streaming patches against {source.patch_index_root}")
-    if batch_size != 2 or max_patches != 4:
-        # The gate is a bounded smoke; a different bound is still validated,
-        # only reported so the evidence states what was read.
-        print(f"  note: bound batch_size={batch_size} max_patches_per_split={max_patches}")
+    print(
+        f"  effective bound: max_patches_per_split={max_patches} (validator cap "
+        f"{_VALIDATOR_MAX_PATCHES}), batch_size={batch_size}, "
+        f"n_active_channels={n_active}"
+    )
 
     modules: dict[str, RealPatchDataModule] = {}
     for name, (mode, workers, shuffle) in _ARMS.items():
@@ -194,6 +246,7 @@ def main() -> int:
             batch_size=batch_size,
             max_patches=max_patches,
             seed=seed,
+            n_active_channels=n_active,
         )
         modules[name].setup()
 
@@ -296,6 +349,7 @@ def main() -> int:
         batch_size=batch_size,
         max_patches=max_patches,
         seed=seed,
+        n_active_channels=n_active,
     )
     replay.setup()
     if replay.stats()["train_shuffle_order"] != recorded:
@@ -306,6 +360,49 @@ def main() -> int:
             errors.append(f"{shuffled_name}: fresh loader did not replay the same train order")
     except RuntimeError as exc:
         errors.append(f"{shuffled_name}: replay loader unavailable: {exc}")
+
+    # ── first-C selection must equal the first C of the full 28-channel read ──
+    # Only meaningful when the config selects fewer than the full stack; the
+    # reference is the same bounded, eager read at 28 channels.
+    if n_active != N_FEATURE_CHANNELS:
+        reference = _arm(
+            source,
+            mode="eager",
+            num_workers=0,
+            shuffle_train=False,
+            batch_size=batch_size,
+            max_patches=max_patches,
+            seed=seed,
+            n_active_channels=N_FEATURE_CHANNELS,
+        )
+        reference.setup()
+        ref_scope = reference.stats()
+        for split in _SPLITS:
+            if ref_scope["patch_ids"][split] != eager["patch_ids"][split]:
+                errors.append(
+                    f"first-C reference: {split} admitted IDs differ from eager"
+                )
+        for split in _SPLITS:
+            if not _usable("eager", split):
+                continue
+            try:
+                ref_batches = _load_batches(reference, split)
+            except RuntimeError as exc:
+                errors.append(f"first-C reference/{split}: loader unavailable: {exc}")
+                continue
+            selected = batches["eager"][split]
+            if len(selected) != len(ref_batches):
+                errors.append(
+                    f"first-C reference vs eager {split}: "
+                    f"{len(selected)} vs {len(ref_batches)} batches"
+                )
+                continue
+            for i, (x, y) in enumerate(zip(selected, ref_batches, strict=True)):
+                difference = _first_c_difference(x, y, n_active)
+                if difference is not None:
+                    errors.append(
+                        f"first-C vs full-28 {split} batch {i}: {difference}"
+                    )
 
     # ── human-oriented QA summary ──
     for name in _ARMS:
@@ -319,10 +416,15 @@ def main() -> int:
         print(f"FAIL: {len(errors)} finding(s)")
         return 1
     total = sum(len(ids) for ids in eager["patch_ids"].values())
+    first_c_note = (
+        f"; first {n_active} channels equal the full 28-channel read"
+        if n_active != N_FEATURE_CHANNELS
+        else ""
+    )
     print(
         f"OK: streaming path is read-invariant ({total} admitted patches, "
         f"identical IDs/exclusions/tensors across eager, stream/0 and "
-        f"stream/2+shuffle; seeded train order reproduced)"
+        f"stream/2+shuffle; seeded train order reproduced{first_c_note})"
     )
     return 0
 

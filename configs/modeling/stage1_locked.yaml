@@ -1,0 +1,45 @@
+# @package _global_
+# Stage-1 locked profile. This is the frozen experiment contract for the
+# full Stage-1 model and its probes: it fixes the spectral block, backbone
+# capacity, and optimisation defaults so later runs cannot silently drift.
+#
+# Frozen (do not tune in Stage 1):
+#   data.n_active_channels: 10   first ten channels of the fixed V3 order —
+#                                B02, B03, B04, B08, B11, B12, ndvi,
+#                                ndwi_mcfeeters, ndbi, s2_broadband_albedo
+#   model.depth: 4               U-Net depth (160 px / 2**4 = 10 px bottleneck)
+#   model.base_width: 32
+#   trainer.learning_rate: 1.0e-3
+#   trainer.weight_decay: 0.0
+#   seed: 0
+#   augmentation: none           no augmentation code exists on this path; the
+#                                default is none and Stage 1 keeps it
+#   contract.*                   temporal split, 160/16 geometry, masked L1,
+#                                v3_first_c order (inherited from _base)
+# The separate lst_prior input is an additional channel, never counted in the
+# ten feature channels.
+#
+# Stage-1 operational retunes (allowed without reopening method choices):
+# batch size, AMP precision, dataloader workers, early-stopping patience.
+#
+# `modeling/run.py:assert_stage1_lock` fails closed if any frozen value drifts
+# from this profile before any source read or fit.
+#
+# Scope: full temporal train/validation over every published patch, W&B online.
+# This is an explicit, expensive invocation — not run by CI. Do not point
+# output_root at a canonical release or retained QA root.
+defaults:
+  - real_full
+  - _self_
+
+# Lock marker; the runner requires it when this profile is selected, so the
+# guard cannot be disabled by overriding it away.
+stage1_lock: true
+
+data:
+  n_active_channels: 10   # first 10 of the fixed V3 28-channel order
+
+output_root: "data/runs/modeling-stage1-locked"
+
+wandb:
+  mode: "online"

@@ -210,7 +210,7 @@ Batch convention `(B, ...)`; `H100 = H10 / 10` and `W100 = W10 / 10`.
 
 | Field | Grid | Shape | Role |
 |-------|------|-------|------|
-| `features` | 10 m | `(B, 28, H10, W10)` float32 | Fixed V3 channel order (first C of 28 for ablations) |
+| `features` | 10 m | `(B, C, H10, W10)` float32 | First C of the fixed V3 order (C = `n_active_channels`; 28 reads the full stack) |
 | `lst_prior` | 10 m | `(B, 1, H10, W10)` float32 | Explicit prior input, built per above |
 | `target_100m` | 100 m | `(B, 1, H100, W100)` float32 | Native Landsat LST supervision |
 | `mask_100m` | 100 m | `(B, 1, H100, W100)` bool | `training_eligible@100m` |
@@ -218,6 +218,26 @@ Batch convention `(B, ...)`; `H100 = H10 / 10` and `W100 = W10 / 10`.
 
 `prediction_100m` (the pooled prediction compared against `target_100m`)
 is an intermediate derived from `prediction_10m`, not a separate field.
+
+### Feature channel selection (Stage-1 lock)
+
+The released feature stack is an immutable 28-channel product. The published
+scaler is fitted on all 28 channels, and validity/admission require complete
+28-channel support, so the eligible patch universe does **not** change when a
+model consumes fewer channels. A configuration may set
+`data.n_active_channels: C` to feed the model the first C channels of the fixed
+order; the selection happens at batch collation, after scaling and zero-fill,
+so the reader, the scaler, and the naive baseline keep reading all 28.
+`filled_feature_pixels` therefore still counts non-finite predictor pixels
+across all 28 channels.
+
+The frozen Stage-1 profile (`configs/modeling/stage1_locked.yaml`, issue #40)
+selects C=10 — the six S2 reflectance bands, the three indices, and the albedo
+proxy — plus the separate `lst_prior` input, which is **not** counted among the
+feature channels. `modeling/run.py:assert_stage1_lock` fails closed if the
+profile drifts. Because eligibility is defined on the full stack, a C=10 model
+is scored over that same universe: a C=10 comparison is a comparison under the
+28-feature release, not evidence over every potentially C10-valid pixel.
 
 ## Patch streaming and the read scope
 
