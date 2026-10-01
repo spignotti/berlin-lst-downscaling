@@ -392,9 +392,9 @@ def main() -> int:
     final = _poll_until_terminal(client, resource_name, deadline)
     print(f"final state: {final.name}")
     if final == JobState.JOB_STATE_SUCCEEDED:
-        print(f"SUCCESS: bounded vertex smoke completed. Evidence: {evidence_uri}")
+        print(f"SUCCESS: bounded vertex {args.mode} completed. Evidence: {evidence_uri}")
         return 0
-    print(f"FAIL: vertex smoke ended {final.name}. Query with --status {resource_name}")
+    print(f"FAIL: vertex {args.mode} ended {final.name}. Query with --status {resource_name}")
     return 1
 
 
