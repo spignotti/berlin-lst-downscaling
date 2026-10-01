@@ -23,6 +23,10 @@ Usage
     #   full  — every published patch; explicit invocation, not run by CI
     uv run python scripts/runners/run_modeling.py --config-name real_full
 
+    # Locked Stage-1 profile (issue #40): first 10 V3 channels + separate
+    # prior, frozen backbone and optimisation defaults. Fail-closed guard.
+    uv run python scripts/runners/run_modeling.py --config-name stage1_locked
+
 The config's ``data.kind`` selects the lifecycle (``synthetic``,
 ``synthetic_contract``, or ``real``). Exits non-zero when the lifecycle fails
 (fit error, missing best checkpoint, or checkpoint reload validation failure —
