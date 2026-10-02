@@ -24,11 +24,12 @@ bytes; no such saving is assumed.
 
 ## Bounded cohorts
 
-- Performance cohort: at most 512 requested train and 192 requested validation
-  patches; require at least 384 and 128 admitted respectively. Select a fixed,
-  scene-spread cohort from index metadata, covering at least three train years
-  and including partially valid masks. Freeze requested IDs before admission;
-  record exclusions without refill.
+- Performance cohort: request 384 train and 128 validation patches (the
+  preregistered minima; caps remain 512 / 192) and require all requested counts
+  admitted. Select a fixed scene-spread cohort from index metadata, covering at
+  least three train years. Reserve one partial-mask candidate per split before
+  filling the remaining scene-round-robin slots. Freeze requested IDs before
+  admission; record exclusions without refill.
 - Learning cohort: use `stage1_probe` unchanged for both J1 and J4: GPU
   accelerator, stream loader, seeded shuffle, seed 0, scene-spread 128/64
   selection, six epochs, existing cohort minima and residual recovery method.
@@ -79,6 +80,14 @@ before including it. Keep default precision FP32. Measure 16-mixed on identical
 inputs as a candidate; physical residual arithmetic, pooling, loss/metric
 reductions, validation, and reload remain FP32. Batch 8 is forward/backward
 compute-only and is not adopted for training by this protocol.
+The project batch type implements Lightning's documented custom-batch
+`pin_memory()` and `.to(device, non_blocking=...)` hooks; validate the CPU
+transfer and verify all four tensors are actually pinned before the pinned GPU
+candidate is considered.
+For a learning fit, retain the GradScaler scale once per epoch; a scale decrease
+marks at least one skipped optimizer update during that epoch, but is only a
+lower bound on the number of skips. Do not poll the scaler every batch because
+`get_scale()` synchronizes with the GPU and would distort the timing.
 
 The measurement-tool search covered installed `torch.profiler`, CUDA events,
 Lightning's timer, and NVIDIA Nsight Systems. The short profiler window is for
@@ -105,13 +114,24 @@ cap. If a line item cannot be bounded, do not submit.
 |---|---|---|
 | J1 | Current streaming, FP32, batch 4, workers 2 | Performance cohort measurements, then one fresh six-epoch recovery control on 128/64. |
 | J2 | Job-local cache, FP32, batch 4 | Source/cache and loader/transfer comparisons; GPU-vs-CPU lifecycle equivalence. No optimizer steps. |
-| J3 | J2 winner, FP32 vs 16-mixed; batch-8 diagnostic only | Measure precision and compute opportunity. No optimizer steps. Skip only if AMP cannot plausibly save 10% complete runtime. |
+| J3 | J2 winner, FP32 vs 16-mixed; batch-8 diagnostic only | Measure precision and compute opportunity. No optimizer steps. If projected complete-runtime AMP gain is under 10%, J4 must use FP32. |
 | J4 | Best evidenced settings, batch 4 | Repeat performance measurements and a fresh matched six-epoch 128/64 learning guard. |
 
 Reserve J4 from the beginning. No fifth job. A timeout, failed cache, rate or
 budget uncertainty, numerical mismatch, learning regression, or ambiguous
 submission stops the sequence and consumes the slot. No shortened cohort or
 omitted verification may be silently substituted.
+
+After each job, download its create-only evidence and run the independent
+efficiency validator. Supply J1 evidence to J2; J1 and J2 evidence to J3; and
+J1/J2/J3 evidence to J4. The validator compares fixed IDs, exclusions, cache
+provenance, timing structure, and the matched learning screen. It computes the
+conservative AMP runtime gain from J2 steady-loader time and J3 batch timings.
+Use `--mark-ledger` after validation, including a failing validation to consume
+the slot permanently. The launcher leaves a successful Vertex job in
+`awaiting_validation`; it rejects the next slot until the validator records that
+slot as `validated`. Vertex `SUCCEEDED` alone is not a quality or cache-equivalence
+gate. A failed/incomplete validation blocks the remaining slots.
 
 ## Acceptance and decision
 

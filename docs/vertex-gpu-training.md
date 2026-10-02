@@ -2,11 +2,15 @@
 
 The repo trains on the CPU smoke VM (`berlin-lst-vm`) for pipeline and smoke
 work, and on **Vertex AI Custom Training** for GPU work (`AGENTS.md`
-§Compute Placement). This document is the launch recipe for three bounded Vertex
-jobs on the real-data modeling path: the GPU acceptance smoke (issue #38,
-`--mode smoke`), the Stage-1 learning probe (issue #45, `--mode probe`,
-result in `docs/stage1-probe-results.md`), and the Stage-1 full temporal run
-(issue #53, `--mode full`, currently blocked by `docs/stage1-efficiency.md`).
+§Compute Placement). This document covers bounded Vertex jobs on the real-data
+modeling path: the GPU acceptance smoke (issue #38), historical Stage-1 probes
+(issues #45/#47), the bounded efficiency gate, and the deferred full temporal
+Stage-1 run (issue #53).
+
+**Current gate:** while `docs/stage1-efficiency.md` is active, the launcher and
+modeling runner reject paid smoke/probe/full modes; only the four ledger-bound
+`--mode efficiency` slots are eligible. The historical smoke/probe recipes below
+document prior evidence and are not currently executable through the launcher.
 
 ## What the path is (and is not)
 
@@ -17,7 +21,7 @@ result in `docs/stage1-probe-results.md`), and the Stage-1 full temporal run
 - It is a bounded **infrastructure and lifecycle** check, not a model-quality
   run. It proves device use, streamed I/O, online logging, checkpoint selection
   and reload, and clean teardown.
-- It is deliberately a single, capped, on-demand job. There is no persistent
+- It was deliberately a single, capped, on-demand job. There is no persistent
   GPU resource, no automatic retry, and no accelerator or region substitution.
 
 ## Region
@@ -169,21 +173,80 @@ uv run python scripts/validators/validate_stage1_probe.py --self-check
 uv run python scripts/validators/validate_stage1_probe.py --evidence <evidence.json>
 ```
 
+### Stage-1 efficiency jobs (`--mode efficiency`)
+
+These four job slots measure the source/cache path, loader/transfer choices,
+FP32/16-mixed compute and a matched learning guard. The fixed slot/role schedule
+is `1=baseline`, `2=cache`, `3=diagnostic`, `4=final`; the launcher's local,
+git-ignored ledger prevents a duplicate slot and requires each earlier slot to
+be independently validated before the next submission. Vertex `SUCCEEDED` is
+not sufficient. Failed or ambiguous slots are not repeated. Full Stage-1
+remains blocked regardless of efficiency results.
+
+Every submission requires the freshly verified Vertex aggregate
+`europe-west3` hourly rate, at most `$1.03/h`, a 2700-second server timeout, a
+600-second maximum client allowance, at most `$1.00` projected compute per job,
+and a combined four-slot projected compute ceiling of `$3.78`. The separate
+experiment ceiling is `$10` including build/storage/registry/logging; pass the
+cumulative other-cost estimate, which may not exceed `$6.22` or decrease between
+slots. The rate and exposure values are estimates/guards, not provider spending
+caps. All four slots must reuse the same clean source SHA and pinned image
+digest; a code or image change ends this experiment sequence.
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode efficiency --efficiency-slot 1 --efficiency-role baseline \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<efficiency-digest> \
+  --source-sha <clean-commit> --run-label stage1-efficiency-j1-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --efficiency-workers 2 --efficiency-precision 32-true \
+  --hourly-rate-usd <verified-current-rate> --timeout-seconds 2700 \
+  --projected-noncompute-total-usd <cumulative-other-cost-estimate> \
+  --max-wait-seconds 600 --max-exposure-usd 1.00 --preflight
+```
+
+`--preflight` is read-only and does not reserve a slot. A real submission
+reserves its slot immediately before `create_custom_job`. Do not delete the
+local ledger or reuse labels. If client waiting expires, reconnect by the
+printed job resource with `--status`; the next slot remains blocked until that
+job is `SUCCEEDED`, its evidence is downloaded, and the independent validator
+marks the ledger slot validated. A worker failure may retain an incomplete
+`evidence.json`; do not resubmit that slot.
+
+J1 validation:
+
+```bash
+uv run --group operators python scripts/validators/validate_training_efficiency.py \
+  --evidence <j1-evidence.json> \
+  --checkpoint <downloaded-j1-best.ckpt> \
+  --baseline docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json \
+  --mark-ledger
+```
+
+J2 adds `--control-evidence <validated-j1-evidence.json>`. J3 supplies J1 and
+J2 via `--control-evidence` and `--cache-evidence`. J4 supplies J1/J2/J3 via
+`--control-evidence`, `--cache-evidence`, and `--diagnostic-evidence`, and both
+`--checkpoint <downloaded-j4-best.ckpt>` and
+`--control-checkpoint <downloaded-j1-best.ckpt>`. Failed validation with
+`--mark-ledger` permanently blocks later slots. The validator
+also checks the recorded Vertex resource is `JOB_STATE_SUCCEEDED` before
+marking a slot; after a client timeout, poll with `--status`, then validate the
+downloaded evidence without resubmitting.
+
 ### Full Stage-1 run (`--mode full`)
 
 **Blocked pending a separate approved plan. Do not run this command.** The
 full-run capability is retained for later, but current work is governed by
 `docs/stage1-efficiency.md`; its bounded jobs do not authorize the full fit.
 
-When separately approved, this mode runs the `stage1_locked` profile — 20 unbounded epochs over every published
-train/validation patch — and then scores the 2025 test split once. The launcher
-composes and asserts both the locked method (`assert_stage1_lock`) and the
-full-run bounds (`assert_stage1_full_bounds`: one GPU, W&B online, job-local
-output root, train/validation-only admission) before submitting. It defaults the
-server timeout to **172,800 s (48 h)**, requires the verified regional rate via
-`--hourly-rate-usd`, and refuses to submit when the rate is above $1.03/h or the
-projected compute exposure exceeds **$50**. `docs/stage1-full-results.md` holds
-the pre-registered decision table and the results readout.
+The full-run implementation is retained as future capability only. The current
+launcher and direct runner reject it until the efficiency gate in
+`docs/stage1-efficiency.md` passes and a separate approved plan explicitly
+authorizes execution. `docs/stage1-full-results.md` contains historical
+pre-registration context, not permission to run.
 
 ```bash
 uv run --group operators python scripts/operators/launch_vertex_modeling.py \

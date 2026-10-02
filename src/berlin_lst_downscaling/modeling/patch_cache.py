@@ -59,6 +59,8 @@ class PatchCache:
         if not manifest_path.is_file():
             raise RuntimeError(f"patch cache is incomplete: missing {manifest_path}")
         self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if self.manifest.get("version") != 1:
+            raise RuntimeError("patch cache manifest version is unsupported")
         if self.manifest.get("provenance") != provenance:
             raise RuntimeError("patch cache provenance does not match the requested sources")
         if self.manifest.get("provenance_sha256") != _json_digest(provenance):
@@ -67,6 +69,16 @@ class PatchCache:
         self._metadata = self.manifest.get("metadata", [])
         if not self.patch_ids or len(self.patch_ids) != len(self._metadata):
             raise RuntimeError("patch cache manifest has inconsistent patch IDs and metadata")
+        active_channels = self.manifest.get("active_channels")
+        channel_order = provenance.get("channel_order")
+        if (
+            isinstance(active_channels, bool)
+            or not isinstance(active_channels, int)
+            or not 1 <= active_channels <= 28
+            or not isinstance(channel_order, list | tuple)
+            or len(channel_order) != active_channels
+        ):
+            raise RuntimeError("patch cache active channel count does not match provenance")
         if self.manifest.get("patch_ids_sha256") != _json_digest(list(self.patch_ids)):
             raise RuntimeError("patch cache patch-ID digest is invalid")
         if any(
@@ -76,11 +88,16 @@ class PatchCache:
             raise RuntimeError("patch cache metadata order differs from its patch-ID list")
         self.arrays: dict[str, np.ndarray] = {}
         shape_specs = {
-            "features": tuple(self.manifest["shapes"]["features"]),
+            "features": _feature_shape(len(self.patch_ids), active_channels),
             "prior": (len(self.patch_ids), 1, REAL_PATCH_PX, REAL_PATCH_PX),
             "target": (len(self.patch_ids), 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
             "mask": (len(self.patch_ids), 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
         }
+        if self.manifest.get("shapes") != {key: list(value) for key, value in shape_specs.items()}:
+            raise RuntimeError("patch cache manifest shapes do not match the frozen patch geometry")
+        expected_dtypes = {key: dtype.name for key, (_, dtype) in _ARRAYS.items()}
+        if self.manifest.get("dtypes") != expected_dtypes:
+            raise RuntimeError("patch cache manifest dtype declarations are invalid")
         for key, (filename, dtype) in _ARRAYS.items():
             path = root / filename
             if not path.is_file():

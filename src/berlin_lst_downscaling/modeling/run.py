@@ -25,6 +25,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 import torch
 from lightning.pytorch import LightningModule, Trainer, seed_everything
@@ -36,6 +37,7 @@ from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
+    assert_efficiency_fit_runtime,
     assert_probe_minima,
     assert_stage1_efficiency,
     assert_stage1_efficiency_scope,
@@ -273,6 +275,7 @@ class EpochMetricsRecorder(Callback):
     def __init__(self, path: Path) -> None:
         self.path = path
         self._epochs: dict[int, dict[str, object]] = {}
+        self._last_amp_scale: float | None = None
 
     def _entry(self, epoch: int) -> dict[str, object]:
         return self._epochs.setdefault(
@@ -284,6 +287,8 @@ class EpochMetricsRecorder(Callback):
                 "validation_valid_cells": None,
                 "validation_ssim_100m": None,
                 "validation_ssim_windows": None,
+                "amp_scale": None,
+                "amp_scale_decreased": False,
             },
         )
 
@@ -302,6 +307,16 @@ class EpochMetricsRecorder(Callback):
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         entry = self._entry(int(trainer.current_epoch) + 1)
         entry["train_mae_100m"] = self._read(trainer, "train/mae_100m")
+        scaler = getattr(trainer.precision_plugin, "scaler", None)
+        if scaler is not None and scaler.is_enabled():
+            # One scaler read per epoch; per-batch get_scale() would introduce
+            # a CPU/GPU synchronization into the measured training hot path.
+            scale = float(scaler.get_scale())
+            entry["amp_scale"] = scale
+            entry["amp_scale_decreased"] = (
+                self._last_amp_scale is not None and scale < self._last_amp_scale
+            )
+            self._last_amp_scale = scale
         self._write()
 
     def _write(self) -> None:
@@ -336,28 +351,6 @@ def _residual_identity_mae(task: RealLSTTask, val_loader) -> float:
                 batch.mask_100m,
             )
     return float(metric.compute())
-
-
-def _residual_correction_mean_abs(reloaded: RealLSTTask, val_loader) -> float:
-    """Mean absolute *pooled* Kelvin correction over valid validation cells.
-
-    The correction is the model's own delta (prediction minus reconstructed
-    prior), pooled and scored with the shared path. Near zero means the selected
-    checkpoint is still a prior passthrough.
-    """
-    total = 0.0
-    cells = 0.0
-    with torch.inference_mode():
-        for batch in val_loader:
-            validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
-            delta = reloaded(batch) - reconstruct_prior_kelvin(batch.lst_prior)
-            pooled = pool_10m_to_100m(delta)
-            valid = batch.mask_100m.bool()
-            total += float(pooled[valid].abs().sum())
-            cells += float(valid.sum())
-    if cells <= 0.0:
-        raise RuntimeError("no valid validation cell for the residual correction check")
-    return total / cells
 
 
 def _score_test_once(
@@ -442,7 +435,7 @@ def _fit_contract_lifecycle(
         depth=int(cfg.model.depth),
         learning_rate=float(cfg.trainer.learning_rate),
         weight_decay=float(cfg.trainer.weight_decay),
-        record_probe_metrics=is_probe,
+        record_probe_metrics=is_probe or is_full,
         residual_prior=residual_prior,
     )
 
@@ -529,6 +522,10 @@ def _fit_contract_lifecycle(
         max_epochs=int(cfg.trainer.max_epochs),
         accelerator=str(cfg.trainer.accelerator),
         devices=cfg.trainer.devices,
+        precision=cast(
+            Literal["32-true", "16-mixed"],
+            str(cfg.trainer.get("precision", "32-true")),
+        ),
         deterministic=True,
         benchmark=False,
         logger=wandb_logger,
@@ -581,6 +578,8 @@ def _fit_contract_lifecycle(
         reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
         reloaded.eval()
         recheck = MaskedMAE()
+        correction_abs_sum = 0.0
+        correction_cells = 0.0
         with torch.inference_mode():
             for batch in data_module.val_dataloader():
                 validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
@@ -593,7 +592,15 @@ def _fit_contract_lifecycle(
                     )
                 if not torch.isfinite(prediction).all():
                     raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
-                recheck.update(pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m)
+                pooled_prediction = pool_10m_to_100m(prediction)
+                recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
+                if residual_prior:
+                    correction = pool_10m_to_100m(
+                        prediction - reconstruct_prior_kelvin(batch.lst_prior)
+                    )
+                    valid = batch.mask_100m.bool()
+                    correction_abs_sum += float(correction[valid].abs().sum())
+                    correction_cells += float(valid.sum())
         recomputed = float(recheck.compute())
         tolerance = 1e-3 * max(1.0, abs(best_metric))
         if abs(recomputed - best_metric) > tolerance:
@@ -601,6 +608,11 @@ def _fit_contract_lifecycle(
                 f"reloaded checkpoint validation MAE {recomputed:.6f} != selected "
                 f"{best_metric:.6f} (tolerance {tolerance:.6f})"
             )
+        correction_mean = None
+        if residual_prior:
+            if correction_cells <= 0:
+                raise RuntimeError("no valid validation cell for the residual correction check")
+            correction_mean = correction_abs_sum / correction_cells
 
         # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
         # only after the selected checkpoint and its validation reload are
@@ -627,13 +639,16 @@ def _fit_contract_lifecycle(
                 "validation_valid_cells": float(recheck.valid_cells),
                 "residual_prior": residual_prior,
                 "residual_identity_mae_k": residual_identity_mae,
-                "residual_correction_mean_abs_k": (
-                    _residual_correction_mean_abs(reloaded, data_module.val_dataloader())
-                    if residual_prior
-                    else None
-                ),
+                "residual_correction_mean_abs_k": correction_mean,
                 "resolved_config": OmegaConf.to_container(cfg, resolve=True),
             }
+            if is_probe or is_full:
+                experiment = wandb_logger.experiment
+                summary["wandb"] = {
+                    "project": str(cfg.wandb.project),
+                    "run_id": getattr(experiment, "id", None),
+                    "url": getattr(experiment, "url", None),
+                }
             if test_result is not None:
                 summary["test"] = test_result
             summary_name = "full_summary.json" if is_full else "probe_summary.json"
@@ -708,14 +723,30 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     eagerly (a bounded smoke) or lazily through loader workers (a full run).
     """
     contract_invariants(cfg)
+    if "test" in tuple(str(s) for s in (cfg.data.get("splits") or _REAL_SPLITS)):
+        raise RuntimeError("test-split reads are blocked during the Stage-1 efficiency gate")
     if bool(cfg.get("stage1_full", False)):
         raise RuntimeError(
             "full Stage-1 execution is blocked pending completion of "
             "docs/stage1-efficiency.md and a separate approved plan"
         )
-    if bool(cfg.get("stage1_efficiency", False)):
+    if bool(cfg.get("stage1_efficiency", False)) and not bool(
+        cfg.get("stage1_efficiency_fit", False)
+    ):
         raise RuntimeError(
             "efficiency configs are measurement-only; use the bounded efficiency harness"
+        )
+    if bool(cfg.get("stage1_efficiency_fit", False)):
+        assert_efficiency_fit_runtime()
+    if bool(cfg.get("stage1_probe", False)) and not bool(cfg.get("stage1_efficiency_fit", False)):
+        raise RuntimeError("standalone Stage-1 probe fits are paused during the efficiency gate")
+    if (
+        str(cfg.data.get("kind")) == "real"
+        and cfg.data.get("max_patches_per_split") is None
+        and cfg.data.get("probe") is None
+    ):
+        raise RuntimeError(
+            "unbounded real-data modeling runs are paused during the efficiency gate"
         )
     source = real_source_config(cfg)
     scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
@@ -735,6 +766,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         ProbeScope(
             max_refs_per_split={str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()},
             max_refs_per_scene=int(probe_cfg.max_refs_per_scene),
+            require_partial_masks=bool(probe_cfg.get("require_partial_masks", False)),
         )
         if probe_cfg is not None
         else None
@@ -751,6 +783,11 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         n_active_channels=int(cfg.data.n_active_channels),
         splits=splits,
         probe_scope=probe_scope,
+        pin_memory=bool(cfg.data.get("pin_memory", False)),
+        cache_root=(
+            Path(str(cfg.data.cache_root)) if cfg.data.get("cache_root") is not None else None
+        ),
+        cache_max_bytes=int(cfg.get("stage1_efficiency_cache_max_bytes", 0)),
     )
     return _fit_contract_lifecycle(
         cfg,

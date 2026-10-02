@@ -80,13 +80,16 @@ def build_record(
     result_file: Path | None,
     profile: str = "smoke",
     checkpoint: dict | None = None,
+    efficiency_slot: int | None = None,
+    efficiency_role: str | None = None,
 ) -> dict:
     """Build the compact, non-secret evidence record.
 
     ``profile="probe"`` (historical #45) and ``profile="probe-residual"``
     (issue #47 recovery) retain the probe's cohort bounds, per-epoch metrics and
     summary — the numbers a go/no-go decision needs — instead of a raw stdout
-    tail. ``profile="full"`` (issue #53) retains the full-run epoch curve,
+    tail. ``profile="efficiency"`` retains bounded performance and learning
+    evidence. ``profile="full"`` (issue #53) retains the full-run epoch curve,
     selection/reload summary, one-shot test scope, and the create-only
     checkpoint reference. ``profile="smoke"`` keeps the original bounded-tail
     record.
@@ -108,6 +111,7 @@ def build_record(
             "skipped_refs": scope.get("skipped_refs"),
             "scenes_per_split": scope.get("scenes_per_split"),
             "years_per_split": scope.get("years_per_split"),
+            "partial_mask_patches_per_split": scope.get("partial_mask_patches_per_split"),
             "exclusions": scope.get("exclusions"),
             "patch_ids": scope.get("patch_ids"),
         },
@@ -139,6 +143,66 @@ def build_record(
             "epochs_complete": isinstance(epochs, list)
             and bool(summary)
             and len(epochs) == int((summary or {}).get("max_epochs", -1)),
+        }
+        if checkpoint is not None:
+            record["checkpoint"] = checkpoint
+    elif profile == "efficiency":
+        results = _read_json(run_root / "efficiency_results.json")
+        learning_required = efficiency_role in ("baseline", "final")
+        cache_required = efficiency_role in ("cache", "diagnostic", "final")
+        cache_manifest = (
+            _read_json(run_root / "cache_manifest.json")
+            if (run_root / "cache_manifest.json").is_file()
+            else None
+        )
+        learning_cache_manifest = (
+            _read_json(run_root / "learning_cache_manifest.json")
+            if (run_root / "learning_cache_manifest.json").is_file()
+            else None
+        )
+        learning_root = run_root / "learning"
+        learning_scope = (
+            _read_json(learning_root / "data_scope.json") if learning_required else None
+        )
+        learning_epochs = (
+            _read_json_any(learning_root / "epoch_metrics.json") if learning_required else None
+        )
+        learning_summary = (
+            _read_json(learning_root / "probe_summary.json") if learning_required else None
+        )
+        learning_complete = (
+            isinstance(learning_epochs, list)
+            and bool(learning_summary)
+            and len(learning_epochs) == int((learning_summary or {}).get("max_epochs", -1))
+        )
+        checkpoint_complete = (
+            isinstance(checkpoint, dict)
+            and str(checkpoint.get("uri", "")).endswith(".ckpt")
+            and len(str(checkpoint.get("sha256", ""))) == 64
+            and int(checkpoint.get("bytes", 0)) > 0
+        )
+        record["profile"] = "efficiency"
+        record["efficiency"] = {
+            "slot": efficiency_slot,
+            "role": efficiency_role,
+            "results": results or {},
+            "complete": (
+                isinstance(results, dict)
+                and results.get("status") == "complete"
+                and (not learning_required or learning_complete)
+                and (not learning_required or checkpoint_complete)
+                and (not cache_required or isinstance(cache_manifest, dict))
+                and (efficiency_role != "final" or isinstance(learning_cache_manifest, dict))
+            ),
+            "test_access": False,
+            "cache_manifest": cache_manifest or {},
+            "learning_cache_manifest": learning_cache_manifest or {},
+            "learning": {
+                "data_scope": learning_scope or {},
+                "epoch_metrics": learning_epochs if isinstance(learning_epochs, list) else [],
+                "summary": learning_summary or {},
+                "complete": learning_complete,
+            },
         }
         if checkpoint is not None:
             record["checkpoint"] = checkpoint
@@ -188,7 +252,13 @@ def main() -> None:
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--image-digest", required=True)
     parser.add_argument(
-        "--profile", choices=["smoke", "probe", "probe-residual", "full"], default="smoke"
+        "--profile",
+        choices=["smoke", "probe", "probe-residual", "full", "efficiency"],
+        default="smoke",
+    )
+    parser.add_argument("--efficiency-slot", type=int, choices=(1, 2, 3, 4), default=None)
+    parser.add_argument(
+        "--efficiency-role", choices=["baseline", "cache", "diagnostic", "final"], default=None
     )
     parser.add_argument("--result-file", type=Path, default=None)
     parser.add_argument(
@@ -224,6 +294,8 @@ def main() -> None:
         result_file=args.result_file,
         profile=args.profile,
         checkpoint=checkpoint,
+        efficiency_slot=args.efficiency_slot,
+        efficiency_role=args.efficiency_role,
     )
     payload = json.dumps(record, indent=2, sort_keys=True, default=str).encode("utf-8")
     _upload_create_only(args.evidence_uri, payload)

@@ -17,10 +17,14 @@ without importing the training framework.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import time
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import partial
+from pathlib import Path
 from typing import cast
 
 import torch
@@ -28,11 +32,17 @@ from lightning.pytorch import LightningDataModule, LightningModule
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
+from berlin_lst_downscaling.data.training.contracts import (
+    CANON_GRID_ORIGIN_X,
+    CANON_GRID_ORIGIN_Y,
+    CELL_SIZE_M,
+)
 from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
     PRIOR_AFFINE_OFFSET_K,
     PRIOR_AFFINE_SCALE_K,
     REAL_PATCH_CELLS,
+    REAL_PATCH_PX,
     RealBatch,
     validate_real_batch,
 )
@@ -45,6 +55,7 @@ from berlin_lst_downscaling.modeling.metrics import (
     masked_ssim_stats,
     pool_10m_to_100m,
 )
+from berlin_lst_downscaling.modeling.patch_cache import PatchCache, build_patch_cache
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
@@ -52,6 +63,7 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     collate_real_batch,
     load_patch_refs,
+    patch_index_fingerprints,
 )
 from berlin_lst_downscaling.modeling.unet import UNet
 
@@ -71,6 +83,7 @@ class ProbeScope:
 
     max_refs_per_split: dict[str, int]
     max_refs_per_scene: int
+    require_partial_masks: bool = False
 
 
 def _batch_count(n_patches: int, batch_size: int) -> int:
@@ -150,6 +163,26 @@ class RealPatchDataset(Dataset[RealSample]):
         return self._reader
 
 
+class CachedRealPatchDataset(Dataset[RealSample]):
+    """Lazy read-only view into a job-local cache, reopened per worker process."""
+
+    def __init__(self, root: Path, provenance: dict[str, object], indices: Sequence[int]) -> None:
+        self.root = root
+        self.provenance = provenance
+        self.indices = list(indices)
+        self._cache: PatchCache | None = None
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int) -> RealSample:
+        if not 0 <= idx < len(self.indices):
+            raise IndexError(idx)
+        if self._cache is None:
+            self._cache = PatchCache(self.root, self.provenance)
+        return self._cache[self.indices[idx]]
+
+
 class RealPatchDataModule(LightningDataModule):
     """Contract-conforming real patch batches.
 
@@ -186,6 +219,9 @@ class RealPatchDataModule(LightningDataModule):
         seed: int = 0,
         splits: Sequence[str] = _REAL_SPLITS,
         probe_scope: ProbeScope | None = None,
+        pin_memory: bool = False,
+        cache_root: Path | None = None,
+        cache_max_bytes: int = 0,
     ) -> None:
         super().__init__()
         if mode not in ("eager", "stream"):
@@ -206,11 +242,15 @@ class RealPatchDataModule(LightningDataModule):
         self.seed = seed
         self.splits = tuple(splits)
         self.probe_scope = probe_scope
+        self.pin_memory = pin_memory
+        self.cache_root = cache_root
+        self.cache_max_bytes = cache_max_bytes
+        self.cache_build_seconds = 0.0
         self.reader: RealPatchReader | None = None
         self._admitted: dict[str, list[PatchRef]] = {}
         self._requested: dict[str, list[PatchRef]] = {split: [] for split in self.splits}
         self._skipped: dict[str, list[dict[str, str]]] = {split: [] for split in self.splits}
-        self._datasets: dict[str, _BatchDataset | RealPatchDataset] = {}
+        self._datasets: dict[str, _BatchDataset | RealPatchDataset | CachedRealPatchDataset] = {}
 
     def _select_refs(self, refs: list[PatchRef]) -> dict[str, list[PatchRef]]:
         """Bound the requested refs per split, before any exclusion.
@@ -233,9 +273,7 @@ class RealPatchDataModule(LightningDataModule):
                 requested[ref.split].append(ref)
             return requested
 
-        by_split_scene: dict[str, dict[str, list[PatchRef]]] = {
-            split: {} for split in self.splits
-        }
+        by_split_scene: dict[str, dict[str, list[PatchRef]]] = {split: {} for split in self.splits}
         for ref in refs:
             by_split_scene.get(ref.split, {}).setdefault(ref.scene_id, []).append(ref)
 
@@ -249,12 +287,28 @@ class RealPatchDataModule(LightningDataModule):
                 scene_id: rows[: self.probe_scope.max_refs_per_scene]
                 for scene_id, rows in scenes.items()
             }
+            if self.probe_scope.require_partial_masks:
+                total_cells = REAL_PATCH_CELLS * REAL_PATCH_CELLS
+                for scene_id in scenes:
+                    partial = next(
+                        (ref for ref in per_scene[scene_id] if 0 < ref.n_eligible < total_cells),
+                        None,
+                    )
+                    if partial is not None:
+                        requested[split].append(partial)
+                        break
+                if not requested[split]:
+                    raise ValueError(
+                        f"{split} efficiency cohort has no partial-mask candidate in index metadata"
+                    )
             index = 0
             while len(requested[split]) < target:
                 progressed = False
                 for scene_id in scenes:
                     rows = per_scene[scene_id]
-                    if index < len(rows):
+                    if index < len(rows) and all(
+                        chosen.patch_id != rows[index].patch_id for chosen in requested[split]
+                    ):
                         requested[split].append(rows[index])
                         progressed = True
                         if len(requested[split]) >= target:
@@ -283,15 +337,76 @@ class RealPatchDataModule(LightningDataModule):
             admitted = self._admit(self.reader, split, split_refs)
             self._admitted[split] = admitted
             if self.mode == "eager":
-                self._datasets[split] = _BatchDataset(
-                    self._read_batches(self.reader, admitted)
-                )
+                self._datasets[split] = _BatchDataset(self._read_batches(self.reader, admitted))
             else:
                 self._datasets[split] = RealPatchDataset(self.source, admitted)
+        if self.cache_root is not None:
+            self._build_cache()
 
-    def _admit(
-        self, reader: RealPatchReader, split: str, refs: list[PatchRef]
-    ) -> list[PatchRef]:
+    def _build_cache(self) -> None:
+        """Build an ordered cache from admitted refs and replace split datasets."""
+        if self.cache_root is None or self.reader is None:
+            raise RuntimeError("cache build requires a configured path and initialized reader")
+        reader = self.reader
+        if set(self.splits) != {"train", "validation"}:
+            raise ValueError("efficiency cache requires exactly train and validation splits")
+        ordered_refs = [ref for split in ("train", "validation") for ref in self._admitted[split]]
+        if not ordered_refs:
+            raise RuntimeError("cannot build an empty efficiency cache")
+        patch_ids = [ref.patch_id for ref in ordered_refs]
+        scope = self.stats()
+        scaler_record = asdict(reader.scaler)
+        scaler_digest = hashlib.sha256(
+            json.dumps(scaler_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        provenance: dict[str, object] = {
+            "source_roots": asdict(self.source),
+            "patch_index_fingerprints": patch_index_fingerprints(self.source.patch_index_root),
+            "scaler_digest": scaler_digest,
+            "channel_order": list(reader.scaler.channel_order[: self.n_active_channels]),
+            "geometry": {
+                "crs": "EPSG:25833",
+                "origin_x": CANON_GRID_ORIGIN_X,
+                "origin_y": CANON_GRID_ORIGIN_Y,
+                "cell_size_m": CELL_SIZE_M,
+                "patch_px": REAL_PATCH_PX,
+                "target_cells": REAL_PATCH_CELLS,
+                "anchors": [[ref.row, ref.col] for ref in ordered_refs],
+            },
+            "preprocessing_version": 1,
+            "requested_patch_ids": scope["requested_patch_ids"],
+            "admitted_patch_ids": scope["patch_ids"],
+            "skipped_refs": scope["skipped_refs"],
+        }
+
+        def source_samples():
+            for ref in ordered_refs:
+                sample = reader.read_patch(ref)
+                if sample is None:
+                    raise RuntimeError(f"admitted patch became unreadable: {ref.patch_id}")
+                yield sample
+
+        cache_started = time.perf_counter()
+        build_patch_cache(
+            self.cache_root,
+            source_samples(),
+            patch_ids=patch_ids,
+            active_channels=self.n_active_channels,
+            provenance=provenance,
+            max_bytes=self.cache_max_bytes,
+        )
+        self.cache_build_seconds = time.perf_counter() - cache_started
+        PatchCache(self.cache_root, provenance)
+
+        offset = 0
+        for split in ("train", "validation"):
+            refs = self._admitted[split]
+            self._datasets[split] = CachedRealPatchDataset(
+                self.cache_root, provenance, range(offset, offset + len(refs))
+            )
+            offset += len(refs)
+
+    def _admit(self, reader: RealPatchReader, split: str, refs: list[PatchRef]) -> list[PatchRef]:
         """Keep the readable refs in canonical order; record the skipped ones."""
         admitted: list[PatchRef] = []
         for ref in refs:
@@ -320,16 +435,11 @@ class RealPatchDataModule(LightningDataModule):
                 for split, refs in self._admitted.items()
             },
             "patches_per_split": {split: len(refs) for split, refs in self._admitted.items()},
-            "requested_per_split": {
-                split: len(refs) for split, refs in self._requested.items()
-            },
+            "requested_per_split": {split: len(refs) for split, refs in self._requested.items()},
             # Only the bounded probe retains the requested IDs; a full run would
             # duplicate the admitted list and bloat its data_scope.json.
             "requested_patch_ids": (
-                {
-                    split: [ref.patch_id for ref in refs]
-                    for split, refs in self._requested.items()
-                }
+                {split: [ref.patch_id for ref in refs] for split, refs in self._requested.items()}
                 if self.probe_scope is not None
                 else None
             ),
@@ -338,19 +448,14 @@ class RealPatchDataModule(LightningDataModule):
                 for split, refs in self._admitted.items()
             },
             "years_per_split": {
-                split: sorted({ref.year for ref in refs})
-                for split, refs in self._admitted.items()
+                split: sorted({ref.year for ref in refs}) for split, refs in self._admitted.items()
             },
             "partial_mask_patches_per_split": {
-                split: sum(
-                    0 < ref.n_eligible < REAL_PATCH_CELLS * REAL_PATCH_CELLS
-                    for ref in refs
-                )
+                split: sum(0 < ref.n_eligible < REAL_PATCH_CELLS * REAL_PATCH_CELLS for ref in refs)
                 for split, refs in self._admitted.items()
             },
             "patch_ids": {
-                split: [ref.patch_id for ref in refs]
-                for split, refs in self._admitted.items()
+                split: [ref.patch_id for ref in refs] for split, refs in self._admitted.items()
             },
             "skipped_refs": self._skipped,
             "skipped_per_split": {split: len(refs) for split, refs in self._skipped.items()},
@@ -358,7 +463,7 @@ class RealPatchDataModule(LightningDataModule):
             "train_shuffle_order": self._train_shuffle_order(),
         }
 
-    def _train_sampler(self, dataset: RealPatchDataset) -> RandomSampler:
+    def _train_sampler(self, dataset: RealPatchDataset | CachedRealPatchDataset) -> RandomSampler:
         """A dedicated seeded sampler, so the train order is reproducible.
 
         A dedicated ``RandomSampler`` is used instead of ``shuffle=True`` so the
@@ -384,7 +489,7 @@ class RealPatchDataModule(LightningDataModule):
         if self.mode != "stream" or not self.shuffle_train:
             return None
         dataset = self._datasets.get("train")
-        if not isinstance(dataset, RealPatchDataset) or len(dataset) == 0:
+        if not isinstance(dataset, (RealPatchDataset, CachedRealPatchDataset)) or len(dataset) == 0:
             return None
         return list(self._train_sampler(dataset))
 
@@ -400,20 +505,20 @@ class RealPatchDataModule(LightningDataModule):
                 )
             chunk.append(sample)
             if len(chunk) == self.batch_size:
-                batches.append(
-                    collate_real_batch(chunk, n_active_channels=self.n_active_channels)
-                )
+                batches.append(collate_real_batch(chunk, n_active_channels=self.n_active_channels))
                 chunk = []
         if chunk:
-            batches.append(
-                collate_real_batch(chunk, n_active_channels=self.n_active_channels)
-            )
+            batches.append(collate_real_batch(chunk, n_active_channels=self.n_active_channels))
         return batches
 
     def _loader(self, split: str) -> DataLoader[RealBatch]:
         dataset = self._datasets.get(split)
         if dataset is None or len(dataset) == 0:
             raise RuntimeError(f"real path has no {split} batch to train on")
+        if self.cache_root is not None and not isinstance(dataset, CachedRealPatchDataset):
+            raise RuntimeError(
+                "efficiency cache setup failed; refusing a silent streaming fallback"
+            )
         if isinstance(dataset, _BatchDataset):
             return DataLoader(dataset, batch_size=None, shuffle=False)
         shuffle = self.shuffle_train and split == "train"
@@ -421,12 +526,11 @@ class RealPatchDataModule(LightningDataModule):
             dataset,
             batch_size=self.batch_size,
             sampler=self._train_sampler(dataset) if shuffle else None,
-            collate_fn=partial(
-                collate_real_batch, n_active_channels=self.n_active_channels
-            ),
+            collate_fn=partial(collate_real_batch, n_active_channels=self.n_active_channels),
             num_workers=self.num_workers,
             generator=torch.Generator().manual_seed(self.seed) if shuffle else None,
             persistent_workers=self.num_workers > 0,
+            pin_memory=self.pin_memory,
         )
         # The dataset yields RealSample; ``collate_real_batch`` stacks each
         # batch into RealBatch, so the loader's yielded type is RealBatch.
@@ -473,9 +577,7 @@ class RealLSTTask(LightningModule):
         residual_prior: bool = False,
     ) -> None:
         super().__init__()
-        self.model = UNet(
-            in_channels=n_active_channels + 1, base_width=base_width, depth=depth
-        )
+        self.model = UNet(in_channels=n_active_channels + 1, base_width=base_width, depth=depth)
         self.n_active_channels = n_active_channels
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
@@ -503,7 +605,7 @@ class RealLSTTask(LightningModule):
         delta = self.model(inputs)
         if not self.residual_prior:
             return delta
-        return reconstruct_prior_kelvin(batch.lst_prior) + delta
+        return reconstruct_prior_kelvin(batch.lst_prior).float() + delta.float()
 
     def training_step(self, batch: RealBatch, batch_idx: int) -> Tensor:
         prediction_100m = pool_10m_to_100m(self(batch))
@@ -514,7 +616,9 @@ class RealLSTTask(LightningModule):
         return loss
 
     def validation_step(self, batch: RealBatch, batch_idx: int) -> None:
-        prediction_100m = pool_10m_to_100m(self(batch))
+        with torch.autocast(device_type=batch.features.device.type, enabled=False):
+            prediction = self(batch)
+        prediction_100m = pool_10m_to_100m(prediction.float())
         self.val_mae.update(prediction_100m, batch.target_100m, batch.mask_100m)
         ssim_sum, ssim_count = masked_ssim_stats(
             prediction_100m, batch.target_100m, batch.mask_100m
@@ -523,17 +627,11 @@ class RealLSTTask(LightningModule):
         self.val_ssim_windows.update(ssim_count)
         self.val_valid_cells.update(batch.mask_100m)
         # Masked MAE is the selection metric; SSIM is logged only.
-        self.log(
-            "validation/mae_100m", self.val_mae, on_step=False, on_epoch=True, prog_bar=True
-        )
+        self.log("validation/mae_100m", self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         self.log("validation/ssim_100m", self.val_ssim, on_step=False, on_epoch=True)
-        self.log(
-            "validation/ssim_windows", self.val_ssim_windows, on_step=False, on_epoch=True
-        )
+        self.log("validation/ssim_windows", self.val_ssim_windows, on_step=False, on_epoch=True)
         if self.record_probe_metrics:
-            self.log(
-                "validation/valid_cells", self.val_valid_cells, on_step=False, on_epoch=True
-            )
+            self.log("validation/valid_cells", self.val_valid_cells, on_step=False, on_epoch=True)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(
