@@ -39,6 +39,7 @@ from pathlib import Path
 from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.run import (
+    assert_stage1_efficiency,
     assert_stage1_full_bounds,
     assert_stage1_lock,
     guard_modeling_config,
@@ -211,11 +212,25 @@ def _guard_self_check() -> int:
         print(f"  {status} guard: {label} (accepted={accepted}, expected={should_pass})")
 
     try:
-        guard_modeling_config(compose_cfg("stage1_probe", []), "stage1_probe")
-        print("  PASS guard: full guard accepts stage1_probe")
+        guard_modeling_config(compose_cfg("stage1_locked", []), "stage1_locked")
+        failures.append("full execution guard accepted stage1_locked")
+        print("  FAIL guard: full execution remains blocked")
+    except ValueError:
+        print("  PASS guard: full execution remains blocked")
+
+    efficiency = compose_cfg("stage1_efficiency", [])
+    try:
+        assert_stage1_efficiency(efficiency)
+        try:
+            guard_modeling_config(efficiency, "stage1_efficiency")
+        except ValueError:
+            print("  PASS guard: bounded efficiency config is excluded from fit runner")
+        else:
+            failures.append("efficiency config entered the fit runner")
+            print("  FAIL guard: efficiency config entered the fit runner")
     except Exception as exc:  # pragma: no cover - self-check reporting
-        failures.append(f"guard rejected stage1_probe: {exc}")
-        print(f"  FAIL guard: full guard accepts stage1_probe ({exc})")
+        failures.append(f"bounded efficiency config failed its own assertions: {exc}")
+        print(f"  FAIL guard: bounded efficiency config ({exc})")
 
     failures.extend(_screen_self_check())
 

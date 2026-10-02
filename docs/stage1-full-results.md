@@ -1,4 +1,10 @@
-# Stage-1 full temporal run — pre-registration and results (issue #53)
+# Stage-1 full temporal run — deferred pending efficiency gate (issue #53)
+
+**Status: blocked.** The full-run invocation described below is superseded by
+`docs/stage1-efficiency.md`. No full Stage-1 fit is authorized until the
+bounded efficiency work is complete and a separate plan explicitly approves
+the full run. The prior result thresholds are retained for later reference;
+they do not authorize an invocation or test access during efficiency work.
 
 The first **full temporal** Stage-1 fit under the recovered residual lock: every
 published train and 2024-validation patch, checkpoint selection on validation
@@ -12,8 +18,9 @@ width 32, LR 1e-3, WD 0, seed 0, masked L1, temporal split, residual prior with 
 zero-initialized head, 20 epochs. Batch size, AMP, workers, and patience remain
 operational retunes; none is changed here.
 
-Status: **pre-registered** (2026-10-02, clean tree at `7bb57464`); the run
-outcome is appended in §4 after the single paid invocation.
+Status: **deferred** (2026-10-02). The prior full-run pre-registration remains
+historical context only; do not append a run outcome before the efficiency gate
+and subsequent approval.
 
 ## 1. Representation and cohort
 
@@ -81,9 +88,8 @@ documented honestly. Multi-10 K or init-scale scores are not.
 
 ## 4. Results
 
-_Pending the single paid invocation. Appended after the run with the observed
-curve, full-universe comparisons, one-shot test score, selected checkpoint hash,
-Vertex job id, W&B run, and the validator verdict._
+_No full Stage-1 run has been authorized or performed. Any future result requires
+a separate approved plan after `docs/stage1-efficiency.md` is complete._
 
 ## 5. Limitations
 

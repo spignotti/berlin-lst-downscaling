@@ -191,6 +191,7 @@ def assert_stage1_full_bounds(cfg: DictConfig) -> None:
 # (issue #47). Both share one frozen method; only the learning rate differs.
 STAGE1_PROBE_CONFIG_NAME = "stage1_probe"
 STAGE1_PROBE_LR3_CONFIG_NAME = "stage1_probe_lr3"
+STAGE1_EFFICIENCY_CONFIG_NAME = "stage1_efficiency"
 
 _STAGE1_PROBE_SPLITS = ("train", "validation")
 
@@ -229,6 +230,106 @@ _STAGE1_PROBE_SCOPE: dict[str, object] = {
     "min_scenes_per_split": {"train": 16, "validation": 8},
     "min_train_years": 3,
 }
+
+_STAGE1_EFFICIENCY_FROZEN: dict[str, object] = {
+    "data.kind": "real",
+    "data.mode": "stream",
+    "data.n_active_channels": 10,
+    "data.shuffle_train": True,
+    "model.depth": 4,
+    "model.base_width": 32,
+    "trainer.learning_rate": 1.0e-3,
+    "trainer.weight_decay": 0.0,
+    "trainer.accelerator": "gpu",
+    "trainer.devices": 1,
+    "seed": 0,
+    "stage1_residual_prior": True,
+}
+
+_STAGE1_EFFICIENCY_ROLES = {"baseline", "cache", "diagnostic"}
+
+
+def assert_stage1_efficiency(cfg: DictConfig) -> None:
+    """Fail closed unless the config is a bounded, train/validation-only profile."""
+    problems: list[str] = []
+    if cfg.get("stage1_efficiency") is not True:
+        problems.append("stage1_efficiency marker is not true")
+    if cfg.get("stage1_full") is not False or cfg.get("stage1_lock") is not False:
+        problems.append("efficiency config must not carry full-run or full-lock markers")
+    if bool(cfg.get("stage1_probe", False)):
+        problems.append("efficiency config must not carry the learning-probe marker")
+    for key, expected in _STAGE1_EFFICIENCY_FROZEN.items():
+        actual = OmegaConf.select(cfg, key)
+        if actual != expected:
+            problems.append(f"{key}={actual!r} (expected {expected!r})")
+
+    if list(cfg.data.get("splits") or []) != ["train", "validation"]:
+        problems.append("efficiency data.splits must be exactly ['train', 'validation']")
+    limit = cfg.data.get("max_patches_per_split")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 512:
+        problems.append(f"data.max_patches_per_split={limit!r} (expected integer in [1, 512])")
+    role = str(cfg.get("stage1_efficiency_role", ""))
+    if role not in _STAGE1_EFFICIENCY_ROLES:
+        problems.append(f"stage1_efficiency_role={role!r} is not an allowed bounded role")
+
+    probe = cfg.data.get("probe")
+    if probe is None:
+        problems.append("bounded scene-spread data.probe selection is required")
+    else:
+        refs = dict(probe.get("max_refs_per_split") or {})
+        if refs != {"train": 512, "validation": 192}:
+            problems.append(
+                f"data.probe.max_refs_per_split={refs!r} is not the preregistered cohort"
+            )
+        if int(probe.get("max_refs_per_scene", 0)) != 16:
+            problems.append("data.probe.max_refs_per_scene must be 16")
+        if int(probe.get("min_train_years", 0)) < 3:
+            problems.append("data.probe.min_train_years must be at least 3")
+        minima = dict(probe.get("min_admitted_per_split") or {})
+        if minima != {"train": 384, "validation": 128}:
+            problems.append(f"data.probe.min_admitted_per_split={minima!r} is not preregistered")
+
+    epochs = cfg.trainer.get("max_epochs")
+    if isinstance(epochs, bool) or not isinstance(epochs, int) or epochs != 1:
+        problems.append(
+            f"trainer.max_epochs={epochs!r} (efficiency role must not fit multiple epochs)"
+        )
+    output_root = str(cfg.get("output_root", ""))
+    if not output_root or output_root.startswith("gs://") or "/runs/" not in output_root:
+        problems.append("output_root must be a job-local path under data/runs/")
+    if str(cfg.wandb.get("mode")) != "online":
+        problems.append("wandb.mode must be online for a Vertex efficiency job")
+    if problems:
+        raise ValueError("stage1 efficiency config is off-contract: " + "; ".join(problems))
+
+
+def assert_stage1_efficiency_scope(cfg: DictConfig, scope: dict) -> None:
+    """Require the fixed admitted cohort to include years and partial masks."""
+    probe = cfg.data.probe
+    admitted_raw = scope.get("patches_per_split")
+    years_raw = scope.get("years_per_split")
+    partial_raw = scope.get("partial_mask_patches_per_split")
+    admitted = admitted_raw if isinstance(admitted_raw, dict) else {}
+    years = years_raw if isinstance(years_raw, dict) else {}
+    partial = partial_raw if isinstance(partial_raw, dict) else {}
+    minima = dict(probe.min_admitted_per_split)
+    problems: list[str] = []
+    if set(admitted) != {"train", "validation"}:
+        problems.append(f"admitted splits {sorted(admitted)} are not train/validation only")
+    for split in ("train", "validation"):
+        if int(admitted.get(split, 0)) < int(minima[split]):
+            problems.append(
+                f"{split} admitted {admitted.get(split, 0)} < required {minima[split]}"
+            )
+        if int(partial.get(split, 0)) <= 0:
+            problems.append(f"{split} cohort has no partially eligible mask")
+    required_years = int(probe.min_train_years)
+    if len(years.get("train", [])) < required_years:
+        problems.append(
+            f"train covers {len(years.get('train', []))} years < required {required_years}"
+        )
+    if problems:
+        raise ValueError("stage1 efficiency cohort is out of bounds: " + "; ".join(problems))
 
 
 def _assert_stage1_probe(cfg: DictConfig, *, config_name: str) -> None:
@@ -364,10 +465,16 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "stage1_probe marker is set on a non-probe config "
             f"({config_name!r}); the probe guard would not run"
         )
+    if bool(cfg.get("stage1_efficiency", False)) and config_name != STAGE1_EFFICIENCY_CONFIG_NAME:
+        raise ValueError(
+            "stage1_efficiency marker is set on an unapproved config "
+            f"({config_name!r}); refusing to run"
+        )
     if bool(cfg.get("stage1_residual_prior", False)) and config_name not in (
         STAGE1_LOCKED_CONFIG_NAME,
         STAGE1_PROBE_CONFIG_NAME,
         STAGE1_PROBE_LR3_CONFIG_NAME,
+        STAGE1_EFFICIENCY_CONFIG_NAME,
     ):
         raise ValueError(
             "stage1_residual_prior is the Stage-1 recovery representation "
@@ -379,22 +486,33 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             f"(issue #53) but is set on config {config_name!r}; refusing to run"
         )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
-        assert_stage1_lock(cfg)
-        assert_stage1_full_bounds(cfg)
+        raise ValueError(
+            "full Stage-1 execution is blocked pending completion of "
+            "docs/stage1-efficiency.md and a separate approved plan"
+        )
     if config_name == STAGE1_PROBE_CONFIG_NAME:
         assert_stage1_probe(cfg)
     if config_name == STAGE1_PROBE_LR3_CONFIG_NAME:
         assert_stage1_probe_lr3(cfg)
+    if config_name == STAGE1_EFFICIENCY_CONFIG_NAME:
+        assert_stage1_efficiency(cfg)
+        raise ValueError(
+            "efficiency profiles must run through the bounded measurement harness, "
+            "not the modeling fit runner"
+        )
     if bool(cfg.get("vertex_smoke_bounds", False)):
         assert_vertex_smoke_bounds(cfg)
 
 
 __all__ = [
     "assert_probe_minima",
+    "assert_stage1_efficiency",
+    "assert_stage1_efficiency_scope",
     "assert_stage1_full_bounds",
     "assert_stage1_lock",
     "assert_stage1_probe",
     "assert_stage1_probe_lr3",
+    "STAGE1_EFFICIENCY_CONFIG_NAME",
     "assert_vertex_smoke_bounds",
     "contract_invariants",
     "guard_modeling_config",

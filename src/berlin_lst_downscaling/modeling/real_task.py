@@ -32,6 +32,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
     PRIOR_AFFINE_OFFSET_K,
     PRIOR_AFFINE_SCALE_K,
+    REAL_PATCH_CELLS,
     RealBatch,
     validate_real_batch,
 )
@@ -338,6 +339,13 @@ class RealPatchDataModule(LightningDataModule):
             },
             "years_per_split": {
                 split: sorted({ref.year for ref in refs})
+                for split, refs in self._admitted.items()
+            },
+            "partial_mask_patches_per_split": {
+                split: sum(
+                    0 < ref.n_eligible < REAL_PATCH_CELLS * REAL_PATCH_CELLS
+                    for ref in refs
+                )
                 for split, refs in self._admitted.items()
             },
             "patch_ids": {

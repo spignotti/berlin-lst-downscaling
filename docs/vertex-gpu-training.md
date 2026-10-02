@@ -6,7 +6,7 @@ work, and on **Vertex AI Custom Training** for GPU work (`AGENTS.md`
 jobs on the real-data modeling path: the GPU acceptance smoke (issue #38,
 `--mode smoke`), the Stage-1 learning probe (issue #45, `--mode probe`,
 result in `docs/stage1-probe-results.md`), and the Stage-1 full temporal run
-(issue #53, `--mode full`, pre-registration in `docs/stage1-full-results.md`).
+(issue #53, `--mode full`, currently blocked by `docs/stage1-efficiency.md`).
 
 ## What the path is (and is not)
 
@@ -171,7 +171,11 @@ uv run python scripts/validators/validate_stage1_probe.py --evidence <evidence.j
 
 ### Full Stage-1 run (`--mode full`)
 
-Runs the `stage1_locked` profile — 20 unbounded epochs over every published
+**Blocked pending a separate approved plan. Do not run this command.** The
+full-run capability is retained for later, but current work is governed by
+`docs/stage1-efficiency.md`; its bounded jobs do not authorize the full fit.
+
+When separately approved, this mode runs the `stage1_locked` profile — 20 unbounded epochs over every published
 train/validation patch — and then scores the 2025 test split once. The launcher
 composes and asserts both the locked method (`assert_stage1_lock`) and the
 full-run bounds (`assert_stage1_full_bounds`: one GPU, W&B online, job-local

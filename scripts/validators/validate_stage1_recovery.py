@@ -38,6 +38,7 @@ from berlin_lst_downscaling.modeling.patches import (
 )
 from berlin_lst_downscaling.modeling.run import (
     assert_probe_minima,
+    assert_stage1_lock,
     assert_stage1_probe,
     assert_stage1_probe_lr3,
     guard_modeling_config,
@@ -139,15 +140,21 @@ def _guard_self_check() -> int:
         failures.append(f"minima at cohort: {exc}")
         print(f"  FAIL minima: cohort at minima ({exc})")
 
-    # After the issue #47 GO the residual representation is frozen into the lock
-    # too, so it is accepted on the lock and the two probes, and must still be
-    # rejected on any unrelated config.
+    # The frozen method lock remains inspectable, but full execution is blocked
+    # until the Stage-1 efficiency gate and a separate approval are complete.
     try:
-        guard_modeling_config(compose_cfg("stage1_locked", []), "stage1_locked")
-        print("  PASS guard: full guard accepts stage1_locked (residual frozen)")
+        locked = compose_cfg("stage1_locked", [])
+        assert_stage1_lock(locked)
+        try:
+            guard_modeling_config(locked, "stage1_locked")
+        except ValueError:
+            print("  PASS guard: method lock valid; full execution blocked")
+        else:
+            failures.append("full execution guard accepted stage1_locked")
+            print("  FAIL guard: full execution is not blocked")
     except ValueError as exc:  # pragma: no cover - self-check reporting
-        failures.append(f"full guard rejected stage1_locked: {exc}")
-        print(f"  FAIL guard: full guard accepts stage1_locked ({exc})")
+        failures.append(f"method lock rejected stage1_locked: {exc}")
+        print(f"  FAIL guard: method lock remains valid ({exc})")
     try:
         guard_modeling_config(
             compose_cfg("contract_smoke", ["+stage1_residual_prior=true"]), "contract_smoke"

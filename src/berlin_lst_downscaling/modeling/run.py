@@ -37,6 +37,8 @@ from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
     assert_probe_minima,
+    assert_stage1_efficiency,
+    assert_stage1_efficiency_scope,
     assert_stage1_full_bounds,
     assert_stage1_lock,
     assert_stage1_probe,
@@ -706,6 +708,15 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     eagerly (a bounded smoke) or lazily through loader workers (a full run).
     """
     contract_invariants(cfg)
+    if bool(cfg.get("stage1_full", False)):
+        raise RuntimeError(
+            "full Stage-1 execution is blocked pending completion of "
+            "docs/stage1-efficiency.md and a separate approved plan"
+        )
+    if bool(cfg.get("stage1_efficiency", False)):
+        raise RuntimeError(
+            "efficiency configs are measurement-only; use the bounded efficiency harness"
+        )
     source = real_source_config(cfg)
     scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
     # ``null`` means unbounded (a full run); ``0`` would otherwise be falsy and
@@ -798,6 +809,8 @@ __all__ = [
     "EpochMetricsRecorder",
     "ModelingRunResult",
     "assert_probe_minima",
+    "assert_stage1_efficiency",
+    "assert_stage1_efficiency_scope",
     "assert_stage1_full_bounds",
     "assert_stage1_lock",
     "assert_stage1_probe",

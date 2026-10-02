@@ -333,6 +333,12 @@ def main() -> int:
     if args.status:
         return _print_status(args.status)
 
+    if args.mode == "full":
+        raise SystemExit(
+            "ERROR: full Stage-1 execution is blocked pending the efficiency gate "
+            "and a separate approved plan"
+        )
+
     required = {
         "--image-uri": args.image_uri,
         "--source-sha": args.source_sha,
