@@ -173,12 +173,28 @@ def build_patch_cache(
             raise RuntimeError(
                 f"source order drift at row {index}: {sample.meta.patch_id!r} != {expected_id!r}"
             )
-        features = np.asarray(sample.features[:active_channels], dtype=np.float32)
-        if features.shape != (active_channels, REAL_PATCH_PX, REAL_PATCH_PX):
-            raise RuntimeError(f"feature shape mismatch for {expected_id}: {features.shape}")
+        if sample.features.shape != (28, REAL_PATCH_PX, REAL_PATCH_PX):
+            raise RuntimeError(
+                f"source feature shape mismatch for {expected_id}: {sample.features.shape}"
+            )
+        if sample.features.dtype != np.dtype("float32"):
+            raise RuntimeError(f"source feature dtype mismatch for {expected_id}")
+        if sample.lst_prior_k.shape != (1, REAL_PATCH_PX, REAL_PATCH_PX):
+            raise RuntimeError(f"source prior shape mismatch for {expected_id}")
+        if sample.lst_prior_k.dtype != np.dtype("float32"):
+            raise RuntimeError(f"source prior dtype mismatch for {expected_id}")
+        if sample.target_100m.shape != (1, REAL_PATCH_CELLS, REAL_PATCH_CELLS):
+            raise RuntimeError(f"source target shape mismatch for {expected_id}")
+        if sample.target_100m.dtype != np.dtype("float32"):
+            raise RuntimeError(f"source target dtype mismatch for {expected_id}")
+        if sample.mask_100m.shape != (1, REAL_PATCH_CELLS, REAL_PATCH_CELLS):
+            raise RuntimeError(f"source mask shape mismatch for {expected_id}")
+        if sample.mask_100m.dtype != np.dtype("bool"):
+            raise RuntimeError(f"source mask dtype mismatch for {expected_id}")
+        features = sample.features[:active_channels]
         if not np.isfinite(features).all() or not np.isfinite(sample.lst_prior_k).all():
             raise RuntimeError(f"non-finite model input in admitted source sample {expected_id}")
-        valid = np.asarray(sample.mask_100m, dtype=bool)
+        valid = sample.mask_100m
         if not valid.any():
             raise RuntimeError(f"all-invalid admitted source sample {expected_id}")
         if not np.isfinite(sample.target_100m[valid]).all():

@@ -133,9 +133,11 @@ scenarios and per-phase costs without double-counting overlap.
 Target at least 25% conservative projected runtime savings, or document that no
 larger safe improvement was demonstrated. Stop tuning after two plausible
 controlled knobs each yield under 10% incremental complete-runtime savings, or
-when the four-job/$10 cap is reached. The proposed five-run allocation is at
-most €175 of a €250 allowance, reserving €75; current available balance and FX
-must be confirmed before this projection can be treated as affordable.
+when the four-job/$10 cap is reached. Separately, the portfolio planning
+assumption is at most €175 across five eventual substantive model runs (Stage 1
+plus later phases), reserving €75 of a €250 allowance. That is not an assertion
+that the allowance covers this efficiency budget as well; current balance and
+FX must be confirmed before either projection is treated as affordable.
 
 Possible verdicts: recommended measured configuration; no larger safe
 improvement demonstrated; or no-go/inconclusive. **Every verdict keeps full

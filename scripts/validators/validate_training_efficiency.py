@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -193,6 +194,39 @@ def _cache_checks(root: Path) -> list[str]:
     else:
         failures.append("all-invalid sample accepted")
         print("  FAIL cache: all-invalid sample accepted")
+
+    malformed = {
+        "prior": replace(
+            source[0],
+            lst_prior_k=np.full((1, 1, REAL_PATCH_PX), 300.5, dtype=np.float32),
+        ),
+        "target": replace(
+            source[0],
+            target_100m=np.full((1, 1, REAL_PATCH_CELLS), 301.25, dtype=np.float32),
+        ),
+        "mask": replace(
+            source[0],
+            mask_100m=np.ones((1, 1, REAL_PATCH_CELLS), dtype=bool),
+        ),
+    }
+    for name, sample in malformed.items():
+        bad_root = root / f"bad-shape-{name}"
+        try:
+            build_patch_cache(
+                bad_root,
+                iter([sample]),
+                patch_ids=[sample.meta.patch_id],
+                active_channels=10,
+                provenance=provenance,
+                max_bytes=estimate_cache_bytes(1, 10) + 1024,
+            )
+        except RuntimeError:
+            if (bad_root / "manifest.json").exists():
+                failures.append(f"malformed {name} published readiness")
+            print(f"  PASS cache: broadcastable malformed {name} shape rejected")
+        else:
+            failures.append(f"malformed {name} shape was accepted")
+            print(f"  FAIL cache: malformed {name} shape was accepted")
     return failures
 
 
