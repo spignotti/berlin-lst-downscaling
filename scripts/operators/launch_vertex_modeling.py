@@ -31,6 +31,8 @@ import math
 import os
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from google.cloud import aiplatform_v1
@@ -266,7 +268,8 @@ def _check_efficiency_sequence(
         raise SystemExit("ERROR: aggregate projected efficiency cost exceeds $10")
 
 
-def _write_efficiency_ledger(rows: list[dict]) -> None:
+@contextmanager
+def _lock_efficiency_ledger() -> Iterator[None]:
     EFFICIENCY_LEDGER.parent.mkdir(parents=True, exist_ok=True)
     lock_path = EFFICIENCY_LEDGER.with_suffix(".lock")
     try:
@@ -275,11 +278,20 @@ def _write_efficiency_ledger(rows: list[dict]) -> None:
         raise SystemExit(f"ERROR: efficiency ledger is locked: {lock_path}") from exc
     try:
         os.close(descriptor)
-        temporary = EFFICIENCY_LEDGER.with_suffix(".partial")
-        temporary.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, EFFICIENCY_LEDGER)
+        yield
     finally:
         lock_path.unlink(missing_ok=True)
+
+
+def _write_efficiency_ledger_locked(rows: list[dict]) -> None:
+    temporary = EFFICIENCY_LEDGER.with_suffix(".partial")
+    temporary.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, EFFICIENCY_LEDGER)
+
+
+def _write_efficiency_ledger(rows: list[dict]) -> None:
+    with _lock_efficiency_ledger():
+        _write_efficiency_ledger_locked(rows)
 
 
 def _reserve_efficiency_slot(
@@ -293,25 +305,49 @@ def _reserve_efficiency_slot(
     exposure: float,
     noncompute_total: float,
 ) -> list[dict]:
-    rows = _load_efficiency_ledger()
-    if len(rows) != slot - 1:
-        raise SystemExit("ERROR: efficiency slot ledger changed after preflight; refusing submit")
-    rows.append(
-        {
-            "session": EFFICIENCY_SESSION_ID,
-            "slot": slot,
-            "role": role,
-            "run_label": run_label,
-            "source_sha": source_sha,
-            "image_digest": image_digest,
-            "verified_hourly_rate_usd": hourly_rate,
-            "projected_exposure_usd": exposure,
-            "projected_noncompute_total_usd": noncompute_total,
-            "state": "reserved",
-            "resource_name": None,
-        }
-    )
-    _write_efficiency_ledger(rows)
+    with _lock_efficiency_ledger():
+        rows = _load_efficiency_ledger()
+        if len(rows) != slot - 1 or [row.get("slot") for row in rows] != list(range(1, slot)):
+            raise SystemExit(
+                "ERROR: efficiency slot ledger changed after preflight; refusing submit"
+            )
+        if any(row.get("state") != "validated" for row in rows):
+            raise SystemExit("ERROR: previous efficiency evidence is not validated")
+        if any(
+            row.get("session") != EFFICIENCY_SESSION_ID
+            or row.get("source_sha") != source_sha
+            or row.get("image_digest") != image_digest
+            for row in rows
+        ):
+            raise SystemExit("ERROR: efficiency sequence source/image/session changed")
+        prior_compute = sum(float(row.get("projected_exposure_usd", 0.0)) for row in rows)
+        prior_other = max(
+            (float(row.get("projected_noncompute_total_usd", 0.0)) for row in rows),
+            default=0.0,
+        )
+        if (
+            prior_compute + exposure > EFFICIENCY_MAX_TOTAL_COMPUTE_USD
+            or noncompute_total < prior_other
+            or noncompute_total > EFFICIENCY_MAX_NONCOMPUTE_USD
+            or prior_compute + exposure + noncompute_total > EFFICIENCY_MAX_TOTAL_USD
+        ):
+            raise SystemExit("ERROR: locked efficiency reservation would exceed its budget gate")
+        rows.append(
+            {
+                "session": EFFICIENCY_SESSION_ID,
+                "slot": slot,
+                "role": role,
+                "run_label": run_label,
+                "source_sha": source_sha,
+                "image_digest": image_digest,
+                "verified_hourly_rate_usd": hourly_rate,
+                "projected_exposure_usd": exposure,
+                "projected_noncompute_total_usd": noncompute_total,
+                "state": "reserved",
+                "resource_name": None,
+            }
+        )
+        _write_efficiency_ledger_locked(rows)
     return rows
 
 
