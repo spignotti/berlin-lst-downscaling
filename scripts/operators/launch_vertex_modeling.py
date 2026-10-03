@@ -34,6 +34,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -534,8 +535,9 @@ def _poll_until_terminal(
     resource_name: str,
     *,
     start_deadline: float,
+    max_wait_seconds: int,
     overall_deadline: float,
-) -> JobState:
+) -> tuple[JobState, bool]:
     last = ""
     cancel_deadline: float | None = None
     while True:
@@ -545,9 +547,13 @@ def _poll_until_terminal(
             print(f"  state: {state.name}", flush=True)
             last = state.name
         if state in _TERMINAL:
-            return state
+            return state, cancel_deadline is not None
         now = time.monotonic()
         started = job.start_time is not None or state == JobState.JOB_STATE_RUNNING
+        if started and job.start_time is not None and job.create_time is not None:
+            started = job.start_time <= job.create_time + timedelta(seconds=max_wait_seconds)
+        elif started:
+            started = now < start_deadline
         if not started and cancel_deadline is None and now >= start_deadline:
             try:
                 client.cancel_custom_job(name=resource_name)
@@ -586,9 +592,15 @@ def _print_status(resource_name: str) -> int:
 
 def _wait_self_check() -> int:
     class FakeJob:
-        def __init__(self, state: JobState, start_time: object | None = None) -> None:
+        def __init__(
+            self,
+            state: JobState,
+            start_time: object | None = None,
+            create_time: object | None = None,
+        ) -> None:
             self.state = state
             self.start_time = start_time
+            self.create_time = create_time
 
     class QueueClient:
         def __init__(self) -> None:
@@ -612,16 +624,52 @@ def _wait_self_check() -> int:
         patch(__name__ + ".time.monotonic", side_effect=(0.0, 1800.0, 1801.0)),
         patch(__name__ + ".time.sleep"),
     ):
-        state = _poll_until_terminal(
+        state, queue_missed = _poll_until_terminal(
             queue_client,
             "fake-job",
             start_deadline=1800.0,
+            max_wait_seconds=1800,
             overall_deadline=5100.0,
         )
-    if state != JobState.JOB_STATE_CANCELLED or queue_client.cancel_count != 1:
+    if (
+        state != JobState.JOB_STATE_CANCELLED
+        or not queue_missed
+        or queue_client.cancel_count != 1
+    ):
         failures.append("queued job was not cancelled exactly once")
     else:
         print("  PASS queue: one cancellation was requested and confirmed terminal")
+
+    class LateStartClient(QueueClient):
+        def get_custom_job(self, *, name: str) -> FakeJob:
+            if self.cancelled:
+                return FakeJob(JobState.JOB_STATE_CANCELLED)
+            return FakeJob(
+                JobState.JOB_STATE_RUNNING,
+                start_time=datetime(2026, 10, 3, 12, 30, 1, tzinfo=UTC),
+                create_time=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
+            )
+
+    late_client = LateStartClient()
+    with (
+        patch(__name__ + ".time.monotonic", side_effect=(1801.0, 1802.0)),
+        patch(__name__ + ".time.sleep"),
+    ):
+        late_state, late_queue_missed = _poll_until_terminal(
+            late_client,
+            "late-start-job",
+            start_deadline=1800.0,
+            max_wait_seconds=1800,
+            overall_deadline=5100.0,
+        )
+    if (
+        late_state != JobState.JOB_STATE_CANCELLED
+        or not late_queue_missed
+        or late_client.cancel_count != 1
+    ):
+        failures.append("late-start job was not cancelled after the provisioning deadline")
+    else:
+        print("  PASS queue: late RUNNING transition is cancelled by server timestamps")
 
     source_sha = "a" * 40
     image_digest = "sha256:" + "b" * 64
@@ -1082,10 +1130,11 @@ def main() -> int:
     submitted_at = time.monotonic()
     start_deadline = submitted_at + max_wait_seconds
     overall_deadline = start_deadline + timeout_seconds + CANCEL_CONFIRMATION_SECONDS
-    final = _poll_until_terminal(
+    final, queue_deadline_missed = _poll_until_terminal(
         client,
         resource_name,
         start_deadline=start_deadline,
+        max_wait_seconds=max_wait_seconds,
         overall_deadline=overall_deadline,
     )
     print(f"final state: {final.name}")
@@ -1093,12 +1142,22 @@ def main() -> int:
         _update_efficiency_slot(
             args.efficiency_slot,
             state=(
-                "awaiting_validation"
-                if final == JobState.JOB_STATE_SUCCEEDED
-                else final.name.lower()
+                "queue_deadline_exceeded"
+                if queue_deadline_missed
+                else (
+                    "awaiting_validation"
+                    if final == JobState.JOB_STATE_SUCCEEDED
+                    else final.name.lower()
+                )
             ),
             terminal_state=final.name,
         )
+    if queue_deadline_missed:
+        print(
+            f"FAIL: {resource_name} missed the provisioning deadline; "
+            "its slot is consumed. Do not continue the replacement sequence."
+        )
+        return 1
     if final == JobState.JOB_STATE_SUCCEEDED:
         print(f"SUCCESS: bounded vertex {args.mode} completed. Evidence: {evidence_uri}")
         return 0

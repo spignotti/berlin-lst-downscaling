@@ -117,7 +117,8 @@ Run at most four sequential replacements, J1–J4, for at most five submissions
 including the preserved failure. Each replacement uses one on-demand
 `n1-standard-4` + T4, a 2,700-second server timeout, and at most 1,800 seconds
 for provisioning. If the job has not entered `JOB_STATE_RUNNING` by that
-deadline, cancel that exact job once and confirm a terminal state. An ambiguous
+deadline, including a `startTime` later than its `createTime` plus 1,800 seconds,
+cancel that exact job once and confirm a terminal state. An ambiguous
 submit or cancel, failed job, failed validation, or failed learning/cache gate
 consumes the slot and stops the sequence. Never resubmit a replacement slot or
 automatically substitute hardware.

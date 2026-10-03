@@ -189,8 +189,10 @@ efficiency results.
 Each replacement has a 2700-second server timeout and a maximum 1800-second
 provisioning wait. If the resource has not entered `JOB_STATE_RUNNING` by that
 deadline, the launcher cancels that exact resource once and waits for a terminal
-state. Ambiguous submit/cancel responses stop the sequence; inspect the saved
-resource and never resubmit it. Automatic retries are disabled. The user-approved
+state. A server `startTime` after `createTime + 1800 seconds` also counts as a
+missed allowance, even if first observed later as `JOB_STATE_RUNNING`. Ambiguous
+submit/cancel responses stop the sequence; inspect the saved resource and never
+resubmit it. Automatic retries are disabled. The user-approved
 rate input is `$1.00/h`; projected exposure is at most `$1.25` per replacement.
 The conservative aggregate estimate reserves the failed attempt's `$0.9167`,
 four replacements at `$1.25` each, and `$2.00` cumulative non-compute costs,
