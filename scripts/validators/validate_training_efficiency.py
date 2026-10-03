@@ -33,6 +33,10 @@ from berlin_lst_downscaling.modeling.efficiency_protocol import (
     EFFICIENCY_MAX_TOTAL_USD,
     EFFICIENCY_SESSION_ID,
     EFFICIENCY_SLOT_ROLES,
+    REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST,
+    REVALIDATION_EFFICIENCY_J1_RESOURCE_NAME,
+    REVALIDATION_EFFICIENCY_J1_RUN_LABEL,
+    REVALIDATION_EFFICIENCY_J1_SOURCE_SHA,
 )
 from berlin_lst_downscaling.modeling.guards import (
     assert_stage1_efficiency,
@@ -636,6 +640,62 @@ def _evidence_checks() -> list[str]:
     return failures
 
 
+def _checkpoint_checks() -> list[str]:
+    failures: list[str] = []
+    temporary_parent = Path(os.environ["TMPDIR"]) / "opencode"
+    if not temporary_parent.is_dir():
+        return [f"checkpoint self-check temporary parent is missing: {temporary_parent}"]
+    with tempfile.TemporaryDirectory(
+        dir=temporary_parent, prefix="efficiency-checkpoint-self-check-"
+    ) as temporary:
+        checkpoint = Path(temporary) / "best.ckpt"
+        payload = b"synthetic selected checkpoint"
+        checkpoint.write_bytes(payload)
+        reference = {
+            "uri": "gs://synthetic/efficiency/best.ckpt",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+        }
+        evidence = {
+            "profile": "efficiency",
+            "source_sha": "a" * 40,
+            "image_digest": "sha256:" + "b" * 64,
+            "run_label": REVALIDATION_EFFICIENCY_J1_RUN_LABEL,
+            "checkpoint": reference,
+            "efficiency": {
+                "slot": 1,
+                "role": "baseline",
+                "learning": {"complete": True},
+            },
+        }
+        mismatch = _verify_checkpoint_hash(evidence, checkpoint)
+        if mismatch:
+            failures.append(f"top-level selected checkpoint was rejected: {mismatch}")
+            print(f"  FAIL checkpoint: {mismatch}")
+        else:
+            print("  PASS checkpoint: producer's top-level selected-checkpoint accepted")
+        corrupted = Path(temporary) / "corrupted.ckpt"
+        corrupted.write_bytes(payload + b"x")
+        if _verify_checkpoint_hash(evidence, corrupted) is None:
+            failures.append("selected-checkpoint hash mismatch was accepted")
+            print("  FAIL checkpoint: mismatched file hash accepted")
+        else:
+            print("  PASS checkpoint: mismatched file hash rejected")
+        isolated = json.loads(json.dumps(evidence))
+        del isolated["checkpoint"]
+        isolated_errors: list[str] = []
+        _validate_learning(isolated["efficiency"], isolated, {}, isolated_errors)
+        if not any(
+            "learning fit has no retained selected-checkpoint hash/size" in error
+            for error in isolated_errors
+        ):
+            failures.append("learning validator accepted evidence without its checkpoint")
+            print("  FAIL checkpoint: missing-checkpoint evidence accepted")
+        else:
+            print("  PASS checkpoint: missing-checkpoint evidence rejected")
+    return failures
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -795,7 +855,7 @@ def _validate_learning(
     if not isinstance(learning, dict) or learning.get("complete") is not True:
         _error("six-epoch learning evidence is missing or incomplete", errors)
         return None
-    checkpoint = efficiency.get("checkpoint")
+    checkpoint = _checkpoint_reference(evidence)
     if (
         not isinstance(checkpoint, dict)
         or not str(checkpoint.get("uri", "")).endswith(".ckpt")
@@ -1344,7 +1404,7 @@ def _read_efficiency_evidence(path: Path) -> dict:
 
 
 def _verify_checkpoint_hash(evidence: dict, path: Path) -> str | None:
-    checkpoint = (evidence.get("efficiency") or {}).get("checkpoint")
+    checkpoint = _checkpoint_reference(evidence)
     recorded = str((checkpoint or {}).get("sha256", ""))
     if not re.fullmatch(r"[0-9a-f]{64}", recorded):
         return "evidence has no valid selected-checkpoint SHA-256"
@@ -1353,6 +1413,94 @@ def _verify_checkpoint_hash(evidence: dict, path: Path) -> str | None:
     if _sha256(path) != recorded:
         return f"downloaded checkpoint SHA-256 differs from evidence: {path}"
     return None
+
+
+def _checkpoint_reference(evidence: dict) -> dict | None:
+    checkpoint = evidence.get("checkpoint")
+    return checkpoint if isinstance(checkpoint, dict) else None
+
+
+def _write_efficiency_ledger(rows: list[dict]) -> None:
+    lock = _EFFICIENCY_LEDGER.with_suffix(".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.close(descriptor)
+        temporary = _EFFICIENCY_LEDGER.with_suffix(".partial")
+        temporary.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, _EFFICIENCY_LEDGER)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _record_revalidation_audit(
+    slot: int, evidence: dict, evidence_path: Path, passed: bool
+) -> None:
+    """Preserve the initial failure while auditing a corrected local revalidation.
+
+    Only the one user-confirmed J1 checkpoint-path revalidation may resolve to
+    ``validated`` after correction. Its initial unsuccessful validator result and
+    verdict remain in ``initial_validation_attempts`` and are never overwritten.
+    """
+    from datetime import UTC, datetime
+
+    if not _EFFICIENCY_LEDGER.is_file():
+        raise RuntimeError("efficiency ledger is missing; cannot record revalidation")
+    rows = json.loads(_EFFICIENCY_LEDGER.read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or not 1 <= slot <= len(rows):
+        raise RuntimeError("efficiency ledger does not contain the evidence slot")
+    row = rows[slot - 1]
+    unexpected = (
+        slot != 1
+        or evidence.get("run_label") != REVALIDATION_EFFICIENCY_J1_RUN_LABEL
+        or evidence.get("source_sha") != REVALIDATION_EFFICIENCY_J1_SOURCE_SHA
+        or evidence.get("image_digest") != REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST
+        or row.get("run_label") != REVALIDATION_EFFICIENCY_J1_RUN_LABEL
+        or row.get("source_sha") != REVALIDATION_EFFICIENCY_J1_SOURCE_SHA
+        or row.get("image_digest") != REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST
+        or row.get("resource_name") != REVALIDATION_EFFICIENCY_J1_RESOURCE_NAME
+        or row.get("terminal_state") != "JOB_STATE_SUCCEEDED"
+    )
+    if unexpected:
+        raise RuntimeError("revalidation audit is restricted to the confirmed J1 artifact")
+    attempts = row.get("initial_validation_attempts")
+    if not isinstance(attempts, list):
+        attempts = [
+            {
+                "state": row.get("state"),
+                "verdict": row.get("validation_verdict"),
+                "evidence_sha256": row.get("evidence_sha256"),
+            }
+        ]
+    if row.get("state") != "validation_failed" or row.get("validation_verdict") != "fail":
+        raise RuntimeError("revalidation audit requires the preserved initial failure")
+    if len(attempts) != 1 or attempts[0].get("state") != "validation_failed":
+        raise RuntimeError("revalidation audit cannot overwrite validator history")
+    attempts.append(
+        {
+            "state": "validated" if passed else "validation_failed",
+            "verdict": "pass" if passed else "fail",
+            "evidence_sha256": _sha256(evidence_path),
+        }
+    )
+    if not passed:
+        row["initial_validation_attempts"] = attempts
+        _write_efficiency_ledger(rows)
+        return
+    row.update(
+        {
+            "state": "validated",
+            "validation_verdict": "pass",
+            "evidence_sha256": _sha256(evidence_path),
+            "initial_validation_attempts": attempts,
+            "revalidated_at": datetime.now(UTC).isoformat(),
+            "revalidation_note": (
+                "confirmed local validator checkpoint-path correction; "
+                "same evidence and checkpoint, no rerun"
+            ),
+        }
+    )
+    _write_efficiency_ledger(rows)
 
 
 def _mark_ledger(slot: int, evidence: dict, evidence_path: Path, passed: bool) -> None:
@@ -1438,16 +1586,7 @@ def _mark_ledger(slot: int, evidence: dict, evidence_path: Path, passed: bool) -
         row["selected_loader"] = validated_settings.get("selected_loader")
     if slot == 3 and passed:
         row["amp_projected_runtime_gain"] = validated_settings.get("amp_projected_runtime_gain")
-    lock = _EFFICIENCY_LEDGER.with_suffix(".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    try:
-        os.close(descriptor)
-        temporary = _EFFICIENCY_LEDGER.with_suffix(".partial")
-        temporary.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, _EFFICIENCY_LEDGER)
-    finally:
-        lock.unlink(missing_ok=True)
+    _write_efficiency_ledger(rows)
 
 
 def _reservation_errors(evidence: dict, slot: int) -> list[str]:
@@ -1580,11 +1719,17 @@ def main() -> int:
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--control-checkpoint", type=Path)
     parser.add_argument("--mark-ledger", action="store_true")
+    parser.add_argument(
+        "--record-revalidation",
+        action="store_true",
+        help="append a terminal-state-preserving revalidation audit entry to the ledger row",
+    )
     args = parser.parse_args()
     if args.self_check:
         failures = _guard_checks()
         failures.extend(_selection_checks())
         failures.extend(_evidence_checks())
+        failures.extend(_checkpoint_checks())
         with tempfile.TemporaryDirectory(prefix="stage1-efficiency-") as temporary:
             failures.extend(_cache_checks(Path(temporary)))
         if failures:
@@ -1675,6 +1820,14 @@ def main() -> int:
             print(f"LEDGER ERROR: {exc}")
             return 1
         print(f"ledger: slot {slot} -> {'validated' if passed else 'validation_failed'}")
+    if args.record_revalidation:
+        if not isinstance(evidence.get("run_label"), str):
+            parser.error("cannot record revalidation without a valid evidence run label")
+        try:
+            _record_revalidation_audit(slot, evidence, args.evidence, passed)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"LEDGER ERROR: {exc}")
+            return 1
     return 0 if passed else 2
 
 
