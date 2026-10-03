@@ -57,6 +57,7 @@ if [[ "$PROFILE" == "efficiency" ]]; then
   : "${VERTEX_EFFICIENCY_PRECISION:?VERTEX_EFFICIENCY_PRECISION is required}"
   : "${VERTEX_EFFICIENCY_PIN_MEMORY:?VERTEX_EFFICIENCY_PIN_MEMORY is required}"
   : "${VERTEX_EFFICIENCY_RATE_USD:?VERTEX_EFFICIENCY_RATE_USD is required}"
+  : "${VERTEX_EFFICIENCY_RATE_SOURCE:?VERTEX_EFFICIENCY_RATE_SOURCE is required}"
   : "${VERTEX_EFFICIENCY_EXPOSURE_USD:?VERTEX_EFFICIENCY_EXPOSURE_USD is required}"
   : "${VERTEX_EFFICIENCY_NONCOMPUTE_TOTAL_USD:?VERTEX_EFFICIENCY_NONCOMPUTE_TOTAL_USD is required}"
   run_command=(uv run python scripts/validators/measure_training_efficiency.py
@@ -69,6 +70,7 @@ if [[ "$PROFILE" == "efficiency" ]]; then
     --precision "$VERTEX_EFFICIENCY_PRECISION"
     --workers "$VERTEX_EFFICIENCY_WORKERS"
     --hourly-rate-usd "$VERTEX_EFFICIENCY_RATE_USD"
+    --hourly-rate-source "$VERTEX_EFFICIENCY_RATE_SOURCE"
     --projected-exposure-usd "$VERTEX_EFFICIENCY_EXPOSURE_USD"
     --projected-noncompute-total-usd "$VERTEX_EFFICIENCY_NONCOMPUTE_TOTAL_USD")
   if [[ "$VERTEX_EFFICIENCY_PIN_MEMORY" == "true" ]]; then

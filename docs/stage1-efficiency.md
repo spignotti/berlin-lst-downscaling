@@ -100,15 +100,40 @@ new profiling dependency is authorized.
 At most four sequential submissions, each with a 2,700-second server timeout,
 600-second client allowance, one on-demand `n1-standard-4` + T4, and no retry or
 automatic substitution. Every failed or expired submission consumes its slot.
-Before paid work, obtain an authoritative current Vertex Custom Training
-europe-west3 aggregate rate for machine, memory, and T4; it must be no more than
-$1.03/hour. A Compute Engine quote or historical rate is not a substitute.
+The user has explicitly authorized using the reviewed Vertex Custom Training
+price range supplied in chat for these bounded efficiency jobs. Use its upper
+bound, **$1.00/hour**, as the conservative rate input. This is a user-authorized
+estimate for this four-job gate, not a claim that the active Billing-account
+contract price was independently retrieved. A standalone Compute Engine quote
+or the older historical `$0.90/h` value is not the accepted basis. This
+authorization does not extend to a full Stage-1 run.
 
 The maximum projected compute exposure is approximately
 `4 × (2700 + 600) / 3600 × $1.03 = $3.78`. The aggregate experiment ceiling is
 $10 including builds, registry, storage and logging, leaving at most $6.22 for
 those other expenses. This is an admission estimate, not a provider spending
 cap. If a line item cannot be bounded, do not submit.
+
+### Operator-provided pre-launch estimate (2026-10-02)
+
+The operator supplied this Frankfurt Vertex Custom Trained Models itemization
+in chat: N1 core `$0.190/h`, N1 RAM `$0.095/h`, T4 `$0.490/h`, and 100-GB disk
+approximately `$0.006/h`, quoting an aggregate around `$0.78–$0.82/h`; the user
+also authorized a planning range of `$0.80–$1.00/h`. Use the authorized upper
+bound **`$1.00/h`**. A separate N1-standard-4 figure of `$0.21849885/h` was
+also supplied, which does not equal the listed core-plus-RAM subtotal
+(`$0.285/h`). The `$1.00/h` input conservatively exceeds both quoted worker
+aggregates. `[uncertain: exact active Billing-account contract price and whether
+an additional Vertex line item applies]`. This authorization applies only to
+the four bounded efficiency jobs.
+
+The operator estimated all four jobs' cumulative non-compute costs (one image
+build, Artifact Registry, Storage, Logging) at **less than `$0.20`**. Reserve
+`$0.20` in the launcher estimate. At the authorized `$1.00/h` upper bound, the
+four 45-minute jobs plus four 10-minute allowances project at most about
+**`$3.67` compute** and **`$3.87` total** with that reserve; the `$3.78` compute / `$10` total admission estimates remain
+in force. These are user-supplied list-price estimates, not actual billing and
+not provider-enforced spend caps.
 
 | Job | Configuration | Purpose |
 |---|---|---|

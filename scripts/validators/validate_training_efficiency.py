@@ -509,6 +509,7 @@ def _evidence_checks() -> list[str]:
                 "test_access": False,
                 "budget": {
                     "hourly_rate_usd": 0.9,
+                    "hourly_rate_source": "synthetic local self-check source label",
                     "projected_exposure_usd": 0.825,
                     "projected_noncompute_total_usd": 2.0,
                 },
@@ -944,6 +945,7 @@ def validate_efficiency_evidence(
         errors.append("efficiency evidence has no budget calculation")
     else:
         rate = budget.get("hourly_rate_usd")
+        rate_source = budget.get("hourly_rate_source")
         exposure = budget.get("projected_exposure_usd")
         other = budget.get("projected_noncompute_total_usd")
         if not _finite_number(rate) or float(rate) > 1.03:
@@ -952,6 +954,8 @@ def validate_efficiency_evidence(
             errors.append("efficiency projected job compute exceeds $1.00")
         if not _finite_number(other) or float(other) > 6.22:
             errors.append("cumulative non-compute estimate is missing or exceeds $6.22")
+        if not isinstance(rate_source, str) or len(rate_source.strip()) < 20:
+            errors.append("hourly rate source/provenance note is missing")
         if (
             _finite_number(exposure)
             and _finite_number(other)
@@ -1403,6 +1407,7 @@ def _reservation_errors(evidence: dict, slot: int) -> list[str]:
         if left != right:
             errors.append(f"ledger {label} differs from the evidence")
     for row_key, budget_key in (
+        ("hourly_rate_source", "hourly_rate_source"),
         ("verified_hourly_rate_usd", "hourly_rate_usd"),
         ("projected_exposure_usd", "projected_exposure_usd"),
         ("projected_noncompute_total_usd", "projected_noncompute_total_usd"),

@@ -203,8 +203,10 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
   --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
   --infisical-env dev --infisical-path /vertex \
   --efficiency-workers 2 --efficiency-precision 32-true \
-  --hourly-rate-usd <verified-current-rate> --timeout-seconds 2700 \
-  --projected-noncompute-total-usd <cumulative-other-cost-estimate> \
+  --hourly-rate-usd 1.00 \
+  --hourly-rate-source 'user-authorized upper bound of supplied Vertex Frankfurt rate range, 2026-10-02' \
+  --timeout-seconds 2700 \
+  --projected-noncompute-total-usd 0.20 \
   --max-wait-seconds 600 --max-exposure-usd 1.00 --preflight
 ```
 

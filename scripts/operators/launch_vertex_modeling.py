@@ -302,6 +302,7 @@ def _reserve_efficiency_slot(
     source_sha: str,
     image_digest: str,
     hourly_rate: float,
+    hourly_rate_source: str,
     exposure: float,
     noncompute_total: float,
 ) -> list[dict]:
@@ -341,6 +342,7 @@ def _reserve_efficiency_slot(
                 "source_sha": source_sha,
                 "image_digest": image_digest,
                 "verified_hourly_rate_usd": hourly_rate,
+                "hourly_rate_source": hourly_rate_source,
                 "projected_exposure_usd": exposure,
                 "projected_noncompute_total_usd": noncompute_total,
                 "state": "reserved",
@@ -539,6 +541,11 @@ def main() -> int:
         help="verified regional on-demand rate; required for multi-epoch/efficiency modes",
     )
     parser.add_argument(
+        "--hourly-rate-source",
+        default=None,
+        help="provenance note for the reviewed Vertex SKU/rate; efficiency-only",
+    )
+    parser.add_argument(
         "--max-exposure-usd",
         type=float,
         default=None,
@@ -598,6 +605,10 @@ def main() -> int:
             raise SystemExit("ERROR: J1 control must use the current two-worker loader")
         if args.projected_noncompute_total_usd is None:
             raise SystemExit("ERROR: efficiency mode requires --projected-noncompute-total-usd")
+        if not args.hourly_rate_source or len(args.hourly_rate_source.strip()) < 20:
+            raise SystemExit(
+                "ERROR: efficiency mode requires a reviewed Vertex SKU/rate source note"
+            )
 
     required = {
         "--image-uri": args.image_uri,
@@ -768,6 +779,7 @@ def main() -> int:
                 ("VERTEX_EFFICIENCY_PRECISION", args.efficiency_precision),
                 ("VERTEX_EFFICIENCY_PIN_MEMORY", str(args.efficiency_pin_memory).lower()),
                 ("VERTEX_EFFICIENCY_RATE_USD", str(hourly_rate)),
+                ("VERTEX_EFFICIENCY_RATE_SOURCE", args.hourly_rate_source),
                 ("VERTEX_EFFICIENCY_EXPOSURE_USD", f"{exposure:.8f}"),
                 (
                     "VERTEX_EFFICIENCY_NONCOMPUTE_TOTAL_USD",
@@ -804,6 +816,7 @@ def main() -> int:
             source_sha=args.source_sha,
             image_digest=args.image_uri.split("@", 1)[1],
             hourly_rate=hourly_rate,
+            hourly_rate_source=args.hourly_rate_source,
             exposure=exposure,
             noncompute_total=args.projected_noncompute_total_usd,
         )

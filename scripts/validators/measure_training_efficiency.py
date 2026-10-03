@@ -605,6 +605,7 @@ def measure(args: argparse.Namespace) -> dict[str, object]:
         "VERTEX_SOURCE_SHA": args.source_sha,
         "VERTEX_IMAGE_DIGEST": args.image_digest,
         "VERTEX_EFFICIENCY_RATE_USD": str(args.hourly_rate_usd),
+        "VERTEX_EFFICIENCY_RATE_SOURCE": args.hourly_rate_source,
         "VERTEX_EFFICIENCY_EXPOSURE_USD": f"{args.projected_exposure_usd:.8f}",
         "VERTEX_EFFICIENCY_NONCOMPUTE_TOTAL_USD": str(args.projected_noncompute_total_usd),
     }
@@ -650,6 +651,7 @@ def measure(args: argparse.Namespace) -> dict[str, object]:
         "image_digest": args.image_digest,
         "budget": {
             "hourly_rate_usd": args.hourly_rate_usd,
+            "hourly_rate_source": args.hourly_rate_source,
             "projected_exposure_usd": args.projected_exposure_usd,
             "projected_noncompute_total_usd": args.projected_noncompute_total_usd,
         },
@@ -867,6 +869,7 @@ def main() -> int:
     parser.add_argument("--image-digest", required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--hourly-rate-usd", type=float, required=True)
+    parser.add_argument("--hourly-rate-source", required=True)
     parser.add_argument("--projected-exposure-usd", type=float, required=True)
     parser.add_argument("--projected-noncompute-total-usd", type=float, required=True)
     parser.add_argument("--precision", choices=("32-true", "16-mixed"), default="32-true")
