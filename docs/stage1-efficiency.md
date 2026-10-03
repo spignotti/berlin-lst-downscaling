@@ -5,7 +5,7 @@ U-Net training path before any full Stage-1 run. It authorizes at most four
 bounded Vertex efficiency jobs. **It does not authorize a full Stage-1 fit or
 any test-pixel reads.**
 
-Status: pre-registered on 2026-10-02, source `a6b42018ae382d93c5d51575067804f773369539`.
+Status: complete — replacement J1–J4 executed and validated on 2026-10-03; pre-registered on 2026-10-02, source `a6b42018ae382d93c5d51575067804f773369539`.
 
 ## Method invariants
 
@@ -175,13 +175,21 @@ shortened cohort or omitted verification may be silently substituted.
 After each job, download its create-only evidence and run the independent
 efficiency validator. Supply J1 evidence to J2; J1 and J2 evidence to J3; and
 J1/J2/J3 evidence to J4. The validator compares fixed IDs, exclusions, cache
-provenance, timing structure, and the matched learning screen. It computes the
-conservative AMP runtime gain from J2 steady-loader time and J3 batch timings.
-Use `--mark-ledger` after validation, including a failing validation to consume
-the slot permanently. The launcher leaves a successful Vertex job in
-`awaiting_validation`; it rejects the next slot until the validator records that
-slot as `validated`. Vertex `SUCCEEDED` alone is not a quality or cache-equivalence
-gate. A failed/incomplete validation blocks the remaining slots.
+provenance, timing structure, and the matched learning screen. J3 reuses the
+loader configuration selected by J2 and projects AMP gain from J2's steady-loader
+time and J3's batch timings; J3 does not remeasure a duplicate loader block.
+Use `--mark-ledger` after validation, including a failing validation.
+
+Two one-time, evidence-only revalidations are authorized for the exact retained
+J1 and J3 jobs because the original validator mismatches were implementation
+defects: J1's producer stores checkpoint metadata at the evidence top level, and
+J3 consumes J2 loader timing without a duplicate `selected_cache_loader` block.
+Use `--record-revalidation --mark-ledger` only with the original, hash-identical
+evidence, after correcting the local validator. The ledger records the initial
+failure and the revalidation verdict; it does not rerun or replace a Vertex job.
+Any revalidation failure, any other failed/incomplete validation, or any failed
+job blocks remaining slots. Vertex `SUCCEEDED` alone is not a quality or
+cache-equivalence gate.
 
 ## Acceptance and decision
 
@@ -225,6 +233,107 @@ not run because it reads test-split patches.
 
 ## Results
 
-The original J1 attempt failed during worker startup before measurement setup;
-its incomplete evidence is retained. No replacement performance results are
-available yet.
+### Replacement jobs
+
+The original J1 worker failed before measurement setup. The four replacement
+jobs used source `ea10155e48ecf553db14bdcd635ae386972882c5` and image
+`sha256:919012758eabdb8f6f34e9e98d2c2c951d908e3546fffa570f6fa8472f520601`.
+All jobs succeeded, and their evidence passed independent validation. J1 and J3
+each needed one local evidence-only revalidation. Their first failed verdicts
+remain in the recovery ledger; neither job was rerun.
+
+| Slot | Configuration | Provisioned seconds | Estimated compute at $1.00/h | Validation |
+|---|---|---:|---:|---|
+| J1 | Stream, FP32, batch 4, workers 2; six-epoch 128/64 learning control | 1116 | $0.31 | Pass after checkpoint-reference correction |
+| J2 | Local cache, FP32, batch 4; worker 0 / pin memory false selected | 1268 | $0.35 | Pass; exact source/cache match and CPU/GPU lifecycle |
+| J3 | Cache, worker 0; FP32/mixed batch-4 and FP32 batch-8 compute-only | 693 | $0.19 | Pass after removing a redundant J3 loader-timing requirement |
+| J4 | Cache, mixed precision, batch 4, workers 0; matched six-epoch learning guard | 934 | $0.26 | Pass |
+
+The ledger estimates about `$1.11` compute for the four replacements from
+Vertex `startTime` to `endTime`. Including the original failed J1 reservation
+of `$0.9167` and the cumulative `$2.00` non-compute reserve gives about `$4.03`
+estimated experiment cost so far. This is not an invoice. The conservative
+full-gate ceiling remains `$7.92` projected, below `$10`.
+
+Vertex jobs:
+
+| Slot | Resource ID | Evidence SHA-256 |
+|---|---|---|
+| J1 | `1504129432896405504` | `e1dc91ca05f6fe63d8585d7be07093b945ca344616af17b6efdc51a0d0920568` |
+| J2 | `1400757747699417088` | `6b4dab8d1cae09b55c6d4bd825c99d3e66b4f2be1bdfa8dce7fd259418b8dfb4` |
+| J3 | `2113452388730798080` | `17263a41474033cf7dc59990360a3e3b907dafe5776add8b99fbf65de43a201e` |
+| J4 | `54744409069060096` | `9704b56759b11cce6e3665deb3bcd5ba7fed0b216db99f9293b41dbdc816698b` |
+
+Each evidence object and checkpoint is retained under
+`gs://berlin-lst-training-data/qa/modeling/vertex-smoke/<run-label>/`.
+W&B recorded learning runs J1 `3749uejg` and J4 `exfo1fqp`. All four evidence
+records report test access disabled and train/validation-only splits. No test
+pixels were read.
+
+### Loader and precision findings
+
+On the fixed 384/128 performance cohort, J1's median steady streaming-loader
+pass with two workers took `116.28 s` across train and validation. J2's selected
+cached loader (zero workers, pin memory false) took `0.136 s` for the same pass.
+The J2 cache build took `281.07 s` for `577,372,672` bytes, with another
+`44.17 s` for cache admission. Counting both, the measured loader-time saving
+repays the cache build and admission after about `2.8` repeated passes,
+excluding shared source setup. Workers 2 and 4 were slower than worker 0 on the
+cached loader.
+
+J3's median batch-4 compute time was `0.1051 s` in FP32 and `0.0460 s` in
+16-mixed. Using the validated J2 loader timing, the independent validator
+projects **55.7% complete-runtime gain** for mixed precision, above the 10% J4
+selection threshold. Batch 8 was compute-only and was not adopted.
+
+J1's best validation MAE was `1.19290 K` at epoch 5; reload recomputed
+`1.19290 K`. J4's best and final validation MAE were both `1.16232 K` at epoch
+6; reload recomputed `1.16232 K`. J4 is about `2.6%` below J1's best score on
+the matched cohort. Both runs improved train MAE by more than 5%, retained the
+residual prior, had residual identity MAE `0.000 K`, and passed the same-cohort
+naive cap and reload checks. Their mean absolute residual corrections were
+`1.225 K` (J1) and `0.981 K` (J4), so neither is a prior passthrough.
+
+### Full-run planning estimate
+
+The baseline index has `10,018` patches: `6,873` train, `1,342` validation, and
+`1,803` test (`docs/baseline-full-results.md:12–13, 32–34`). Full Stage-1
+therefore requests `8,215` train/validation patches. Scaling the 192-patch,
+six-epoch learning guard to 20 epochs and that requested universe gives a factor
+of about `142.6`. At this scale, a linear cache-size estimate is about `9 GiB`;
+using J2's measured cache-build rate gives about `1.31 h` to build it.
+
+For a central cached/mixed scenario, J4's provisioned time minus its measured
+performance phase is `322.7 s`. The 192-patch learning cache is `216.5 MB`;
+estimating its build time from J2's measured build rate leaves about `217 s` for
+the six-epoch learning and finalization. Scaling that portion gives about
+`8.6 h`. Adding the full-cache build, scaled source/admission setup, a one-shot
+test-score allowance extrapolated from J1 validation throughput, and a
+10-minute launch-wait allowance gives roughly **`10.7 h`**, or about **`$10.7`
+compute** at the authorized estimate.
+
+For a conservative streaming/FP32 reference, J1's provisioned time minus its
+performance phase is `471.5 s` for the same learning guard. Scaling it by the
+same factor, then adding source/admission setup, the one-shot test-score
+allowance, and launch wait gives roughly **`19.5 h`**, or about **`$19.5`
+compute**. The cached/mixed projection is about 45% lower than this reference.
+These are extrapolations from a small learning cohort, not measured full-run
+times or provider quotes. Phase boundaries in the learning fit are incomplete,
+so fixed checkpoint/finalization costs are included in the scaled fit tail.
+The full 20-epoch run and test scoring remain blocked pending a separate plan.
+
+The two experiment image builds each increased the Artifact Registry repository
+size by about `6.13 GB` in the observed reads. At Google's published Artifact
+Registry storage rate, retaining both images adds roughly `$1.1–$1.2/month`
+before any account-level free allowance; actual billing units and credits were
+not checked. The images and all create-only evidence remain retained for
+reproducibility.
+
+### Verdict
+
+Recommended measured configuration for a future full Stage-1 plan: job-local
+cache, batch 4, zero workers with pin memory false, and 16-mixed precision for
+the learning fit. Batch 8 remains compute-only and is not adopted. The
+conservative projection clears the 25% savings target, so this is not a
+no-improvement outcome. Full Stage-1 execution and test scoring stay blocked
+pending a separate approved plan.

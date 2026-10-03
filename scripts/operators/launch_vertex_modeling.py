@@ -423,30 +423,6 @@ def _update_efficiency_slot(slot: int, **updates: object) -> None:
     _write_efficiency_ledger(rows)
 
 
-def mark_efficiency_slot_validated(
-    *, slot: int, run_label: str, evidence_sha256: str, verdict: str
-) -> None:
-    """Gate the next efficiency submission on independent evidence validation."""
-    rows = _load_efficiency_ledger()
-    if not 1 <= slot <= len(rows):
-        raise SystemExit(f"ERROR: efficiency slot {slot} has no local reservation")
-    row = rows[slot - 1]
-    if row.get("slot") != slot or row.get("run_label") != run_label:
-        raise SystemExit("ERROR: evidence label/slot does not match the local reservation")
-    if row.get("state") != "awaiting_validation":
-        raise SystemExit(
-            f"ERROR: efficiency slot {slot} is {row.get('state')!r}, not awaiting_validation"
-        )
-    row.update(
-        {
-            "state": "validated" if verdict == "pass" else "validation_failed",
-            "validation_verdict": verdict,
-            "evidence_sha256": evidence_sha256,
-        }
-    )
-    _write_efficiency_ledger(rows)
-
-
 def _evidence_exists(evidence_uri: str) -> bool:
     """True if the create-only evidence object already exists (label must be unique)."""
     bucket_name, _, object_name = evidence_uri[len("gs://") :].partition("/")
@@ -1075,8 +1051,11 @@ def main() -> int:
             "must never be reused (the create-only upload would fail after the run)"
         )
     run_prefix = evidence_uri.rsplit("/", 1)[0]
-    if args.mode == "full" and _evidence_exists(f"{run_prefix}/best.ckpt"):
-        # A previous full run may have died after the checkpoint upload but
+    _checkpoint_uploading = args.mode == "full" or (
+        args.mode == "efficiency" and args.efficiency_role in ("baseline", "final")
+    )
+    if _checkpoint_uploading and _evidence_exists(f"{run_prefix}/best.ckpt"):
+        # A previous run may have died after the checkpoint upload but
         # before the manifest; that orphaned checkpoint would fail create-only
         # after burning a new paid job, so refuse the label here.
         raise SystemExit(

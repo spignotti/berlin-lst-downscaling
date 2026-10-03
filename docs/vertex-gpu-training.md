@@ -237,7 +237,13 @@ ledger or reuse labels. After each replacement, the next slot remains blocked
 until the job is `SUCCEEDED`, its evidence and checkpoint are downloaded, and
 the independent validator marks the recovery-ledger slot validated. A worker
 failure may retain incomplete `evidence.json`; it consumes the slot and stops
-the sequence.
+the sequence. The confirmed J1 checkpoint-location defect and J3 duplicate
+loader-timing requirement may each be revalidated once with
+`--record-revalidation --mark-ledger`, using the same hash-identical evidence
+and no new Vertex job. The J3 timing comparison uses the validated J2 loader
+measurement and verifies that J3 used its selected settings. The ledger keeps
+both the initial failure and the revalidation verdict. No other failed
+validation may be reopened.
 
 J1 validation:
 
@@ -254,7 +260,8 @@ J2 via `--control-evidence` and `--cache-evidence`. J4 supplies J1/J2/J3 via
 `--control-evidence`, `--cache-evidence`, and `--diagnostic-evidence`, and both
 `--checkpoint <downloaded-j4-best.ckpt>` and
 `--control-checkpoint <downloaded-j1-best.ckpt>`. Failed validation with
-`--mark-ledger` permanently blocks later slots. The validator
+`--mark-ledger` blocks later slots, except for the two authorized one-time
+`--record-revalidation` cases above. The validator
 also checks the recorded Vertex resource is `JOB_STATE_SUCCEEDED` before
 marking a slot; after a client timeout, poll with `--status`, then validate the
 downloaded evidence without resubmitting.

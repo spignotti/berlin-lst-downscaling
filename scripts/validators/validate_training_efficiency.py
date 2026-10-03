@@ -37,6 +37,8 @@ from berlin_lst_downscaling.modeling.efficiency_protocol import (
     REVALIDATION_EFFICIENCY_J1_RESOURCE_NAME,
     REVALIDATION_EFFICIENCY_J1_RUN_LABEL,
     REVALIDATION_EFFICIENCY_J1_SOURCE_SHA,
+    REVALIDATION_EFFICIENCY_J3_RESOURCE_NAME,
+    REVALIDATION_EFFICIENCY_J3_RUN_LABEL,
 )
 from berlin_lst_downscaling.modeling.guards import (
     assert_stage1_efficiency,
@@ -76,6 +78,22 @@ _DEFAULT_BASELINE = Path(
 )
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_REVALIDATION_SPECS = {
+    1: {
+        "run_label": REVALIDATION_EFFICIENCY_J1_RUN_LABEL,
+        "source_sha": REVALIDATION_EFFICIENCY_J1_SOURCE_SHA,
+        "image_digest": REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST,
+        "resource_name": REVALIDATION_EFFICIENCY_J1_RESOURCE_NAME,
+        "reason": "checkpoint metadata is top-level in producer evidence",
+    },
+    3: {
+        "run_label": REVALIDATION_EFFICIENCY_J3_RUN_LABEL,
+        "source_sha": REVALIDATION_EFFICIENCY_J1_SOURCE_SHA,
+        "image_digest": REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST,
+        "resource_name": REVALIDATION_EFFICIENCY_J3_RESOURCE_NAME,
+        "reason": "J3 reuses J2 loader timing; it does not duplicate that timing block",
+    },
+}
 
 
 def _sample(index: int, *, all_invalid: bool = False) -> RealSample:
@@ -591,6 +609,27 @@ def _evidence_checks() -> list[str]:
         print("  FAIL evidence: changed performance universe accepted")
     else:
         print("  PASS evidence: changed performance universe rejected")
+    j2 = json.loads(json.dumps(evidence))
+    j2["efficiency"]["results"]["selected_loader"] = {
+        "workers": 0,
+        "pin_memory": False,
+    }
+    diagnostic_results = {"config": {"data": {"num_workers": 0, "pin_memory": False}}}
+    errors = []
+    _validate_selected_cache_loader(diagnostic_results, j2, errors, slot=3)
+    if errors:
+        failures.extend(f"J3 accepted J2 loader but had errors: {error}" for error in errors)
+        print(f"  FAIL evidence: J3 J2-loader reuse ({errors})")
+    else:
+        print("  PASS evidence: J3 reuses J2 loader without a duplicate timing block")
+    diagnostic_results["config"]["data"]["num_workers"] = 2
+    errors = []
+    _validate_selected_cache_loader(diagnostic_results, j2, errors, slot=3)
+    if not any("worker count differs" in error for error in errors):
+        failures.append("J3 accepted a loader configuration different from J2")
+        print("  FAIL evidence: J3 loader mismatch accepted")
+    else:
+        print("  PASS evidence: J3 loader mismatch rejected")
     budget = evidence["efficiency"]["results"]["budget"]
     ledger_row = {
         "session": EFFICIENCY_SESSION_ID,
@@ -693,6 +732,86 @@ def _checkpoint_checks() -> list[str]:
             print("  FAIL checkpoint: missing-checkpoint evidence accepted")
         else:
             print("  PASS checkpoint: missing-checkpoint evidence rejected")
+    return failures
+
+
+def _revalidation_checks() -> list[str]:
+    from types import SimpleNamespace
+
+    from google.cloud.aiplatform_v1.types import JobState
+
+    failures: list[str] = []
+    temporary_parent = Path(os.environ["TMPDIR"]) / "opencode"
+    if not temporary_parent.is_dir():
+        return [f"revalidation self-check temporary parent is missing: {temporary_parent}"]
+    spec = _REVALIDATION_SPECS[3]
+    evidence = {
+        "profile": "efficiency",
+        "run_label": spec["run_label"],
+        "source_sha": spec["source_sha"],
+        "image_digest": spec["image_digest"],
+        "efficiency": {
+            "slot": 3,
+            "role": "diagnostic",
+            "validated_settings": {"amp_projected_runtime_gain": 0.12},
+        },
+    }
+    with tempfile.TemporaryDirectory(
+        dir=temporary_parent, prefix="efficiency-revalidation-self-check-"
+    ) as temporary:
+        root = Path(temporary)
+        evidence_path = root / "evidence.json"
+        evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+        row = {
+            "session": EFFICIENCY_SESSION_ID,
+            "slot": 3,
+            "role": "diagnostic",
+            "run_label": spec["run_label"],
+            "source_sha": spec["source_sha"],
+            "image_digest": spec["image_digest"],
+            "resource_name": spec["resource_name"],
+            "state": "validation_failed",
+            "validation_verdict": "fail",
+            "evidence_sha256": _sha256(evidence_path),
+            "terminal_state": "JOB_STATE_SUCCEEDED",
+        }
+        ledger = root / "slots.json"
+        previous = [
+            {"slot": 1, "state": "validated"},
+            {"slot": 2, "state": "validated"},
+        ]
+        ledger.write_text(json.dumps([*previous, row]), encoding="utf-8")
+        with patch(__name__ + "._EFFICIENCY_LEDGER", ledger):
+            with patch(
+                "google.cloud.aiplatform_v1.JobServiceClient.get_custom_job",
+                return_value=SimpleNamespace(state=JobState.JOB_STATE_SUCCEEDED),
+            ):
+                _record_revalidation_audit(3, evidence, evidence_path, passed=True)
+            updated = json.loads(ledger.read_text(encoding="utf-8"))[2]
+            attempts = updated.get("initial_validation_attempts") or []
+            if (
+                updated.get("state") != "validated"
+                or len(attempts) != 2
+                or attempts[0].get("verdict") != "fail"
+                or attempts[1].get("verdict") != "pass"
+                or attempts[0].get("evidence_sha256") != attempts[1].get("evidence_sha256")
+                or updated.get("amp_projected_runtime_gain") != 0.12
+            ):
+                failures.append("J3 revalidation did not preserve its initial failed verdict")
+                print("  FAIL revalidation: initial failure was not retained")
+            else:
+                print("  PASS revalidation: same J3 artifact records fail then pass")
+            if not _failed_revalidation_errors(3, updated, evidence, evidence_path):
+                failures.append("a validated J3 slot remained eligible for another revalidation")
+                print("  FAIL revalidation: repeated revalidation was not rejected")
+            else:
+                print("  PASS revalidation: duplicate revalidation rejected")
+            mismatched = {**evidence, "run_label": "stage1-efficiency-j3-other-artifact"}
+            if not _failed_revalidation_errors(3, row, mismatched, evidence_path):
+                failures.append("J3 revalidation accepted a different run label")
+                print("  FAIL revalidation: different evidence identity accepted")
+            else:
+                print("  PASS revalidation: different evidence identity rejected")
     return failures
 
 
@@ -1207,21 +1326,11 @@ def validate_efficiency_evidence(
         ):
             errors.append("J2 CPU/GPU residual identity/correction differs beyond tolerance")
     elif slot == 3:
-        require_timing("selected_cache_loader")
         if cache_evidence is None:
             errors.append("J3 validation requires the validated J2 cache evidence")
         else:
             _validate_same_performance_universe(evidence, cache_evidence, errors)
-            selected_loader = (
-                (cache_evidence.get("efficiency") or {})
-                .get("results", {})
-                .get("selected_loader", {})
-            )
-            current_cfg = results.get("config") or {}
-            if current_cfg.get("data", {}).get("num_workers") != selected_loader.get("workers"):
-                errors.append("J3 compute diagnostics did not use the J2 worker winner")
-            if current_cfg.get("data", {}).get("pin_memory") != selected_loader.get("pin_memory"):
-                errors.append("J3 compute diagnostics did not use the J2 pin-memory winner")
+            _validate_selected_cache_loader(results, cache_evidence, errors, slot=3)
         _validate_cache_pair(item, scope, errors)
         cache_record = results.get("cache")
         if not isinstance(cache_record, dict):
@@ -1436,12 +1545,7 @@ def _write_efficiency_ledger(rows: list[dict]) -> None:
 def _record_revalidation_audit(
     slot: int, evidence: dict, evidence_path: Path, passed: bool
 ) -> None:
-    """Preserve the initial failure while auditing a corrected local revalidation.
-
-    Only the one user-confirmed J1 checkpoint-path revalidation may resolve to
-    ``validated`` after correction. Its initial unsuccessful validator result and
-    verdict remain in ``initial_validation_attempts`` and are never overwritten.
-    """
+    """Preserve a confirmed J1/J3 validator failure while rechecking its evidence."""
     from datetime import UTC, datetime
 
     if not _EFFICIENCY_LEDGER.is_file():
@@ -1450,37 +1554,34 @@ def _record_revalidation_audit(
     if not isinstance(rows, list) or not 1 <= slot <= len(rows):
         raise RuntimeError("efficiency ledger does not contain the evidence slot")
     row = rows[slot - 1]
-    unexpected = (
-        slot != 1
-        or evidence.get("run_label") != REVALIDATION_EFFICIENCY_J1_RUN_LABEL
-        or evidence.get("source_sha") != REVALIDATION_EFFICIENCY_J1_SOURCE_SHA
-        or evidence.get("image_digest") != REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST
-        or row.get("run_label") != REVALIDATION_EFFICIENCY_J1_RUN_LABEL
-        or row.get("source_sha") != REVALIDATION_EFFICIENCY_J1_SOURCE_SHA
-        or row.get("image_digest") != REVALIDATION_EFFICIENCY_J1_IMAGE_DIGEST
-        or row.get("resource_name") != REVALIDATION_EFFICIENCY_J1_RESOURCE_NAME
-        or row.get("terminal_state") != "JOB_STATE_SUCCEEDED"
-    )
-    if unexpected:
-        raise RuntimeError("revalidation audit is restricted to the confirmed J1 artifact")
-    attempts = row.get("initial_validation_attempts")
-    if not isinstance(attempts, list):
-        attempts = [
-            {
-                "state": row.get("state"),
-                "verdict": row.get("validation_verdict"),
-                "evidence_sha256": row.get("evidence_sha256"),
-            }
-        ]
-    if row.get("state") != "validation_failed" or row.get("validation_verdict") != "fail":
-        raise RuntimeError("revalidation audit requires the preserved initial failure")
-    if len(attempts) != 1 or attempts[0].get("state") != "validation_failed":
-        raise RuntimeError("revalidation audit cannot overwrite validator history")
+    errors = _failed_revalidation_errors(slot, row, evidence, evidence_path)
+    if errors:
+        raise RuntimeError("revalidation audit rejected: " + "; ".join(errors))
+    spec = _REVALIDATION_SPECS[slot]
+    from google.cloud import aiplatform_v1
+    from google.cloud.aiplatform_v1.types import JobState
+
+    job = aiplatform_v1.JobServiceClient(
+        client_options={"api_endpoint": "europe-west3-aiplatform.googleapis.com"}
+    ).get_custom_job(name=spec["resource_name"])
+    if JobState(job.state) != JobState.JOB_STATE_SUCCEEDED:
+        raise RuntimeError("revalidation resource is no longer JOB_STATE_SUCCEEDED")
+    attempts = [
+        {
+            "attempt": 1,
+            "state": "validation_failed",
+            "verdict": "fail",
+            "evidence_sha256": row["evidence_sha256"],
+            "reason": spec["reason"],
+        }
+    ]
     attempts.append(
         {
+            "attempt": 2,
             "state": "validated" if passed else "validation_failed",
             "verdict": "pass" if passed else "fail",
             "evidence_sha256": _sha256(evidence_path),
+            "reason": spec["reason"],
         }
     )
     if not passed:
@@ -1494,13 +1595,55 @@ def _record_revalidation_audit(
             "evidence_sha256": _sha256(evidence_path),
             "initial_validation_attempts": attempts,
             "revalidated_at": datetime.now(UTC).isoformat(),
-            "revalidation_note": (
-                "confirmed local validator checkpoint-path correction; "
-                "same evidence and checkpoint, no rerun"
-            ),
+            "revalidation_note": f"same immutable J{slot} evidence; {spec['reason']}",
         }
     )
+    if slot == 3 and passed:
+        row["amp_projected_runtime_gain"] = (
+            (evidence.get("efficiency") or {}).get("validated_settings") or {}
+        ).get("amp_projected_runtime_gain")
     _write_efficiency_ledger(rows)
+
+
+def _failed_revalidation_errors(
+    slot: int, row: dict, evidence: dict, evidence_path: Path
+) -> list[str]:
+    spec = _REVALIDATION_SPECS.get(slot)
+    if spec is None:
+        return ["revalidation is not authorized for this efficiency slot"]
+    expected = {
+        "session": EFFICIENCY_SESSION_ID,
+        "slot": slot,
+        "role": _SLOT_ROLES[slot],
+        "run_label": spec["run_label"],
+        "source_sha": spec["source_sha"],
+        "image_digest": spec["image_digest"],
+        "resource_name": spec["resource_name"],
+        "state": "validation_failed",
+        "validation_verdict": "fail",
+        "terminal_state": "JOB_STATE_SUCCEEDED",
+    }
+    errors = [
+        f"failed ledger {key} differs from the approved revalidation identity"
+        for key, value in expected.items()
+        if row.get(key) != value
+    ]
+    item = evidence.get("efficiency") or {}
+    if any(
+        (
+            evidence.get("run_label") != spec["run_label"],
+            evidence.get("source_sha") != spec["source_sha"],
+            evidence.get("image_digest") != spec["image_digest"],
+            item.get("slot") != slot,
+            item.get("role") != _SLOT_ROLES[slot],
+        )
+    ):
+        errors.append("evidence identity differs from the approved revalidation artifact")
+    if row.get("initial_validation_attempts") is not None:
+        errors.append("this failed slot already has a revalidation attempt")
+    if not evidence_path.is_file() or row.get("evidence_sha256") != _sha256(evidence_path):
+        errors.append("revalidation evidence differs from the initially failed immutable object")
+    return errors
 
 
 def _mark_ledger(slot: int, evidence: dict, evidence_path: Path, passed: bool) -> None:
@@ -1589,7 +1732,13 @@ def _mark_ledger(slot: int, evidence: dict, evidence_path: Path, passed: bool) -
     _write_efficiency_ledger(rows)
 
 
-def _reservation_errors(evidence: dict, slot: int) -> list[str]:
+def _reservation_errors(
+    evidence: dict,
+    slot: int,
+    *,
+    allow_failed_revalidation: bool = False,
+    evidence_path: Path | None = None,
+) -> list[str]:
     if not _EFFICIENCY_LEDGER.is_file():
         return ["efficiency ledger is missing"]
     rows = json.loads(_EFFICIENCY_LEDGER.read_text(encoding="utf-8"))
@@ -1603,7 +1752,10 @@ def _reservation_errors(evidence: dict, slot: int) -> list[str]:
     if row.get("session") != EFFICIENCY_SESSION_ID or row.get("slot") != slot:
         errors.append("ledger session/slot differs from this evidence")
     if row.get("state") not in ("submitted", "awaiting_validation"):
-        errors.append(f"ledger state is {row.get('state')!r}, not awaiting validation")
+        if not allow_failed_revalidation or evidence_path is None:
+            errors.append(f"ledger state is {row.get('state')!r}, not awaiting validation")
+        else:
+            errors.extend(_failed_revalidation_errors(slot, row, evidence, evidence_path))
     if row.get("run_label") != evidence.get("run_label"):
         errors.append("ledger run label differs from the evidence envelope")
     for label, left, right in (
@@ -1677,6 +1829,22 @@ def _validate_cache_pair(item: dict, scope: dict, errors: list[str]) -> None:
         _manifest_valid(manifest, scope, errors, name="performance cache")
 
 
+def _validate_selected_cache_loader(
+    candidate_results: dict, cache_evidence: dict, errors: list[str], *, slot: int
+) -> None:
+    selected = (
+        (cache_evidence.get("efficiency") or {}).get("results", {}).get("selected_loader")
+    )
+    if not isinstance(selected, dict):
+        errors.append("validated J2 evidence has no selected cache loader")
+        return
+    data = (candidate_results.get("config") or {}).get("data") or {}
+    if data.get("num_workers") != selected.get("workers"):
+        errors.append(f"J{slot} worker count differs from the validated J2 loader winner")
+    if data.get("pin_memory") != selected.get("pin_memory"):
+        errors.append(f"J{slot} pin-memory setting differs from the validated J2 loader winner")
+
+
 def _validate_same_performance_universe(left: dict, right: dict, errors: list[str]) -> None:
     left_scope = left.get("data_scope") or {}
     right_scope = right.get("data_scope") or {}
@@ -1730,6 +1898,7 @@ def main() -> int:
         failures.extend(_selection_checks())
         failures.extend(_evidence_checks())
         failures.extend(_checkpoint_checks())
+        failures.extend(_revalidation_checks())
         with tempfile.TemporaryDirectory(prefix="stage1-efficiency-") as temporary:
             failures.extend(_cache_checks(Path(temporary)))
         if failures:
@@ -1737,6 +1906,8 @@ def main() -> int:
             return 1
         print("SELF-CHECK OK: efficiency guard and synthetic cache checks passed")
         return 0
+    if args.record_revalidation and not args.mark_ledger:
+        parser.error("--record-revalidation requires --mark-ledger")
 
     if args.evidence is None:
         parser.error("--evidence is required unless --self-check is used")
@@ -1754,6 +1925,8 @@ def main() -> int:
         parser.error("learning slots J1/J4 require --checkpoint for SHA-256 verification")
     if slot == 4 and args.control_checkpoint is None:
         parser.error("J4 requires --control-checkpoint for the J1 checkpoint SHA-256 verification")
+    if args.record_revalidation and slot not in _REVALIDATION_SPECS:
+        parser.error("--record-revalidation is restricted to the confirmed J1/J3 artifacts")
     required_prior = {
         1: (),
         2: ("control",),
@@ -1787,7 +1960,14 @@ def main() -> int:
         if mismatch:
             errors.append(mismatch)
     if args.mark_ledger:
-        errors.extend(_reservation_errors(evidence, slot))
+        errors.extend(
+            _reservation_errors(
+                evidence,
+                slot,
+                allow_failed_revalidation=args.record_revalidation,
+                evidence_path=args.evidence,
+            )
+        )
     passed = not errors
     if passed and slot == 2:
         item["validated_settings"] = {
@@ -1815,19 +1995,15 @@ def main() -> int:
         if not isinstance(evidence.get("run_label"), str):
             parser.error("cannot mark ledger without a valid evidence run label")
         try:
-            _mark_ledger(slot, evidence, args.evidence, passed)
+            if args.record_revalidation:
+                _record_revalidation_audit(slot, evidence, args.evidence, passed)
+            else:
+                _mark_ledger(slot, evidence, args.evidence, passed)
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"LEDGER ERROR: {exc}")
             return 1
-        print(f"ledger: slot {slot} -> {'validated' if passed else 'validation_failed'}")
-    if args.record_revalidation:
-        if not isinstance(evidence.get("run_label"), str):
-            parser.error("cannot record revalidation without a valid evidence run label")
-        try:
-            _record_revalidation_audit(slot, evidence, args.evidence, passed)
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(f"LEDGER ERROR: {exc}")
-            return 1
+        action = "revalidated" if args.record_revalidation else "validated"
+        print(f"ledger: slot {slot} {action} -> {'pass' if passed else 'fail'}")
     return 0 if passed else 2
 
 
