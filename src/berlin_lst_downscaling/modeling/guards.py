@@ -19,6 +19,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
 )
+from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 
 
 def contract_invariants(cfg: DictConfig) -> None:
@@ -303,7 +304,7 @@ def assert_efficiency_fit_runtime() -> None:
     slot = os.environ.get("VERTEX_EFFICIENCY_SLOT")
     if (
         os.environ.get("VERTEX_PROFILE") != "efficiency"
-        or os.environ.get("VERTEX_EFFICIENCY_SESSION") != "stage1-efficiency-20261002"
+        or os.environ.get("VERTEX_EFFICIENCY_SESSION") != EFFICIENCY_SESSION_ID
         or (role, slot) not in (("baseline", "1"), ("final", "4"))
     ):
         raise ValueError("efficiency learning fit requires a reserved J1/J4 Vertex worker context")

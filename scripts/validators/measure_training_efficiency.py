@@ -20,6 +20,14 @@ from omegaconf import OmegaConf
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.modeling.contracts import RealBatch, validate_real_batch
+from berlin_lst_downscaling.modeling.efficiency_protocol import (
+    EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD,
+    EFFICIENCY_MAX_HOURLY_RATE_USD,
+    EFFICIENCY_MAX_JOB_EXPOSURE_USD,
+    EFFICIENCY_MAX_NONCOMPUTE_USD,
+    EFFICIENCY_MAX_TOTAL_USD,
+    EFFICIENCY_SESSION_ID,
+)
 from berlin_lst_downscaling.modeling.guards import (
     assert_stage1_efficiency,
     assert_stage1_efficiency_scope,
@@ -41,7 +49,6 @@ from berlin_lst_downscaling.modeling.real_task import (
 from berlin_lst_downscaling.modeling.run import real_source_config, run_modeling
 
 _CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs" / "modeling")
-_EFFICIENCY_SESSION = "stage1-efficiency-20261002"
 _SLOT_ROLES = {1: "baseline", 2: "cache", 3: "diagnostic", 4: "final"}
 _REPEATS = 3
 _WORKERS = (0, 2, 4)
@@ -593,9 +600,45 @@ def _environment(output_root: Path) -> dict[str, object]:
     }
 
 
+def _assert_fresh_output_root(output_root: Path, run_label: str) -> None:
+    if output_root.is_symlink():
+        raise FileExistsError(f"efficiency output root is a symlink: {output_root}")
+    if not output_root.exists():
+        output_root.parent.mkdir(parents=True, exist_ok=True)
+        output_root.mkdir()
+        return
+    if os.environ.get("VERTEX_EFFICIENCY_OUTPUT_CLAIMED") != run_label:
+        raise FileExistsError(
+            f"efficiency output root was not claimed by this entrypoint: {output_root}"
+        )
+    if not output_root.is_dir():
+        raise FileExistsError(f"efficiency output root is not a directory: {output_root}")
+    allowed = {
+        Path("logs"),
+        Path("logs/modeling"),
+        Path("logs/modeling/vertex-entrypoint.txt"),
+    }
+    seen: set[Path] = set()
+    for path in output_root.rglob("*"):
+        relative = path.relative_to(output_root)
+        if path.is_symlink() or relative not in allowed:
+            raise FileExistsError(f"efficiency output root contains unexpected content: {path}")
+        if relative == Path("logs/modeling/vertex-entrypoint.txt"):
+            if not path.is_file():
+                raise FileExistsError(f"entrypoint log is not a regular file: {path}")
+        elif not path.is_dir():
+            raise FileExistsError(f"unexpected file in efficiency output root: {path}")
+        seen.add(relative)
+    if Path("logs/modeling/vertex-entrypoint.txt") not in seen:
+        raise FileExistsError(
+            f"efficiency output root has no claimed entrypoint log: {output_root}"
+        )
+
+
 def measure(args: argparse.Namespace) -> dict[str, object]:
     expected_env = {
-        "VERTEX_EFFICIENCY_SESSION": _EFFICIENCY_SESSION,
+        "VERTEX_EFFICIENCY_SESSION": EFFICIENCY_SESSION_ID,
+        "VERTEX_EFFICIENCY_OUTPUT_CLAIMED": args.run_label,
         "VERTEX_EFFICIENCY_ROLE": args.role,
         "VERTEX_EFFICIENCY_SLOT": str(args.slot),
         "VERTEX_EFFICIENCY_WORKERS": str(args.workers),
@@ -620,27 +663,31 @@ def measure(args: argparse.Namespace) -> dict[str, object]:
         )
     if _SLOT_ROLES.get(args.slot) != args.role:
         raise RuntimeError("efficiency slot and role do not match the fixed schedule")
-    if args.hourly_rate_usd > 1.03 or args.projected_exposure_usd > 1.0:
+    if (
+        args.hourly_rate_usd > EFFICIENCY_MAX_HOURLY_RATE_USD
+        or args.projected_exposure_usd > EFFICIENCY_MAX_JOB_EXPOSURE_USD
+    ):
         raise RuntimeError("efficiency invocation exceeds its rate or per-job compute cap")
     if (
-        args.projected_exposure_usd + args.projected_noncompute_total_usd > 10.0
-        or args.projected_noncompute_total_usd > 6.22
+        EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD
+        + args.projected_exposure_usd
+        + args.projected_noncompute_total_usd
+        > EFFICIENCY_MAX_TOTAL_USD
+        or args.projected_noncompute_total_usd > EFFICIENCY_MAX_NONCOMPUTE_USD
     ):
         raise RuntimeError("efficiency invocation exceeds the all-in experiment budget")
     expected_root = Path("data/runs/efficiency") / args.run_label
     if args.output_root.resolve() != expected_root.resolve():
         raise RuntimeError("efficiency output root differs from the launcher-reserved run root")
     output_root = args.output_root
-    if output_root.exists() and any(output_root.iterdir()):
-        raise FileExistsError(f"efficiency output root is not empty: {output_root}")
-    output_root.mkdir(parents=True, exist_ok=True)
+    _assert_fresh_output_root(output_root, args.run_label)
     cfg = _compose(args.role, args.precision, args.workers, args.pin_memory)
     source = real_source_config(cfg)
     started_at = datetime.now(UTC).isoformat()
     monotonic_start = time.monotonic()
     results: dict[str, object] = {
         "status": "running",
-        "session": _EFFICIENCY_SESSION,
+        "session": EFFICIENCY_SESSION_ID,
         "started_at": started_at,
         "role": args.role,
         "slot": args.slot,

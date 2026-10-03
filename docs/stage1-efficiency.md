@@ -97,24 +97,49 @@ new profiling dependency is authorized.
 
 ## Job schedule and budget
 
-At most four sequential submissions, each with a 2,700-second server timeout,
-600-second client allowance, one on-demand `n1-standard-4` + T4, and no retry or
-automatic substitution. Every failed or expired submission consumes its slot.
-The user has explicitly authorized using the reviewed Vertex Custom Training
-price range supplied in chat for these bounded efficiency jobs. Use its upper
-bound, **$1.00/hour**, as the conservative rate input. This is a user-authorized
-estimate for this four-job gate, not a claim that the active Billing-account
-contract price was independently retrieved. A standalone Compute Engine quote
-or the older historical `$0.90/h` value is not the accepted basis. This
-authorization does not extend to a full Stage-1 run.
+### Preserved failed submission
 
-The maximum projected compute exposure is approximately
-`4 × (2700 + 600) / 3600 × $1.03 = $3.78`. The aggregate experiment ceiling is
-$10 including builds, registry, storage and logging, leaving at most $6.22 for
-those other expenses. This is an admission estimate, not a provider spending
-cap. If a line item cannot be bounded, do not submit.
+The original J1 submission was `stage1-efficiency-j1-20261003T030056Z`, Vertex
+resource `projects/996559849187/locations/europe-west3/customJobs/6995706228521304064`,
+source SHA `514fae1cf27f73d08883b985f1cc3b5bcef31233`, and image digest
+`sha256:6d2967c323410540b50365a32ec4a4e0bf4baff636c37d90bbaf0a641141c9f7`.
+It failed before measurement setup because the entrypoint created
+`logs/modeling/vertex-entrypoint.txt` inside its output root, then the measurer
+rejected the non-empty root. The retained, incomplete evidence is at
+`gs://berlin-lst-training-data/qa/modeling/vertex-smoke/stage1-efficiency-j1-20261003T030056Z/evidence.json`.
+It has no measurements or checkpoint. Preserve that object and the original
+local ledger; the failed submission consumes one of the five total submissions
+allowed by the recovery plan.
 
-### Operator-provided pre-launch estimate (2026-10-02)
+### Replacement sequence
+
+Run at most four sequential replacements, J1–J4, for at most five submissions
+including the preserved failure. Each replacement uses one on-demand
+`n1-standard-4` + T4, a 2,700-second server timeout, and at most 1,800 seconds
+for provisioning. If the job has not entered `JOB_STATE_RUNNING` by that
+deadline, cancel that exact job once and confirm a terminal state. An ambiguous
+submit or cancel, failed job, failed validation, or failed learning/cache gate
+consumes the slot and stops the sequence. Never resubmit a replacement slot or
+automatically substitute hardware.
+
+Use the user-authorized upper bound **$1.00/hour** for the supplied Frankfurt
+Vertex Custom Training range. It is a planning estimate, not a verified active
+Billing-account contract price or provider spending cap. The maximum projected
+compute per replacement is `($2,700 + $1,800) / 3,600 × $1.00 = $1.25`.
+Conservatively carry the failed J1 reservation of `$0.9167` and reserve `$2.00`
+cumulatively for all non-compute costs, including the prior and replacement
+image builds, registry storage, job storage, and logging. The resulting maximum
+projection is `$0.9167 + 4 × $1.25 + $2.00 = $7.9167`, below the `$10` experiment
+ceiling. The `$2.00` reserve supersedes the previous `$0.20` estimate; actual
+charges and persistent image-retention cost remain unverified.
+
+All replacements use the fixed recovery session
+`stage1-efficiency-recovery-20261003`, its separate ignored ledger under
+`data/runs/.stage1-efficiency-control/`, one committed source SHA, and one
+digest-pinned image. The original failed ledger, evidence, and image remain
+unchanged. No full Stage-1 run or test-pixel access is authorized.
+
+### Operator-provided pre-launch estimate (2026-10-02; rate basis retained)
 
 The operator supplied this Frankfurt Vertex Custom Trained Models itemization
 in chat: N1 core `$0.190/h`, N1 RAM `$0.095/h`, T4 `$0.490/h`, and 100-GB disk
@@ -127,13 +152,10 @@ aggregates. `[uncertain: exact active Billing-account contract price and whether
 an additional Vertex line item applies]`. This authorization applies only to
 the four bounded efficiency jobs.
 
-The operator estimated all four jobs' cumulative non-compute costs (one image
-build, Artifact Registry, Storage, Logging) at **less than `$0.20`**. Reserve
-`$0.20` in the launcher estimate. At the authorized `$1.00/h` upper bound, the
-four 45-minute jobs plus four 10-minute allowances project at most about
-**`$3.67` compute** and **`$3.87` total** with that reserve; the `$3.78` compute / `$10` total admission estimates remain
-in force. These are user-supplied list-price estimates, not actual billing and
-not provider-enforced spend caps.
+The original operator estimate for non-compute costs was less than `$0.20` for
+one image build and the four jobs. It is superseded for the recovery sequence by
+the larger `$2.00` cumulative reserve above, which includes the rebuild. These
+are planning estimates, not actual billing or provider-enforced spend caps.
 
 | Job | Configuration | Purpose |
 |---|---|---|
@@ -142,10 +164,10 @@ not provider-enforced spend caps.
 | J3 | J2 winner, FP32 vs 16-mixed; batch-8 diagnostic only | Measure precision and compute opportunity. No optimizer steps. If projected complete-runtime AMP gain is under 10%, J4 must use FP32. |
 | J4 | Best evidenced settings, batch 4 | Repeat performance measurements and a fresh matched six-epoch 128/64 learning guard. |
 
-Reserve J4 from the beginning. No fifth job. A timeout, failed cache, rate or
-budget uncertainty, numerical mismatch, learning regression, or ambiguous
-submission stops the sequence and consumes the slot. No shortened cohort or
-omitted verification may be silently substituted.
+Reserve J4 from the beginning. No sixth submission. A timeout, failed cache,
+rate or budget uncertainty, numerical mismatch, learning regression, or
+ambiguous submission stops the replacement sequence and consumes the slot. No
+shortened cohort or omitted verification may be silently substituted.
 
 After each job, download its create-only evidence and run the independent
 efficiency validator. Supply J1 evidence to J2; J1 and J2 evidence to J3; and
@@ -192,9 +214,14 @@ fit.**
 Validation commands are explicit QA steps, not new test-suite files:
 `uv run nox`; `uv run nox -s smoke-modeling-contract`; and direct
 `uv run python scripts/validators/validate_training_efficiency.py --self-check`
-plus the corresponding cache self-check. The `smoke-real-comparison` session is
+plus `uv run python scripts/validators/check_efficiency_output_root.py`,
+`bash scripts/validators/check_vertex_efficiency_entrypoint.sh`,
+`uv run --group operators python scripts/operators/launch_vertex_modeling.py --self-check`,
+and the corresponding cache self-check. The `smoke-real-comparison` session is
 not run because it reads test-split patches.
 
 ## Results
 
-_Pending. No efficiency jobs have been submitted._
+The original J1 attempt failed during worker startup before measurement setup;
+its incomplete evidence is retained. No replacement performance results are
+available yet.

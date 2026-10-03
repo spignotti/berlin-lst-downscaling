@@ -10,6 +10,7 @@ import os
 import re
 import tempfile
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,16 @@ from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
     RealSampleMeta,
+)
+from berlin_lst_downscaling.modeling.efficiency_protocol import (
+    EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD,
+    EFFICIENCY_MAX_HOURLY_RATE_USD,
+    EFFICIENCY_MAX_JOB_EXPOSURE_USD,
+    EFFICIENCY_MAX_NONCOMPUTE_USD,
+    EFFICIENCY_MAX_TOTAL_COMPUTE_USD,
+    EFFICIENCY_MAX_TOTAL_USD,
+    EFFICIENCY_SESSION_ID,
+    EFFICIENCY_SLOT_ROLES,
 )
 from berlin_lst_downscaling.modeling.guards import (
     assert_stage1_efficiency,
@@ -49,11 +60,13 @@ from berlin_lst_downscaling.modeling.real_task import (
 )
 
 _CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs" / "modeling")
-_EFFICIENCY_SESSION = "stage1-efficiency-20261002"
 _EFFICIENCY_LEDGER = (
-    Path(__file__).resolve().parents[2] / "data/runs/.stage1-efficiency-control/slots.json"
+    Path(__file__).resolve().parents[2]
+    / "data/runs/.stage1-efficiency-control"
+    / EFFICIENCY_SESSION_ID
+    / "slots.json"
 )
-_SLOT_ROLES = {1: "baseline", 2: "cache", 3: "diagnostic", 4: "final"}
+_SLOT_ROLES = EFFICIENCY_SLOT_ROLES
 _DEFAULT_BASELINE = Path(
     "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
 )
@@ -153,7 +166,7 @@ def _guard_checks() -> list[str]:
             os.environ,
             {
                 "VERTEX_PROFILE": "efficiency",
-                "VERTEX_EFFICIENCY_SESSION": _EFFICIENCY_SESSION,
+                "VERTEX_EFFICIENCY_SESSION": EFFICIENCY_SESSION_ID,
                 "VERTEX_EFFICIENCY_ROLE": "baseline",
                 "VERTEX_EFFICIENCY_SLOT": "1",
             },
@@ -501,7 +514,7 @@ def _evidence_checks() -> list[str]:
                 "status": "complete",
                 "slot": 2,
                 "role": "cache",
-                "session": _EFFICIENCY_SESSION,
+                "session": EFFICIENCY_SESSION_ID,
                 "run_label": "stage1-efficiency-j2-cache",
                 "source_sha": source_sha,
                 "image_digest": image_digest,
@@ -574,6 +587,52 @@ def _evidence_checks() -> list[str]:
         print("  FAIL evidence: changed performance universe accepted")
     else:
         print("  PASS evidence: changed performance universe rejected")
+    budget = evidence["efficiency"]["results"]["budget"]
+    ledger_row = {
+        "session": EFFICIENCY_SESSION_ID,
+        "slot": 2,
+        "state": "submitted",
+        "run_label": evidence["run_label"],
+        "role": "cache",
+        "source_sha": evidence["source_sha"],
+        "image_digest": evidence["image_digest"],
+        "hourly_rate_source": budget["hourly_rate_source"],
+        "verified_hourly_rate_usd": budget["hourly_rate_usd"],
+        "projected_exposure_usd": budget["projected_exposure_usd"],
+        "projected_noncompute_total_usd": budget["projected_noncompute_total_usd"],
+    }
+    with tempfile.TemporaryDirectory(
+        dir=Path(os.environ["TMPDIR"]) / "opencode",
+        prefix="efficiency-ledger-self-check-",
+    ) as temporary:
+        ledger_path = Path(temporary) / "slots.json"
+        prior_row = {
+            "slot": 1,
+            "projected_exposure_usd": 1.25,
+            "projected_noncompute_total_usd": 2.0,
+        }
+        ledger_path.write_text(json.dumps([prior_row, ledger_row]), encoding="utf-8")
+        with patch(__name__ + "._EFFICIENCY_LEDGER", ledger_path):
+            errors = _reservation_errors(evidence, 2)
+            if errors:
+                failures.append(f"ledger rejected matching provenance and numeric budget: {errors}")
+                print(f"  FAIL budget provenance: {errors}")
+            else:
+                print("  PASS budget provenance: text is compared exactly and numeric values parse")
+            ledger_row["hourly_rate_source"] = "different source note"
+            ledger_path.write_text(json.dumps([prior_row, ledger_row]), encoding="utf-8")
+            errors = _reservation_errors(evidence, 2)
+            if not any("hourly_rate_source differs" in error for error in errors):
+                failures.append("ledger accepted different hourly-rate provenance")
+                print("  FAIL budget provenance: source-note drift accepted")
+            else:
+                print("  PASS budget provenance: source-note drift rejected")
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    if _provisioned_seconds(started, started + timedelta(seconds=30)) != 30:
+        failures.append("Vertex datetime elapsed-time calculation is incorrect")
+        print("  FAIL budget timestamp: SDK datetime elapsed time")
+    else:
+        print("  PASS budget timestamp: SDK datetime elapsed time")
     return failures
 
 
@@ -594,6 +653,10 @@ def _load_object(path: Path) -> dict:
 
 def _finite_number(value: object) -> bool:
     return isinstance(value, int | float) and math.isfinite(float(value))
+
+
+def _provisioned_seconds(start_time: datetime, end_time: datetime) -> float:
+    return (end_time - start_time).total_seconds()
 
 
 def _error(message: str, errors: list[str]) -> None:
@@ -931,7 +994,7 @@ def validate_efficiency_evidence(
         errors.append("result slot/role does not match evidence envelope")
     if results.get("scratch_optimizer_steps") != 0 or results.get("test_access") is not False:
         errors.append("scratch measurements stepped an optimizer or accessed test data")
-    if results.get("session") != _EFFICIENCY_SESSION:
+    if results.get("session") != EFFICIENCY_SESSION_ID:
         errors.append("efficiency result session ID is not the approved four-slot session")
     if results.get("source_sha") != evidence.get("source_sha") or results.get(
         "image_digest"
@@ -948,20 +1011,23 @@ def validate_efficiency_evidence(
         rate_source = budget.get("hourly_rate_source")
         exposure = budget.get("projected_exposure_usd")
         other = budget.get("projected_noncompute_total_usd")
-        if not _finite_number(rate) or float(rate) > 1.03:
-            errors.append("efficiency rate is missing or exceeds $1.03/hour")
-        if not _finite_number(exposure) or float(exposure) > 1.0:
-            errors.append("efficiency projected job compute exceeds $1.00")
-        if not _finite_number(other) or float(other) > 6.22:
-            errors.append("cumulative non-compute estimate is missing or exceeds $6.22")
+        if not _finite_number(rate) or float(rate) > EFFICIENCY_MAX_HOURLY_RATE_USD:
+            errors.append("efficiency rate is missing or exceeds $1.00/hour")
+        if not _finite_number(exposure) or float(exposure) > EFFICIENCY_MAX_JOB_EXPOSURE_USD:
+            errors.append("efficiency projected job compute exceeds $1.25")
+        if not _finite_number(other) or float(other) > EFFICIENCY_MAX_NONCOMPUTE_USD:
+            errors.append("cumulative non-compute estimate is missing or exceeds $2.00")
         if not isinstance(rate_source, str) or len(rate_source.strip()) < 20:
             errors.append("hourly rate source/provenance note is missing")
         if (
             _finite_number(exposure)
             and _finite_number(other)
-            and float(exposure) + float(other) > 10.0
+            and EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD
+            + float(exposure)
+            + float(other)
+            > EFFICIENCY_MAX_TOTAL_USD
         ):
-            errors.append("single-slot compute plus cumulative non-compute estimate exceeds $10")
+            errors.append("historical and slot compute plus non-compute estimate exceeds $10")
 
     environment = results.get("environment")
     if not isinstance(environment, dict):
@@ -1297,7 +1363,7 @@ def _mark_ledger(slot: int, evidence: dict, evidence_path: Path, passed: bool) -
         raise RuntimeError("efficiency ledger does not contain the evidence slot")
     row = rows[slot - 1]
     result = evidence.get("efficiency") or {}
-    if row.get("session") != _EFFICIENCY_SESSION or row.get("slot") != slot:
+    if row.get("session") != EFFICIENCY_SESSION_ID or row.get("slot") != slot:
         raise RuntimeError("efficiency evidence does not match the active ledger session/slot")
     if row.get("run_label") != evidence.get("run_label") or row.get("run_label") != result.get(
         "results", {}
@@ -1335,22 +1401,24 @@ def _mark_ledger(slot: int, evidence: dict, evidence_path: Path, passed: bool) -
     provisioned_seconds = None
     estimated_compute_cost = None
     if job.start_time is not None and job.end_time is not None:
-        provisioned_seconds = (
-            job.end_time.seconds
-            - job.start_time.seconds
-            + (job.end_time.nanos - job.start_time.nanos) / 1_000_000_000
-        )
+        provisioned_seconds = _provisioned_seconds(job.start_time, job.end_time)
         estimated_compute_cost = (
             provisioned_seconds * float(row["verified_hourly_rate_usd"]) / 3600.0
         )
     if slot > 1 and any(item.get("state") != "validated" for item in rows[: slot - 1]):
         raise RuntimeError("cannot validate this slot while a prior slot is unvalidated")
-    total_compute = sum(float(item.get("projected_exposure_usd", 0.0)) for item in rows)
+    total_compute = EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD + sum(
+        float(item.get("projected_exposure_usd", 0.0)) for item in rows
+    )
     total_other = max(
         (float(item.get("projected_noncompute_total_usd", 0.0)) for item in rows),
         default=0.0,
     )
-    if total_compute > 3.78 or total_other > 6.22 or total_compute + total_other > 10.0:
+    if (
+        total_compute > EFFICIENCY_MAX_TOTAL_COMPUTE_USD
+        or total_other > EFFICIENCY_MAX_NONCOMPUTE_USD
+        or total_compute + total_other > EFFICIENCY_MAX_TOTAL_USD
+    ):
         passed = False
     row.update(
         {
@@ -1393,7 +1461,7 @@ def _reservation_errors(evidence: dict, slot: int) -> list[str]:
     results = item.get("results") or {}
     budget = results.get("budget") or {}
     errors: list[str] = []
-    if row.get("session") != _EFFICIENCY_SESSION or row.get("slot") != slot:
+    if row.get("session") != EFFICIENCY_SESSION_ID or row.get("slot") != slot:
         errors.append("ledger session/slot differs from this evidence")
     if row.get("state") not in ("submitted", "awaiting_validation"):
         errors.append(f"ledger state is {row.get('state')!r}, not awaiting validation")
@@ -1406,8 +1474,9 @@ def _reservation_errors(evidence: dict, slot: int) -> list[str]:
     ):
         if left != right:
             errors.append(f"ledger {label} differs from the evidence")
+    if row.get("hourly_rate_source") != budget.get("hourly_rate_source"):
+        errors.append("ledger hourly_rate_source differs from evidence budget")
     for row_key, budget_key in (
-        ("hourly_rate_source", "hourly_rate_source"),
         ("verified_hourly_rate_usd", "hourly_rate_usd"),
         ("projected_exposure_usd", "projected_exposure_usd"),
         ("projected_noncompute_total_usd", "projected_noncompute_total_usd"),
@@ -1415,12 +1484,18 @@ def _reservation_errors(evidence: dict, slot: int) -> list[str]:
         actual = budget.get(budget_key)
         if not _finite_number(actual) or abs(float(row.get(row_key, -1)) - float(actual)) > 1e-7:
             errors.append(f"ledger {row_key} differs from evidence budget")
-    total_compute = sum(float(entry.get("projected_exposure_usd", 0.0)) for entry in rows)
+    total_compute = EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD + sum(
+        float(entry.get("projected_exposure_usd", 0.0)) for entry in rows
+    )
     total_other = max(
         (float(entry.get("projected_noncompute_total_usd", 0.0)) for entry in rows),
         default=0.0,
     )
-    if total_compute > 3.78 or total_other > 6.22 or total_compute + total_other > 10.0:
+    if (
+        total_compute > EFFICIENCY_MAX_TOTAL_COMPUTE_USD
+        or total_other > EFFICIENCY_MAX_NONCOMPUTE_USD
+        or total_compute + total_other > EFFICIENCY_MAX_TOTAL_USD
+    ):
         errors.append("efficiency ledger aggregate estimate exceeds its approved caps")
     return errors
 

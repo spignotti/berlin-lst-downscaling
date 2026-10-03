@@ -40,7 +40,13 @@ if [[ "$PROFILE" == "efficiency" ]]; then
   export OPENBLAS_NUM_THREADS=1
   export GDAL_NUM_THREADS=1
 fi
-mkdir -p "$OUTPUT_ROOT"
+if [[ "$PROFILE" == "efficiency" ]]; then
+  mkdir -p "$(dirname "$OUTPUT_ROOT")"
+  mkdir "$OUTPUT_ROOT"
+  export VERTEX_EFFICIENCY_OUTPUT_CLAIMED="$VERTEX_RUN_LABEL"
+else
+  mkdir -p "$OUTPUT_ROOT"
+fi
 mkdir -p "$OUTPUT_ROOT/logs/modeling"
 RESULT_FILE="$OUTPUT_ROOT/logs/modeling/vertex-entrypoint.txt"
 

@@ -175,23 +175,40 @@ uv run python scripts/validators/validate_stage1_probe.py --evidence <evidence.j
 
 ### Stage-1 efficiency jobs (`--mode efficiency`)
 
-These four job slots measure the source/cache path, loader/transfer choices,
-FP32/16-mixed compute and a matched learning guard. The fixed slot/role schedule
-is `1=baseline`, `2=cache`, `3=diagnostic`, `4=final`; the launcher's local,
-git-ignored ledger prevents a duplicate slot and requires each earlier slot to
-be independently validated before the next submission. Vertex `SUCCEEDED` is
-not sufficient. Failed or ambiguous slots are not repeated. Full Stage-1
-remains blocked regardless of efficiency results.
+The four roles measure the source/cache path, loader/transfer choices,
+FP32/16-mixed compute and a matched learning guard. The fixed replacement
+schedule is `1=baseline`, `2=cache`, `3=diagnostic`, `4=final`. The first J1
+attempt failed before measurement setup because entrypoint log creation made the
+measurer's output root non-empty. Its incomplete, create-only evidence and
+original ledger are retained; it is never retried or overwritten. The replacement
+uses fixed session `stage1-efficiency-recovery-20261003` and a separate ignored
+ledger. The recovery allows four replacement submissions, at most five total
+including the failed original. Full Stage-1 remains blocked regardless of
+efficiency results.
 
-Every submission requires the freshly verified Vertex aggregate
-`europe-west3` hourly rate, at most `$1.03/h`, a 2700-second server timeout, a
-600-second maximum client allowance, at most `$1.00` projected compute per job,
-and a combined four-slot projected compute ceiling of `$3.78`. The separate
-experiment ceiling is `$10` including build/storage/registry/logging; pass the
-cumulative other-cost estimate, which may not exceed `$6.22` or decrease between
-slots. The rate and exposure values are estimates/guards, not provider spending
-caps. All four slots must reuse the same clean source SHA and pinned image
-digest; a code or image change ends this experiment sequence.
+Each replacement has a 2700-second server timeout and a maximum 1800-second
+provisioning wait. If the resource has not entered `JOB_STATE_RUNNING` by that
+deadline, the launcher cancels that exact resource once and waits for a terminal
+state. Ambiguous submit/cancel responses stop the sequence; inspect the saved
+resource and never resubmit it. Automatic retries are disabled. The user-approved
+rate input is `$1.00/h`; projected exposure is at most `$1.25` per replacement.
+The conservative aggregate estimate reserves the failed attempt's `$0.9167`,
+four replacements at `$1.25` each, and `$2.00` cumulative non-compute costs,
+totalling about `$7.92` under the `$10` experiment ceiling. The `$2.00` reserve
+supersedes the prior `$0.20` estimate and includes both image builds, storage,
+and logging. These are estimates, not provider spending caps; the active
+Billing-account rate and actual charges are not independently verified.
+All replacement slots use one clean source SHA and one pinned image digest.
+
+Before building or submitting, run the offline orchestration checks:
+
+```bash
+bash -n scripts/operators/vertex_entrypoint.sh
+uv run --group operators python scripts/operators/launch_vertex_modeling.py --self-check
+uv run python scripts/validators/check_efficiency_output_root.py
+bash scripts/validators/check_vertex_efficiency_entrypoint.sh
+uv run python scripts/validators/validate_training_efficiency.py --self-check
+```
 
 ```bash
 uv run --group operators python scripts/operators/launch_vertex_modeling.py \
@@ -204,19 +221,20 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
   --infisical-env dev --infisical-path /vertex \
   --efficiency-workers 2 --efficiency-precision 32-true \
   --hourly-rate-usd 1.00 \
-  --hourly-rate-source 'user-authorized upper bound of supplied Vertex Frankfurt rate range, 2026-10-02' \
+  --hourly-rate-source 'User-authorized Vertex Frankfurt range; USD 1.00/hour.' \
   --timeout-seconds 2700 \
-  --projected-noncompute-total-usd 0.20 \
-  --max-wait-seconds 600 --max-exposure-usd 1.00 --preflight
+  --projected-noncompute-total-usd 2.00 \
+  --max-wait-seconds 1800 --max-exposure-usd 1.25 --preflight
 ```
 
 `--preflight` is read-only and does not reserve a slot. A real submission
-reserves its slot immediately before `create_custom_job`. Do not delete the
-local ledger or reuse labels. If client waiting expires, reconnect by the
-printed job resource with `--status`; the next slot remains blocked until that
-job is `SUCCEEDED`, its evidence is downloaded, and the independent validator
-marks the ledger slot validated. A worker failure may retain an incomplete
-`evidence.json`; do not resubmit that slot.
+reserves its slot immediately before `create_custom_job`. Preserve the original
+ledger at `data/runs/.stage1-efficiency-control/slots.json`; do not reset either
+ledger or reuse labels. After each replacement, the next slot remains blocked
+until the job is `SUCCEEDED`, its evidence and checkpoint are downloaded, and
+the independent validator marks the recovery-ledger slot validated. A worker
+failure may retain incomplete `evidence.json`; it consumes the slot and stops
+the sequence.
 
 J1 validation:
 

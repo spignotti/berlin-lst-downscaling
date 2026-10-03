@@ -30,10 +30,13 @@ import json
 import math
 import os
 import re
+import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 from google.cloud import aiplatform_v1
 from google.cloud.aiplatform_v1.types import (
@@ -49,6 +52,26 @@ from google.cloud.aiplatform_v1.types import (
 from google.protobuf.duration_pb2 import Duration
 from hydra import compose, initialize_config_dir
 
+from berlin_lst_downscaling.modeling.efficiency_protocol import (
+    EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD,
+    EFFICIENCY_HISTORICAL_SUBMISSIONS,
+    EFFICIENCY_MAX_HOURLY_RATE_USD,
+    EFFICIENCY_MAX_JOB_EXPOSURE_USD,
+    EFFICIENCY_MAX_NONCOMPUTE_USD,
+    EFFICIENCY_MAX_SUBMISSIONS,
+    EFFICIENCY_MAX_TOTAL_COMPUTE_USD,
+    EFFICIENCY_MAX_TOTAL_USD,
+    EFFICIENCY_MAX_WAIT_SECONDS,
+    EFFICIENCY_REPLACEMENT_SUBMISSIONS,
+    EFFICIENCY_SESSION_ID,
+    EFFICIENCY_SLOT_ROLES,
+    EFFICIENCY_TIMEOUT_SECONDS,
+    HISTORICAL_EFFICIENCY_IMAGE_DIGEST,
+    HISTORICAL_EFFICIENCY_RESOURCE_NAME,
+    HISTORICAL_EFFICIENCY_RUN_LABEL,
+    HISTORICAL_EFFICIENCY_SESSION_ID,
+    HISTORICAL_EFFICIENCY_SOURCE_SHA,
+)
 from berlin_lst_downscaling.modeling.run import (
     assert_stage1_efficiency,
     assert_stage1_full_bounds,
@@ -91,28 +114,23 @@ FULL_MAX_EXPOSURE_USD = 50.0
 # At $1.03/h the 48h+600s projection is $49.61, so a verified rate above this
 # cannot stay under the $50 ceiling and must stop for a budget decision.
 FULL_MAX_HOURLY_RATE_USD = 1.03
-# Bounded efficiency jobs are capped at 45 minutes and one dollar projected
-# each; the four-slot local ledger enforces the aggregate compute ceiling.
-EFFICIENCY_TIMEOUT_SECONDS = 2700
-EFFICIENCY_MAX_JOB_EXPOSURE_USD = 1.0
-EFFICIENCY_MAX_HOURLY_RATE_USD = 1.03
-EFFICIENCY_MAX_TOTAL_COMPUTE_USD = 3.78
-EFFICIENCY_MAX_NONCOMPUTE_USD = 6.22
-EFFICIENCY_MAX_TOTAL_USD = 10.0
-EFFICIENCY_SESSION_ID = "stage1-efficiency-20261002"
+# The recovery ledger is isolated from the preserved original failed slot.
 # decision: keep the four-slot ledger in this git-ignored checkout because the
 # project requires one sequential checkout and adding a cloud control object
 # would create another external write. Alternative: Vertex-side reservations.
-EFFICIENCY_LEDGER = (
-    Path(__file__).resolve().parents[2] / "data/runs/.stage1-efficiency-control/slots.json"
+_EFFICIENCY_CONTROL_ROOT = (
+    Path(__file__).resolve().parents[2] / "data/runs/.stage1-efficiency-control"
 )
-EFFICIENCY_SLOT_ROLE = {1: "baseline", 2: "cache", 3: "diagnostic", 4: "final"}
+EFFICIENCY_LEDGER = _EFFICIENCY_CONTROL_ROOT / EFFICIENCY_SESSION_ID / "slots.json"
+HISTORICAL_EFFICIENCY_LEDGER = _EFFICIENCY_CONTROL_ROOT / "slots.json"
+EFFICIENCY_SLOT_ROLE = EFFICIENCY_SLOT_ROLES
 # Approximate on-demand n1-standard-4 + T4 compute rate. An estimate only: pass
 # the verified regional SKU with --hourly-rate-usd before submitting. The bucket
 # and image share this region, so no cross-region transfer applies.
 DEFAULT_HOURLY_RATE_USD = 0.75
 DEFAULT_MAX_EXPOSURE_USD = 3.0
 POLL_SECONDS = 20
+CANCEL_CONFIRMATION_SECONDS = 300
 
 # The approved profiles. `probe` and `probe-lr3` are the two Stage-1 recovery
 # trials (issue #47) that share the residual method and differ only in learning
@@ -203,15 +221,83 @@ def _load_efficiency_ledger() -> list[dict]:
     return payload
 
 
+def _verify_historical_efficiency_slot(
+    client: aiplatform_v1.JobServiceClient,
+) -> None:
+    if not HISTORICAL_EFFICIENCY_LEDGER.is_file():
+        raise SystemExit("ERROR: preserved original efficiency ledger is missing")
+    try:
+        rows = json.loads(HISTORICAL_EFFICIENCY_LEDGER.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"ERROR: original efficiency ledger is unreadable: {exc}") from exc
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise SystemExit("ERROR: original efficiency ledger does not contain exactly one slot")
+    row = rows[0]
+    expected = {
+        "session": HISTORICAL_EFFICIENCY_SESSION_ID,
+        "slot": 1,
+        "role": "baseline",
+        "run_label": HISTORICAL_EFFICIENCY_RUN_LABEL,
+        "source_sha": HISTORICAL_EFFICIENCY_SOURCE_SHA,
+        "image_digest": HISTORICAL_EFFICIENCY_IMAGE_DIGEST,
+        "resource_name": HISTORICAL_EFFICIENCY_RESOURCE_NAME,
+        "state": "job_state_failed",
+        "terminal_state": JobState.JOB_STATE_FAILED.name,
+    }
+    if any(row.get(key) != value for key, value in expected.items()):
+        raise SystemExit(
+            "ERROR: original failed efficiency slot does not match the preserved record"
+        )
+    try:
+        reserved = float(row["projected_exposure_usd"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit("ERROR: original efficiency reservation has no valid exposure") from exc
+    if (
+        not math.isfinite(reserved)
+        or abs(reserved - EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD) > 1e-7
+    ):
+        raise SystemExit("ERROR: original efficiency exposure differs from its approved reserve")
+    historical_job = client.get_custom_job(name=HISTORICAL_EFFICIENCY_RESOURCE_NAME)
+    if _state(historical_job) != JobState.JOB_STATE_FAILED:
+        raise SystemExit("ERROR: historical efficiency job is not confirmed JOB_STATE_FAILED")
+
+
+def _validate_projected_efficiency_budget(
+    rows: list[dict], *, exposure: float, noncompute_total: float
+) -> float:
+    prior_compute = EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD + sum(
+        float(row.get("projected_exposure_usd", 0.0)) for row in rows
+    )
+    projected_compute = prior_compute + exposure
+    prior_noncompute = max(
+        (float(row.get("projected_noncompute_total_usd", 0.0)) for row in rows),
+        default=0.0,
+    )
+    if projected_compute > EFFICIENCY_MAX_TOTAL_COMPUTE_USD:
+        raise SystemExit(
+            f"ERROR: historical plus replacement compute projects ${projected_compute:.2f}, "
+            f"above ${EFFICIENCY_MAX_TOTAL_COMPUTE_USD:.2f}"
+        )
+    if noncompute_total < prior_noncompute:
+        raise SystemExit("ERROR: cumulative non-compute estimate cannot decrease between slots")
+    if noncompute_total > EFFICIENCY_MAX_NONCOMPUTE_USD:
+        raise SystemExit("ERROR: cumulative non-compute estimate cannot exceed $2.00")
+    if projected_compute + noncompute_total > EFFICIENCY_MAX_TOTAL_USD:
+        raise SystemExit("ERROR: historical and replacement costs would exceed $10")
+    return projected_compute
+
+
 def _check_efficiency_sequence(
     rows: list[dict],
     slot: int,
     role: str,
+    exposure: float,
     noncompute_total: float,
     source_sha: str,
     image_digest: str,
     client: aiplatform_v1.JobServiceClient,
-) -> None:
+) -> float:
+    _verify_historical_efficiency_slot(client)
     if len(rows) != slot - 1 or [row.get("slot") for row in rows] != list(range(1, slot)):
         raise SystemExit(
             f"ERROR: efficiency jobs must run once, sequentially; slot {slot} expects "
@@ -228,13 +314,7 @@ def _check_efficiency_sequence(
         raise SystemExit("ERROR: efficiency jobs must use the same committed source SHA")
     if any(row.get("image_digest") != image_digest for row in rows):
         raise SystemExit("ERROR: efficiency jobs must use the same pinned image digest")
-    total = 0.0
-    prior_noncompute = 0.0
     for row in rows:
-        total += float(row.get("projected_exposure_usd", 0.0))
-        prior_noncompute = max(
-            prior_noncompute, float(row.get("projected_noncompute_total_usd", 0.0))
-        )
         if row.get("state") != "validated":
             raise SystemExit(
                 f"ERROR: prior efficiency slot {row.get('slot')} has not passed its "
@@ -253,19 +333,9 @@ def _check_efficiency_sequence(
                 f"ERROR: previous efficiency slot {row.get('slot')} is {previous_state.name}; "
                 "stop the sequence and inspect its evidence"
             )
-    if total > EFFICIENCY_MAX_TOTAL_COMPUTE_USD:
-        raise SystemExit(
-            f"ERROR: previous efficiency reservations project ${total:.2f}, "
-            f"above ${EFFICIENCY_MAX_TOTAL_COMPUTE_USD:.2f}"
-        )
-    if noncompute_total < prior_noncompute:
-        raise SystemExit("ERROR: cumulative non-compute estimate cannot decrease between slots")
-    if noncompute_total > EFFICIENCY_MAX_NONCOMPUTE_USD:
-        raise SystemExit(
-            "ERROR: non-compute estimate exceeds the remaining $6.22 experiment budget"
-        )
-    if total + noncompute_total > EFFICIENCY_MAX_TOTAL_USD:
-        raise SystemExit("ERROR: aggregate projected efficiency cost exceeds $10")
+    return _validate_projected_efficiency_budget(
+        rows, exposure=exposure, noncompute_total=noncompute_total
+    )
 
 
 @contextmanager
@@ -321,18 +391,9 @@ def _reserve_efficiency_slot(
             for row in rows
         ):
             raise SystemExit("ERROR: efficiency sequence source/image/session changed")
-        prior_compute = sum(float(row.get("projected_exposure_usd", 0.0)) for row in rows)
-        prior_other = max(
-            (float(row.get("projected_noncompute_total_usd", 0.0)) for row in rows),
-            default=0.0,
+        _validate_projected_efficiency_budget(
+            rows, exposure=exposure, noncompute_total=noncompute_total
         )
-        if (
-            prior_compute + exposure > EFFICIENCY_MAX_TOTAL_COMPUTE_USD
-            or noncompute_total < prior_other
-            or noncompute_total > EFFICIENCY_MAX_NONCOMPUTE_USD
-            or prior_compute + exposure + noncompute_total > EFFICIENCY_MAX_TOTAL_USD
-        ):
-            raise SystemExit("ERROR: locked efficiency reservation would exceed its budget gate")
         rows.append(
             {
                 "session": EFFICIENCY_SESSION_ID,
@@ -446,10 +507,9 @@ def _submit(
     instead of resubmitting. No ``base_output_directory`` is set, so no GCS
     staging bucket is involved.
 
-    Only ``timeout`` and ``disable_retries`` are set: Vertex rejects
-    ``max_wait_duration`` unless the scheduling strategy is ``FLEX_START``, so
-    the queue allowance is enforced client-side instead and nothing is billed
-    while the job is still QUEUED.
+    Only ``timeout`` and ``disable_retries`` are set: Vertex only accepts
+    ``max_wait_duration`` with ``FLEX_START``. The approved standard-scheduling
+    queue allowance is enforced client-side, including a one-shot cancellation.
     """
     custom_job = CustomJob(
         display_name=display_name,
@@ -470,9 +530,14 @@ def _submit(
 
 
 def _poll_until_terminal(
-    client: aiplatform_v1.JobServiceClient, resource_name: str, deadline: float
+    client: aiplatform_v1.JobServiceClient,
+    resource_name: str,
+    *,
+    start_deadline: float,
+    overall_deadline: float,
 ) -> JobState:
     last = ""
+    cancel_deadline: float | None = None
     while True:
         job = client.get_custom_job(name=resource_name)
         state = _state(job)
@@ -481,11 +546,28 @@ def _poll_until_terminal(
             last = state.name
         if state in _TERMINAL:
             return state
-        if time.monotonic() > deadline:
+        now = time.monotonic()
+        started = job.start_time is not None or state == JobState.JOB_STATE_RUNNING
+        if not started and cancel_deadline is None and now >= start_deadline:
+            try:
+                client.cancel_custom_job(name=resource_name)
+            except Exception as exc:
+                raise SystemExit(
+                    f"ERROR: queue deadline reached but cancellation response is ambiguous "
+                    f"for {resource_name}; inspect status and do not resubmit: {exc}"
+                ) from exc
+            print(f"  queue allowance expired; cancellation requested for {resource_name}")
+            cancel_deadline = now + CANCEL_CONFIRMATION_SECONDS
+            continue
+        if cancel_deadline is not None and now >= cancel_deadline:
             raise SystemExit(
-                f"ERROR: client wait budget expired while {resource_name} was "
-                f"{state.name}; the job is still running server-side. Query it with "
-                f"--status {resource_name}"
+                f"ERROR: cancellation was not confirmed for {resource_name}; "
+                "inspect status and do not resubmit"
+            )
+        if now >= overall_deadline:
+            raise SystemExit(
+                f"ERROR: server timeout wait expired while {resource_name} was "
+                f"{state.name}; inspect status and do not resubmit"
             )
         time.sleep(POLL_SECONDS)
 
@@ -502,6 +584,147 @@ def _print_status(resource_name: str) -> int:
     return 0 if state == JobState.JOB_STATE_SUCCEEDED else 1
 
 
+def _wait_self_check() -> int:
+    class FakeJob:
+        def __init__(self, state: JobState, start_time: object | None = None) -> None:
+            self.state = state
+            self.start_time = start_time
+
+    class QueueClient:
+        def __init__(self) -> None:
+            self.cancelled = False
+            self.cancel_count = 0
+
+        def get_custom_job(self, *, name: str) -> FakeJob:
+            return FakeJob(
+                JobState.JOB_STATE_CANCELLED
+                if self.cancelled
+                else JobState.JOB_STATE_PENDING
+            )
+
+        def cancel_custom_job(self, *, name: str) -> None:
+            self.cancelled = True
+            self.cancel_count += 1
+
+    failures: list[str] = []
+    queue_client = QueueClient()
+    with (
+        patch(__name__ + ".time.monotonic", side_effect=(0.0, 1800.0, 1801.0)),
+        patch(__name__ + ".time.sleep"),
+    ):
+        state = _poll_until_terminal(
+            queue_client,
+            "fake-job",
+            start_deadline=1800.0,
+            overall_deadline=5100.0,
+        )
+    if state != JobState.JOB_STATE_CANCELLED or queue_client.cancel_count != 1:
+        failures.append("queued job was not cancelled exactly once")
+    else:
+        print("  PASS queue: one cancellation was requested and confirmed terminal")
+
+    source_sha = "a" * 40
+    image_digest = "sha256:" + "b" * 64
+    history_row = {
+        "session": HISTORICAL_EFFICIENCY_SESSION_ID,
+        "slot": 1,
+        "role": "baseline",
+        "run_label": HISTORICAL_EFFICIENCY_RUN_LABEL,
+        "source_sha": HISTORICAL_EFFICIENCY_SOURCE_SHA,
+        "image_digest": HISTORICAL_EFFICIENCY_IMAGE_DIGEST,
+        "resource_name": HISTORICAL_EFFICIENCY_RESOURCE_NAME,
+        "state": "job_state_failed",
+        "terminal_state": JobState.JOB_STATE_FAILED.name,
+        "projected_exposure_usd": EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD,
+    }
+
+    class HistoryClient:
+        def get_custom_job(self, *, name: str) -> FakeJob:
+            state = (
+                JobState.JOB_STATE_FAILED
+                if name == HISTORICAL_EFFICIENCY_RESOURCE_NAME
+                else JobState.JOB_STATE_SUCCEEDED
+            )
+            return FakeJob(state, start_time=object())
+
+    prior_rows = [
+        {
+            "slot": slot,
+            "session": EFFICIENCY_SESSION_ID,
+            "source_sha": source_sha,
+            "image_digest": image_digest,
+            "state": "validated",
+            "resource_name": f"replacement-{slot}",
+            "projected_exposure_usd": EFFICIENCY_MAX_JOB_EXPOSURE_USD,
+            "projected_noncompute_total_usd": EFFICIENCY_MAX_NONCOMPUTE_USD,
+        }
+        for slot in range(1, EFFICIENCY_REPLACEMENT_SUBMISSIONS)
+    ]
+    with tempfile.TemporaryDirectory(
+        dir=Path(os.environ["TMPDIR"]) / "opencode",
+        prefix="efficiency-launcher-self-check-",
+    ) as temporary:
+        historical_ledger = Path(temporary) / "original-slots.json"
+        historical_ledger.write_text(json.dumps([history_row]), encoding="utf-8")
+        with patch(__name__ + ".HISTORICAL_EFFICIENCY_LEDGER", historical_ledger):
+            client = HistoryClient()
+            projected = _check_efficiency_sequence(
+                prior_rows,
+                EFFICIENCY_REPLACEMENT_SUBMISSIONS,
+                "final",
+                EFFICIENCY_MAX_JOB_EXPOSURE_USD,
+                EFFICIENCY_MAX_NONCOMPUTE_USD,
+                source_sha,
+                image_digest,
+                cast(aiplatform_v1.JobServiceClient, client),
+            )
+            if projected != EFFICIENCY_MAX_TOTAL_COMPUTE_USD:
+                failures.append("cumulative compute did not include historical reservation")
+            else:
+                print("  PASS budget: four replacement slots plus historical reserve meet the cap")
+            try:
+                _check_efficiency_sequence(
+                    prior_rows,
+                    EFFICIENCY_REPLACEMENT_SUBMISSIONS,
+                    "final",
+                    EFFICIENCY_MAX_JOB_EXPOSURE_USD + 0.001,
+                    EFFICIENCY_MAX_NONCOMPUTE_USD,
+                    source_sha,
+                    image_digest,
+                    cast(aiplatform_v1.JobServiceClient, client),
+                )
+            except SystemExit as exc:
+                if "above" not in str(exc):
+                    failures.append(f"unexpected over-budget rejection: {exc}")
+                else:
+                    print("  PASS budget: exposure above the aggregate cap rejected")
+            else:
+                failures.append("aggregate compute above the cap was accepted")
+            try:
+                _check_efficiency_sequence(
+                    [{"slot": 2}],
+                    2,
+                    "cache",
+                    1.25,
+                    EFFICIENCY_MAX_NONCOMPUTE_USD,
+                    source_sha,
+                    image_digest,
+                    cast(aiplatform_v1.JobServiceClient, client),
+                )
+            except SystemExit as exc:
+                if "sequentially" not in str(exc):
+                    failures.append(f"unexpected duplicate-slot rejection: {exc}")
+                else:
+                    print("  PASS ledger: out-of-order/duplicate slot rejected")
+            else:
+                failures.append("out-of-order/duplicate slot was accepted")
+    if failures:
+        print(f"SELF-CHECK FAILED: {failures}")
+        return 1
+    print("SELF-CHECK OK: queue/cancel, recovery-ledger, and combined-budget checks")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-uri")
@@ -509,7 +732,11 @@ def main() -> int:
     parser.add_argument("--run-label")
     parser.add_argument("--service-account")
     parser.add_argument("--mode", choices=sorted(MODE_CONFIG_NAME), default="smoke")
-    parser.add_argument("--efficiency-slot", type=int, choices=(1, 2, 3, 4))
+    parser.add_argument(
+        "--efficiency-slot",
+        type=int,
+        choices=tuple(sorted(EFFICIENCY_SLOT_ROLE)),
+    )
     parser.add_argument("--efficiency-role", choices=("baseline", "cache", "diagnostic", "final"))
     parser.add_argument("--efficiency-workers", type=int, choices=(0, 2, 4), default=2)
     parser.add_argument(
@@ -531,7 +758,7 @@ def main() -> int:
     parser.add_argument(
         "--max-wait-seconds",
         type=int,
-        default=DEFAULT_MAX_WAIT_SECONDS,
+        default=None,
         help="client-side queue/provisioning wait budget (not sent to Vertex)",
     )
     parser.add_argument(
@@ -561,8 +788,12 @@ def main() -> int:
     parser.add_argument(
         "--preflight", action="store_true", help="validate and print the plan without submitting"
     )
+    parser.add_argument("--self-check", action="store_true", help="run local wait/cancel checks")
     parser.add_argument("--status", help="print the state of an existing job and exit")
     args = parser.parse_args()
+
+    if args.self_check:
+        return _wait_self_check()
 
     if args.project != PROJECT or args.region != REGION:
         raise SystemExit(
@@ -633,6 +864,15 @@ def main() -> int:
         timeout_seconds = PROBE_TIMEOUT_SECONDS
     else:
         timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+    max_wait_seconds = (
+        args.max_wait_seconds
+        if args.max_wait_seconds is not None
+        else (
+            EFFICIENCY_MAX_WAIT_SECONDS
+            if args.mode == "efficiency"
+            else DEFAULT_MAX_WAIT_SECONDS
+        )
+    )
     if args.mode in _RATE_REQUIRED_MODES and args.hourly_rate_usd is None:
         raise SystemExit(
             "ERROR: this mode requires the verified regional rate via "
@@ -659,7 +899,7 @@ def main() -> int:
         or args.projected_noncompute_total_usd < 0
     ):
         raise SystemExit("ERROR: non-compute estimate must be finite and non-negative")
-    if not math.isfinite(float(args.max_wait_seconds)) or args.max_wait_seconds < 0:
+    if not math.isfinite(float(max_wait_seconds)) or max_wait_seconds < 0:
         raise SystemExit("ERROR: --max-wait-seconds must be a finite non-negative number")
     if args.mode == "full":
         # issue #53: one bounded job, 48-hour server timeout, $50 projected
@@ -673,14 +913,14 @@ def main() -> int:
     if args.mode == "efficiency":
         if timeout_seconds > EFFICIENCY_TIMEOUT_SECONDS:
             raise SystemExit("ERROR: efficiency timeout cannot exceed 2700 seconds")
-        if args.max_wait_seconds > DEFAULT_MAX_WAIT_SECONDS:
-            raise SystemExit("ERROR: efficiency client allowance cannot exceed 600 seconds")
+        if max_wait_seconds > EFFICIENCY_MAX_WAIT_SECONDS:
+            raise SystemExit("ERROR: efficiency queue allowance cannot exceed 1800 seconds")
         if max_exposure > EFFICIENCY_MAX_JOB_EXPOSURE_USD:
-            raise SystemExit("ERROR: efficiency per-job exposure cannot exceed $1.00")
+            raise SystemExit("ERROR: efficiency per-job exposure cannot exceed $1.25")
         if hourly_rate > EFFICIENCY_MAX_HOURLY_RATE_USD:
-            raise SystemExit("ERROR: efficiency verified rate exceeds $1.03/hour")
+            raise SystemExit("ERROR: efficiency rate exceeds the user-authorized $1.00/hour cap")
         if args.projected_noncompute_total_usd > EFFICIENCY_MAX_NONCOMPUTE_USD:
-            raise SystemExit("ERROR: non-compute estimate exceeds the remaining $6.22 budget")
+            raise SystemExit("ERROR: cumulative non-compute estimate cannot exceed $2.00")
 
     _validate_image_uri(args.image_uri)
     _validate_run_label(args.run_label)
@@ -692,7 +932,7 @@ def main() -> int:
         )
     check_bounds(config_name, efficiency_role=args.efficiency_role)
 
-    exposure = _exposure_usd(hourly_rate, timeout_seconds, args.max_wait_seconds)
+    exposure = _exposure_usd(hourly_rate, timeout_seconds, max_wait_seconds)
     if not math.isfinite(exposure) or exposure > max_exposure:
         raise SystemExit(
             f"ERROR: projected exposure ${exposure:.2f} exceeds the "
@@ -700,14 +940,16 @@ def main() -> int:
         )
 
     efficiency_rows: list[dict] = []
+    projected_compute_total = EFFICIENCY_HISTORICAL_COMPUTE_RESERVE_USD
     client: aiplatform_v1.JobServiceClient | None = None
     if args.mode == "efficiency":
         client = _client(REGION)
         efficiency_rows = _load_efficiency_ledger()
-        _check_efficiency_sequence(
+        projected_compute_total = _check_efficiency_sequence(
             efficiency_rows,
             args.efficiency_slot,
             args.efficiency_role,
+            exposure,
             args.projected_noncompute_total_usd,
             args.source_sha,
             args.image_uri.split("@", 1)[1],
@@ -727,19 +969,6 @@ def main() -> int:
                 raise SystemExit(
                     f"ERROR: J3 measured projected AMP gain {amp_gain:.1%} < 10%; J4 must use FP32"
                 )
-        prior_exposure = sum(
-            float(row.get("projected_exposure_usd", 0.0)) for row in efficiency_rows
-        )
-        if prior_exposure + exposure > EFFICIENCY_MAX_TOTAL_COMPUTE_USD:
-            raise SystemExit(
-                f"ERROR: four-slot projected compute would be "
-                f"${prior_exposure + exposure:.2f}, above the $3.78 ceiling"
-            )
-        if (
-            prior_exposure + exposure + args.projected_noncompute_total_usd
-            > EFFICIENCY_MAX_TOTAL_USD
-        ):
-            raise SystemExit("ERROR: cumulative compute and other costs would exceed $10")
 
     evidence_uri = f"{args.evidence_prefix.rstrip('/')}/{args.run_label}/evidence.json"
     if _evidence_exists(evidence_uri):
@@ -795,12 +1024,23 @@ def main() -> int:
     print(f"  machine        : {MACHINE_TYPE} + 1x {ACCELERATOR_TYPE} (on-demand)")
     print(f"  image          : {args.image_uri}")
     print(f"  service account: {args.service_account}")
-    print(f"  timeout        : {timeout_seconds}s  max-wait: {args.max_wait_seconds}s")
+    print(f"  timeout        : {timeout_seconds}s  max-wait: {max_wait_seconds}s")
     print(f"  exposure       : ~${exposure:.2f} (estimate at ${hourly_rate}/h)")
     if args.mode == "efficiency":
         print(
-            f"  all-in estimate: ~${exposure + args.projected_noncompute_total_usd:.2f} "
-            "(compute + cumulative other costs)"
+            f"  submissions    : {EFFICIENCY_HISTORICAL_SUBMISSIONS} preserved + "
+            f"{EFFICIENCY_REPLACEMENT_SUBMISSIONS} replacement "
+            f"({EFFICIENCY_MAX_SUBMISSIONS} total maximum)"
+        )
+        print(
+            "  cumulative cost: "
+            f"~${projected_compute_total + args.projected_noncompute_total_usd:.2f} "
+            "including historical reservation and cumulative non-compute reserve"
+        )
+        print(
+            "  sequence cap   : "
+            f"~${EFFICIENCY_MAX_TOTAL_COMPUTE_USD + EFFICIENCY_MAX_NONCOMPUTE_USD:.2f} "
+            "including preserved failure and all four replacement slots"
         )
     print(f"  evidence       : {evidence_uri}")
 
@@ -839,8 +1079,15 @@ def main() -> int:
             resource_name=resource_name,
         )
 
-    deadline = time.monotonic() + timeout_seconds + args.max_wait_seconds + 300
-    final = _poll_until_terminal(client, resource_name, deadline)
+    submitted_at = time.monotonic()
+    start_deadline = submitted_at + max_wait_seconds
+    overall_deadline = start_deadline + timeout_seconds + CANCEL_CONFIRMATION_SECONDS
+    final = _poll_until_terminal(
+        client,
+        resource_name,
+        start_deadline=start_deadline,
+        overall_deadline=overall_deadline,
+    )
     print(f"final state: {final.name}")
     if args.mode == "efficiency":
         _update_efficiency_slot(
