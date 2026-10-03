@@ -540,21 +540,39 @@ def _poll_until_terminal(
 ) -> tuple[JobState, bool]:
     last = ""
     cancel_deadline: float | None = None
+    started_within_deadline = False
+    queue_deadline_missed = False
     while True:
         job = client.get_custom_job(name=resource_name)
         state = _state(job)
         if state.name != last:
             print(f"  state: {state.name}", flush=True)
             last = state.name
-        if state in _TERMINAL:
-            return state, cancel_deadline is not None
         now = time.monotonic()
-        started = job.start_time is not None or state == JobState.JOB_STATE_RUNNING
-        if started and job.start_time is not None and job.create_time is not None:
-            started = job.start_time <= job.create_time + timedelta(seconds=max_wait_seconds)
-        elif started:
-            started = now < start_deadline
-        if not started and cancel_deadline is None and now >= start_deadline:
+        if job.start_time is not None and job.create_time is not None:
+            started_within_deadline = (
+                job.start_time
+                <= job.create_time + timedelta(seconds=max_wait_seconds)
+            )
+            queue_deadline_missed |= not started_within_deadline
+        elif not started_within_deadline and (
+            job.start_time is not None or state == JobState.JOB_STATE_RUNNING
+        ):
+            if now < start_deadline:
+                started_within_deadline = True
+            else:
+                queue_deadline_missed = True
+        if state in _TERMINAL:
+            if (
+                state == JobState.JOB_STATE_SUCCEEDED
+                and not started_within_deadline
+                and now >= start_deadline
+            ):
+                queue_deadline_missed = True
+            return state, queue_deadline_missed
+        if not started_within_deadline and now >= start_deadline:
+            queue_deadline_missed = True
+        if queue_deadline_missed and cancel_deadline is None:
             try:
                 client.cancel_custom_job(name=resource_name)
             except Exception as exc:
@@ -670,6 +688,38 @@ def _wait_self_check() -> int:
         failures.append("late-start job was not cancelled after the provisioning deadline")
     else:
         print("  PASS queue: late RUNNING transition is cancelled by server timestamps")
+
+    class LateSuccessClient:
+        def __init__(self) -> None:
+            self.cancel_count = 0
+
+        def get_custom_job(self, *, name: str) -> FakeJob:
+            return FakeJob(
+                JobState.JOB_STATE_SUCCEEDED,
+                start_time=datetime(2026, 10, 3, 12, 30, 1, tzinfo=UTC),
+                create_time=datetime(2026, 10, 3, 12, 0, tzinfo=UTC),
+            )
+
+        def cancel_custom_job(self, *, name: str) -> None:
+            self.cancel_count += 1
+
+    late_success_client = LateSuccessClient()
+    with patch(__name__ + ".time.monotonic", return_value=2000.0):
+        late_success_state, late_success_missed = _poll_until_terminal(
+            cast(aiplatform_v1.JobServiceClient, late_success_client),
+            "late-success-job",
+            start_deadline=1800.0,
+            max_wait_seconds=1800,
+            overall_deadline=5100.0,
+        )
+    if (
+        late_success_state != JobState.JOB_STATE_SUCCEEDED
+        or not late_success_missed
+        or late_success_client.cancel_count != 0
+    ):
+        failures.append("late terminal success was not marked as a consumed queue-deadline slot")
+    else:
+        print("  PASS queue: terminal success after a late start remains a consumed slot")
 
     source_sha = "a" * 40
     image_digest = "sha256:" + "b" * 64
