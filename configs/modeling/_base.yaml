@@ -33,6 +33,7 @@ ard_root: null
 # Determinism: fixed seed + deterministic kernels. Recorded at run level;
 # byte identity is still environment/hardware/library dependent.
 seed: 0
+stage1_efficiency_cache_max_bytes: 0
 
 # ── data ──────────────────────────────────────────────────────────────
 data:
@@ -48,6 +49,8 @@ data:
   mode: eager             # real only; eager (preload) | stream (lazy per-patch reads)
   num_workers: 0          # real only; stream loader workers (0 = load in-process)
   shuffle_train: false    # real only; stream mode only; seeded deterministic train order
+  pin_memory: false       # real only; measured on the Vertex GPU path before enabling
+  cache_root: null        # real only; opt-in job-local efficiency cache
 
 # ── model (fixed deterministic 2D U-Net) ──────────────────────────────
 model:
@@ -59,6 +62,7 @@ trainer:
   max_epochs: 5
   learning_rate: 1.0e-3
   weight_decay: 0.0
+  precision: "32-true"
   accelerator: "auto"     # cpu | gpu | mps | auto
   devices: "auto"         # auto, an int, or a device list
 

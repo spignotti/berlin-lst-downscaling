@@ -1,0 +1,43 @@
+# @package _global_
+# Bounded, train/validation-only Stage-1 efficiency cohort. This profile is not
+# a training-quality run and cannot select or score a full Stage-1 checkpoint.
+defaults:
+  - stage1_locked
+  - _self_
+
+stage1_lock: false
+stage1_full: false
+stage1_probe: false
+stage1_efficiency: true
+stage1_efficiency_role: baseline
+stage1_efficiency_cache_max_bytes: 42949672960
+stage1_efficiency_fit: false
+stage1_residual_prior: true
+
+data:
+  splits: ["train", "validation"]
+  max_patches_per_split: 512
+  # decision: request the pre-registered minima to keep each 45-minute job bounded.
+  pin_memory: false
+  cache_root: null
+  probe:
+    max_refs_per_split:
+      train: 384
+      validation: 128
+    max_refs_per_scene: 16
+    require_partial_masks: true
+    min_admitted_per_split:
+      train: 384
+      validation: 128
+    min_train_years: 3
+
+trainer:
+  max_epochs: 1
+  accelerator: "gpu"
+  devices: 1
+  precision: "32-true"
+
+output_root: "data/runs/stage1-efficiency"
+
+wandb:
+  mode: "online"
