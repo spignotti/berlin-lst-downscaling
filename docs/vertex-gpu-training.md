@@ -108,6 +108,7 @@ gcloud builds submit --project=berlin-lst-training \
 
 GPU-verified image digests:
 - #38 acceptance smoke: `sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea`
+- #53 cheap-runtime smoke (cache + 16-mixed, SHA `8bd094b`): `sha256:8772b5c8a6349448e820404c75008c59f9df8b63aa1099088e7deffeee90d887`
 - #45 bounded Stage-1 probe (built from the probe tree): `sha256:78430e03643a328775897db9a99b296d70621db73b5019c0b72ea68bff74777e`
 
 The image must expose the NVIDIA driver at runtime. The T4 device nodes are
@@ -383,7 +384,9 @@ incomplete and is not a GO.
 
 ## Acceptance record
 
-Status: **passed** (2026-10-01).
+### #38 GPU path (2026-10-01)
+
+Status: **passed**.
 
 | Field | Value |
 |---|---|
@@ -392,23 +395,30 @@ Status: **passed** (2026-10-01).
 | Source SHA | `ef80930a202e82bc99cec12655e6d600004e9d1a` |
 | Image digest | `sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea` |
 | Terminal state | `JOB_STATE_SUCCEEDED` |
-| Timing | created 00:07:08Z, started 00:13:17Z, ended 00:14:18Z (≈11 min wall, ≈1 min compute after provisioning) |
 | Evidence | `gs://berlin-lst-training-data/qa/modeling/vertex-smoke/vertex-smoke-20261001T000657Z-139d32/evidence.json` |
-| W&B run | `comfy-energy-26` — https://wandb.ai/pignottisilas-berliner-hochschule-f-r-technik/berlin-lst-downscaling/runs/4w4rkp7k |
+| W&B run | `comfy-energy-26` |
 
-Verified: real streamed reads from the published roots (4 indexed refs admitted
-per split, 0 exclusions), one epoch on the GPU (`train/loss=304.0`,
-`validation/mae_100m=302.0`), best-checkpoint selection and CPU reload check,
-W&B online with the vault key injected at runtime, create-only QA evidence,
-clean teardown and no persistent GPU.
+Verified the original streamed GPU lifecycle (4 refs/split, one epoch, W&B
+online, create-only evidence).
 
-Failure history resolved along the way (each a separate, bounded attempt): the
-`slim` base lacked `libexpat1` (rasterio import); Hydra could not write its log
-to a root-owned `/app`; the container had no NVIDIA driver library path; the
-checkpoint-reload check fed CPU batches to a GPU model. All four are fixed in
-the image/worker; no full Stage-1 run was performed.
+### #53 cheap-runtime smoke (2026-10-05)
 
-Limitations: this proves the GPU execution path and lifecycle, not model
-quality. Cost is compute for seven short jobs (a few minutes of T4 total);
-the exact billed amount appears in Cloud Billing, not here. The full Stage-1
-temporal run remains a separate, explicitly scheduled invocation.
+Status: **passed**. Proves job-local cache + `16-mixed` on the unlock image
+before the full Stage-1 run.
+
+| Field | Value |
+|---|---|
+| Job | `projects/996559849187/locations/europe-west3/customJobs/7397729461078065152` |
+| Region | `europe-west3` (T4, `n1-standard-4`) |
+| Source SHA | `8bd094b0758e661873bc338ef2ca6bfcad3f5883` |
+| Image digest | `sha256:8772b5c8a6349448e820404c75008c59f9df8b63aa1099088e7deffeee90d887` |
+| Run label | `vertex-smoke-20261005T101459Z-cache` |
+| Terminal state | `JOB_STATE_SUCCEEDED` |
+| Evidence | `gs://berlin-lst-training-data/qa/modeling/vertex-smoke/vertex-smoke-20261005T101459Z-cache/evidence.json` |
+| W&B run | `floral-gorge-31` — https://wandb.ai/pignottisilas-berliner-hochschule-f-r-technik/berlin-lst-downscaling/runs/jdqm4vfe |
+
+Verified: train/validation only (4 refs each, 0 exclusions), C=10, workers 0,
+`16-mixed`, one GPU epoch (`validation/mae_100m=302.0`), checkpoint selection
+and reload, W&B online, create-only evidence, clean teardown. This is a
+lifecycle check, not model quality. The full Stage-1 temporal run remains the
+next explicit invocation under issue #53.
