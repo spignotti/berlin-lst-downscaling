@@ -1,5 +1,9 @@
 # Phase-2 preparation
 
+Historical handoff, written against `gs://berlin-lst-data/`. Canonical
+storage since the 2026-09-25 cutover is `gs://berlin-lst-training-data/`
+(same keys). Current contracts: `docs/data-sources-and-contracts.md`.
+
 Short handoff record between the delivered preprocessing phase and the
 next QA/feature-engineering tasks. Normative contracts and the full
 product inventory live in `data-sources-and-contracts.md` and
