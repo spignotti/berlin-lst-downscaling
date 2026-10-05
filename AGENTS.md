@@ -1,116 +1,28 @@
 # berlin-lst-downscaling
 
-Cloud-native LST downscaling pipeline for Berlin. Uses Microsoft Planetary Computer STAC for Landsat/Sentinel-2 data access and NASA CMR (earthaccess) for ECOSTRESS data. Manifest-driven scene selection, ARD processing (COGs + STAC + ledger), and GCS-native storage.
+Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Microsoft Planetary Computer STAC; ECOSTRESS comes from NASA CMR via earthaccess. Products live in GCS.
 
-## Delivery Profile
+## Compute and storage
 
-`standard` — determined during setup interview.
+- Canonical bucket: `gs://berlin-lst-training-data/` (GCP project `berlin-lst-training`, `europe-west3`).
+- Local mount: rclone at `~/.mnt/berlin-lst/` (gcsfuse is unavailable on this x86_64 Mac).
+- Heavy pipeline runs use the On-Demand VM `berlin-lst-vm`. Start, stop, SSH, and run launchers live only in `.opencode/skills/google-access/scripts/`. Application code consumes GCS and Hydra and does not know the VM.
+- Managed GPU training runs on Vertex AI (`docs/vertex-gpu-training.md`).
+- Keep the VM stopped when it is not running a job. Deletion protection stays on; the boot disk is not auto-delete.
+- The bucket holds immutable canonical products, retained QA evidence, and ephemeral run outputs. Do not delete or rewrite canonical products outside a planned task. Do not edit retained evidence. Remove ephemeral outputs in the task that created them.
+- Logs live only at `<output_root>/logs/<pipeline>/`.
 
-Git policy: `feature-pr` — direct-main for personal/local repos (commit on default branch); feature-pr for collaborative/production/published (feature branch + PR for non-trivial work). Issue-backed exception: see `git-workflow` §Repository Policy (canonical rule). Work happens sequentially in the current checkout — one process per repository; worktrees are not used.
+## Runtime
 
-- branch/commit/PR workflow → load `git-workflow` skill
-- Git lifecycle: every planned package ends with a commit; final push after review; completed remote features open a PR by default
-- conventional commits always
-- profile-specific gates → see below
+- Pipeline telemetry goes through `log_event` in `data/io/run_logging.py`. `print()` is for validators, spikes, and human-oriented CLI summaries.
+- W&B tracks experiments and records the Git commit per run.
 
-## Tech Stack
+## Validation
 
-- Python 3.12
-- uv — package management
-- ruff — linting and formatting
-- pyright — type checking
-- nox — validation entrypoint
-- wandb — experiment tracking
-- pydantic-settings — env-based config
-- google-cloud-storage — bucket access
-- pystac-client, odc-stac, rioxarray — PC STAC + EO data (in use)
-- _planned (training stack, not yet used):_ zarr, PyTorch, Lightning, TorchGeo
+- Default nox sessions are `lint` and `typecheck`. There is no pytest session. Quality is real-data smoke and QA gates (`uv run nox -s smoke-*` and the stage validators). Do not add tests unless asked.
+- CI on `main` and pull requests runs `uv run --locked nox`.
 
-## Project Type
+## Planning
 
-`data-pipeline`
-
-## Verification
-
-How to establish that a change is done, using non-mutating commands or named manual probes:
-
-- `uv run nox` — full validation gate; run before every commit
-- `nox -s lint` — docs, config, comment-only changes
-- `nox -s lint typecheck` — structural changes (new modules, imports, type signatures)
-- No test session — tests are opt-in. Quality validated via real-data QA gates (smoke, spike scripts), not unit tests.
-
-PR CI: `expected`
-
-## Data Safety
-
-- The bucket holds immutable canonical products, retained QA evidence, and ephemeral run outputs. Never delete or rewrite canonical products outside a planned task; never modify retained evidence; remove ephemeral outputs in the task that created them.
-- Logs live only at `<output_root>/logs/<pipeline>/`; never at the repo root or outside the run's output root.
-- Remove temporary/one-off scripts before closing a task.
-- The VM stays stopped and protected (deletion protection on, boot disk not auto-delete) when not actively running the Dynamic pipeline.
-- Secrets via ENV, never committed.
-
-## Compute Placement
-
-- Compute-heavy production work runs on the GCP VM (On-Demand `berlin-lst-vm`); managed model training runs on Vertex AI.
-- VM lifecycle orchestration (start/stop/ssh/status, run launchers) lives **only** in `.opencode/skills/google-access/scripts/` — never in application source under `src/` or repo `scripts/`.
-- Application code stays VM-agnostic: it consumes GCS and takes config via Hydra; only the skill launchers know the VM.
-
-## Conventions
-
-- follow existing patterns before introducing new ones
-- keep the README honest and presentable — this is portfolio work
-- **No tests unless explicitly requested** — QA is validated through real-data smoke/spike scripts, not unit tests
-- **Build order:** Spike → Core → Framework (not the reverse — no premature scaffolding)
-- Pipeline telemetry goes through `log_event` (`data/io/run_logging.py`), never raw `print()`; `print()` is allowed only for validators, spikes, and human-oriented CLI summaries.
-
-## Library Documentation
-
-Context7 MCP is available in this project. When working with any external library, use it to fetch current, version-specific documentation rather than relying on training data. Invoke with the library name or a Context7 library ID (e.g. `/fastapi/fastapi`, `/pydantic/pydantic`).
-
-## Known Constraints
-
-- Storage: Bucket mounted locally via rclone (not gcsfuse — x86_64 macOS limitation) at `~/.mnt/berlin-lst/`. See `.opencode/skills/google-access/` for mount/access commands.
-- Reproducibility: env lock (uv), Git commit hash logged per W&B run.
-- macOS x86_64 ceiling: `numpy<2`, `torch<2.3` for training stack.
-
-## Project Contract
-
-Status: not-required
-Manifest: TECHNICAL_CONTRACT.md
-Activation reason: none
-Opt-out reason: none
-
-<!-- Set by setup: production projects become `active` unless the user explicitly opts out with a reason. Set on request for any project: "set up a project contract". -->
-
-## Documentation
-
-- `README.md` — public project overview: architecture, status, minimal setup.
-- `docs/phase-1-delivery.md` — delivered data products and phase-2 handoff.
-- `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger contracts.
-- `docs/phase-2-preparation.md` — phase-2 preparation state.
-- `docs/patch-read-timing.md` — real patch read timing measurement and its no-optimization decision.
-- `docs/baseline-full-results.md` — full validation/test naive baseline anchor (issue #39) with its run artifact.
-- `docs/vertex-gpu-training.md` — Vertex GPU launch recipe: bounded acceptance smoke (issue #38) and bounded Stage-1 probe (issue #45) — image, identities, secret ownership, cost bounds, evidence.
-- `docs/stage1-probe-results.md` — bounded Stage-1 learning probe result (issue #45): cohort, six-epoch curve, predeclared screen, go/no-go.
-
-## Notion Integration
-
-Notion Page ID: 28c35645-1f66-8057-b647-db5aebf191a5
-
-## GitHub Issues
-
-Issues: on
-Repo: spignotti/berlin-lst-downscaling
-Project: spignotti/1
-
-## PR Review
-
-Mode: basic
-
-## Merge Workflow
-
-Merges are decided by human review plus local validation (`uv run nox`) and GitHub mergeability (`CLEAN`/`MERGEABLE`) with no failing visible checks.
-
-Post-PR review is Build-managed for a PR whose verified base commit carries the `PR CI: expected` declaration above: Build waits for the pull-request checks on the exact head, reports the readiness evidence, then asks once and performs the squash merge. The merge is never unattended — that confirmation is always required.
-
-The `Mode: basic` gate above remains the `/pr-review` path for issue-backed PRs that do not resolve a Build-managed readiness case. Both resolve their mode from the verified PR base SHA, so the `PR CI: expected` declaration applies to PRs based on a `main` that already contains it, not to the PR that introduces it.
+- Notion page: `28c35645-1f66-8057-b647-db5aebf191a5`
+- GitHub: `spignotti/berlin-lst-downscaling`, project `spignotti/1`
