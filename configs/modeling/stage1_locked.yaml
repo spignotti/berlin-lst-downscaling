@@ -36,17 +36,40 @@
 # Scope: full temporal train/validation over every published patch, W&B online.
 # This is an explicit, expensive invocation — not run by CI. Do not point
 # output_root at a canonical release or retained QA root.
+#
+# Isolation (issue #53): the fit reads train/validation only; the 2025 test
+# split is scored once, after the selected checkpoint is frozen, by a separate
+# test-only pass in the lifecycle. `assert_stage1_lock` and
+# `assert_stage1_full_bounds` fail closed on any split, device, or scope drift
+# before a run directory is created or a paid job starts.
 defaults:
   - real_full
   - _self_
 
-# Lock marker; the runner requires it when this profile is selected, so the
-# guard cannot be disabled by overriding it away.
+# Lock markers; the runner requires them when this profile is selected, so the
+# guards cannot be disabled by overriding them away.
 stage1_lock: true
+stage1_full: true
 stage1_residual_prior: true
 
 data:
-  n_active_channels: 10   # first 10 of the fixed V3 28-channel order
+  n_active_channels: 10            # first 10 of the fixed V3 28-channel order
+  splits: ["train", "validation"]  # the 2025 test split is scored once, after freeze
+  # Frozen cheap runtime from docs/stage1-efficiency.md (J1–J4).
+  # Operational retunes only; the frozen method above is unchanged.
+  # cache_root stays null here: run.py composes <output_root>/cache so each
+  # job keeps a job-local cache.
+  batch_size: 4
+  mode: stream
+  num_workers: 0
+  shuffle_train: true
+  pin_memory: false
+  cache_max_bytes: 12884901888    # 12 GiB fit-cache budget (8.64 GiB payload + headroom)
+
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"           # candidate; cached FP32 is the preverified fallback
 
 output_root: "data/runs/modeling-stage1-locked"
 

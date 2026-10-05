@@ -25,6 +25,7 @@ defaults:
   - _self_
 
 stage1_lock: false
+stage1_full: false
 stage1_probe: true
 stage1_residual_prior: true
 
