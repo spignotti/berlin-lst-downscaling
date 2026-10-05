@@ -122,8 +122,9 @@ Scripts are grouped by role under `scripts/`:
   `retire_feature_release`, `audit_cloud_masking`)
 
 Each script is self-documenting (`uv run python scripts/<group>/<name>.py
---help`) and runnable directly on the VM. VM lifecycle orchestration lives in
-the `google-access` OpenCode skill, not in the repository.
+--help`) and runnable directly on the VM. VM lifecycle (start, stop, SSH,
+and the fail-closed `run-*-vm.sh` launchers) lives in
+`.opencode/skills/google-access/`.
 
 ## Documentation
 
@@ -131,5 +132,10 @@ the `google-access` OpenCode skill, not in the repository.
   and product contracts.
 - `docs/pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
   contract for real-data training (WB3), implemented by `modeling/`.
-- `docs/gcs-inventory-and-transfer.md` — GCS bucket inventory and the
-  copy-first mirror runbook for a later account move.
+- `docs/vertex-gpu-training.md` — Vertex AI GPU launch recipe.
+- `docs/gcs-inventory-and-transfer.md` — completed 2026-09-25 bucket
+  cutover archive.
+- `docs/phase-1-delivery.md`, `docs/phase-2-preparation.md` — historical
+  preprocessing handoff (paths in those files predate the cutover).
+- Result notes (`docs/baseline-full-results.md`, `docs/stage1-*.md`) are
+  GO/NO-GO evidence for individual runs.

@@ -22,7 +22,12 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 - Default nox sessions are `lint` and `typecheck`. There is no pytest session. Quality is real-data smoke and QA gates (`uv run nox -s smoke-*` and the stage validators). Do not add tests unless asked.
 - CI on `main` and pull requests runs `uv run --locked nox`.
 
+## Git
+
+- Work on a feature branch. Open a pull request into `main`. Squash-merge after the `validate` check is green.
+- Open a GitHub issue for a change to method, a data product, or a training run. The title says what changes. The body states the current state, the desired state, and what is out of scope. Hygiene (lint, harness, typos) needs no issue. Notion holds the plan.
+
 ## Planning
 
 - Notion page: `28c35645-1f66-8057-b647-db5aebf191a5`
-- GitHub: `spignotti/berlin-lst-downscaling`, project `spignotti/1`
+- GitHub: `spignotti/berlin-lst-downscaling`

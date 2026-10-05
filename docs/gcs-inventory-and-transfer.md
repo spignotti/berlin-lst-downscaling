@@ -1,12 +1,13 @@
 # GCS inventory and account transfer runbook
 
-Records what must be preserved from the current GCS bucket, defines a
-copy-first mirror procedure for a later move to a new GCP account, and
-lists the cutover changes that a move would require.
+Completed 2026-09-25. Canonical storage is `gs://berlin-lst-training-data/`
+(project `berlin-lst-training`). This file is the archive of the
+pre-cutover inventory, the copy-first procedure, and the cutover record.
+It is not an open runbook.
 
-This document is a record and a procedure. It performs no transfer,
-changes no application path, and deletes nothing. The actual transfer is
-a separate, explicitly approved operation.
+The snapshot and command examples below still name the retired source
+`gs://berlin-lst-data` (project `masterarbeit-berlin-lst-v2`, deleted
+2026-09-26). Read them as history.
 
 ## Bucket identity (observed 2026-09-23)
 

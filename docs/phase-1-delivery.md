@@ -1,5 +1,9 @@
 # Phase 1 delivery
 
+Historical handoff, written against `gs://berlin-lst-data/`. Canonical
+storage since the 2026-09-25 cutover is `gs://berlin-lst-training-data/`
+(same keys). Current contracts: `docs/data-sources-and-contracts.md`.
+
 Records what the preprocessing phase built and published: the pipeline
 graph, the delivered data products on GCS, their metadata and stack
 interface, and the handoff state for phase 2. Operational commands,
