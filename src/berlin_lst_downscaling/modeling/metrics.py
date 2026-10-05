@@ -117,17 +117,23 @@ def masked_ssim_stats(
         raise ValueError("patch is smaller than the SSIM window")
     if not valid.any():
         return torch.zeros((), dtype=prediction_100m.dtype), torch.zeros(())
-    # Temporary computation copies: zero where invalid so the conv never sees NaN.
-    safe_pred = torch.where(valid, prediction_100m, torch.zeros_like(prediction_100m))
-    safe_target = torch.where(valid, target_100m, torch.zeros_like(target_100m))
-    _, ssim_map = _ssim(
-        safe_pred,
-        safe_target,
-        gaussian_kernel=False,
-        kernel_size=SSIM_WINDOW,
-        data_range=SSIM_DATA_RANGE,
-        return_full_image=True,
-    )
+    # FP32 boundary: the TorchMetrics convolution must execute in float32 with
+    # autocast disabled. Kelvin-scale squared moments overflow float16, which
+    # produced NaN SSIM under mixed-precision validation (J4 evidence). A bare
+    # ``.float()`` cast is insufficient: convolution autocast would downcast
+    # again inside an enabled region.
+    with torch.autocast(device_type=prediction_100m.device.type, enabled=False):
+        # Temporary computation copies: zero where invalid so the conv never sees NaN.
+        safe_pred = torch.where(valid, prediction_100m, torch.zeros_like(prediction_100m)).float()
+        safe_target = torch.where(valid, target_100m, torch.zeros_like(target_100m)).float()
+        _, ssim_map = _ssim(
+            safe_pred,
+            safe_target,
+            gaussian_kernel=False,
+            kernel_size=SSIM_WINDOW,
+            data_range=SSIM_DATA_RANGE,
+            return_full_image=True,
+        )
     # A centre is supported only when its whole window is valid, which also
     # excludes the pad-wide border whose window would fall outside the patch.
     supported = F.avg_pool2d(valid.to(ssim_map.dtype), kernel_size=SSIM_WINDOW, stride=1) == 1.0
@@ -137,6 +143,8 @@ def masked_ssim_stats(
     values = inner[supported]
     if values.numel() == 0:
         return torch.zeros((), dtype=ssim_map.dtype, device=ssim_map.device), torch.zeros(())
+    if not bool(torch.isfinite(values).all()):
+        raise ValueError("a supported SSIM window carries a non-finite value")
     return values.sum(), torch.tensor(
         float(values.numel()), dtype=ssim_map.dtype, device=ssim_map.device
     )

@@ -132,7 +132,9 @@ and the fail-closed `run-*-vm.sh` launchers) lives in
   and product contracts.
 - `docs/pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
   contract for real-data training (WB3), implemented by `modeling/`.
-- `docs/vertex-gpu-training.md` — Vertex AI GPU launch recipe.
+- `docs/vertex-gpu-training.md` — Vertex AI GPU launch recipe (smoke + full Stage-1).
+- `docs/stage1-efficiency.md` — closed efficiency gate; frozen cheap runtime.
+- `docs/stage1-full-results.md` — Stage-1 full temporal run (issue #53).
 - `docs/gcs-inventory-and-transfer.md` — completed 2026-09-25 bucket
   cutover archive.
 - `docs/phase-1-delivery.md`, `docs/phase-2-preparation.md` — historical

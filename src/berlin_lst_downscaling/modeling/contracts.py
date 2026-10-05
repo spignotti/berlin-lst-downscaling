@@ -195,6 +195,24 @@ class RealBatch:
     mask_100m: Tensor
     metadata: list[RealSampleMeta]
 
+    def pin_memory(self) -> RealBatch:
+        """Pin tensor storage so DataLoader recognizes this custom batch type."""
+        self.features = self.features.pin_memory()
+        self.lst_prior = self.lst_prior.pin_memory()
+        self.target_100m = self.target_100m.pin_memory()
+        self.mask_100m = self.mask_100m.pin_memory()
+        return self
+
+    def to(self, device: torch.device | str, non_blocking: bool = False) -> RealBatch:
+        """Move tensor fields for Lightning's custom-batch transfer hook."""
+        return RealBatch(
+            features=self.features.to(device, non_blocking=non_blocking),
+            lst_prior=self.lst_prior.to(device, non_blocking=non_blocking),
+            target_100m=self.target_100m.to(device, non_blocking=non_blocking),
+            mask_100m=self.mask_100m.to(device, non_blocking=non_blocking),
+            metadata=self.metadata,
+        )
+
 
 def validate_real_batch(batch: RealBatch, *, n_active_channels: int) -> None:
     """Validate the real batch contract at the task boundary.

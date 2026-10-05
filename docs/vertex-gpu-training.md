@@ -2,23 +2,29 @@
 
 The repo trains on the CPU smoke VM (`berlin-lst-vm`) for pipeline and smoke
 work, and on **Vertex AI Custom Training** for GPU work (`AGENTS.md`
-§Compute Placement). This document is the launch recipe for two bounded Vertex
-jobs on the real-data modeling path: the GPU acceptance smoke (issue #38,
-`--mode smoke`) and the Stage-1 learning probe (issue #45, `--mode probe`,
-result in `docs/stage1-probe-results.md`). It does **not** cover the Stage-1
-full temporal run, which remains a separate explicit invocation.
+§Compute Placement). This document is the launch recipe for the cheap Stage-1
+path: a bounded GPU smoke (`--mode smoke`) that proves job-local cache +
+16-mixed, then the full temporal Stage-1 run (`--mode full`, issue #53).
+Historical probes (#45/#47) and the closed efficiency gate
+(`docs/stage1-efficiency.md`) stay documented below as prior evidence.
+
+**Current path:** launcher modes are `smoke`, `probe`, `probe-lr3`, and `full`.
+Efficiency and verification modes are closed. Frozen full-run runtime: job-local
+cache, batch 4, workers 0, `pin_memory: false`, `16-mixed`.
 
 ## What the path is (and is not)
 
 - It runs the **existing** runner (`scripts/runners/run_modeling.py`) with the
-  `vertex_smoke` config through the `real` lifecycle: streamed patch reads from
-  the published GCS roots, one epoch, at most four indexed refs per split, one
-  GPU, W&B online, checkpoints on the disposable worker disk.
-- It is a bounded **infrastructure and lifecycle** check, not a model-quality
-  run. It proves device use, streamed I/O, online logging, checkpoint selection
-  and reload, and clean teardown.
-- It is deliberately a single, capped, on-demand job. There is no persistent
-  GPU resource, no automatic retry, and no accelerator or region substitution.
+  selected Hydra profile through the `real` lifecycle on one on-demand T4,
+  W&B online, checkpoints on the disposable worker disk, create-only evidence
+  under the approved QA prefix.
+- The smoke is a bounded **infrastructure and lifecycle** check for the cheap
+  runtime (cache build, AMP, W&B, checkpoint reload). It is not a model-quality
+  run.
+- The full run is the Stage-1 ablation anchor (issue #53): 20 epochs over every
+  published train/validation patch, then one-shot 2025 test scoring.
+- Jobs are single, capped, and on-demand. There is no persistent GPU resource,
+  no automatic retry, and no accelerator or region substitution.
 
 ## Region
 
@@ -169,6 +175,137 @@ uv run python scripts/validators/validate_stage1_probe.py --self-check
 uv run python scripts/validators/validate_stage1_probe.py --evidence <evidence.json>
 ```
 
+### Stage-1 efficiency jobs (`--mode efficiency`)
+
+The four roles measure the source/cache path, loader/transfer choices,
+FP32/16-mixed compute and a matched learning guard. The fixed replacement
+schedule is `1=baseline`, `2=cache`, `3=diagnostic`, `4=final`. The first J1
+attempt failed before measurement setup because entrypoint log creation made the
+measurer's output root non-empty. Its incomplete, create-only evidence and
+original ledger are retained; it is never retried or overwritten. The replacement
+uses fixed session `stage1-efficiency-recovery-20261003` and a separate ignored
+ledger. The recovery allows four replacement submissions, at most five total
+including the failed original. Full Stage-1 remains blocked regardless of
+efficiency results.
+
+Each replacement has a 2700-second server timeout and a maximum 1800-second
+provisioning wait. If the resource has not entered `JOB_STATE_RUNNING` by that
+deadline, the launcher cancels that exact resource once and waits for a terminal
+state. A server `startTime` after `createTime + 1800 seconds` also counts as a
+missed allowance, even if first observed later as `JOB_STATE_RUNNING`; if it is
+already terminal, preserve that terminal state but still consume the slot and
+stop. Ambiguous submit/cancel responses stop the sequence; inspect the saved
+resource and never resubmit it. Automatic retries are disabled. The user-approved
+rate input is `$1.00/h`; projected exposure is at most `$1.25` per replacement.
+The conservative aggregate estimate reserves the failed attempt's `$0.9167`,
+four replacements at `$1.25` each, and `$2.00` cumulative non-compute costs,
+totalling about `$7.92` under the `$10` experiment ceiling. The `$2.00` reserve
+supersedes the prior `$0.20` estimate and includes both image builds, storage,
+and logging. These are estimates, not provider spending caps; the active
+Billing-account rate and actual charges are not independently verified.
+All replacement slots use one clean source SHA and one pinned image digest.
+
+Before building or submitting, run the offline orchestration checks:
+
+```bash
+bash -n scripts/operators/vertex_entrypoint.sh
+uv run --group operators python scripts/operators/launch_vertex_modeling.py --self-check
+uv run python scripts/validators/check_efficiency_output_root.py
+bash scripts/validators/check_vertex_efficiency_entrypoint.sh
+uv run python scripts/validators/validate_training_efficiency.py --self-check
+```
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode efficiency --efficiency-slot 1 --efficiency-role baseline \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<efficiency-digest> \
+  --source-sha <clean-commit> --run-label stage1-efficiency-j1-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --efficiency-workers 2 --efficiency-precision 32-true \
+  --hourly-rate-usd 1.00 \
+  --hourly-rate-source 'User-authorized Vertex Frankfurt range; USD 1.00/hour.' \
+  --timeout-seconds 2700 \
+  --projected-noncompute-total-usd 2.00 \
+  --max-wait-seconds 1800 --max-exposure-usd 1.25 --preflight
+```
+
+`--preflight` is read-only and does not reserve a slot. A real submission
+reserves its slot immediately before `create_custom_job`. Preserve the original
+ledger at `data/runs/.stage1-efficiency-control/slots.json`; do not reset either
+ledger or reuse labels. After each replacement, the next slot remains blocked
+until the job is `SUCCEEDED`, its evidence and checkpoint are downloaded, and
+the independent validator marks the recovery-ledger slot validated. A worker
+failure may retain incomplete `evidence.json`; it consumes the slot and stops
+the sequence. The confirmed J1 checkpoint-location defect and J3 duplicate
+loader-timing requirement may each be revalidated once with
+`--record-revalidation --mark-ledger`, using the same hash-identical evidence
+and no new Vertex job. The J3 timing comparison uses the validated J2 loader
+measurement and verifies that J3 used its selected settings. The ledger keeps
+both the initial failure and the revalidation verdict. No other failed
+validation may be reopened.
+
+J1 validation:
+
+```bash
+uv run --group operators python scripts/validators/validate_training_efficiency.py \
+  --evidence <j1-evidence.json> \
+  --checkpoint <downloaded-j1-best.ckpt> \
+  --baseline docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json \
+  --mark-ledger
+```
+
+J2 adds `--control-evidence <validated-j1-evidence.json>`. J3 supplies J1 and
+J2 via `--control-evidence` and `--cache-evidence`. J4 supplies J1/J2/J3 via
+`--control-evidence`, `--cache-evidence`, and `--diagnostic-evidence`, and both
+`--checkpoint <downloaded-j4-best.ckpt>` and
+`--control-checkpoint <downloaded-j1-best.ckpt>`. Failed validation with
+`--mark-ledger` blocks later slots, except for the two authorized one-time
+`--record-revalidation` cases above. The validator
+also checks the recorded Vertex resource is `JOB_STATE_SUCCEEDED` before
+marking a slot; after a client timeout, poll with `--status`, then validate the
+downloaded evidence without resubmitting.
+
+### Full Stage-1 run (`--mode full`)
+
+Issue #53. Uses `configs/modeling/stage1_locked.yaml` with the frozen cheap
+runtime from `docs/stage1-efficiency.md`. Fit admits train/validation only;
+the 2025 test split is scored once after checkpoint freeze. Decision table and
+readout live in `docs/stage1-full-results.md`. Run only after a successful
+`--mode smoke` on the same image digest.
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode full \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<full-digest> \
+  --source-sha <clean-commit> --run-label stage1-full-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 0.90 --preflight
+```
+
+The client wait can outlast a session; if it expires the job keeps running
+server-side, so reconnect with `--status <resource-name>` (never resubmit) and
+cancel a runaway job with `gcloud ai custom-jobs cancel <resource-name>
+--region=europe-west3`. The 48 h server timeout is the hard ceiling.
+
+Validate a retained full-run result and re-derive its tier with no source read or
+submission:
+
+```bash
+uv run python scripts/validators/validate_stage1_full.py --self-check
+uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json>
+# optional: also verify the downloaded checkpoint's bytes against its recorded sha256
+uv run python scripts/validators/validate_stage1_full.py --evidence <evidence.json> \
+  --checkpoint <downloaded best.ckpt>
+```
+
+Exit codes: `0` GO, `2` usable anchor, `3` NO-GO, `1` incomplete/undecidable.
+
 Submission uses the low-level Vertex `JobServiceClient` with an explicit
 `CustomJobSpec` (single worker pool, `service_account`, and `Scheduling` with
 `timeout` and `disable_retries`). No `base_output_directory` is set, so no GCS
@@ -215,7 +352,8 @@ instead of resubmitting. Cancel a runaway job with
 ## Retained evidence
 
 Checkpoints and the local run directory stay on the worker disk and are **not**
-retained. On success, the worker writes one small create-only object:
+retained by the smoke and probe profiles. On success, the worker writes one
+small create-only object:
 
 ```
 gs://berlin-lst-training-data/qa/modeling/vertex-smoke/<run-label>/evidence.json
@@ -226,6 +364,13 @@ Fields: `run_label`, `source_sha`, `image_digest`, `generated_at`, `run`
 skips, exclusions, patch IDs), and a bounded `result_tail` of the runner's
 stdout. Upload uses `if_generation_match=0`, so retained evidence is never
 overwritten and the run label must never be reused.
+
+The `full` profile additionally retains, under the same prefix, the selected
+checkpoint (`best.ckpt`, uploaded **first**) and `evidence.json` (uploaded
+**last**) with the epoch curve, full-run summary, fit and test `data_scope`,
+checkpoint SHA-256 and byte size. A manifest that references a checkpoint cannot
+precede it; a missing or checksum-invalid checkpoint means the package is
+incomplete and is not a GO.
 
 ## CPU VM versus Vertex
 

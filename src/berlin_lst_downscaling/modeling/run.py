@@ -20,11 +20,14 @@ Reproducibility posture
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast
 
 import torch
 from lightning.pytorch import LightningModule, Trainer, seed_everything
@@ -37,9 +40,13 @@ from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
     assert_probe_minima,
+    assert_stage1_efficiency,
+    assert_stage1_efficiency_scope,
+    assert_stage1_full_bounds,
     assert_stage1_lock,
     assert_stage1_probe,
     assert_stage1_probe_lr3,
+    assert_stage1_runtime,
     assert_vertex_smoke_bounds,
     contract_invariants,
     guard_modeling_config,
@@ -63,6 +70,71 @@ from berlin_lst_downscaling.modeling.synthetic import (
 from berlin_lst_downscaling.modeling.task import LSTRegressionTask
 
 _logger = logging.getLogger(__name__)
+
+# Extra free disk required beyond the planned cache/checkpoint scratch, so a
+# full-size job cannot fill its worker disk mid-run.
+_FULL_CACHE_DISK_RESERVE_BYTES = 10 * 1024**3
+
+
+def _resolve_cache_budget(cfg: DictConfig) -> int:
+    """Return the job-local cache budget in bytes.
+
+    Reads the normal ``data.cache_max_bytes`` field with fallback to the
+    legacy ``stage1_efficiency_cache_max_bytes`` root key, so historical
+    efficiency configs keep their meaning. Both missing means no cache.
+    """
+    data_cfg = cfg.get("data", {})
+    raw = data_cfg.get("cache_max_bytes", 0)
+    if isinstance(raw, bool):
+        raise ValueError(f"data.cache_max_bytes must be an int, got {raw!r}")
+    try:
+        budget = int(raw or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"data.cache_max_bytes must be an int, got {raw!r}") from exc
+    if budget < 0:
+        raise ValueError(f"data.cache_max_bytes must be >= 0, got {budget}")
+    if budget > 0:
+        return budget
+    legacy = cfg.get("stage1_efficiency_cache_max_bytes", 0)
+    if isinstance(legacy, bool):
+        raise ValueError("stage1_efficiency_cache_max_bytes must be an int")
+    return int(legacy or 0)
+
+
+def _resolve_cache_root(cfg: DictConfig, *, output_root: Path) -> Path | None:
+    """Return the job-local cache path when a positive budget is configured.
+
+    An explicit ``data.cache_root`` always wins. Otherwise a positive
+    ``data.cache_max_bytes`` (or the legacy efficiency budget key) composes
+    ``<output_root>/cache``, so smoke and full runs keep a job-local cache
+    without a static path colliding across jobs.
+    """
+    data_cfg = cfg.get("data", {})
+    raw = data_cfg.get("cache_root")
+    if raw is not None:
+        return Path(str(raw))
+    if _resolve_cache_budget(cfg) > 0:
+        return output_root / "cache"
+    return None
+
+
+def write_checkpoint_manifest(checkpoint_dir: Path, manifest_path: Path) -> dict[str, object]:
+    """Record SHA-256/bytes for the retained best/last checkpoints.
+
+    Pure inventory: hashes every ``*.ckpt`` in ``checkpoint_dir`` and writes
+    the manifest. The future full run calls this before uploading each epoch
+    package; synthetic calibration exercises the same helper. Never deletes
+    or overwrites a checkpoint.
+    """
+    entries: dict[str, dict[str, object]] = {}
+    for ckpt in sorted(checkpoint_dir.glob("*.ckpt")):
+        digest = hashlib.sha256()
+        with ckpt.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        entries[ckpt.name] = {"sha256": digest.hexdigest(), "bytes": ckpt.stat().st_size}
+    manifest_path.write_text(json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8")
+    return {"checkpoints": entries, "manifest": str(manifest_path)}
 
 
 @dataclass(frozen=True)
@@ -270,6 +342,7 @@ class EpochMetricsRecorder(Callback):
     def __init__(self, path: Path) -> None:
         self.path = path
         self._epochs: dict[int, dict[str, object]] = {}
+        self._last_amp_scale: float | None = None
 
     def _entry(self, epoch: int) -> dict[str, object]:
         return self._epochs.setdefault(
@@ -281,6 +354,8 @@ class EpochMetricsRecorder(Callback):
                 "validation_valid_cells": None,
                 "validation_ssim_100m": None,
                 "validation_ssim_windows": None,
+                "amp_scale": None,
+                "amp_scale_decreased": False,
             },
         )
 
@@ -299,12 +374,20 @@ class EpochMetricsRecorder(Callback):
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         entry = self._entry(int(trainer.current_epoch) + 1)
         entry["train_mae_100m"] = self._read(trainer, "train/mae_100m")
+        scaler = getattr(trainer.precision_plugin, "scaler", None)
+        if scaler is not None and scaler.is_enabled():
+            # One scaler read per epoch; per-batch get_scale() would introduce
+            # a CPU/GPU synchronization into the measured training hot path.
+            scale = float(scaler.get_scale())
+            entry["amp_scale"] = scale
+            entry["amp_scale_decreased"] = (
+                self._last_amp_scale is not None and scale < self._last_amp_scale
+            )
+            self._last_amp_scale = scale
         self._write()
 
     def _write(self) -> None:
-        self.path.write_text(
-            json.dumps(self.epochs, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        self.path.write_text(json.dumps(self.epochs, indent=2, sort_keys=True), encoding="utf-8")
 
     @property
     def epochs(self) -> list[dict[str, object]]:
@@ -337,26 +420,60 @@ def _residual_identity_mae(task: RealLSTTask, val_loader) -> float:
     return float(metric.compute())
 
 
-def _residual_correction_mean_abs(reloaded: RealLSTTask, val_loader) -> float:
-    """Mean absolute *pooled* Kelvin correction over valid validation cells.
+def _score_test_once(
+    cfg: DictConfig,
+    source: RealSourceConfig,
+    reloaded: RealLSTTask,
+    output_root: Path,
+) -> dict[str, object]:
+    """Score the 2025 test split once with the frozen selected checkpoint.
 
-    The correction is the model's own delta (prediction minus reconstructed
-    prior), pooled and scored with the shared path. Near zero means the selected
-    checkpoint is still a prior passthrough.
+    A test-only streamed data module reads the full published test split and
+    scores it through the same nested 10x10 pooling and cell-weighted masked MAE
+    used for validation. Callers invoke this only after the best checkpoint and
+    its validation reload have succeeded, so the test set cannot influence
+    checkpoint choice. The read scope is retained as ``test_scope.json``.
     """
-    total = 0.0
-    cells = 0.0
+    test_module = RealPatchDataModule(
+        source,
+        batch_size=int(cfg.data.batch_size),
+        max_patches_per_split=None,
+        scene_ids=None,
+        mode=str(cfg.data.get("mode", "eager")),
+        num_workers=int(cfg.data.get("num_workers", 0)),
+        shuffle_train=False,
+        seed=int(cfg.seed),
+        n_active_channels=int(cfg.data.n_active_channels),
+        splits=("test",),
+    )
+    test_module.setup()
+    scope = test_module.stats()
+    (output_root / "test_scope.json").write_text(
+        json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+    metric = MaskedMAE()
     with torch.inference_mode():
-        for batch in val_loader:
+        for batch in test_module.test_dataloader():
             validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
-            delta = reloaded(batch) - reconstruct_prior_kelvin(batch.lst_prior)
-            pooled = pool_10m_to_100m(delta)
-            valid = batch.mask_100m.bool()
-            total += float(pooled[valid].abs().sum())
-            cells += float(valid.sum())
-    if cells <= 0.0:
-        raise RuntimeError("no valid validation cell for the residual correction check")
-    return total / cells
+            prediction = reloaded(batch)
+            expected = (batch.features.shape[0], 1) + tuple(batch.features.shape[2:])
+            if tuple(prediction.shape) != expected:
+                raise RuntimeError(
+                    f"test pass prediction shape mismatch: {tuple(prediction.shape)} != {expected}"
+                )
+            if not torch.isfinite(prediction).all():
+                raise RuntimeError("test pass produced non-finite predictions")
+            metric.update(pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m)
+
+    patches = scope.get("patches_per_split", {})
+    return {
+        "mae_100m": float(metric.compute()),
+        "abs_error_sum": float(metric.abs_error_sum),
+        "valid_cells": float(metric.valid_cells),
+        "patches": int(patches.get("test", 0)) if isinstance(patches, dict) else 0,
+        "scope_uri": str(output_root / "test_scope.json"),
+    }
 
 
 def _fit_contract_lifecycle(
@@ -377,6 +494,7 @@ def _fit_contract_lifecycle(
     seed_everything(seed)
 
     is_probe = bool(cfg.get("stage1_probe", False))
+    is_full = bool(cfg.get("stage1_full", False))
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     task = RealLSTTask(
         n_active_channels=int(cfg.data.n_active_channels),
@@ -384,7 +502,7 @@ def _fit_contract_lifecycle(
         depth=int(cfg.model.depth),
         learning_rate=float(cfg.trainer.learning_rate),
         weight_decay=float(cfg.trainer.weight_decay),
-        record_probe_metrics=is_probe,
+        record_probe_metrics=is_probe or is_full,
         residual_prior=residual_prior,
     )
 
@@ -405,9 +523,7 @@ def _fit_contract_lifecycle(
     )
     empty_splits = [s for s in ("train", "validation") if per_split.get(s, 0) <= 0]
     if empty_splits:
-        raise RuntimeError(
-            f"no patches admitted for split(s) {empty_splits}; refusing to train"
-        )
+        raise RuntimeError(f"no patches admitted for split(s) {empty_splits}; refusing to train")
     if is_probe:
         assert_probe_minima(cfg, scope)
 
@@ -459,10 +575,11 @@ def _fit_contract_lifecycle(
         auto_insert_metric_name=False,
     )
 
-    # The epoch recorder is a probe-only artifact: a full run keeps its previous
-    # on-disk surface unchanged.
+    # The epoch recorder is a probe/full artifact: the full Stage-1 run keeps
+    # the same retained curve so its readout does not depend on W&B alone. A
+    # plain local `real_full` invocation keeps its on-disk surface unchanged.
     recorder = (
-        EpochMetricsRecorder(output_root / "epoch_metrics.json") if is_probe else None
+        EpochMetricsRecorder(output_root / "epoch_metrics.json") if is_probe or is_full else None
     )
     callbacks: list[Callback] = [checkpoint_callback]
     if recorder is not None:
@@ -472,6 +589,10 @@ def _fit_contract_lifecycle(
         max_epochs=int(cfg.trainer.max_epochs),
         accelerator=str(cfg.trainer.accelerator),
         devices=cfg.trainer.devices,
+        precision=cast(
+            Literal["32-true", "16-mixed"],
+            str(cfg.trainer.get("precision", "32-true")),
+        ),
         deterministic=True,
         benchmark=False,
         logger=wandb_logger,
@@ -524,6 +645,8 @@ def _fit_contract_lifecycle(
         reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
         reloaded.eval()
         recheck = MaskedMAE()
+        correction_abs_sum = 0.0
+        correction_cells = 0.0
         with torch.inference_mode():
             for batch in data_module.val_dataloader():
                 validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
@@ -536,9 +659,15 @@ def _fit_contract_lifecycle(
                     )
                 if not torch.isfinite(prediction).all():
                     raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
-                recheck.update(
-                    pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m
-                )
+                pooled_prediction = pool_10m_to_100m(prediction)
+                recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
+                if residual_prior:
+                    correction = pool_10m_to_100m(
+                        prediction - reconstruct_prior_kelvin(batch.lst_prior)
+                    )
+                    valid = batch.mask_100m.bool()
+                    correction_abs_sum += float(correction[valid].abs().sum())
+                    correction_cells += float(valid.sum())
         recomputed = float(recheck.compute())
         tolerance = 1e-3 * max(1.0, abs(best_metric))
         if abs(recomputed - best_metric) > tolerance:
@@ -546,26 +675,51 @@ def _fit_contract_lifecycle(
                 f"reloaded checkpoint validation MAE {recomputed:.6f} != selected "
                 f"{best_metric:.6f} (tolerance {tolerance:.6f})"
             )
+        correction_mean = None
+        if residual_prior:
+            if correction_cells <= 0:
+                raise RuntimeError("no valid validation cell for the residual correction check")
+            correction_mean = correction_abs_sum / correction_cells
+
+        # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
+        # only after the selected checkpoint and its validation reload are
+        # frozen. The test read is a separate test-only module; its score is
+        # never fed to the fit, callbacks, or checkpoint selection.
+        test_result: dict[str, object] | None = None
+        if is_full and isinstance(data_module, RealPatchDataModule):
+            test_result = _score_test_once(cfg, data_module.source, reloaded, output_root)
 
         if recorder is not None:
             summary = {
-                "profile": "probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME,
+                "profile": (
+                    "full"
+                    if is_full
+                    else ("probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME)
+                ),
                 "epochs_completed": len(recorder.epochs),
                 "max_epochs": int(cfg.trainer.max_epochs),
                 "selection_metric": monitored,
                 "best_epoch": _best_epoch_from_path(best_checkpoint),
                 "best_metric": best_metric,
                 "reload_recomputed": recomputed,
+                "validation_abs_error_sum": float(recheck.abs_error_sum),
+                "validation_valid_cells": float(recheck.valid_cells),
                 "residual_prior": residual_prior,
                 "residual_identity_mae_k": residual_identity_mae,
-                "residual_correction_mean_abs_k": (
-                    _residual_correction_mean_abs(reloaded, data_module.val_dataloader())
-                    if residual_prior
-                    else None
-                ),
+                "residual_correction_mean_abs_k": correction_mean,
                 "resolved_config": OmegaConf.to_container(cfg, resolve=True),
             }
-            (output_root / "probe_summary.json").write_text(
+            if is_probe or is_full:
+                experiment = wandb_logger.experiment
+                summary["wandb"] = {
+                    "project": str(cfg.wandb.project),
+                    "run_id": getattr(experiment, "id", None),
+                    "url": getattr(experiment, "url", None),
+                }
+            if test_result is not None:
+                summary["test"] = test_result
+            summary_name = "full_summary.json" if is_full else "probe_summary.json"
+            (output_root / summary_name).write_text(
                 json.dumps(summary, indent=2, sort_keys=True, default=str), encoding="utf-8"
             )
 
@@ -636,6 +790,25 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     eagerly (a bounded smoke) or lazily through loader workers (a full run).
     """
     contract_invariants(cfg)
+    if bool(cfg.get("stage1_efficiency", False)) or bool(cfg.get("stage1_efficiency_fit", False)):
+        raise RuntimeError(
+            "Stage-1 efficiency profiles are closed; retained results are in "
+            "docs/stage1-efficiency.md"
+        )
+    if bool(cfg.get("stage1_verification", False)):
+        raise RuntimeError(
+            "Stage-1 verification profile is cancelled; runtime is frozen from "
+            "the J1–J4 efficiency results in docs/stage1-efficiency.md"
+        )
+    # Full Stage-1 (issue #53): the fit admits train/validation only. The 2025
+    # test split is scored once after checkpoint freeze via _score_test_once.
+    if bool(cfg.get("stage1_full", False)):
+        declared = tuple(str(s) for s in (cfg.data.get("splits") or ()))
+        if declared != ("train", "validation"):
+            raise RuntimeError(
+                "full Stage-1 fit splits must be exactly ('train', 'validation'); "
+                f"got {declared!r}"
+            )
     source = real_source_config(cfg)
     scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
     # ``null`` means unbounded (a full run); ``0`` would otherwise be falsy and
@@ -652,14 +825,27 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     probe_cfg = cfg.data.get("probe")
     probe_scope = (
         ProbeScope(
-            max_refs_per_split={
-                str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()
-            },
+            max_refs_per_split={str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()},
             max_refs_per_scene=int(probe_cfg.max_refs_per_scene),
+            require_partial_masks=bool(probe_cfg.get("require_partial_masks", False)),
         )
         if probe_cfg is not None
         else None
     )
+    output_root_hint = Path(str(cfg.get("output_root", "data/runs/modeling")))
+    cache_budget = _resolve_cache_budget(cfg)
+    cache_root = _resolve_cache_root(cfg, output_root=output_root_hint)
+    if cache_root is not None:
+        # Fail closed when the worker disk cannot hold the cache budget plus
+        # the reserve; build_patch_cache would abort mid-run otherwise.
+        free = shutil.disk_usage(output_root_hint.parent).free
+        if free < cache_budget + _FULL_CACHE_DISK_RESERVE_BYTES:
+            raise RuntimeError(
+                f"cache needs budget {cache_budget} plus "
+                f"{_FULL_CACHE_DISK_RESERVE_BYTES} reserve but only {free} are free"
+            )
+        if cache_budget <= 0:
+            raise RuntimeError("a cache path requires a positive cache budget")
     data_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
@@ -672,6 +858,9 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         n_active_channels=int(cfg.data.n_active_channels),
         splits=splits,
         probe_scope=probe_scope,
+        pin_memory=bool(cfg.data.get("pin_memory", False)),
+        cache_root=cache_root,
+        cache_max_bytes=cache_budget,
     )
     return _fit_contract_lifecycle(
         cfg,
@@ -730,9 +919,13 @@ __all__ = [
     "EpochMetricsRecorder",
     "ModelingRunResult",
     "assert_probe_minima",
+    "assert_stage1_efficiency",
+    "assert_stage1_efficiency_scope",
+    "assert_stage1_full_bounds",
     "assert_stage1_lock",
     "assert_stage1_probe",
     "assert_stage1_probe_lr3",
+    "assert_stage1_runtime",
     "assert_vertex_smoke_bounds",
     "contract_invariants",
     "guard_modeling_config",
@@ -741,4 +934,5 @@ __all__ = [
     "run_modeling",
     "run_real_training",
     "run_training",
+    "write_checkpoint_manifest",
 ]

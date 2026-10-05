@@ -1,6 +1,7 @@
 # @package _global_
-# Bounded Vertex GPU acceptance smoke: a few streamed real patches through the
-# contract-conforming lifecycle on one GPU, W&B online, local ephemeral output.
+# Bounded Vertex GPU smoke for the cheap Stage-1 runtime: a few job-local
+# cached real patches through the contract-conforming lifecycle on one GPU,
+# 16-mixed, W&B online, local ephemeral output.
 #
 # This is a one-shot paid run. `modeling/run.py:assert_vertex_smoke_bounds`
 # refuses to start if the resolved config drifts from these bounds (streamed
@@ -8,6 +9,12 @@
 # root), and the guarded launcher enforces the same bounds before submitting.
 # Checkpoints stay on the disposable worker disk; only a small metadata record
 # is retained under the approved QA prefix.
+#
+# Operational knobs match the frozen full-run runtime from
+# docs/stage1-efficiency.md (cache, workers 0, pin_memory false, 16-mixed)
+# at smoke scale. Method choices stay out of this profile: C=10 here is only
+# to exercise the same active-channel width as Stage 1, without the residual
+# lock marker.
 defaults:
   - _base
   - _self_
@@ -18,11 +25,16 @@ vertex_smoke_bounds: true
 
 data:
   kind: real
-  batch_size: 2
+  n_active_channels: 10
+  batch_size: 4
   max_patches_per_split: 4   # first 4 indexed rows per split: a bounded pass
-  mode: stream               # read each patch on demand through loader workers
-  num_workers: 2
+  splits: ["train", "validation"]  # cache path admits train/validation only
+  mode: stream               # admit via the stream reader, then build a job-local cache
+  num_workers: 0
   shuffle_train: true        # seeded, deterministic train order
+  pin_memory: false
+  cache_root: null           # composed to <output_root>/cache when budget > 0
+  cache_max_bytes: 268435456 # 256 MiB — plenty for eight C=10 patches
 
 model:
   depth: 4                   # 160 px / 2**4 = 10 px bottleneck
@@ -31,6 +43,7 @@ trainer:
   max_epochs: 1
   accelerator: "gpu"
   devices: 1
+  precision: "16-mixed"
 
 # Local ephemeral output on the worker disk. The launcher overrides this with a
 # unique job-scoped path; it must never point at a canonical or retained root.
