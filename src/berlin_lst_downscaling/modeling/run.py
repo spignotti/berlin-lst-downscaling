@@ -40,6 +40,7 @@ from berlin_lst_downscaling.modeling.channels import selection_from_config
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
+    assert_ablation_lock,
     assert_probe_minima,
     assert_stage1_efficiency,
     assert_stage1_efficiency_scope,
@@ -926,6 +927,7 @@ def _finalize_wandb(wandb_logger: WandbLogger, metadata: dict, success: bool) ->
 __all__ = [
     "EpochMetricsRecorder",
     "ModelingRunResult",
+    "assert_ablation_lock",
     "assert_probe_minima",
     "assert_stage1_efficiency",
     "assert_stage1_efficiency_scope",

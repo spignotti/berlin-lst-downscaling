@@ -26,3 +26,26 @@ Smoke (GCS-free):
 ```bash
 uv run python scripts/validators/validate_ablation_configs.py
 ```
+
+## Full temporal submit (issue #58)
+
+The Vertex launcher admits `--mode stage2` … `--mode stage5`. Each mode maps to
+the matching `*_locked` config, reuses the Stage-1 full evidence profile
+(epoch curve, one-shot test, create-only checkpoint), and keeps the same
+48 h / $50 ceilings and `--hourly-rate-usd` requirement as `--mode full`.
+
+Rebuild the modeling image from the commit that carries these configs before
+the first ablation submit; the Stage-1 digest does not include them. Run stages
+sequentially (2 → 3 → 4 → 5); do not retune between stages.
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode stage2 \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<ablation-digest> \
+  --source-sha <clean-commit> --run-label stage2-full-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 1.00 --preflight
+```
