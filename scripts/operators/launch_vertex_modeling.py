@@ -2,8 +2,10 @@
 
 Submits exactly one on-demand ``n1-standard-4`` + ``NVIDIA_TESLA_T4`` Vertex
 Custom Job in ``europe-west3``. Modes: ``smoke`` (cheap-runtime lifecycle),
-``probe`` / ``probe-lr3`` (historical recovery probes), and ``full`` (issue #53
-Stage-1 temporal run). Efficiency and verification modes are closed.
+``probe`` / ``probe-lr3`` (historical recovery probes), ``full`` (issue #53
+Stage-1 temporal run), and ``stage2``–``stage5`` (issue #58 Tag-11 ablation
+full temporal runs under the residual lock). Efficiency and verification
+modes are closed.
 
 Server-side job limits, a single worker pool, no persistent resource, and no
 retries are set here so a disconnected client cannot leave an unbounded or
@@ -64,6 +66,7 @@ from berlin_lst_downscaling.modeling.efficiency_protocol import (
     HISTORICAL_EFFICIENCY_SOURCE_SHA,
 )
 from berlin_lst_downscaling.modeling.run import (
+    assert_ablation_lock,
     assert_stage1_full_bounds,
     assert_stage1_lock,
     assert_stage1_probe,
@@ -135,24 +138,38 @@ CANCEL_CONFIRMATION_SECONDS = 300
 # The approved profiles. `probe` and `probe-lr3` are the two Stage-1 recovery
 # trials (issue #47) that share the residual method and differ only in learning
 # rate; the smoke is the #38 GPU acceptance path and is left unchanged. `full`
-# is the unbounded 20-epoch Stage-1 temporal run (issue #53).
+# is the unbounded 20-epoch Stage-1 temporal run (issue #53). `stage2`–`stage5`
+# are the Tag-11 cumulative ablation full runs (issue #58) under the same
+# residual lock, timeout, and cost ceilings as `full`.
 MODE_CONFIG_NAME = {
     "smoke": "vertex_smoke",
     "probe": "stage1_probe",
     "probe-lr3": "stage1_probe_lr3",
     "full": "stage1_locked",
+    "stage2": "stage2_locked",
+    "stage3": "stage3_locked",
+    "stage4": "stage4_locked",
+    "stage5": "stage5_locked",
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
 # historical #45 `probe` evidence stays distinguishable from the recovery runs.
+# Ablation full runs reuse the Stage-1 `full` evidence schema (epoch curve,
+# one-shot test, create-only checkpoint).
 _PROBE_MODES = ("probe", "probe-lr3")
+_FULL_TEMPORAL_MODES = ("full", "stage2", "stage3", "stage4", "stage5")
+_ABLATION_MODES = ("stage2", "stage3", "stage4", "stage5")
 # Modes that require the verified regional rate before submitting.
-_RATE_REQUIRED_MODES = ("probe", "probe-lr3", "full")
+_RATE_REQUIRED_MODES = ("probe", "probe-lr3", *_FULL_TEMPORAL_MODES)
 MODE_EVIDENCE_PROFILE = {
     "smoke": "smoke",
     "probe": "probe-residual",
     "probe-lr3": "probe-residual",
     "full": "full",
+    "stage2": "full",
+    "stage3": "full",
+    "stage4": "full",
+    "stage5": "full",
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -184,6 +201,8 @@ def check_bounds(config_name: str, *, efficiency_role: str | None = None) -> Non
         assert_stage1_lock(cfg)
         assert_stage1_full_bounds(cfg)
         assert_stage1_runtime(cfg)
+    elif config_name in {MODE_CONFIG_NAME[m] for m in _ABLATION_MODES}:
+        assert_ablation_lock(cfg)
     else:
         assert_vertex_smoke_bounds(cfg)
 
@@ -1029,7 +1048,7 @@ def main() -> int:
     config_name = MODE_CONFIG_NAME[args.mode]
     if args.timeout_seconds is not None:
         timeout_seconds = args.timeout_seconds
-    elif args.mode == "full":
+    elif args.mode in _FULL_TEMPORAL_MODES:
         timeout_seconds = FULL_TIMEOUT_SECONDS
     elif args.mode == "efficiency":
         timeout_seconds = EFFICIENCY_TIMEOUT_SECONDS
@@ -1070,7 +1089,11 @@ def main() -> int:
             else (
                 VERIFICATION_MAX_JOB_EXPOSURE_USD
                 if args.mode == "verification"
-                else (FULL_MAX_EXPOSURE_USD if args.mode == "full" else DEFAULT_MAX_EXPOSURE_USD)
+                else (
+                    FULL_MAX_EXPOSURE_USD
+                    if args.mode in _FULL_TEMPORAL_MODES
+                    else DEFAULT_MAX_EXPOSURE_USD
+                )
             )
         )
     )
@@ -1084,21 +1107,23 @@ def main() -> int:
         raise SystemExit("ERROR: non-compute estimate must be finite and non-negative")
     if not math.isfinite(float(max_wait_seconds)) or max_wait_seconds < 0:
         raise SystemExit("ERROR: --max-wait-seconds must be a finite non-negative number")
-    if args.mode == "full":
-        # issue #53: one bounded job, 48-hour server timeout, $50 projected
-        # compute; the full run must not silently exceed either ceiling.
+    if args.mode in _FULL_TEMPORAL_MODES:
+        # issue #53 / #58: one bounded job, 48-hour server timeout, $50 projected
+        # compute; a full temporal run must not silently exceed either ceiling.
         if timeout_seconds > FULL_TIMEOUT_SECONDS:
             raise SystemExit(
-                f"ERROR: --mode full server timeout {timeout_seconds}s exceeds the "
+                f"ERROR: --mode {args.mode} server timeout {timeout_seconds}s exceeds the "
                 f"{FULL_TIMEOUT_SECONDS}s ceiling"
             )
         if max_exposure > FULL_MAX_EXPOSURE_USD:
             raise SystemExit(
-                f"ERROR: --mode full exposure ceiling cannot exceed ${FULL_MAX_EXPOSURE_USD:.2f}"
+                f"ERROR: --mode {args.mode} exposure ceiling cannot exceed "
+                f"${FULL_MAX_EXPOSURE_USD:.2f}"
             )
         if hourly_rate > FULL_MAX_HOURLY_RATE_USD:
             raise SystemExit(
-                f"ERROR: --mode full rate exceeds the ${FULL_MAX_HOURLY_RATE_USD:.2f}/hour cap"
+                f"ERROR: --mode {args.mode} rate exceeds the "
+                f"${FULL_MAX_HOURLY_RATE_USD:.2f}/hour cap"
             )
 
     if args.mode == "efficiency":
@@ -1203,7 +1228,7 @@ def main() -> int:
             "must never be reused (the create-only upload would fail after the run)"
         )
     run_prefix = evidence_uri.rsplit("/", 1)[0]
-    _checkpoint_uploading = args.mode == "full" or (
+    _checkpoint_uploading = args.mode in _FULL_TEMPORAL_MODES or (
         args.mode == "efficiency" and args.efficiency_role in ("baseline", "final")
     )
     if _checkpoint_uploading and _evidence_exists(f"{run_prefix}/best.ckpt"):

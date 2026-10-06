@@ -165,6 +165,26 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
                 f"data.cache_max_bytes={cache_bytes!r} "
                 f"(expected an int >= {min_cache} for C={selection.n_active})"
             )
+    # Operational bounds shared with the Stage-1 full Vertex path: one GPU,
+    # W&B online, job-local output root. Checked here so the launcher and the
+    # worker refuse a drifted ablation submit without a separate marker.
+    if str(OmegaConf.select(cfg, "trainer.accelerator")) != "gpu":
+        problems.append(
+            f"trainer.accelerator={OmegaConf.select(cfg, 'trainer.accelerator')!r} "
+            "(expected 'gpu')"
+        )
+    devices = OmegaConf.select(cfg, "trainer.devices")
+    if isinstance(devices, bool) or not isinstance(devices, int) or devices != 1:
+        problems.append(f"trainer.devices={devices!r} (expected 1)")
+    if str(OmegaConf.select(cfg, "wandb.mode")) != "online":
+        problems.append(
+            f"wandb.mode={OmegaConf.select(cfg, 'wandb.mode')!r} (expected 'online')"
+        )
+    output_root = str(cfg.get("output_root", ""))
+    if not output_root or output_root.startswith("gs://") or "/runs/" not in output_root:
+        problems.append(
+            f"output_root={output_root!r} (expected a job-local path under data/runs/)"
+        )
     if problems:
         raise ValueError("ablation lock is off-contract: " + "; ".join(problems))
 

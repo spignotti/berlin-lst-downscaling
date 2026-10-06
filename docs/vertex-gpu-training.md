@@ -289,6 +289,26 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
   --hourly-rate-usd 0.90 --preflight
 ```
 
+### Tag-11 ablation full runs (`--mode stage2` … `stage5`)
+
+Issue #58. Same protocol, timeout, and cost ceilings as `--mode full`, with
+Hydra profiles `stage2_locked` … `stage5_locked` under the residual lock
+(`docs/ablation-stage-configs.md`). Evidence reuses the `full` profile
+(checkpoint + one-shot test). Rebuild the image from a commit that includes
+those configs; submit stages sequentially without retuning.
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode stage2 \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<ablation-digest> \
+  --source-sha <clean-commit> --run-label stage2-full-<utc>-<suffix> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 1.00 --preflight
+```
+
 The client wait can outlast a session; if it expires the job keeps running
 server-side, so reconnect with `--status <resource-name>` (never resubmit) and
 cancel a runaway job with `gcloud ai custom-jobs cancel <resource-name>
