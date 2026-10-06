@@ -15,11 +15,20 @@ import os
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from berlin_lst_downscaling.data.training.contracts import split_for_year
+from berlin_lst_downscaling.modeling.channels import (
+    ABLATION_LOCKED_CONFIG_NAMES,
+    ABLATION_STAGE_CHANNELS,
+    feature_order_for,
+    selection_from_config,
+)
 from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
 )
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
+
+_ALLOWED_CONTRACT_LOSSES = frozenset({"masked_l1", "thermal_aware"})
+_ALLOWED_FEATURE_ORDERS = frozenset({"v3_first_c", "v3_named_subset"})
 
 
 def contract_invariants(cfg: DictConfig) -> None:
@@ -29,27 +38,135 @@ def contract_invariants(cfg: DictConfig) -> None:
     split, Stage-1 loss, and feature order so they are visible in every
     resolved config. They are not free parameters: a mismatch with the
     contract constants raises instead of silently training on a drifted
-    geometry or loss. The split mapping itself stays a policy constant and is
-    only probed here for the two holdout years.
+    geometry or loss. Tag-11 ablation configs may declare ``v3_named_subset``
+    and Stage 5 may declare ``thermal_aware``; both are still checked against
+    the resolved channel selection. The split mapping itself stays a policy
+    constant and is only probed here for the two holdout years.
     """
     declared = cfg.get("contract")
     if declared is None:
         raise ValueError("config is missing the frozen 'contract' block")
-    expected: dict[str, object] = {
+    expected_geometry: dict[str, object] = {
         "split": "temporal",
         "patch_px": REAL_PATCH_PX,
         "patch_cells": REAL_PATCH_CELLS,
-        "loss": "masked_l1",
-        "feature_order": "v3_first_c",
     }
-    for key, value in expected.items():
+    for key, value in expected_geometry.items():
         actual = declared.get(key)
         if actual != value:
             raise ValueError(
                 f"contract.{key} = {actual!r} contradicts the frozen contract value {value!r}"
             )
+    loss = declared.get("loss")
+    if loss not in _ALLOWED_CONTRACT_LOSSES:
+        raise ValueError(
+            f"contract.loss = {loss!r} is not one of {sorted(_ALLOWED_CONTRACT_LOSSES)}"
+        )
+    feature_order = declared.get("feature_order")
+    if feature_order not in _ALLOWED_FEATURE_ORDERS:
+        raise ValueError(
+            "contract.feature_order = "
+            f"{feature_order!r} is not one of {sorted(_ALLOWED_FEATURE_ORDERS)}"
+        )
+    selection = selection_from_config(cfg)
+    expected_order = feature_order_for(selection)
+    if feature_order != expected_order:
+        raise ValueError(
+            f"contract.feature_order = {feature_order!r} does not match the resolved "
+            f"channel selection ({expected_order!r}, C={selection.n_active})"
+        )
+    if not bool(cfg.get("ablation_lock", False)) and loss != "masked_l1":
+        raise ValueError("thermal_aware loss is only admitted on ablation_lock configs")
+    if (
+        not bool(cfg.get("ablation_lock", False))
+        and feature_order != "v3_first_c"
+    ):
+        raise ValueError("v3_named_subset is only admitted on ablation_lock configs")
     if split_for_year(2024) != "validation" or split_for_year(2025) != "test":
         raise RuntimeError("temporal split contract no longer maps 2024/2025 as frozen")
+
+
+# Frozen scientific method + Stage-1 cheap runtime shared by Tag-11 ablations
+# (issue #57). Channel count / names, Stage-5 loss, and the scaled cache budget
+# are the only intentional deltas from stage1_locked.
+_ABLATION_LOCK_EXPECTED: dict[str, object] = {
+    "data.kind": "real",
+    "data.mode": "stream",
+    "data.max_patches_per_split": None,
+    "data.shuffle_train": True,
+    "data.batch_size": 4,
+    "data.num_workers": 0,
+    "data.pin_memory": False,
+    "model.depth": 4,
+    "model.base_width": 32,
+    "trainer.learning_rate": 1.0e-3,
+    "trainer.weight_decay": 0.0,
+    "trainer.max_epochs": 20,
+    "trainer.precision": "16-mixed",
+    "seed": 0,
+}
+
+# Stage-1 used 12 GiB for C=10. Scale the floor linearly with channel count so
+# larger ablation subsets cannot silently reuse an undersized job-local cache.
+_STAGE1_CACHE_BYTES = 12_884_901_888
+_STAGE1_CACHE_CHANNELS = 10
+
+
+def assert_ablation_lock(cfg: DictConfig) -> None:
+    """Fail closed unless the config is a Tag-11 ablation under the Stage-1 lock."""
+    problems: list[str] = []
+    if cfg.get("ablation_lock") is not True:
+        problems.append("ablation_lock marker is not true")
+    stage = cfg.get("ablation_stage")
+    if (
+        isinstance(stage, bool)
+        or not isinstance(stage, int)
+        or stage not in (2, 3, 4, 5)
+    ):
+        problems.append(f"ablation_stage={stage!r} (expected an int in {{2, 3, 4, 5}})")
+        stage = None
+    if cfg.get("stage1_residual_prior") is not True:
+        problems.append("ablation configs require the frozen residual prior")
+    for marker in ("stage1_lock", "stage1_full", "stage1_probe"):
+        if bool(cfg.get(marker, False)):
+            problems.append(f"ablation config must not carry {marker}")
+    for key, expected in _ABLATION_LOCK_EXPECTED.items():
+        actual = OmegaConf.select(cfg, key)
+        if key == "trainer.precision" and actual == "32-true":
+            continue
+        if actual != expected:
+            problems.append(f"{key}={actual!r} (expected {expected!r})")
+    if list(cfg.data.get("splits") or []) != ["train", "validation"]:
+        problems.append("ablation data.splits must be exactly ['train', 'validation']")
+    if stage is not None:
+        expected_names = list(ABLATION_STAGE_CHANNELS[stage])
+        selection = selection_from_config(cfg)
+        if list(selection.names) != expected_names:
+            problems.append(
+                f"active channels for stage {stage} must be {expected_names}; "
+                f"got {list(selection.names)}"
+            )
+        expected_loss = "thermal_aware" if stage == 5 else "masked_l1"
+        actual_loss = OmegaConf.select(cfg, "contract.loss")
+        if actual_loss != expected_loss:
+            problems.append(
+                f"contract.loss={actual_loss!r} (expected {expected_loss!r} for stage {stage})"
+            )
+        cache_bytes = OmegaConf.select(cfg, "data.cache_max_bytes")
+        min_cache = int(
+            _STAGE1_CACHE_BYTES * (selection.n_active / _STAGE1_CACHE_CHANNELS)
+        )
+        if (
+            isinstance(cache_bytes, bool)
+            or not isinstance(cache_bytes, int)
+            or cache_bytes < min_cache
+        ):
+            problems.append(
+                f"data.cache_max_bytes={cache_bytes!r} "
+                f"(expected an int >= {min_cache} for C={selection.n_active})"
+            )
+    if problems:
+        raise ValueError("ablation lock is off-contract: " + "; ".join(problems))
 
 
 def assert_vertex_smoke_bounds(cfg: DictConfig) -> None:
@@ -640,11 +757,13 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "Stage-1 verification profile is cancelled; runtime is frozen from "
             "the J1–J4 efficiency results in docs/stage1-efficiency.md"
         )
-    if bool(cfg.get("stage1_residual_prior", False)) and config_name not in (
+    _residual_prior_configs = {
         STAGE1_LOCKED_CONFIG_NAME,
         STAGE1_PROBE_CONFIG_NAME,
         STAGE1_PROBE_LR3_CONFIG_NAME,
-    ):
+        *ABLATION_LOCKED_CONFIG_NAMES,
+    }
+    if bool(cfg.get("stage1_residual_prior", False)) and config_name not in _residual_prior_configs:
         raise ValueError(
             "stage1_residual_prior is the Stage-1 recovery representation "
             f"(issues #40/#47) but is set on config {config_name!r}; refusing to run"
@@ -654,6 +773,11 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "stage1_full is the unbounded Stage-1 Vertex run marker "
             f"(issue #53) but is set on config {config_name!r}; refusing to run"
         )
+    if bool(cfg.get("ablation_lock", False)) and config_name not in ABLATION_LOCKED_CONFIG_NAMES:
+        raise ValueError(
+            "ablation_lock is the Tag-11 ablation marker (issue #57) but is set on "
+            f"config {config_name!r}; refusing to run"
+        )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
         assert_stage1_lock(cfg)
         assert_stage1_full_bounds(cfg)
@@ -662,11 +786,14 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         assert_stage1_probe(cfg)
     if config_name == STAGE1_PROBE_LR3_CONFIG_NAME:
         assert_stage1_probe_lr3(cfg)
+    if config_name in ABLATION_LOCKED_CONFIG_NAMES:
+        assert_ablation_lock(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
         assert_vertex_smoke_bounds(cfg)
 
 
 __all__ = [
+    "assert_ablation_lock",
     "assert_efficiency_fit_runtime",
     "assert_probe_minima",
     "assert_stage1_efficiency",

@@ -1,0 +1,64 @@
+# @package _global_
+# Tag-11 ablation stage 4 (issue #57): stage 3 + meteorology (ERA5-Land).
+# Model input order keeps the cumulative ladder (shadows before ERA5), which
+# is a named subset of the published V3 stack rather than a first-C prefix.
+defaults:
+  - real_full
+  - _self_
+
+ablation_lock: true
+ablation_stage: 4
+stage1_residual_prior: true
+
+contract:
+  loss: "masked_l1"
+  feature_order: "v3_named_subset"
+
+data:
+  n_active_channels: 28
+  active_channel_names:
+    - B02
+    - B03
+    - B04
+    - B08
+    - B11
+    - B12
+    - ndvi
+    - ndwi_mcfeeters
+    - ndbi
+    - s2_broadband_albedo
+    - building_height_mean
+    - building_height_std
+    - building_coverage_ratio
+    - building_height_max
+    - vegetation_height_mean
+    - vegetation_height_max
+    - imperviousness
+    - svf
+    - shadow_building
+    - shadow_vegetation
+    - t2m_scene
+    - ssrd_scene
+    - ssrd_antecedent_72h_mean
+    - vpd_scene
+    - wind_speed_10m_scene
+    - tp_0_24h
+    - tp_24_48h
+    - tp_48_72h
+  splits: ["train", "validation"]
+  batch_size: 4
+  mode: stream
+  num_workers: 0
+  shuffle_train: true
+  pin_memory: false
+  cache_max_bytes: 36077725286    # >= 12 GiB * 28/10
+
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"
+
+output_root: "data/runs/modeling-ablation-stage4"
+
+wandb:
+  mode: "online"

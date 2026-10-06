@@ -139,6 +139,7 @@ def build_patch_cache(
     active_channels: int,
     provenance: dict[str, object],
     max_bytes: int,
+    channel_indices: Iterable[int] | None = None,
 ) -> dict[str, object]:
     """Write a cache and publish its manifest last; partial roots never open."""
     if root.exists():
@@ -148,6 +149,19 @@ def build_patch_cache(
     channel_order = provenance.get("channel_order")
     if not isinstance(channel_order, list | tuple) or len(channel_order) != active_channels:
         raise ValueError("provenance channel_order must match active_channels")
+    if channel_indices is None:
+        indices = tuple(range(active_channels))
+    else:
+        indices = tuple(int(i) for i in channel_indices)
+        if len(indices) != active_channels:
+            raise ValueError(
+                f"channel_indices length {len(indices)} != active_channels {active_channels}"
+            )
+        if any(i < 0 or i >= 28 for i in indices):
+            raise ValueError(f"channel_indices out of range for V3 stack: {indices}")
+        if len(set(indices)) != len(indices):
+            raise ValueError("channel_indices must be unique")
+    index_array = np.asarray(indices, dtype=np.intp)
     estimate = estimate_cache_bytes(len(patch_ids), active_channels)
     if estimate > max_bytes:
         raise ValueError(f"estimated cache size {estimate} exceeds max_bytes {max_bytes}")
@@ -208,7 +222,7 @@ def build_patch_cache(
             raise RuntimeError(f"source mask shape mismatch for {expected_id}")
         if sample.mask_100m.dtype != np.dtype("bool"):
             raise RuntimeError(f"source mask dtype mismatch for {expected_id}")
-        features = sample.features[:active_channels]
+        features = sample.features[index_array]
         if not np.isfinite(features).all() or not np.isfinite(sample.lst_prior_k).all():
             raise RuntimeError(f"non-finite model input in admitted source sample {expected_id}")
         valid = sample.mask_100m
@@ -249,6 +263,7 @@ def build_patch_cache(
         "provenance": provenance,
         "provenance_sha256": _json_digest(provenance),
         "active_channels": active_channels,
+        "channel_indices": list(indices),
         "shapes": shapes,
         "dtypes": {key: dtype.name for key, (_, dtype) in _ARRAYS.items()},
         "array_bytes": array_bytes,
@@ -264,12 +279,27 @@ def build_patch_cache(
     return manifest
 
 
-def assert_samples_equal(expected: RealSample, actual: RealSample, active_channels: int) -> None:
+def assert_samples_equal(
+    expected: RealSample,
+    actual: RealSample,
+    active_channels: int,
+    *,
+    channel_indices: Iterable[int] | None = None,
+) -> None:
     """Fail unless a cached sample exactly preserves the source sample contract."""
     if asdict(expected.meta) != asdict(actual.meta):
         raise AssertionError(f"cached metadata differs for {expected.meta.patch_id}")
+    if channel_indices is None:
+        selected = expected.features[:active_channels]
+    else:
+        indices = tuple(int(i) for i in channel_indices)
+        if len(indices) != active_channels:
+            raise ValueError(
+                f"channel_indices length {len(indices)} != active_channels {active_channels}"
+            )
+        selected = expected.features[np.asarray(indices, dtype=np.intp)]
     comparisons = (
-        (expected.features[:active_channels], actual.features, True),
+        (selected, actual.features, True),
         (expected.lst_prior_k, actual.lst_prior_k, True),
         (expected.target_100m, actual.target_100m, True),
         (expected.mask_100m, actual.mask_100m, False),

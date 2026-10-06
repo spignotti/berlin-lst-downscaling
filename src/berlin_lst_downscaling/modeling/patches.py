@@ -39,6 +39,7 @@ import io
 import json
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -761,15 +762,21 @@ class RealPatchReader:
 
 
 def collate_real_batch(
-    samples: list[RealSample], *, n_active_channels: int = N_FEATURE_CHANNELS
+    samples: list[RealSample],
+    *,
+    n_active_channels: int = N_FEATURE_CHANNELS,
+    channel_indices: Sequence[int] | None = None,
 ) -> RealBatch:
     """Stack samples into a :class:`RealBatch` (prior normalized for the model).
 
-    ``features`` keep the first ``n_active_channels`` of each sample's 28
-    channels: the reader has already scaled and zero-filled them, so the
-    selection here leaves the reader, its scaler, and the naive baseline on
-    their full 28-channel behavior. The ``lst_prior`` is a separate input and
-    is never counted in the selection.
+    ``features`` keep the selected channels of each sample's 28-band stack: the
+    reader has already scaled and zero-filled them, so the selection here leaves
+    the reader, its scaler, and the naive baseline on their full 28-channel
+    behavior. When ``channel_indices`` is omitted the first
+    ``n_active_channels`` of the fixed V3 order are kept (``v3_first_c``). When
+    indices are given they must match ``n_active_channels`` and may be a
+    non-contiguous named subset (Tag-11 stage 3). The ``lst_prior`` is a
+    separate input and is never counted in the selection.
     """
     if not samples:
         raise ValueError("cannot collate an empty sample list")
@@ -777,8 +784,21 @@ def collate_real_batch(
         raise ValueError(
             f"n_active_channels must be in [1, {N_FEATURE_CHANNELS}], got {n_active_channels}"
         )
+    if channel_indices is None:
+        indices = tuple(range(n_active_channels))
+    else:
+        indices = tuple(int(i) for i in channel_indices)
+        if len(indices) != n_active_channels:
+            raise ValueError(
+                f"channel_indices length {len(indices)} != n_active_channels {n_active_channels}"
+            )
+        if any(i < 0 or i >= N_FEATURE_CHANNELS for i in indices):
+            raise ValueError(f"channel_indices out of range for V3 stack: {indices}")
+        if len(set(indices)) != len(indices):
+            raise ValueError("channel_indices must be unique")
+    index_array = np.asarray(indices, dtype=np.intp)
     features = torch.from_numpy(
-        np.stack([s.features[:n_active_channels] for s in samples])
+        np.stack([s.features[index_array] for s in samples])
     )
     prior = torch.from_numpy(
         np.stack([prior_model_channel(s.lst_prior_k) for s in samples])

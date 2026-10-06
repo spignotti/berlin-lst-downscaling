@@ -36,6 +36,7 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.data.io import log_event, run_context_path
+from berlin_lst_downscaling.modeling.channels import selection_from_config
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
@@ -434,6 +435,7 @@ def _score_test_once(
     its validation reload have succeeded, so the test set cannot influence
     checkpoint choice. The read scope is retained as ``test_scope.json``.
     """
+    selection = selection_from_config(cfg)
     test_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
@@ -443,7 +445,8 @@ def _score_test_once(
         num_workers=int(cfg.data.get("num_workers", 0)),
         shuffle_train=False,
         seed=int(cfg.seed),
-        n_active_channels=int(cfg.data.n_active_channels),
+        n_active_channels=selection.n_active,
+        channel_indices=selection.indices,
         splits=("test",),
     )
     test_module.setup()
@@ -494,8 +497,9 @@ def _fit_contract_lifecycle(
     seed_everything(seed)
 
     is_probe = bool(cfg.get("stage1_probe", False))
-    is_full = bool(cfg.get("stage1_full", False))
+    is_full = bool(cfg.get("stage1_full", False)) or bool(cfg.get("ablation_lock", False))
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
+    loss_name = str(OmegaConf.select(cfg, "contract.loss") or "masked_l1")
     task = RealLSTTask(
         n_active_channels=int(cfg.data.n_active_channels),
         base_width=int(cfg.model.base_width),
@@ -504,6 +508,7 @@ def _fit_contract_lifecycle(
         weight_decay=float(cfg.trainer.weight_decay),
         record_probe_metrics=is_probe or is_full,
         residual_prior=residual_prior,
+        loss_name=loss_name,
     )
 
     output_root = Path(str(cfg.output_root))
@@ -800,14 +805,15 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
             "Stage-1 verification profile is cancelled; runtime is frozen from "
             "the J1–J4 efficiency results in docs/stage1-efficiency.md"
         )
-    # Full Stage-1 (issue #53): the fit admits train/validation only. The 2025
-    # test split is scored once after checkpoint freeze via _score_test_once.
-    if bool(cfg.get("stage1_full", False)):
+    # Full Stage-1 (issue #53) and Tag-11 ablations (issue #57): the fit admits
+    # train/validation only. The 2025 test split is scored once after checkpoint
+    # freeze via _score_test_once.
+    if bool(cfg.get("stage1_full", False)) or bool(cfg.get("ablation_lock", False)):
         declared = tuple(str(s) for s in (cfg.data.get("splits") or ()))
         if declared != ("train", "validation"):
             raise RuntimeError(
-                "full Stage-1 fit splits must be exactly ('train', 'validation'); "
-                f"got {declared!r}"
+                "full Stage-1 / ablation fit splits must be exactly "
+                f"('train', 'validation'); got {declared!r}"
             )
     source = real_source_config(cfg)
     scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
@@ -846,6 +852,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
             )
         if cache_budget <= 0:
             raise RuntimeError("a cache path requires a positive cache budget")
+    selection = selection_from_config(cfg)
     data_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
@@ -855,7 +862,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         num_workers=int(cfg.data.get("num_workers", 0)),
         shuffle_train=bool(cfg.data.get("shuffle_train", False)),
         seed=int(cfg.seed),
-        n_active_channels=int(cfg.data.n_active_channels),
+        n_active_channels=selection.n_active,
+        channel_indices=selection.indices,
         splits=splits,
         probe_scope=probe_scope,
         pin_memory=bool(cfg.data.get("pin_memory", False)),

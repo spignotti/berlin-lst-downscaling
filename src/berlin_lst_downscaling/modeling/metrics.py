@@ -96,6 +96,60 @@ def masked_l1_loss(
     return total / count
 
 
+# Fixed Stage-5 thermal-aware mix (issue #57). Selection stays masked MAE;
+# only the training objective changes. Weights are method constants, not tuned
+# per ablation stage.
+THERMAL_AWARE_SSIM_WEIGHT: float = 0.1
+THERMAL_AWARE_GRAD_WEIGHT: float = 0.1
+
+
+def _masked_gradient_l1(
+    prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
+) -> Tensor:
+    """Masked L1 on finite differences where both adjacent cells are valid."""
+    valid = mask_100m.bool()
+    dx_pred = prediction_100m[:, :, :, 1:] - prediction_100m[:, :, :, :-1]
+    dx_target = target_100m[:, :, :, 1:] - target_100m[:, :, :, :-1]
+    dx_valid = valid[:, :, :, 1:] & valid[:, :, :, :-1]
+    dy_pred = prediction_100m[:, :, 1:, :] - prediction_100m[:, :, :-1, :]
+    dy_target = target_100m[:, :, 1:, :] - target_100m[:, :, :-1, :]
+    dy_valid = valid[:, :, 1:, :] & valid[:, :, :-1, :]
+
+    parts: list[Tensor] = []
+    if bool(dx_valid.any()):
+        parts.append((dx_pred - dx_target).abs()[dx_valid])
+    if bool(dy_valid.any()):
+        parts.append((dy_pred - dy_target).abs()[dy_valid])
+    if not parts:
+        return prediction_100m.new_zeros(())
+    selected = torch.cat(parts)
+    if not bool(torch.isfinite(selected).all()):
+        raise ValueError("a valid gradient cell carries a non-finite prediction or target")
+    return selected.mean()
+
+
+def thermal_aware_loss(
+    prediction_100m: Tensor,
+    target_100m: Tensor,
+    mask_100m: Tensor,
+    *,
+    ssim_weight: float = THERMAL_AWARE_SSIM_WEIGHT,
+    grad_weight: float = THERMAL_AWARE_GRAD_WEIGHT,
+) -> Tensor:
+    """Stage-5 loss: masked L1 plus structural and gradient penalties.
+
+    The L1 term matches Stage 1–4. SSIM enters as ``1 - mean(supported local
+    SSIM)`` when at least one window is supported, else zero. The gradient term
+    is masked finite-difference L1. Checkpoint selection remains masked MAE.
+    """
+    loss = masked_l1_loss(prediction_100m, target_100m, mask_100m)
+    ssim_sum, ssim_count = masked_ssim_stats(prediction_100m, target_100m, mask_100m)
+    if float(ssim_count) > 0.0:
+        loss = loss + ssim_weight * (1.0 - (ssim_sum / ssim_count))
+    loss = loss + grad_weight * _masked_gradient_l1(prediction_100m, target_100m, mask_100m)
+    return loss
+
+
 def masked_ssim_stats(
     prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
 ) -> tuple[Tensor, Tensor]:
@@ -243,6 +297,8 @@ __all__ = [
     "SSIM_DATA_RANGE",
     "SSIM_PAD",
     "SSIM_WINDOW",
+    "THERMAL_AWARE_GRAD_WEIGHT",
+    "THERMAL_AWARE_SSIM_WEIGHT",
     "MaskedMAE",
     "MaskedSSIM",
     "SupportedWindows",
@@ -251,4 +307,5 @@ __all__ = [
     "masked_l1_loss",
     "masked_ssim_stats",
     "pool_10m_to_100m",
+    "thermal_aware_loss",
 ]

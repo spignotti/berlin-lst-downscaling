@@ -39,6 +39,10 @@ stage1_efficiency_cache_max_bytes: 0
 data:
   kind: synthetic         # synthetic | synthetic_contract | real
   n_active_channels: 28   # first-C of the fixed V3 28-channel order
+  # Optional named subset of FEATURE_CHANNEL_NAMES. null/[] = first-C
+  # (v3_first_c). A non-prefix list (Tag-11 stage 3) selects by name after
+  # the full train-only scaler is applied; n_active_channels must match.
+  active_channel_names: null
   batch_size: 8
   patch_size: 32          # synthetic only; H == W, divisible by 2 ** model.depth
   n_train: 128            # synthetic only
