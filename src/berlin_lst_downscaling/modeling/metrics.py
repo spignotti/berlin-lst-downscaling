@@ -21,27 +21,25 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 from torchmetrics import Metric
-from torchmetrics.functional.image import (
-    structural_similarity_index_measure as _ssim,
-)
 
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
 from berlin_lst_downscaling.modeling.contracts import POOL_FACTOR
 
-# decision: SSIM comes from TorchMetrics, because it is already in the lock
-# through Lightning and the pinned 1.9.0 exposes the full local map via
-# ``return_full_image``. Alternatives rejected: a new scikit-image dependency,
-# and a hand-rolled SSIM formula.
-# searched for library: TorchMetrics and scikit-image were checked. Context7 was
-# unavailable, so the version-pinned upstream source
-# (github.com/Lightning-AI/torchmetrics, tag v1.9.0, functional/image/ssim.py) was
-# read instead. TorchMetrics' SSIM has no mask argument, so the window-support
-# test lives in this module, not in the library call.
+# decision: local SSIM matches TorchMetrics 1.9.0 with ``gaussian_kernel=False``
+# (uniform window, k1=0.01, k2=0.03, data_range clamp). TorchMetrics pads with
+# reflection before the convolution; CUDA has no deterministic
+# ``reflection_pad2d`` backward, so Stage-5 ``thermal_aware`` blew up under
+# ``Trainer(deterministic=True)``. We compute only the valid (unpadded) window
+# map — the same interior TorchMetrics keeps after crop — so training and the
+# diagnostic share one pad-free path. TorchMetrics stays in the lock via
+# Lightning but is not called for this map.
 #
 # Fixed SSIM configuration (both arms).
 SSIM_WINDOW: int = 7
 SSIM_PAD: int = SSIM_WINDOW // 2  # centres nearer the edge lack a full window
 SSIM_DATA_RANGE: tuple[float, float] = LST_RANGE_K
+SSIM_K1: float = 0.01
+SSIM_K2: float = 0.03
 
 
 def pool_10m_to_100m(prediction_10m: Tensor) -> Tensor:
@@ -150,6 +148,42 @@ def thermal_aware_loss(
     return loss
 
 
+def _uniform_ssim_map(prediction_100m: Tensor, target_100m: Tensor) -> Tensor:
+    """Return the valid-convolution local SSIM map ``(B, 1, H-k+1, W-k+1)``.
+
+    Matches TorchMetrics 1.9.0 with ``gaussian_kernel=False`` on the interior
+    that remains after reflection-pad + crop. No padding, so CUDA backward stays
+    compatible with ``torch.use_deterministic_algorithms(True)``.
+    """
+    low, high = SSIM_DATA_RANGE
+    data_range = high - low
+    c1 = (SSIM_K1 * data_range) ** 2
+    c2 = (SSIM_K2 * data_range) ** 2
+    preds = torch.clamp(prediction_100m, min=low, max=high)
+    target = torch.clamp(target_100m, min=low, max=high)
+    channel = int(preds.shape[1])
+    kernel = torch.ones(
+        (channel, 1, SSIM_WINDOW, SSIM_WINDOW), dtype=preds.dtype, device=preds.device
+    ) / float(SSIM_WINDOW * SSIM_WINDOW)
+    # TorchMetrics packs the five moments into one grouped conv; keep the same
+    # algebra with five calls so the graph stays obvious and pad-free.
+    mu_pred = F.conv2d(preds, kernel, groups=channel)
+    mu_target = F.conv2d(target, kernel, groups=channel)
+    mu_pred_sq = mu_pred.pow(2)
+    mu_target_sq = mu_target.pow(2)
+    mu_pred_target = mu_pred * mu_target
+    sigma_pred_sq = torch.clamp(
+        F.conv2d(preds * preds, kernel, groups=channel) - mu_pred_sq, min=0.0
+    )
+    sigma_target_sq = torch.clamp(
+        F.conv2d(target * target, kernel, groups=channel) - mu_target_sq, min=0.0
+    )
+    sigma_pred_target = F.conv2d(preds * target, kernel, groups=channel) - mu_pred_target
+    upper = 2.0 * sigma_pred_target + c2
+    lower = sigma_pred_sq + sigma_target_sq + c2
+    return ((2.0 * mu_pred_target + c1) * upper) / ((mu_pred_sq + mu_target_sq + c1) * lower)
+
+
 def masked_ssim_stats(
     prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
 ) -> tuple[Tensor, Tensor]:
@@ -157,12 +191,12 @@ def masked_ssim_stats(
 
     A centre counts only when its full ``SSIM_WINDOW`` neighbourhood lies inside
     the patch **and** every cell in that neighbourhood is valid. Invalid cells
-    are replaced by zero in a temporary copy so the library never sees a NaN,
-    and every window touching such a cell is then discarded by the support
+    are replaced by zero in a temporary copy so the convolution never sees a
+    NaN, and every window touching such a cell is then discarded by the support
     test, so the substitution cannot influence a reported value.
 
-    TorchMetrics' own scalar reduction is intentionally unused: it averages over
-    unsupported centres, which the contract forbids.
+    Scalar reduction over unsupported centres is intentionally unused: the
+    contract forbids averaging them in.
     """
     valid = mask_100m.bool()
     if prediction_100m.shape[1] != 1 or valid.shape != prediction_100m.shape:
@@ -171,30 +205,19 @@ def masked_ssim_stats(
         raise ValueError("patch is smaller than the SSIM window")
     if not valid.any():
         return torch.zeros((), dtype=prediction_100m.dtype), torch.zeros(())
-    # FP32 boundary: the TorchMetrics convolution must execute in float32 with
-    # autocast disabled. Kelvin-scale squared moments overflow float16, which
-    # produced NaN SSIM under mixed-precision validation (J4 evidence). A bare
+    # FP32 boundary: the SSIM convolution must execute in float32 with autocast
+    # disabled. Kelvin-scale squared moments overflow float16, which produced
+    # NaN SSIM under mixed-precision validation (J4 evidence). A bare
     # ``.float()`` cast is insufficient: convolution autocast would downcast
     # again inside an enabled region.
     with torch.autocast(device_type=prediction_100m.device.type, enabled=False):
-        # Temporary computation copies: zero where invalid so the conv never sees NaN.
         safe_pred = torch.where(valid, prediction_100m, torch.zeros_like(prediction_100m)).float()
         safe_target = torch.where(valid, target_100m, torch.zeros_like(target_100m)).float()
-        _, ssim_map = _ssim(
-            safe_pred,
-            safe_target,
-            gaussian_kernel=False,
-            kernel_size=SSIM_WINDOW,
-            data_range=SSIM_DATA_RANGE,
-            return_full_image=True,
-        )
-    # A centre is supported only when its whole window is valid, which also
-    # excludes the pad-wide border whose window would fall outside the patch.
+        ssim_map = _uniform_ssim_map(safe_pred, safe_target)
+    # A centre is supported only when its whole window is valid; avg_pool with
+    # the SSIM window already drops the incomplete border.
     supported = F.avg_pool2d(valid.to(ssim_map.dtype), kernel_size=SSIM_WINDOW, stride=1) == 1.0
-    inner = ssim_map[
-        :, :, SSIM_PAD : SSIM_PAD + supported.shape[-2], SSIM_PAD : SSIM_PAD + supported.shape[-1]
-    ]
-    values = inner[supported]
+    values = ssim_map[supported]
     if values.numel() == 0:
         return torch.zeros((), dtype=ssim_map.dtype, device=ssim_map.device), torch.zeros(())
     if not bool(torch.isfinite(values).all()):

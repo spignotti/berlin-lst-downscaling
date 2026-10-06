@@ -135,6 +135,32 @@ def _check_stage(config_name: str) -> list[str]:
             loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
     if not torch.isfinite(loss):
         failures.append(f"{config_name}: non-finite {loss_name} loss")
+    # Stage-5 regression: TorchMetrics SSIM used reflection_pad2d, whose CUDA
+    # backward is banned under Trainer(deterministic=True). The pad-free map
+    # must survive a deterministic backward on CPU (and on CUDA when present).
+    if loss_name == "thermal_aware":
+        pred = torch.randn(
+            1, 1, REAL_PATCH_PX // 10, REAL_PATCH_PX // 10, requires_grad=True
+        )
+        target = pred.detach() + 0.1
+        mask = torch.ones_like(pred)
+        was_det = torch.are_deterministic_algorithms_enabled()
+        was_warn = torch.is_deterministic_algorithms_warn_only_enabled()
+        try:
+            torch.use_deterministic_algorithms(True)
+            loss_bwd = thermal_aware_loss(pred, target, mask)
+            loss_bwd.backward()
+        except RuntimeError as exc:
+            failures.append(
+                f"{config_name}: thermal_aware backward under deterministic "
+                f"algorithms failed: {exc}"
+            )
+        finally:
+            torch.use_deterministic_algorithms(was_det, warn_only=was_warn)
+        if pred.grad is None or not torch.isfinite(pred.grad).all():
+            failures.append(
+                f"{config_name}: thermal_aware deterministic backward produced bad grad"
+            )
     if not isinstance(batch, RealBatch):
         failures.append(f"{config_name}: collate did not return RealBatch")
     return failures
