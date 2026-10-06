@@ -54,6 +54,7 @@ from berlin_lst_downscaling.modeling.metrics import (
     masked_l1_loss,
     masked_ssim_stats,
     pool_10m_to_100m,
+    thermal_aware_loss,
 )
 from berlin_lst_downscaling.modeling.patch_cache import PatchCache, build_patch_cache
 from berlin_lst_downscaling.modeling.patches import (
@@ -211,6 +212,7 @@ class RealPatchDataModule(LightningDataModule):
         *,
         batch_size: int = 4,
         n_active_channels: int = N_FEATURE_CHANNELS,
+        channel_indices: Sequence[int] | None = None,
         max_patches_per_split: int | None = None,
         scene_ids: Sequence[str] | None = None,
         mode: str = "eager",
@@ -231,9 +233,19 @@ class RealPatchDataModule(LightningDataModule):
         unknown_splits = sorted(set(splits) - set(_REAL_SPLITS))
         if unknown_splits:
             raise ValueError(f"unknown split(s) {unknown_splits}; expected {_REAL_SPLITS}")
+        if channel_indices is None:
+            resolved_indices = tuple(range(n_active_channels))
+        else:
+            resolved_indices = tuple(int(i) for i in channel_indices)
+            if len(resolved_indices) != n_active_channels:
+                raise ValueError(
+                    f"channel_indices length {len(resolved_indices)} != "
+                    f"n_active_channels {n_active_channels}"
+                )
         self.source = source
         self.batch_size = batch_size
         self.n_active_channels = n_active_channels
+        self.channel_indices = resolved_indices
         self.max_patches_per_split = max_patches_per_split
         self.scene_ids = tuple(scene_ids) if scene_ids else None
         self.mode = mode
@@ -368,11 +380,13 @@ class RealPatchDataModule(LightningDataModule):
         scaler_digest = hashlib.sha256(
             json.dumps(scaler_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        channel_order = [reader.scaler.channel_order[i] for i in self.channel_indices]
         provenance: dict[str, object] = {
             "source_roots": asdict(self.source),
             "patch_index_fingerprints": patch_index_fingerprints(self.source.patch_index_root),
             "scaler_digest": scaler_digest,
-            "channel_order": list(reader.scaler.channel_order[: self.n_active_channels]),
+            "channel_order": channel_order,
+            "channel_indices": list(self.channel_indices),
             "geometry": {
                 "crs": "EPSG:25833",
                 "origin_x": CANON_GRID_ORIGIN_X,
@@ -403,6 +417,7 @@ class RealPatchDataModule(LightningDataModule):
             active_channels=self.n_active_channels,
             provenance=provenance,
             max_bytes=self.cache_max_bytes,
+            channel_indices=self.channel_indices,
         )
         self.cache_build_seconds = time.perf_counter() - cache_started
         PatchCache(self.cache_root, provenance)
@@ -517,10 +532,22 @@ class RealPatchDataModule(LightningDataModule):
                 )
             chunk.append(sample)
             if len(chunk) == self.batch_size:
-                batches.append(collate_real_batch(chunk, n_active_channels=self.n_active_channels))
+                batches.append(
+                    collate_real_batch(
+                        chunk,
+                        n_active_channels=self.n_active_channels,
+                        channel_indices=self.channel_indices,
+                    )
+                )
                 chunk = []
         if chunk:
-            batches.append(collate_real_batch(chunk, n_active_channels=self.n_active_channels))
+            batches.append(
+                collate_real_batch(
+                    chunk,
+                    n_active_channels=self.n_active_channels,
+                    channel_indices=self.channel_indices,
+                )
+            )
         return batches
 
     def _loader(self, split: str) -> DataLoader[RealBatch]:
@@ -534,11 +561,22 @@ class RealPatchDataModule(LightningDataModule):
         if isinstance(dataset, _BatchDataset):
             return DataLoader(dataset, batch_size=None, shuffle=False)
         shuffle = self.shuffle_train and split == "train"
+        # Cached tensors are already channel-selected; re-applying V3 indices
+        # would be wrong for non-contiguous ablation subsets. Live readers still
+        # yield the full 28-band stack and need the configured indices.
+        if isinstance(dataset, CachedRealPatchDataset):
+            collate_fn = partial(collate_real_batch, n_active_channels=self.n_active_channels)
+        else:
+            collate_fn = partial(
+                collate_real_batch,
+                n_active_channels=self.n_active_channels,
+                channel_indices=self.channel_indices,
+            )
         loader = DataLoader(
             dataset,
             batch_size=self.batch_size,
             sampler=self._train_sampler(dataset) if shuffle else None,
-            collate_fn=partial(collate_real_batch, n_active_channels=self.n_active_channels),
+            collate_fn=collate_fn,
             num_workers=self.num_workers,
             generator=torch.Generator().manual_seed(self.seed) if shuffle else None,
             persistent_workers=self.num_workers > 0,
@@ -576,6 +614,10 @@ class RealLSTTask(LightningModule):
         Kelvin *correction* added to the reconstructed prior, and the final head
         is zero-initialized so the model starts exactly at the prior-expand arm.
         The output, pooling, loss, and target are unchanged.
+    loss_name:
+        Training objective. ``masked_l1`` is Stages 1–4; ``thermal_aware`` is
+        Stage 5 (same inputs, structural + gradient penalties). Checkpoint
+        selection stays masked MAE in both cases.
     """
 
     def __init__(
@@ -587,14 +629,20 @@ class RealLSTTask(LightningModule):
         weight_decay: float = 0.0,
         record_probe_metrics: bool = False,
         residual_prior: bool = False,
+        loss_name: str = "masked_l1",
     ) -> None:
         super().__init__()
+        if loss_name not in ("masked_l1", "thermal_aware"):
+            raise ValueError(
+                f"loss_name must be 'masked_l1' or 'thermal_aware', got {loss_name!r}"
+            )
         self.model = UNet(in_channels=n_active_channels + 1, base_width=base_width, depth=depth)
         self.n_active_channels = n_active_channels
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.record_probe_metrics = record_probe_metrics
         self.residual_prior = residual_prior
+        self.loss_name = loss_name
         if residual_prior:
             # Zero head only in the recovery mode: the initial output is then
             # exactly the reconstructed prior, which the probe guard verifies.
@@ -607,6 +655,13 @@ class RealLSTTask(LightningModule):
         self.val_valid_cells = ValidCells()
         # Reconstructible model/loss configuration for load_from_checkpoint.
         self.save_hyperparameters()
+
+    def _training_loss(
+        self, prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
+    ) -> Tensor:
+        if self.loss_name == "thermal_aware":
+            return thermal_aware_loss(prediction_100m, target_100m, mask_100m)
+        return masked_l1_loss(prediction_100m, target_100m, mask_100m)
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -621,7 +676,7 @@ class RealLSTTask(LightningModule):
 
     def training_step(self, batch: RealBatch, batch_idx: int) -> Tensor:
         prediction_100m = pool_10m_to_100m(self(batch))
-        loss = masked_l1_loss(prediction_100m, batch.target_100m, batch.mask_100m)
+        loss = self._training_loss(prediction_100m, batch.target_100m, batch.mask_100m)
         self.log("train/loss", loss, on_step=True, on_epoch=False, prog_bar=True)
         self.train_mae.update(prediction_100m, batch.target_100m, batch.mask_100m)
         self.log("train/mae_100m", self.train_mae, on_step=False, on_epoch=True)
