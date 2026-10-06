@@ -1,0 +1,55 @@
+# @package _global_
+# Issue #63: spectral block + ERA5 meteorology, without morphology or shadows.
+# Compared with stage2_locked and isolate_shadows_locked this measures the
+# meteorology family on its own. Same residual lock, masked L1, and
+# masked-MAE selection as Stage 1.
+defaults:
+  - real_full
+  - _self_
+
+ablation_lock: true
+ablation_isolation: era5
+stage1_residual_prior: true
+
+contract:
+  loss: "masked_l1"
+  feature_order: "v3_named_subset"
+
+data:
+  n_active_channels: 18
+  active_channel_names:
+    - B02
+    - B03
+    - B04
+    - B08
+    - B11
+    - B12
+    - ndvi
+    - ndwi_mcfeeters
+    - ndbi
+    - s2_broadband_albedo
+    - t2m_scene
+    - ssrd_scene
+    - ssrd_antecedent_72h_mean
+    - vpd_scene
+    - wind_speed_10m_scene
+    - tp_0_24h
+    - tp_24_48h
+    - tp_48_72h
+  splits: ["train", "validation"]
+  batch_size: 4
+  mode: stream
+  num_workers: 0
+  shuffle_train: true
+  pin_memory: false
+  cache_max_bytes: 23192823398    # >= 12 GiB * 18/10
+
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"
+
+output_root: "data/runs/modeling-ablation-isolate-era5"
+
+wandb:
+  mode: "online"

@@ -3,9 +3,10 @@
 Submits exactly one on-demand ``n1-standard-4`` + ``NVIDIA_TESLA_T4`` Vertex
 Custom Job in ``europe-west3``. Modes: ``smoke`` (cheap-runtime lifecycle),
 ``probe`` / ``probe-lr3`` (historical recovery probes), ``full`` (issue #53
-Stage-1 temporal run), and ``stage2``–``stage5`` (issue #58 Tag-11 ablation
-full temporal runs under the residual lock). Efficiency and verification
-modes are closed.
+Stage-1 temporal run), ``stage2``–``stage5`` (issue #58 Tag-11 ablation full
+temporal runs), and ``isolate-shadows`` / ``isolate-era5`` (issue #63
+single-family runs). All of those stay under the residual lock. Efficiency
+and verification modes are closed.
 
 Server-side job limits, a single worker pool, no persistent resource, and no
 retries are set here so a disconnected client cannot leave an unbounded or
@@ -139,8 +140,9 @@ CANCEL_CONFIRMATION_SECONDS = 300
 # trials (issue #47) that share the residual method and differ only in learning
 # rate; the smoke is the #38 GPU acceptance path and is left unchanged. `full`
 # is the unbounded 20-epoch Stage-1 temporal run (issue #53). `stage2`–`stage5`
-# are the Tag-11 cumulative ablation full runs (issue #58) under the same
-# residual lock, timeout, and cost ceilings as `full`.
+# are the Tag-11 cumulative ablation full runs (issue #58). `isolate-shadows`
+# and `isolate-era5` are the single-family runs (issue #63). All of them share
+# the residual lock, timeout, and cost ceilings of `full`.
 MODE_CONFIG_NAME = {
     "smoke": "vertex_smoke",
     "probe": "stage1_probe",
@@ -150,6 +152,8 @@ MODE_CONFIG_NAME = {
     "stage3": "stage3_locked",
     "stage4": "stage4_locked",
     "stage5": "stage5_locked",
+    "isolate-shadows": "isolate_shadows_locked",
+    "isolate-era5": "isolate_era5_locked",
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
@@ -157,8 +161,23 @@ MODE_CONFIG_NAME = {
 # Ablation full runs reuse the Stage-1 `full` evidence schema (epoch curve,
 # one-shot test, create-only checkpoint).
 _PROBE_MODES = ("probe", "probe-lr3")
-_FULL_TEMPORAL_MODES = ("full", "stage2", "stage3", "stage4", "stage5")
-_ABLATION_MODES = ("stage2", "stage3", "stage4", "stage5")
+_FULL_TEMPORAL_MODES = (
+    "full",
+    "stage2",
+    "stage3",
+    "stage4",
+    "stage5",
+    "isolate-shadows",
+    "isolate-era5",
+)
+_ABLATION_MODES = (
+    "stage2",
+    "stage3",
+    "stage4",
+    "stage5",
+    "isolate-shadows",
+    "isolate-era5",
+)
 # Modes that require the verified regional rate before submitting.
 _RATE_REQUIRED_MODES = ("probe", "probe-lr3", *_FULL_TEMPORAL_MODES)
 MODE_EVIDENCE_PROFILE = {
@@ -170,6 +189,8 @@ MODE_EVIDENCE_PROFILE = {
     "stage3": "full",
     "stage4": "full",
     "stage5": "full",
+    "isolate-shadows": "full",
+    "isolate-era5": "full",
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
