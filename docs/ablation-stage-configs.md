@@ -46,7 +46,8 @@ to the matching `*_locked` config, reuses the Stage-1 full evidence profile
 
 Rebuild the modeling image from the commit that carries these configs before
 the first ablation submit; the Stage-1 digest does not include them. Run stages
-sequentially (2 → 3 → 4 → 5); do not retune between stages.
+sequentially (2 → 3 → 4 → 5); do not retune between stages. Recorded outcomes
+are in `docs/ablation-full-results.md`.
 
 ```bash
 uv run --group operators python scripts/operators/launch_vertex_modeling.py \

@@ -135,6 +135,7 @@ and the fail-closed `run-*-vm.sh` launchers) lives in
 - `docs/vertex-gpu-training.md` — Vertex AI GPU launch recipe (smoke + full Stage-1).
 - `docs/stage1-efficiency.md` — closed efficiency gate; frozen cheap runtime.
 - `docs/stage1-full-results.md` — Stage-1 full temporal run (issue #53).
+- `docs/ablation-full-results.md` — Tag-11 ablation ladder and isolation runs (issues #58 and #63).
 - `docs/gcs-inventory-and-transfer.md` — completed 2026-09-25 bucket
   cutover archive.
 - `docs/phase-1-delivery.md`, `docs/phase-2-preparation.md` — historical
