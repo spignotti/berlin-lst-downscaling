@@ -16,6 +16,7 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from berlin_lst_downscaling.data.training.contracts import split_for_year
 from berlin_lst_downscaling.modeling.channels import (
+    ABLATION_ISOLATION_CHANNELS,
     ABLATION_LOCKED_CONFIG_NAMES,
     ABLATION_STAGE_CHANNELS,
     feature_order_for,
@@ -112,19 +113,67 @@ _STAGE1_CACHE_BYTES = 12_884_901_888
 _STAGE1_CACHE_CHANNELS = 10
 
 
+def _check_ablation_channels(
+    problems: list[str],
+    cfg: DictConfig,
+    *,
+    label: str,
+    expected_names: list[str],
+    expected_loss: str,
+) -> None:
+    selection = selection_from_config(cfg)
+    if list(selection.names) != expected_names:
+        problems.append(
+            f"active channels for {label} must be {expected_names}; "
+            f"got {list(selection.names)}"
+        )
+    actual_loss = OmegaConf.select(cfg, "contract.loss")
+    if actual_loss != expected_loss:
+        problems.append(
+            f"contract.loss={actual_loss!r} (expected {expected_loss!r} for {label})"
+        )
+    cache_bytes = OmegaConf.select(cfg, "data.cache_max_bytes")
+    min_cache = int(_STAGE1_CACHE_BYTES * (selection.n_active / _STAGE1_CACHE_CHANNELS))
+    if (
+        isinstance(cache_bytes, bool)
+        or not isinstance(cache_bytes, int)
+        or cache_bytes < min_cache
+    ):
+        problems.append(
+            f"data.cache_max_bytes={cache_bytes!r} "
+            f"(expected an int >= {min_cache} for C={selection.n_active})"
+        )
+
+
 def assert_ablation_lock(cfg: DictConfig) -> None:
     """Fail closed unless the config is a Tag-11 ablation under the Stage-1 lock."""
     problems: list[str] = []
     if cfg.get("ablation_lock") is not True:
         problems.append("ablation_lock marker is not true")
     stage = cfg.get("ablation_stage")
-    if (
-        isinstance(stage, bool)
-        or not isinstance(stage, int)
-        or stage not in (2, 3, 4, 5)
-    ):
-        problems.append(f"ablation_stage={stage!r} (expected an int in {{2, 3, 4, 5}})")
-        stage = None
+    isolation = cfg.get("ablation_isolation")
+    stage_ok = (
+        not isinstance(stage, bool) and isinstance(stage, int) and stage in (2, 3, 4, 5)
+    )
+    isolation_ok = isinstance(isolation, str) and isolation in ABLATION_ISOLATION_CHANNELS
+    if stage_ok and isolation_ok:
+        problems.append("ablation_stage and ablation_isolation are mutually exclusive")
+    elif stage_ok:
+        if isolation is not None:
+            problems.append(
+                f"ablation_isolation={isolation!r} (expected null on a cumulative stage)"
+            )
+    elif isolation_ok:
+        if stage is not None:
+            problems.append(
+                f"ablation_stage={stage!r} (expected null on an isolation run)"
+            )
+    else:
+        problems.append(
+            f"ablation_stage={stage!r} ablation_isolation={isolation!r} "
+            "(expected stage in {2, 3, 4, 5} or isolation in "
+            f"{sorted(ABLATION_ISOLATION_CHANNELS)})"
+        )
     if cfg.get("stage1_residual_prior") is not True:
         problems.append("ablation configs require the frozen residual prior")
     for marker in ("stage1_lock", "stage1_full", "stage1_probe"):
@@ -138,33 +187,22 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
             problems.append(f"{key}={actual!r} (expected {expected!r})")
     if list(cfg.data.get("splits") or []) != ["train", "validation"]:
         problems.append("ablation data.splits must be exactly ['train', 'validation']")
-    if stage is not None:
-        expected_names = list(ABLATION_STAGE_CHANNELS[stage])
-        selection = selection_from_config(cfg)
-        if list(selection.names) != expected_names:
-            problems.append(
-                f"active channels for stage {stage} must be {expected_names}; "
-                f"got {list(selection.names)}"
-            )
-        expected_loss = "thermal_aware" if stage == 5 else "masked_l1"
-        actual_loss = OmegaConf.select(cfg, "contract.loss")
-        if actual_loss != expected_loss:
-            problems.append(
-                f"contract.loss={actual_loss!r} (expected {expected_loss!r} for stage {stage})"
-            )
-        cache_bytes = OmegaConf.select(cfg, "data.cache_max_bytes")
-        min_cache = int(
-            _STAGE1_CACHE_BYTES * (selection.n_active / _STAGE1_CACHE_CHANNELS)
+    if stage_ok and not isolation_ok and isinstance(stage, int):
+        _check_ablation_channels(
+            problems,
+            cfg,
+            label=f"stage {stage}",
+            expected_names=list(ABLATION_STAGE_CHANNELS[stage]),
+            expected_loss="thermal_aware" if stage == 5 else "masked_l1",
         )
-        if (
-            isinstance(cache_bytes, bool)
-            or not isinstance(cache_bytes, int)
-            or cache_bytes < min_cache
-        ):
-            problems.append(
-                f"data.cache_max_bytes={cache_bytes!r} "
-                f"(expected an int >= {min_cache} for C={selection.n_active})"
-            )
+    elif isolation_ok and not stage_ok:
+        _check_ablation_channels(
+            problems,
+            cfg,
+            label=f"isolation {isolation}",
+            expected_names=list(ABLATION_ISOLATION_CHANNELS[str(isolation)]),
+            expected_loss="masked_l1",
+        )
     # Operational bounds shared with the Stage-1 full Vertex path: one GPU,
     # W&B online, job-local output root. Checked here so the launcher and the
     # worker refuse a drifted ablation submit without a separate marker.

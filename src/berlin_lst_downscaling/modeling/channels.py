@@ -33,11 +33,21 @@ ABLATION_STAGE_CHANNELS: dict[int, tuple[str, ...]] = {
     5: _SPECTRAL_INDEX + _MORPHOLOGY + _SHADOW + _ERA5,
 }
 
+# Single-family additions on the spectral block (issue #63). These are not
+# rungs of the cumulative ladder: shadows without morphology, ERA5 without
+# morphology or shadows. Loss stays masked L1.
+ABLATION_ISOLATION_CHANNELS: dict[str, tuple[str, ...]] = {
+    "shadows": _SPECTRAL_INDEX + _SHADOW,
+    "era5": _SPECTRAL_INDEX + _ERA5,
+}
+
 ABLATION_LOCKED_CONFIG_NAMES: tuple[str, ...] = (
     "stage2_locked",
     "stage3_locked",
     "stage4_locked",
     "stage5_locked",
+    "isolate_shadows_locked",
+    "isolate_era5_locked",
 )
 
 
@@ -128,6 +138,7 @@ def feature_order_for(selection: ActiveChannelSelection) -> str:
 
 
 __all__ = [
+    "ABLATION_ISOLATION_CHANNELS",
     "ABLATION_LOCKED_CONFIG_NAMES",
     "ABLATION_STAGE_CHANNELS",
     "ActiveChannelSelection",

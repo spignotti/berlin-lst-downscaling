@@ -289,13 +289,15 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
   --hourly-rate-usd 0.90 --preflight
 ```
 
-### Tag-11 ablation full runs (`--mode stage2` … `stage5`)
+### Tag-11 ablation full runs (`--mode stage2` … `stage5`, `isolate-shadows`, `isolate-era5`)
 
-Issue #58. Same protocol, timeout, and cost ceilings as `--mode full`, with
-Hydra profiles `stage2_locked` … `stage5_locked` under the residual lock
+Issue #58 and issue #63. Same protocol, timeout, and cost ceilings as
+`--mode full`, with Hydra profiles `stage2_locked` … `stage5_locked`,
+`isolate_shadows_locked`, and `isolate_era5_locked` under the residual lock
 (`docs/ablation-stage-configs.md`). Evidence reuses the `full` profile
 (checkpoint + one-shot test). Rebuild the image from a commit that includes
-those configs; submit stages sequentially without retuning.
+those configs; do not retune between runs. Stage 5 must use an image that
+contains the pad-free SSIM loss.
 
 ```bash
 uv run --group operators python scripts/operators/launch_vertex_modeling.py \

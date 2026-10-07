@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Smoke Tag-11 ablation configs (issue #57): compose, guard, loader select, model.
+"""Smoke Tag-11 ablation configs (issues #57 and #63).
 
-GCS-free. Verifies each stage2–5 locked profile resolves, passes the ablation
-lock, selects the expected V3 channel subset (including the non-prefix stage-3
-shadow set), and that :class:`RealLSTTask` accepts a batch under that width
-and loss. Exit 0 on GO.
+GCS-free. Verifies each locked cumulative stage and each isolation profile
+resolves, passes the ablation lock, selects the expected V3 channel subset
+(including non-prefix shadow sets), and that :class:`RealLSTTask` accepts a
+batch under that width and loss. Exit 0 on GO.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import torch
 from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.channels import (
+    ABLATION_ISOLATION_CHANNELS,
     ABLATION_LOCKED_CONFIG_NAMES,
     ABLATION_STAGE_CHANNELS,
     selection_from_config,
@@ -81,7 +82,12 @@ def _fake_sample(patch_id: str = "smoke:0") -> RealSample:
 def _check_stage(config_name: str) -> list[str]:
     failures: list[str] = []
     cfg = _compose(config_name)
-    stage = int(cfg.ablation_stage)
+    isolation = cfg.get("ablation_isolation")
+    stage = None if isolation is not None else int(cfg.ablation_stage)
+    if isolation is not None:
+        expected = ABLATION_ISOLATION_CHANNELS[str(isolation)]
+    else:
+        expected = ABLATION_STAGE_CHANNELS[int(stage)]
     try:
         guard_modeling_config(cfg, config_name)
         contract_invariants(cfg)
@@ -91,7 +97,6 @@ def _check_stage(config_name: str) -> list[str]:
         return failures
 
     selection = selection_from_config(cfg)
-    expected = ABLATION_STAGE_CHANNELS[stage]
     if selection.names != expected:
         failures.append(
             f"{config_name}: channels {list(selection.names)} != expected {list(expected)}"
@@ -110,12 +115,25 @@ def _check_stage(config_name: str) -> list[str]:
             f"!= (2, {selection.n_active}, {REAL_PATCH_PX}, {REAL_PATCH_PX})"
         )
 
-    # Non-contiguous stage-3 must pull V3 indices 26/27, not positions 18/19.
-    if stage == 3:
-        got = batch.features[0, 18:20].detach().cpu().numpy()
-        expect = sample.features[np.asarray(selection.indices[18:20], dtype=np.intp)]
+    # Non-contiguous shadow sets must pull V3 indices 26/27, not the next prefix.
+    if stage == 3 or config_name == "isolate_shadows_locked":
+        got = batch.features[0, -2:].detach().cpu().numpy()
+        expect = sample.features[np.asarray(selection.indices[-2:], dtype=np.intp)]
         if not np.array_equal(got, expect):
-            failures.append(f"{config_name}: stage-3 shadow selection did not use V3 indices 26/27")
+            failures.append(
+                f"{config_name}: shadow selection did not use the resolved V3 indices"
+            )
+    if config_name == "isolate_shadows_locked" and selection.indices != (
+        *range(10),
+        26,
+        27,
+    ):
+        failures.append(f"{config_name}: expected spectral prefix plus V3 indices 26/27")
+    if config_name == "isolate_era5_locked" and selection.indices != (
+        *range(10),
+        *range(18, 26),
+    ):
+        failures.append(f"{config_name}: expected spectral prefix plus V3 indices 18–25")
 
     loss_name = str(cfg.contract.loss)
     task = RealLSTTask(
@@ -194,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
         f"stage{stage}=C{len(names)}"
         for stage, names in ABLATION_STAGE_CHANNELS.items()
         if stage >= 2
+    )
+    summary += ", " + ", ".join(
+        f"isolate-{name}=C{len(names)}" for name, names in ABLATION_ISOLATION_CHANNELS.items()
     )
     print(f"ablation config smoke GO — {summary}")
     return 0

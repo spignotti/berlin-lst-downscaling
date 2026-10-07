@@ -1,0 +1,49 @@
+# @package _global_
+# Issue #63: spectral block + building/vegetation shadows, without morphology
+# or ERA5. Compared with stage2_locked (spectral + morphology) this separates
+# the two geometry families the cumulative ladder confounds. Same residual
+# lock, masked L1, and masked-MAE selection as Stage 1.
+defaults:
+  - real_full
+  - _self_
+
+ablation_lock: true
+ablation_isolation: shadows
+stage1_residual_prior: true
+
+contract:
+  loss: "masked_l1"
+  feature_order: "v3_named_subset"
+
+data:
+  n_active_channels: 12
+  active_channel_names:
+    - B02
+    - B03
+    - B04
+    - B08
+    - B11
+    - B12
+    - ndvi
+    - ndwi_mcfeeters
+    - ndbi
+    - s2_broadband_albedo
+    - shadow_building
+    - shadow_vegetation
+  splits: ["train", "validation"]
+  batch_size: 4
+  mode: stream
+  num_workers: 0
+  shuffle_train: true
+  pin_memory: false
+  cache_max_bytes: 15461882265    # >= 12 GiB * 12/10
+
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"
+
+output_root: "data/runs/modeling-ablation-isolate-shadows"
+
+wandb:
+  mode: "online"
