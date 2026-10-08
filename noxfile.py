@@ -1664,3 +1664,24 @@ def smoke_real_comparison(session: nox.Session) -> None:
         _clean()
         print(f"Removed local smoke output: {model_root}, {baseline_root}")
 
+
+@nox.session(venv_backend="none", name="smoke-random-forest")
+def smoke_random_forest(session: nox.Session) -> None:
+    """Fit and independently validate all four RF feature sets on a bounded real cohort."""
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    _preflight_gcs(session)
+    with TemporaryDirectory(prefix="berlin-rf-smoke-", dir="/tmp") as scratch:
+        output_root = str(Path(scratch) / "run")
+        session.run(
+            "uv", "run", "python", "scripts/runners/run_random_forest.py",
+            "--config-name", "random_forest_smoke", f"output_root={output_root}",
+            external=True,
+        )
+        session.run(
+            "uv", "run", "python", "scripts/validators/validate_random_forest.py",
+            "--report", str(Path(output_root) / "random_forest_report.json"),
+            "--max-patches", "4", external=True,
+        )
+

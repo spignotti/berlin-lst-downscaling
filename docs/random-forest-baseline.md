@@ -1,0 +1,35 @@
+# Random-forest residual baseline
+
+This arm compares four random forests against the unchanged naive prior-expand baseline and the Tag-11 U-Net ablations. It uses the published patch index, eligibility masks, `RealPatchReader`, and train-only scaler. The active channel names and order are the same as stages 1–4: 10 spectral channels, 18 with morphology, 20 with shadows, and 28 with ERA5. Stage 5 has the same feature set and does not require another forest.
+
+## Method and comparison contract
+
+Training uses 2017–2023 only; validation is 2024 and the once-per-frozen-forest test is 2025. Neither validation nor test scores select hyperparameters or models. This is a temporal pseudo-pair evaluation at recurring locations, not an independent spatial generalization or operational forecasting claim.
+
+A training observation is one eligible 100 m cell. Its inputs are exact 10×10 means of scaled, already-neutralized native 10 m features, followed by the physical 100 m LST prior in Kelvin. The target is `Landsat_100m − prior_100m`. Thus each forest consumes `C+1` columns, not just the selected feature channels. There are no assumed independent 10 m target observations.
+
+At inference, each **native 10 m pixel** supplies its selected features and the same physical prior. The 100 m prior is repeated onto the nested 10 m grid; the forest predicts a separate residual for each 10 m pixel. Add this residual to the physical prior at 10 m, then compute the exact nested 10×10 mean for 100 m evaluation. Predicting a residual from pooled 100 m features and broadcasting that residual is **not** this method. Transfer from aggregated training features to native fine-resolution inference features is an explicit RF assumption, not fine-resolution supervision.
+
+The full profile fixes 200 trees, maximum depth 20, minimum leaf size 5, `max_features=1.0`, bootstrap enabled, squared-error criterion, and seed 0. CPU parallelism is bounded to one or two workers. All four forests use identical training rows and hyperparameters. A seed-0 reservoir samples at most 500,000 eligible training cells from all training patches. The selected cell/scene keys and fingerprint are retained. Repeated observations from overlapping patch windows are deduplicated, and overlap/weighting counts are reported. This cell sample differs from U-Net patch training.
+
+The primary score is MAE in Kelvin, weighted by valid 100 m cell counts. SSIM is secondary and never a selection gate. Validation and test cover the complete published splits, with the same scored patch IDs, valid-cell counts, feature-fill counts, and exclusion accounting as the naive evidence.
+
+## Run-local artifacts and cache
+
+Each evaluation patch is read once from the source products. Its full `(28, 160, 160)` scaled feature array is cached in a run-local `.npy` file and reused by all four forests; only patch metadata, 100 m priors, targets, and masks remain in memory. Cache files are temporary and must be removed by the run that created them after required artifacts are secured. Canonical products and retained QA evidence must not be changed or deleted.
+
+Retained outputs include safe `.skops` model artifacts, the resolved configuration, Git revision, library versions, source fingerprints, selected training-row identifiers and fingerprints, timings, peak process memory, cache byte counts, patch-level error contributions, and native-resolution replay probes. W&B records configuration, Git revision, fit timings and all stage scores in an offline run under the pipeline log root. Its files are secured with the other artifacts; live W&B synchronization remains a separate authorized operation. Probe features have shape `(P, 28, 160, 160)`, priors `(P, 16, 16)`, and per-stage residuals `(P, 160, 160)`. Logs belong exclusively under `<output_root>/logs/random_forest/`.
+
+Model hashes must match before deserialization. The shared safe loader explicitly permits only the required `sklearn.tree._tree.Tree` addition and audits tree node bounds and cycles before prediction; it must not dynamically trust arbitrary reported types. Pickle loading and lint/type-check suppressions are not part of this workflow.
+
+## Operation and validation
+
+The CPU VM launcher is `.opencode/skills/google-access/scripts/run-random-forest-vm.sh`; its arguments are `<smoke|full> <branch> <hourly-rate-usd>`. Use a committed branch. Before starting, check the VM and existing jobs without disturbing other work. The smoke profile deliberately bounds patches, sampling, trees, and depth; its outputs are not full comparison evidence.
+
+Before the full run, use the smoke runtime/memory observations and current hourly VM rate to check the approved maximum budget of **10 USD and eight hours**. The launcher allocates one hour to the smoke lifecycle and seven hours to the full lifecycle; SSH phases share a remaining-time budget and reserve time for validation and transfer. Pipeline and validator subprocesses have bounded termination timeouts. A lost connection or failed artifact transfer preserves the VM and outputs for operator recovery; this fail-closed exception can extend billed uptime beyond the normal-path budget and requires prompt inspection. If the resources or budget do not suffice, stop and request approval. Do not automatically reduce the full profile's method or evaluation coverage. Leave the VM stopped when the job is no longer running, and retain deletion protection and the non-auto-delete boot disk.
+
+Run the independent validator with `uv run python scripts/validators/validate_random_forest.py --report <run-root>/random_forest_report.json --naive-report <retained-naive-report> --max-patches 5`. Full validation cannot skip naive evidence or substitute a smaller smoke comparison universe.
+
+The validator checks the frozen profile, index fingerprints and split years, training selection identities and accounting, model hashes and `C+1` input width, actual forest parameters, complete full-split coverage, cross-stage identity, and reconciliation with naive evidence. It independently rebuilds native scaled features, physical priors, masks, and targets on bounded real patches; constructs native prediction matrices; pools the 10 m predictions; and recomputes masked error contributions and SSIM support. Native probe replay must be bitwise identical. These checks read published sources but never rewrite them.
+
+Local lint/type checks and the bounded real-data smoke precede the full run. `uv run nox -s smoke-random-forest` exercises the real reader and independent validator on a bounded cohort; run it on a compute host with GDAL GCS authentication. The VM uses its attached service account through the metadata server. All four full-stage results require independent validation. Secure retained artifacts with hash comparison before removing only this run's temporary outputs. Record exact scores, costs when evidenced, artifact hashes, sampling and transfer assumptions, and reproduction arguments in the final result note. This document defines the method and operation; it does not claim a completed cloud run or measured results.
