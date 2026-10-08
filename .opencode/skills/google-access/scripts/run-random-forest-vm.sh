@@ -125,7 +125,7 @@ fi
 leave_running=1
 mkdir -p "$LOCAL_DIR"
 printf '%s\n' "$VALIDATION_OUT" > "$LOCAL_DIR/validation.txt"
-ARCHIVE="$REMOTE_OUTPUT/artifact.tgz"
+ARCHIVE="$APP_DIR/data/runs/random-forest/$WRAP_RUN_ID-artifact.tgz"
 ssh_cmd "tar --exclude=./artifact.tgz -C '$REMOTE_OUTPUT' -czf '$ARCHIVE' ."
 REMOTE_SHA=$(ssh_cmd "sha256sum '$ARCHIVE'" | cut -d' ' -f1)
 ssh_cmd "cat '$ARCHIVE'" > "$LOCAL_DIR/artifact.tgz"
@@ -140,7 +140,7 @@ printf '%s\n' "$REMOTE_SHA" > "$LOCAL_DIR/artifact.sha256"
 leave_running=0
 
 if [[ "$VALIDATION_RC" -eq 0 ]]; then
-  ssh_cmd "rm -rf '$REMOTE_OUTPUT'"
+  ssh_cmd "rm -rf '$REMOTE_OUTPUT' && rm -f '$ARCHIVE'"
 fi
 vm_stop
 if [[ "$VALIDATION_RC" -ne 0 ]]; then
