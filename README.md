@@ -62,7 +62,12 @@ reader, mask, and metric. The real path admits each selected patch once, then
 reads the split either eagerly (bounded smokes) or lazily through loader
 workers (`data.mode=stream`, the `real_full` default), so a full split is
 never held in memory. The scaffolding gates below prove the lifecycle and the
-released-source wiring; a full Stage-1 training run is the next step.
+released-source wiring. Completed since then: the Stage-1 full temporal run
+(validation 0.50285 K, one-shot 2025 test 0.53257 K), the Tag-11 ablation
+ladder (Stages 2–5) with two single-family isolation runs, and the validated
+four-stage random-forest baseline (Stage-4 test 1.18341 K vs naive 1.39523 K).
+Scientific interpretation lives in Notion; machine-readable evidence and
+frozen result notes stay in this repository (see Documentation).
 
 ## Setup
 
@@ -128,19 +133,18 @@ and the fail-closed `run-*-vm.sh` launchers) lives in
 
 ## Documentation
 
-- `docs/data-sources-and-contracts.md` — sources, canonical grid, manifest
-  and product contracts.
-- `docs/pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
-  contract for real-data training (WB3), implemented by `modeling/`.
-- `docs/vertex-gpu-training.md` — Vertex AI GPU launch recipe (smoke + full Stage-1).
-- `docs/stage1-efficiency.md` — closed efficiency gate; frozen cheap runtime.
-- `docs/stage1-full-results.md` — Stage-1 full temporal run (issue #53).
-- `docs/ablation-full-results.md` — Tag-11 ablation ladder and isolation runs (issues #58 and #63).
-- `docs/random-forest-baseline.md` — CPU random-forest comparison method and run validation (issue #59).
-- `docs/random-forest-full-results.md` — validated full RF results against naive and U-Net baselines (issue #59).
-- `docs/gcs-inventory-and-transfer.md` — completed 2026-09-25 bucket
-  cutover archive.
-- `docs/phase-1-delivery.md`, `docs/phase-2-preparation.md` — historical
-  preprocessing handoff (paths in those files predate the cutover).
-- Result notes (`docs/baseline-full-results.md`, `docs/stage1-*.md`) are
-  GO/NO-GO evidence for individual runs.
+Scientific reasoning and interpretation live in Notion; this repository keeps
+normative technical contracts, operating guides, and frozen evidence
+(see `docs/README.md` for the map).
+
+- Current contracts and guides: `docs/data-sources-and-contracts.md`,
+  `docs/pseudo-pair-tensor-contract.md`, `docs/vertex-gpu-training.md`,
+  `docs/ablation-stage-configs.md`.
+- Frozen evidence: `docs/baseline-full-results.md`, `docs/stage1-full-results.md`,
+  `docs/stage1-efficiency.md`, `docs/stage1-probe-results.md`,
+  `docs/stage1-debug-results.md`, `docs/patch-read-timing.md`,
+  `docs/gcs-inventory-and-transfer.md`, `docs/ablation-full-results.md`,
+  `docs/random-forest-baseline.md`, `docs/random-forest-full-results.md`.
+- Archived handoffs: `docs/archive/phase-1-delivery.md`,
+  `docs/archive/phase-2-preparation.md`,
+  `docs/archive/stage1-training-readiness.md` (cancelled verification gate).

@@ -1,7 +1,10 @@
-# Stage-1 training readiness
+# Stage-1 training readiness (archived cancelled gate)
 
-Verifies and freezes the lowest-cost supported Stage-1 setup before any full
-Stage-1 run. Originally planned as one capped verification job after J1–J4.
+> Archived under `docs/archive/` during the Issue #66 documentation cleanup.
+> The verification job was cancelled; the frozen J1–J4 runtime it references
+> is recorded in `docs/stage1-efficiency.md`.
+> Verifies and freezes the lowest-cost supported Stage-1 setup before any full
+> Stage-1 run. Originally planned as one capped verification job after J1–J4.
 
 **Status: cancelled.** The sole verification job was not run. The frozen
 runtime for issue #53 is the J1–J4 recommendation in

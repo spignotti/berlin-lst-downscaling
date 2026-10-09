@@ -1,13 +1,16 @@
-# Phase-2 preparation
+# Phase-2 preparation (archived historical handoff)
 
-Historical handoff, written against `gs://berlin-lst-data/`. Canonical
+> Archived under `docs/archive/` during the Issue #66 documentation cleanup.
+> This is a historical handoff, not a current operational guide. Normative
+> contracts live in `docs/data-sources-and-contracts.md`.
+> Written against `gs://berlin-lst-data/`. Canonical
 storage since the 2026-09-25 cutover is `gs://berlin-lst-training-data/`
 (same keys). Current contracts: `docs/data-sources-and-contracts.md`.
 
 Short handoff record between the delivered preprocessing phase and the
 next QA/feature-engineering tasks. Normative contracts and the full
 product inventory live in `data-sources-and-contracts.md` and
-`phase-1-delivery.md`; this file records only the state a phase-2
+`archive/phase-1-delivery.md`; this file records only the state a phase-2
 session must know up front.
 
 ## Published inputs
@@ -22,7 +25,7 @@ session must know up front.
   at native 20 m before bilinear 20→10 m resampling).
 - Static geometry (sources + derived), dynamic per-scene ERA5-Land and
   shadows, and LoD vintages are delivered as documented in
-  `phase-1-delivery.md`.
+  `archive/phase-1-delivery.md`.
 
 ## ECOSTRESS validation role
 
