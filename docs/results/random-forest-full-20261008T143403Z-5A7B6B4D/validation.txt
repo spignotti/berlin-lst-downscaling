@@ -1,0 +1,21 @@
+Validating random forest report: /workspace/app/data/runs/random-forest/random-forest-full-20261008T143403Z-5A7B6B4D/random_forest_report.json
+  provenance: 10018 indexed patches, fingerprints compared to the marker
+  train selection: 500000 rows (cap 500000), 1741542 candidate cells, 0 duplicate; anchors/unique/year checks OK
+  coverage test       : requested 1803 | scored 1803 | exclusions {}
+  coverage validation : requested 1342 | scored 1341 | exclusions {'no_valid_prior_block': 1}
+  naive evidence: /workspace/app/docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json
+  naive test       : 1803 scored patch(es) in the naive evidence, 0 mismatch(es)
+  naive validation : 1341 scored patch(es) in the naive evidence, 0 mismatch(es)
+  recomputed LC08_L2SP_192023_20250617_02_T1:E394790N5833610 [test] cells=256
+  recomputed LC08_L2SP_192023_20250617_02_T1:E396390N5833610 [test] cells=256
+  recomputed LC08_L2SP_192023_20250617_02_T1:E397990N5833610 [test] cells=255
+  recomputed LC08_L2SP_192023_20250617_02_T1:E389990N5832010 [test] cells=249
+  recomputed LC08_L2SP_192023_20250617_02_T1:E391590N5832010 [test] cells=251
+  recomputed LC08_L2SP_192023_20240513_02_T1:E394790N5833610 [validation] cells=256
+  recomputed LC08_L2SP_192023_20240513_02_T1:E396390N5833610 [validation] cells=256
+  recomputed LC08_L2SP_192023_20240513_02_T1:E397990N5833610 [validation] cells=255
+  recomputed LC08_L2SP_192023_20240513_02_T1:E389990N5832010 [validation] cells=249
+  recomputed LC08_L2SP_192023_20240513_02_T1:E391590N5832010 [validation] cells=251
+  probe LC08_L2SP_192023_20240513_02_T1:E394790N5833610 [validation] rebuilt and replayed per stage
+  probe LC08_L2SP_192023_20250617_02_T1:E394790N5833610 [test] rebuilt and replayed per stage
+OK: random forest report valid (10 patches recomputed, 2 probe(s) replayed, 500000 train rows audited)
