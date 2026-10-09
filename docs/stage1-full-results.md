@@ -4,7 +4,7 @@
 baseline universe, and beat both full-split naive anchors. Independent
 validation (`validate_stage1_full.py`) returns **GO** (exit 0). Efficiency gate
 closed (`docs/stage1-efficiency.md`); verification job cancelled
-(`docs/stage1-training-readiness.md`). Frozen runtime: job-local cache, batch 4,
+(`docs/archive/stage1-training-readiness.md`). Frozen runtime: job-local cache, batch 4,
 workers 0, `pin_memory: false`, `16-mixed`.
 
 The first **full temporal** Stage-1 fit under the recovered residual lock: every

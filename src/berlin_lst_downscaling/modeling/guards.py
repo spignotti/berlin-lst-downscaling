@@ -700,7 +700,7 @@ def assert_probe_minima(cfg: DictConfig, scope: dict) -> None:
         raise ValueError("stage1_probe cohort is out of bounds: " + "; ".join(problems))
 
 
-# Verified full-training runtime (docs/stage1-training-readiness.md). Operational
+# Verified full-training runtime (docs/archive/stage1-training-readiness.md). Operational
 # retunes only — the frozen method in ``_STAGE1_LOCK_EXPECTED`` is untouched.
 # Operational retunes frozen from J1–J4; this guard resolves offline and in the
 # readiness validator, so the later execution plan cannot silently drift.

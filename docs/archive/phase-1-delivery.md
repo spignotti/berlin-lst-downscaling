@@ -1,6 +1,9 @@
-# Phase 1 delivery
+# Phase 1 delivery (archived historical handoff)
 
-Historical handoff, written against `gs://berlin-lst-data/`. Canonical
+> Archived under `docs/archive/` during the Issue #66 documentation cleanup.
+> This is a historical handoff, not a current operational guide. Normative
+> contracts live in `docs/data-sources-and-contracts.md`.
+> Written against `gs://berlin-lst-data/`. Canonical
 storage since the 2026-09-25 cutover is `gs://berlin-lst-training-data/`
 (same keys). Current contracts: `docs/data-sources-and-contracts.md`.
 
@@ -163,5 +166,5 @@ Source semantics behind the probes:
 
 - `README.md` — pipeline operations, production and validation commands, smoke matrix.
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest/ledger/artefact contracts.
-- `phase-2-preparation.md` — preparation state for the next QA phase.
+- `archive/phase-2-preparation.md` — preparation state for the next QA phase.
 - This file — delivered products, metadata interface, handoff state.

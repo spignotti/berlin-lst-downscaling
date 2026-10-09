@@ -127,7 +127,7 @@ inventory.
 - The `-r2` manifest bundle is the canonical one; the earlier bundle is
   history only.
 - Categories here come from the bucket listing plus the documented roots
-  in `docs/phase-1-delivery.md` and `docs/phase-2-preparation.md`. No
+  in `docs/archive/phase-1-delivery.md` and `docs/archive/phase-2-preparation.md`. No
   prefix in the bucket is left unclassified.
 
 ### Observed counts vs. release-report counts
@@ -431,7 +431,7 @@ Not versioned here; switch these on the machine for the new account:
 
 ### Historical documents (deliberately not rewritten)
 
-`docs/phase-1-delivery.md` and `docs/phase-2-preparation.md` record the
+`docs/archive/phase-1-delivery.md` and `docs/archive/phase-2-preparation.md` record the
 old-account era and keep the paths of their time; they are history, not the
 current canonical root. `docs/data-sources-and-contracts.md` is a contract
 and was updated to the new canonical bucket.
@@ -476,8 +476,8 @@ should be repointed if Earth Engine is used again.
 
 ## References
 
-- Product inventory and handoff state: `docs/phase-1-delivery.md`.
-- Phase-2 QA state and the `training/v1` release: `docs/phase-2-preparation.md`.
+- Product inventory and handoff state: `docs/archive/phase-1-delivery.md`.
+- Phase-2 QA state and the `training/v1` release: `docs/archive/phase-2-preparation.md`.
 - Source, grid, manifest, ledger, and artifact contracts:
   `docs/data-sources-and-contracts.md`.
 - Google Cloud, move data between buckets:

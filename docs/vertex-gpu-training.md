@@ -442,5 +442,5 @@ before the full Stage-1 run.
 Verified: train/validation only (4 refs each, 0 exclusions), C=10, workers 0,
 `16-mixed`, one GPU epoch (`validation/mae_100m=302.0`), checkpoint selection
 and reload, W&B online, create-only evidence, clean teardown. This is a
-lifecycle check, not model quality. The full Stage-1 temporal run remains the
-next explicit invocation under issue #53.
+lifecycle check, not model quality. The full Stage-1 temporal run completed
+under issue #53; see `docs/stage1-full-results.md`.
