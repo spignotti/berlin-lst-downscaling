@@ -12,6 +12,12 @@ pipeline stage must respect.
 | Sentinel-2 L2A (PC `sentinel-2-l2a`) | `data/acquisition/sentinel2.py` | 10 m (SWIR 20 m native) | predictor (`role=predictor`) |
 | ECOSTRESS L2T LSTE v002 (NASA CMR) | `data/acquisition/ecostress.py` | 70 m | validation (`role=validation`) |
 
+ECOSTRESS stays outside the V3 feature stack. The 2026-10-14 metadata
+inventory (`docs/ecostress-feasibility.md`) found a small set of daytime
+tile overlaps with the published anchors. It did not read ECOSTRESS QC, and
+the six-id allowlist in `configs/selection/_base.yaml` is not a measured
+collocation. `±2 hours` in that config is unused by selection.
+
 **Evaluation layer, not a model input.** Umweltatlas 06.07 / 06.08
 Stadtstruktur on the ISU5 block map is published separately for
 descriptive statistics and stratified evaluation. It does not enter the

@@ -11,6 +11,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
   product contracts.
 - `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer. Not a
   V3 feature channel. Class groups await scientific approval.
+- `ecostress-feasibility.md` — read-only ECOSTRESS C2 collocation inventory
+  against the published Landsat anchors (issue #71).
 - `pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
   contract for real-data training (WB3), implemented by `modeling/`.
 - `vertex-gpu-training.md` — Vertex AI GPU launch recipe.

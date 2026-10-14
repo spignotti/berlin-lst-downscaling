@@ -1,0 +1,130 @@
+{
+  "accessed_at": "2026-10-14T10:59:13.657205+00:00",
+  "product": "ECO_L2T_LSTE.002",
+  "manifest": "gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet",
+  "cmr": "https://cmr.earthdata.nasa.gov/search/granules.json",
+  "temporal": "2017-05-01T00:00:00Z,2026-07-17T23:59:59Z",
+  "bbox": [
+    13.08,
+    52.34,
+    13.76,
+    52.68
+  ],
+  "overlap_definition": "Planar intersection of the MGRS 100 km tile with data/boundaries/berlin_landesgrenze.geojson in EPSG:25833, divided by the boundary area. An overpass unions every tile that shares time_start. This is tile coverage, not valid LST pixels.",
+  "n_landsat_anchors": 345,
+  "anchor_years": {
+    "2017": 28,
+    "2018": 33,
+    "2019": 31,
+    "2020": 31,
+    "2021": 18,
+    "2022": 42,
+    "2023": 57,
+    "2024": 41,
+    "2025": 43,
+    "2026": 21
+  },
+  "n_cmr_hits": 8794,
+  "n_ecostress_granules": 8794,
+  "n_granules_missing_mgrs": 0,
+  "n_granules_with_tile_overlap": 6602,
+  "n_overpasses": 2602,
+  "n_overpasses_with_tile_overlap": 2342,
+  "first_berlin_granule_at": "2018-07-30T17:59:18.966000+00:00",
+  "anchors_before_first_berlin_granule": 48,
+  "graze_tile": {
+    "mgrs": "33UVT",
+    "n_granules": 2169,
+    "overlap_fraction": 0.00029500977646653706
+  },
+  "anchors_with_any_granule_inside_6h": {
+    "within_15min": 5,
+    "within_30min": 9,
+    "within_60min": 14,
+    "within_120min": 27,
+    "within_180min": 40,
+    "within_360min": 77
+  },
+  "anchors_with_overlapping_overpass": {
+    "within_15min": 5,
+    "within_30min": 9,
+    "within_60min": 14,
+    "within_120min": 27,
+    "within_180min": 40,
+    "within_360min": 73
+  },
+  "anchors_with_overlap_at_least_0_10": {
+    "within_15min": 4,
+    "within_30min": 7,
+    "within_60min": 12,
+    "within_120min": 17,
+    "within_180min": 30,
+    "within_360min": 59
+  },
+  "closest_overlap_minutes": {
+    "min": 2.25205575,
+    "median": 158.3253895
+  },
+  "closest_overlap10_minutes": {
+    "min": 2.25205575,
+    "median": 159.75490268333334
+  },
+  "within_2h_overlap_hour_berlin": {
+    "10": 4,
+    "11": 6,
+    "12": 8,
+    "13": 9
+  },
+  "within_2h_day_night": {
+    "DAY": 27
+  },
+  "within_2h_landsat_clear_frac_at_least_0_05": 27,
+  "within_2h_landsat_clear_frac_at_least_0_50": 9,
+  "within_2h_rows_overlap_at_least_0_10": 13,
+  "within_2h_rows_overlap_at_least_0_50": 11,
+  "within_2h_dates_overlap_at_least_0_10": [
+    "2021-08-16",
+    "2022-06-17",
+    "2022-08-11",
+    "2022-08-12",
+    "2025-06-09",
+    "2025-08-11",
+    "2025-08-12"
+  ],
+  "checks": {
+    "cmr_hits_match_fetched_rows": true,
+    "duplicate_granule_ids": 0,
+    "merge_asof_disagreements": 0,
+    "overlap_asof_disagreements": 0,
+    "n_antimeridian_false_positives": 229,
+    "tiles_outside_cmr_box_0_05deg": 102,
+    "max_corner_overrun_deg": 0.061897109942179895,
+    "max_corner_overrun_granule": "ECOv002_L2T_LSTE_04923_010_01UBU_20190519T122954_0712_01"
+  },
+  "allowlist": {
+    "configured": 6,
+    "found_in_cmr_bbox": 6,
+    "missing": [],
+    "nearest_published_anchor_hours": 190.41239994916668
+  },
+  "not_assessed": [
+    "ECOSTRESS cloud, QC, and valid thermal-pixel support require granule reads.",
+    "Landsat cloud_cover is not Berlin AOI clear fraction. aoi_clear_frac is published.",
+    "A two-hour window is only a sensitivity bin. It is not thermal simultaneity.",
+    "Cross-sensor temperature bias was not measured. No checkpoint was inferred.",
+    "Tile overlap upper-bounds imaged area: the 100 km square can extend beyond the swath."
+  ],
+  "code_audit": {
+    "working": [
+      "data/acquisition/ecostress.py downloads one named ECO_L2T_LSTE.002 granule.",
+      "ARD masking and scripts/validators/validate_ecostress_scenes.py exist."
+    ],
+    "not_a_search": [
+      "configs/selection/_base.yaml sets window_hours: 2. pipeline.py never reads it.",
+      "Selection resolves six 2018-08-25 granules and writes dt_hours 0 and overlap_frac 1.",
+      "data/selection/ecostress_subset.py is absent. couple.py still leaves that list empty.",
+      "The published manifest contains those six granules and no other ECOSTRESS rows."
+    ]
+  },
+  "notion": "https://app.notion.com/p/3f8356451f66816b8b43f69f9db5386e"
+}
