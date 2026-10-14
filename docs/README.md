@@ -9,6 +9,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest and
   product contracts.
+- `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer. Not a
+  V3 feature channel. Class groups await scientific approval.
 - `pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
   contract for real-data training (WB3), implemented by `modeling/`.
 - `vertex-gpu-training.md` — Vertex AI GPU launch recipe.
