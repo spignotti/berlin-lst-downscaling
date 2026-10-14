@@ -1,0 +1,812 @@
+{
+  "accessed_at": "2026-10-14T10:27:03.000990+00:00",
+  "block_size_m": 1000,
+  "candidate_groupings": {
+    "approval": "Final analytical classes are not frozen. Both candidates wait for scientific review.",
+    "candidate_a": "Official Umweltatlas 06.07 ststrnr, including a null code on water. This is the publisher's consolidation of area types, not a new grouping.",
+    "candidate_b": {
+      "complete_for_observed_codes": true,
+      "justification": "Groups share building era and density, or a dominant surface type (vegetation, water, transport, construction). Public and special uses stay together because the official types mix schools, culture, and utilities at block scale. Original typ codes stay recoverable.",
+      "labels": {
+        "commercial_industrial": "Commercial and industrial areas",
+        "construction": "Construction sites",
+        "dense_closed_block": "Closed or heavily modified pre-war blocks",
+        "interwar_block_and_row": "1920s\u20131930s block and row development",
+        "low_rise_residential": "Low-rise, village, and garden housing",
+        "postwar_open_and_highrise": "Post-war row, estate, and high-rise housing",
+        "public_and_special": "Public facilities and special uses",
+        "transport": "Transport surfaces outside the street-land layer",
+        "vegetated_open": "Vegetated and other open land",
+        "water": "Water"
+      },
+      "observed_mapping": [
+        {
+          "proposal_b": "dense_closed_block",
+          "typ": 1,
+          "typklar": "Dichte Blockbebauung, geschlossener Hinterhof (1870er - 1918), 5 - 6-geschossig"
+        },
+        {
+          "proposal_b": "dense_closed_block",
+          "typ": 2,
+          "typklar": "Geschlossene Blockbebauung, Hinterhof (1870er - 1918), 5-geschossig"
+        },
+        {
+          "proposal_b": "dense_closed_block",
+          "typ": 3,
+          "typklar": "Geschlossene und halboffene Blockbebauung, Schmuck- und Gartenhof (1870er - 1918), 4-geschossig"
+        },
+        {
+          "proposal_b": "dense_closed_block",
+          "typ": 6,
+          "typklar": "Mischbebauung, halboffener und offener Schuppenhof, 2 - 4-geschossig"
+        },
+        {
+          "proposal_b": "dense_closed_block",
+          "typ": 7,
+          "typklar": "Entkernte Blockrandbebauung, L\u00fcckenschluss nach 1945"
+        },
+        {
+          "proposal_b": "postwar_open_and_highrise",
+          "typ": 8,
+          "typklar": "Heterogene, innerst\u00e4dtische Mischbebauung, L\u00fcckenschluss nach 1945"
+        },
+        {
+          "proposal_b": "postwar_open_and_highrise",
+          "typ": 9,
+          "typklar": "Gro\u00dfsiedlung und Punkthochh\u00e4user (1960er - 1990er), 4 - 11-geschossig und mehr"
+        },
+        {
+          "proposal_b": "interwar_block_and_row",
+          "typ": 10,
+          "typklar": "Blockrandbebauung mit Gro\u00dfh\u00f6fen (1920er - 1940er), 2 - 5-geschossig"
+        },
+        {
+          "proposal_b": "postwar_open_and_highrise",
+          "typ": 11,
+          "typklar": "Freie Zeilenbebauung mit landschaftlichem Siedlungsgr\u00fcn (1950er - 1970er), 2 - 6-geschossig"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 12,
+          "typklar": "Altbau-Schule (Baujahr vor 1945)"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 13,
+          "typklar": "Neubau-Schule (Baujahr nach 1945)"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 16,
+          "typklar": "Sportanlage, ungedeckt"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 17,
+          "typklar": "Sportanlage, gedeckt"
+        },
+        {
+          "proposal_b": "low_rise_residential",
+          "typ": 21,
+          "typklar": "D\u00f6rfliche Mischbebauung"
+        },
+        {
+          "proposal_b": "low_rise_residential",
+          "typ": 22,
+          "typklar": "Reihen- und Doppelh\u00e4user mit G\u00e4rten"
+        },
+        {
+          "proposal_b": "low_rise_residential",
+          "typ": 23,
+          "typklar": "Freistehende Einfamilienh\u00e4user mit G\u00e4rten"
+        },
+        {
+          "proposal_b": "low_rise_residential",
+          "typ": 24,
+          "typklar": "Villen und Stadtvillen mit parkartigen G\u00e4rten (\u00fcberwiegend 1870er - 1945)"
+        },
+        {
+          "proposal_b": "low_rise_residential",
+          "typ": 25,
+          "typklar": "Verdichtung im Einzelhausgebiet, Mischbebauung mit Garten und halbprivater Umgr\u00fcnung (1870er bis heute)"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 27,
+          "typklar": "Friedhof"
+        },
+        {
+          "proposal_b": "commercial_industrial",
+          "typ": 29,
+          "typklar": "Kerngebiet"
+        },
+        {
+          "proposal_b": "commercial_industrial",
+          "typ": 30,
+          "typklar": "Gewerbe- und Industriegebiet, gro\u00dffl\u00e4chiger Einzelhandel, geringe Bebauung"
+        },
+        {
+          "proposal_b": "commercial_industrial",
+          "typ": 31,
+          "typklar": "Gewerbe- und Industriegebiet, gro\u00dffl\u00e4chiger Einzelhandel, dichte Bebauung"
+        },
+        {
+          "proposal_b": "commercial_industrial",
+          "typ": 32,
+          "typklar": "Ver- und Entsorgung"
+        },
+        {
+          "proposal_b": "commercial_industrial",
+          "typ": 33,
+          "typklar": "Mischgebiet ohne Wohngebietscharakter, geringe Bebauung"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 36,
+          "typklar": "Baumschule / Gartenbau"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 37,
+          "typklar": "Kleingartenanlage"
+        },
+        {
+          "proposal_b": "commercial_industrial",
+          "typ": 38,
+          "typklar": "Mischgebiet ohne Wohngebietscharakter, dichte Bebauung"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 41,
+          "typklar": "Sicherheit und Ordnung"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 43,
+          "typklar": "Verwaltung"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 44,
+          "typklar": "Hochschule und Forschung"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 45,
+          "typklar": "Kultur"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 46,
+          "typklar": "Krankenhaus"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 47,
+          "typklar": "Kindertagesst\u00e4tte"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 49,
+          "typklar": "Kirche"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 51,
+          "typklar": "Sonstige Jugendeinrichtung"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 53,
+          "typklar": "Park / Gr\u00fcnfl\u00e4che"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 54,
+          "typklar": "Stadtplatz / Promenade"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 55,
+          "typklar": "Wald"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 56,
+          "typklar": "Landwirtschaft"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 57,
+          "typklar": "Brachfl\u00e4che"
+        },
+        {
+          "proposal_b": "vegetated_open",
+          "typ": 58,
+          "typklar": "Campingplatz"
+        },
+        {
+          "proposal_b": "low_rise_residential",
+          "typ": 59,
+          "typklar": "Wochenendhaus- und kleingarten\u00e4hnliches Gebiet"
+        },
+        {
+          "proposal_b": "public_and_special",
+          "typ": 60,
+          "typklar": "Sonstiges und heterogenes Gemeinbedarfs- und Sondergebiet"
+        },
+        {
+          "proposal_b": "interwar_block_and_row",
+          "typ": 72,
+          "typklar": "Parallele Zeilenbebauung mit architektonischem Zeilengr\u00fcn (1920er - 1930er), 2 - 5-geschossig"
+        },
+        {
+          "proposal_b": "postwar_open_and_highrise",
+          "typ": 73,
+          "typklar": "Geschosswohnungsbau der 1990er Jahre und j\u00fcnger"
+        },
+        {
+          "proposal_b": "transport",
+          "typ": 91,
+          "typklar": "Parkplatz"
+        },
+        {
+          "proposal_b": "transport",
+          "typ": 92,
+          "typklar": "Bahnhof und Bahnanlagen ohne Gleisk\u00f6rper"
+        },
+        {
+          "proposal_b": "transport",
+          "typ": 93,
+          "typklar": "Flughafen"
+        },
+        {
+          "proposal_b": "transport",
+          "typ": 94,
+          "typklar": "sonstige Verkehrsfl\u00e4che"
+        },
+        {
+          "proposal_b": "construction",
+          "typ": 98,
+          "typklar": "Baustelle"
+        },
+        {
+          "proposal_b": "transport",
+          "typ": 99,
+          "typklar": "Gleisk\u00f6rper"
+        },
+        {
+          "proposal_b": "water",
+          "typ": 100,
+          "typklar": "Gew\u00e4sser"
+        }
+      ],
+      "typ_to_group": {
+        "1": "dense_closed_block",
+        "10": "interwar_block_and_row",
+        "100": "water",
+        "11": "postwar_open_and_highrise",
+        "12": "public_and_special",
+        "13": "public_and_special",
+        "16": "vegetated_open",
+        "17": "public_and_special",
+        "2": "dense_closed_block",
+        "21": "low_rise_residential",
+        "22": "low_rise_residential",
+        "23": "low_rise_residential",
+        "24": "low_rise_residential",
+        "25": "low_rise_residential",
+        "27": "vegetated_open",
+        "29": "commercial_industrial",
+        "3": "dense_closed_block",
+        "30": "commercial_industrial",
+        "31": "commercial_industrial",
+        "32": "commercial_industrial",
+        "33": "commercial_industrial",
+        "36": "vegetated_open",
+        "37": "vegetated_open",
+        "38": "commercial_industrial",
+        "41": "public_and_special",
+        "43": "public_and_special",
+        "44": "public_and_special",
+        "45": "public_and_special",
+        "46": "public_and_special",
+        "47": "public_and_special",
+        "49": "public_and_special",
+        "51": "public_and_special",
+        "53": "vegetated_open",
+        "54": "vegetated_open",
+        "55": "vegetated_open",
+        "56": "vegetated_open",
+        "57": "vegetated_open",
+        "58": "vegetated_open",
+        "59": "low_rise_residential",
+        "6": "dense_closed_block",
+        "60": "public_and_special",
+        "7": "dense_closed_block",
+        "72": "interwar_block_and_row",
+        "73": "postwar_open_and_highrise",
+        "8": "postwar_open_and_highrise",
+        "9": "postwar_open_and_highrise",
+        "91": "transport",
+        "92": "transport",
+        "93": "transport",
+        "94": "transport",
+        "98": "construction",
+        "99": "transport"
+      },
+      "unmapped_observed_typ": []
+    },
+    "status": "proposal_awaiting_scientific_approval"
+  },
+  "cell_size_m": 100,
+  "crs": "EPSG:25833",
+  "failures": [],
+  "grid_shape_row_col": [
+    389,
+    470
+  ],
+  "license_id": "dl-de/zero-2.0",
+  "license_name": "Datenlizenz Deutschland \u2013 Zero \u2013 Version 2.0",
+  "license_url": "https://www.govdata.de/dl-de/zero-2-0",
+  "mixed_cell_semantics": "shares.parquet keeps every overlapping typ. cells.parquet majority_* columns are diagnostics. A mixed cell is not stored as one class.",
+  "open_data_records": {
+    "2020": "https://daten.berlin.de/datensaetze/stadtstruktur-2020-umweltatlas-wfs-cca244ae",
+    "2021": "https://daten.berlin.de/datensaetze/stadtstruktur-umweltatlas-ab-2021-wfs-8065af3b"
+  },
+  "publisher": "Senatsverwaltung f\u00fcr Stadtentwicklung, Bauen und Wohnen Berlin",
+  "qa_pass": true,
+  "release_id": "stadtstruktur-v1",
+  "scene_year_coverage": {
+    "2017": "no_open_vintage",
+    "2018": "no_open_vintage",
+    "2019": "no_open_vintage",
+    "2020": "vintage_2020",
+    "2021": "vintage_2021",
+    "2022": "vintage_2022",
+    "2023": "vintage_2023",
+    "2024": "vintage_2024",
+    "2025": "no_open_vintage"
+  },
+  "street_land": "ISU5 street polygons are a separate layer and are not part of Stadtstruktur. Uncovered land inside the Berlin boundary is expected and is not given a class.",
+  "temporal_limit": "No open Stadtstruktur vintage exists for 2017\u20132019 or for 2025. This release does not assign those scene years to a neighbouring vintage.",
+  "vintages": [
+    {
+      "block_area_m2": 793458289.163882,
+      "cell_tiling_audit": {
+        "max_abs_diff_m2": 1.1289375834167004e-07,
+        "sample_size": 20
+      },
+      "cells_inside_aoi": 89066,
+      "cells_outside_aoi": 1381,
+      "coverage": {
+        "aoi_area_m2": 890667890.7135043,
+        "aoi_uncovered_fraction": 0.10918008517777444,
+        "aoi_uncovered_m2": 97243196.1732091,
+        "overlap_fraction": 1.8028817571706296e-15,
+        "overlap_m2": 1.430511474609375e-06,
+        "source_area_m2": 793458289.1638787,
+        "source_inside_aoi_m2": 793424694.5402832,
+        "source_outside_aoi_m2": 33594.62359362612,
+        "union_area_m2": 793458289.1638772
+      },
+      "duplicate_schluessel": 0,
+      "failures": [],
+      "feature_count": 26378,
+      "flalle_vs_geometry_max_relative_diff": 0.0005504703443533903,
+      "flalle_vs_geometry_median_relative_diff": 0.0005187047051780324,
+      "grid": {
+        "ambiguous_typ_codes": [],
+        "geometry_area_m2": 793458289.1638771,
+        "grid_origin_xy": [
+          369190.0,
+          5838410.0
+        ],
+        "grid_shape": [
+          389,
+          470
+        ],
+        "label_disagreements": [],
+        "n_cells": 90447,
+        "n_mixed_cells": 51975,
+        "n_share_rows": 171781,
+        "outside_or_boundary_residual_m2": -3.397302897667487e-06,
+        "share_area_m2": 793458289.163882
+      },
+      "mixed_cell_area_fraction": 0.5579616714416383,
+      "mixed_cell_area_m2": 442719313.2411024,
+      "n_blocks": 1015,
+      "n_typ_histogram": {
+        "1": 38472,
+        "2": 30165,
+        "3": 15629,
+        "4": 5011,
+        "5": 992,
+        "6": 158,
+        "7": 20
+      },
+      "notes": "Open-data record 'Stadtstruktur 2020 (Umweltatlas)'. Map imprint completed October 2021. Sachdatenstand 31.12.2020. The differentiated layer carries both 06.08 typ and 06.07 ststrnr.",
+      "null_schluessel": 0,
+      "null_ststrnr": 729,
+      "null_typ": 0,
+      "page_sha256": "72d9f72b22a599440041b0a02b07345b028f58092516a2441849875bd0b29f53",
+      "raster_area_audit": {
+        "max_relative_diff": 0.0008192924327345857,
+        "sample_size": 8
+      },
+      "reference_date": "2020-12-31",
+      "repair": {
+        "empty_before": 0,
+        "feature_count_after": 26378,
+        "invalid_after": 0,
+        "invalid_before": 0,
+        "non_polygonal_or_empty_dropped": 0
+      },
+      "service_number_matched": 26378,
+      "type_name": "ua_stadtstruktur_2020:ua_stadtstruktur_diff_2020",
+      "vintage": 2020,
+      "wfs_url": "https://gdi.berlin.de/services/wfs/ua_stadtstruktur_2020"
+    },
+    {
+      "block_area_m2": 793451257.0277606,
+      "cell_tiling_audit": {
+        "max_abs_diff_m2": 4.623143468052149e-08,
+        "sample_size": 20
+      },
+      "cells_inside_aoi": 89066,
+      "cells_outside_aoi": 1381,
+      "coverage": {
+        "aoi_area_m2": 890667890.7135043,
+        "aoi_uncovered_fraction": 0.10915069386122822,
+        "aoi_uncovered_m2": 97217018.27129558,
+        "overlap_fraction": 1.6526562576391669e-15,
+        "overlap_m2": 1.3113021850585938e-06,
+        "source_area_m2": 793451257.0277619,
+        "source_inside_aoi_m2": 793450872.442203,
+        "source_outside_aoi_m2": 384.585557147062,
+        "union_area_m2": 793451257.0277606
+      },
+      "duplicate_schluessel": 0,
+      "failures": [],
+      "feature_count": 26397,
+      "flalle_vs_geometry_max_relative_diff": 0.0005507366418860746,
+      "flalle_vs_geometry_median_relative_diff": 0.0005198975552087596,
+      "grid": {
+        "ambiguous_typ_codes": [],
+        "geometry_area_m2": 793451257.0277622,
+        "grid_origin_xy": [
+          369190.0,
+          5838410.0
+        ],
+        "grid_shape": [
+          389,
+          470
+        ],
+        "label_disagreements": [],
+        "n_cells": 90447,
+        "n_mixed_cells": 52293,
+        "n_share_rows": 172228,
+        "outside_or_boundary_residual_m2": 1.1520446108193028e-06,
+        "share_area_m2": 793451257.0277606
+      },
+      "mixed_cell_area_fraction": 0.5617884926644324,
+      "mixed_cell_area_m2": 445751785.6883248,
+      "n_blocks": 1015,
+      "n_typ_histogram": {
+        "1": 38154,
+        "2": 30409,
+        "3": 15666,
+        "4": 5033,
+        "5": 1007,
+        "6": 156,
+        "7": 21,
+        "8": 1
+      },
+      "notes": "Annual ISU5 update. Feature count matches the Senate ISU5 note of 26,397 block parts for 31.12.2021.",
+      "null_schluessel": 0,
+      "null_ststrnr": 729,
+      "null_typ": 0,
+      "page_sha256": "b8d008f8c8bc875395e174f995651baad96b53b4c66b710e9dd9a2a08e61e2bc",
+      "raster_area_audit": {
+        "max_relative_diff": 0.003049842990516942,
+        "sample_size": 8
+      },
+      "reference_date": "2021-12-31",
+      "repair": {
+        "empty_before": 0,
+        "feature_count_after": 26397,
+        "invalid_after": 0,
+        "invalid_before": 0,
+        "non_polygonal_or_empty_dropped": 0
+      },
+      "service_number_matched": 26397,
+      "type_name": "ua_stadtstruktur:b_stadtstruktur_differenziert_2021",
+      "vintage": 2021,
+      "wfs_url": "https://gdi.berlin.de/services/wfs/ua_stadtstruktur"
+    },
+    {
+      "block_area_m2": 793376328.4397628,
+      "cell_tiling_audit": {
+        "max_abs_diff_m2": 5.472975317388773e-08,
+        "sample_size": 20
+      },
+      "cells_inside_aoi": 89066,
+      "cells_outside_aoi": 1381,
+      "coverage": {
+        "aoi_area_m2": 890667890.7135043,
+        "aoi_uncovered_fraction": 0.10923482017174771,
+        "aoi_uncovered_m2": 97291946.87483948,
+        "overlap_fraction": 1.9122587994394832e-11,
+        "overlap_m2": 0.015171408653259277,
+        "source_area_m2": 793376328.4397638,
+        "source_inside_aoi_m2": 793375943.8386586,
+        "source_outside_aoi_m2": 384.58593363989536,
+        "union_area_m2": 793376328.4245924
+      },
+      "duplicate_schluessel": 0,
+      "failures": [],
+      "feature_count": 26422,
+      "flalle_vs_geometry_max_relative_diff": 0.0005507366418860746,
+      "flalle_vs_geometry_median_relative_diff": 0.0005198897849218415,
+      "grid": {
+        "ambiguous_typ_codes": [],
+        "geometry_area_m2": 793376328.4397637,
+        "grid_origin_xy": [
+          369190.0,
+          5838410.0
+        ],
+        "grid_shape": [
+          389,
+          470
+        ],
+        "label_disagreements": [
+          {
+            "typ": 25,
+            "variants": [
+              {
+                "n_polygons": 368,
+                "ststrname": "Bebauung mit G\u00e4rten und halbprivater Umgr\u00fcnung",
+                "ststrnr": 12,
+                "typklar": "Verdichtung im Einzelhausgebiet, Mischbebauung mit Garten und halbprivater Umgr\u00fcnung (1870er bis heute)"
+              },
+              {
+                "n_polygons": 1,
+                "ststrname": "Bebauung mit G\u00e4rten und halbprivater Umgr\u00fcnung",
+                "ststrnr": 12,
+                "typklar": "Villen und Stadtvillen mit parkartigen G\u00e4rten (\u00fcberwiegend 1870er - 1945)"
+              }
+            ]
+          }
+        ],
+        "n_cells": 90447,
+        "n_mixed_cells": 52287,
+        "n_share_rows": 172224,
+        "outside_or_boundary_residual_m2": 1.0606331173335093e-06,
+        "share_area_m2": 793376328.439763
+      },
+      "mixed_cell_area_fraction": 0.5617311028842487,
+      "mixed_cell_area_m2": 445664159.9767239,
+      "n_blocks": 1015,
+      "n_typ_histogram": {
+        "1": 38160,
+        "2": 30404,
+        "3": 15655,
+        "4": 5051,
+        "5": 1000,
+        "6": 153,
+        "7": 23,
+        "8": 1
+      },
+      "notes": "Annual ISU5 update, Sachdatenstand 31.12.2022.",
+      "null_schluessel": 0,
+      "null_ststrnr": 728,
+      "null_typ": 0,
+      "page_sha256": "514a2478620fcc1cec0f03fe573bc41652649ee5ef749cd5ea273b046ef1ed68",
+      "raster_area_audit": {
+        "max_relative_diff": 0.0008192921547998087,
+        "sample_size": 8
+      },
+      "reference_date": "2022-12-31",
+      "repair": {
+        "empty_before": 0,
+        "feature_count_after": 26422,
+        "invalid_after": 0,
+        "invalid_before": 0,
+        "non_polygonal_or_empty_dropped": 0
+      },
+      "service_number_matched": 26422,
+      "type_name": "ua_stadtstruktur:b_stadtstruktur_differenziert_2022",
+      "vintage": 2022,
+      "wfs_url": "https://gdi.berlin.de/services/wfs/ua_stadtstruktur"
+    },
+    {
+      "block_area_m2": 793371276.2435421,
+      "cell_tiling_audit": {
+        "max_abs_diff_m2": 5.7256329455412924e-08,
+        "sample_size": 20
+      },
+      "cells_inside_aoi": 89066,
+      "cells_outside_aoi": 1381,
+      "coverage": {
+        "aoi_area_m2": 890667890.7135043,
+        "aoi_uncovered_fraction": 0.10924049252291716,
+        "aoi_uncovered_m2": 97296999.05589096,
+        "overlap_fraction": 1.3523096160437327e-15,
+        "overlap_m2": 1.0728836059570312e-06,
+        "source_area_m2": 793371276.2435426,
+        "source_inside_aoi_m2": 793370891.6576074,
+        "source_outside_aoi_m2": 384.58593363989536,
+        "union_area_m2": 793371276.2435415
+      },
+      "duplicate_schluessel": 0,
+      "failures": [],
+      "feature_count": 26431,
+      "flalle_vs_geometry_max_relative_diff": 0.0005508451615013329,
+      "flalle_vs_geometry_median_relative_diff": 0.0005198223783517581,
+      "grid": {
+        "ambiguous_typ_codes": [],
+        "geometry_area_m2": 793371276.2435428,
+        "grid_origin_xy": [
+          369190.0,
+          5838410.0
+        ],
+        "grid_shape": [
+          389,
+          470
+        ],
+        "label_disagreements": [
+          {
+            "typ": 73,
+            "variants": [
+              {
+                "n_polygons": 821,
+                "ststrname": "Siedlungsbebauung der 1990er Jahre und j\u00fcnger",
+                "ststrnr": 8,
+                "typklar": "Geschosswohnungsbau der 1990er Jahre und j\u00fcnger"
+              },
+              {
+                "n_polygons": 1,
+                "ststrname": "Siedlungsbebauung der 1990er Jahre und j\u00fcnger",
+                "ststrnr": 8,
+                "typklar": "Parkplatz"
+              }
+            ]
+          },
+          {
+            "typ": 25,
+            "variants": [
+              {
+                "n_polygons": 368,
+                "ststrname": "Bebauung mit G\u00e4rten und halbprivater Umgr\u00fcnung",
+                "ststrnr": 12,
+                "typklar": "Verdichtung im Einzelhausgebiet, Mischbebauung mit Garten und halbprivater Umgr\u00fcnung (1870er bis heute)"
+              },
+              {
+                "n_polygons": 1,
+                "ststrname": "Bebauung mit G\u00e4rten und halbprivater Umgr\u00fcnung",
+                "ststrnr": 12,
+                "typklar": "Villen und Stadtvillen mit parkartigen G\u00e4rten (\u00fcberwiegend 1870er - 1945)"
+              }
+            ]
+          }
+        ],
+        "n_cells": 90447,
+        "n_mixed_cells": 52304,
+        "n_share_rows": 172261,
+        "outside_or_boundary_residual_m2": 4.713842329806539e-07,
+        "share_area_m2": 793371276.2435421
+      },
+      "mixed_cell_area_fraction": 0.5619099205982411,
+      "mixed_cell_area_m2": 445803190.8389339,
+      "n_blocks": 1015,
+      "n_typ_histogram": {
+        "1": 38143,
+        "2": 30410,
+        "3": 15657,
+        "4": 5065,
+        "5": 990,
+        "6": 158,
+        "7": 23,
+        "8": 1
+      },
+      "notes": "Annual ISU5 update, Sachdatenstand 31.12.2023.",
+      "null_schluessel": 0,
+      "null_ststrnr": 728,
+      "null_typ": 0,
+      "page_sha256": "a3540c2787b040a585261b21c80f82c553a86a08193d6e9d662d4395ee53b3dd",
+      "raster_area_audit": {
+        "max_relative_diff": 0.0004397187801188865,
+        "sample_size": 8
+      },
+      "reference_date": "2023-12-31",
+      "repair": {
+        "empty_before": 0,
+        "feature_count_after": 26431,
+        "invalid_after": 0,
+        "invalid_before": 0,
+        "non_polygonal_or_empty_dropped": 0
+      },
+      "service_number_matched": 26431,
+      "type_name": "ua_stadtstruktur:b_stadtstruktur_differenziert_2023",
+      "vintage": 2023,
+      "wfs_url": "https://gdi.berlin.de/services/wfs/ua_stadtstruktur"
+    },
+    {
+      "block_area_m2": 793367466.6400199,
+      "cell_tiling_audit": {
+        "max_abs_diff_m2": 1.1037627700716257e-07,
+        "sample_size": 20
+      },
+      "cells_inside_aoi": 89066,
+      "cells_outside_aoi": 1381,
+      "coverage": {
+        "aoi_area_m2": 890667890.7135043,
+        "aoi_uncovered_fraction": 0.10924476977915348,
+        "aoi_uncovered_m2": 97300808.67068101,
+        "overlap_fraction": 1.9533454916211246e-15,
+        "overlap_m2": 1.5497207641601562e-06,
+        "source_area_m2": 793367466.6400201,
+        "source_inside_aoi_m2": 793367082.0428169,
+        "source_outside_aoi_m2": 384.5972016806087,
+        "union_area_m2": 793367466.6400186
+      },
+      "duplicate_schluessel": 0,
+      "failures": [],
+      "feature_count": 26613,
+      "flalle_vs_geometry_max_relative_diff": 0.000551090670452034,
+      "flalle_vs_geometry_median_relative_diff": 0.0005198898089351584,
+      "grid": {
+        "ambiguous_typ_codes": [],
+        "geometry_area_m2": 793367466.6400224,
+        "grid_origin_xy": [
+          369190.0,
+          5838410.0
+        ],
+        "grid_shape": [
+          389,
+          470
+        ],
+        "label_disagreements": [],
+        "n_cells": 90447,
+        "n_mixed_cells": 52318,
+        "n_share_rows": 172278,
+        "outside_or_boundary_residual_m2": 3.2937970928514915e-07,
+        "share_area_m2": 793367466.6400197
+      },
+      "mixed_cell_area_fraction": 0.5620866884667646,
+      "mixed_cell_area_m2": 445941292.060955,
+      "n_blocks": 1015,
+      "n_typ_histogram": {
+        "1": 38129,
+        "2": 30414,
+        "3": 15671,
+        "4": 5063,
+        "5": 989,
+        "6": 157,
+        "7": 23,
+        "8": 1
+      },
+      "notes": "Annual ISU5 update, Sachdatenstand 31.12.2024. Latest open vintage.",
+      "null_schluessel": 0,
+      "null_ststrnr": 728,
+      "null_typ": 0,
+      "page_sha256": "55321c466c606894bc7e143519710f2dd54a3f94dfd63c94101845b51447914b",
+      "raster_area_audit": {
+        "max_relative_diff": 0.0025991714211267146,
+        "sample_size": 8
+      },
+      "reference_date": "2024-12-31",
+      "repair": {
+        "empty_before": 0,
+        "feature_count_after": 26613,
+        "invalid_after": 0,
+        "invalid_before": 0,
+        "non_polygonal_or_empty_dropped": 0
+      },
+      "service_number_matched": 26613,
+      "type_name": "ua_stadtstruktur:b_stadtstruktur_differenziert_2024",
+      "vintage": 2024,
+      "wfs_url": "https://gdi.berlin.de/services/wfs/ua_stadtstruktur"
+    }
+  ]
+}

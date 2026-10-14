@@ -12,6 +12,11 @@ pipeline stage must respect.
 | Sentinel-2 L2A (PC `sentinel-2-l2a`) | `data/acquisition/sentinel2.py` | 10 m (SWIR 20 m native) | predictor (`role=predictor`) |
 | ECOSTRESS L2T LSTE v002 (NASA CMR) | `data/acquisition/ecostress.py` | 70 m | validation (`role=validation`) |
 
+**Evaluation layer, not a model input.** Umweltatlas 06.07 / 06.08
+Stadtstruktur on the ISU5 block map is published separately for
+descriptive statistics and stratified evaluation. It does not enter the
+V3 feature stack. Contract and commands: `docs/stadtstruktur.md`.
+
 **Spatial grid.** Canonical 10 m EPSG:25833 over Berlin bbox
 `[13.08, 52.34, 13.76, 52.68]`. Helpers live in `common/grid.py`.
 

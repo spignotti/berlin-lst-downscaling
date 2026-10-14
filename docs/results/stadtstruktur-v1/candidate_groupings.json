@@ -1,0 +1,338 @@
+{
+  "approval": "Final analytical classes are not frozen. Both candidates wait for scientific review.",
+  "candidate_a": "Official Umweltatlas 06.07 ststrnr, including a null code on water. This is the publisher's consolidation of area types, not a new grouping.",
+  "candidate_b": {
+    "complete_for_observed_codes": true,
+    "justification": "Groups share building era and density, or a dominant surface type (vegetation, water, transport, construction). Public and special uses stay together because the official types mix schools, culture, and utilities at block scale. Original typ codes stay recoverable.",
+    "labels": {
+      "commercial_industrial": "Commercial and industrial areas",
+      "construction": "Construction sites",
+      "dense_closed_block": "Closed or heavily modified pre-war blocks",
+      "interwar_block_and_row": "1920s\u20131930s block and row development",
+      "low_rise_residential": "Low-rise, village, and garden housing",
+      "postwar_open_and_highrise": "Post-war row, estate, and high-rise housing",
+      "public_and_special": "Public facilities and special uses",
+      "transport": "Transport surfaces outside the street-land layer",
+      "vegetated_open": "Vegetated and other open land",
+      "water": "Water"
+    },
+    "observed_mapping": [
+      {
+        "proposal_b": "dense_closed_block",
+        "typ": 1,
+        "typklar": "Dichte Blockbebauung, geschlossener Hinterhof (1870er - 1918), 5 - 6-geschossig"
+      },
+      {
+        "proposal_b": "dense_closed_block",
+        "typ": 2,
+        "typklar": "Geschlossene Blockbebauung, Hinterhof (1870er - 1918), 5-geschossig"
+      },
+      {
+        "proposal_b": "dense_closed_block",
+        "typ": 3,
+        "typklar": "Geschlossene und halboffene Blockbebauung, Schmuck- und Gartenhof (1870er - 1918), 4-geschossig"
+      },
+      {
+        "proposal_b": "dense_closed_block",
+        "typ": 6,
+        "typklar": "Mischbebauung, halboffener und offener Schuppenhof, 2 - 4-geschossig"
+      },
+      {
+        "proposal_b": "dense_closed_block",
+        "typ": 7,
+        "typklar": "Entkernte Blockrandbebauung, L\u00fcckenschluss nach 1945"
+      },
+      {
+        "proposal_b": "postwar_open_and_highrise",
+        "typ": 8,
+        "typklar": "Heterogene, innerst\u00e4dtische Mischbebauung, L\u00fcckenschluss nach 1945"
+      },
+      {
+        "proposal_b": "postwar_open_and_highrise",
+        "typ": 9,
+        "typklar": "Gro\u00dfsiedlung und Punkthochh\u00e4user (1960er - 1990er), 4 - 11-geschossig und mehr"
+      },
+      {
+        "proposal_b": "interwar_block_and_row",
+        "typ": 10,
+        "typklar": "Blockrandbebauung mit Gro\u00dfh\u00f6fen (1920er - 1940er), 2 - 5-geschossig"
+      },
+      {
+        "proposal_b": "postwar_open_and_highrise",
+        "typ": 11,
+        "typklar": "Freie Zeilenbebauung mit landschaftlichem Siedlungsgr\u00fcn (1950er - 1970er), 2 - 6-geschossig"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 12,
+        "typklar": "Altbau-Schule (Baujahr vor 1945)"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 13,
+        "typklar": "Neubau-Schule (Baujahr nach 1945)"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 16,
+        "typklar": "Sportanlage, ungedeckt"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 17,
+        "typklar": "Sportanlage, gedeckt"
+      },
+      {
+        "proposal_b": "low_rise_residential",
+        "typ": 21,
+        "typklar": "D\u00f6rfliche Mischbebauung"
+      },
+      {
+        "proposal_b": "low_rise_residential",
+        "typ": 22,
+        "typklar": "Reihen- und Doppelh\u00e4user mit G\u00e4rten"
+      },
+      {
+        "proposal_b": "low_rise_residential",
+        "typ": 23,
+        "typklar": "Freistehende Einfamilienh\u00e4user mit G\u00e4rten"
+      },
+      {
+        "proposal_b": "low_rise_residential",
+        "typ": 24,
+        "typklar": "Villen und Stadtvillen mit parkartigen G\u00e4rten (\u00fcberwiegend 1870er - 1945)"
+      },
+      {
+        "proposal_b": "low_rise_residential",
+        "typ": 25,
+        "typklar": "Verdichtung im Einzelhausgebiet, Mischbebauung mit Garten und halbprivater Umgr\u00fcnung (1870er bis heute)"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 27,
+        "typklar": "Friedhof"
+      },
+      {
+        "proposal_b": "commercial_industrial",
+        "typ": 29,
+        "typklar": "Kerngebiet"
+      },
+      {
+        "proposal_b": "commercial_industrial",
+        "typ": 30,
+        "typklar": "Gewerbe- und Industriegebiet, gro\u00dffl\u00e4chiger Einzelhandel, geringe Bebauung"
+      },
+      {
+        "proposal_b": "commercial_industrial",
+        "typ": 31,
+        "typklar": "Gewerbe- und Industriegebiet, gro\u00dffl\u00e4chiger Einzelhandel, dichte Bebauung"
+      },
+      {
+        "proposal_b": "commercial_industrial",
+        "typ": 32,
+        "typklar": "Ver- und Entsorgung"
+      },
+      {
+        "proposal_b": "commercial_industrial",
+        "typ": 33,
+        "typklar": "Mischgebiet ohne Wohngebietscharakter, geringe Bebauung"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 36,
+        "typklar": "Baumschule / Gartenbau"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 37,
+        "typklar": "Kleingartenanlage"
+      },
+      {
+        "proposal_b": "commercial_industrial",
+        "typ": 38,
+        "typklar": "Mischgebiet ohne Wohngebietscharakter, dichte Bebauung"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 41,
+        "typklar": "Sicherheit und Ordnung"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 43,
+        "typklar": "Verwaltung"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 44,
+        "typklar": "Hochschule und Forschung"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 45,
+        "typklar": "Kultur"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 46,
+        "typklar": "Krankenhaus"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 47,
+        "typklar": "Kindertagesst\u00e4tte"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 49,
+        "typklar": "Kirche"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 51,
+        "typklar": "Sonstige Jugendeinrichtung"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 53,
+        "typklar": "Park / Gr\u00fcnfl\u00e4che"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 54,
+        "typklar": "Stadtplatz / Promenade"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 55,
+        "typklar": "Wald"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 56,
+        "typklar": "Landwirtschaft"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 57,
+        "typklar": "Brachfl\u00e4che"
+      },
+      {
+        "proposal_b": "vegetated_open",
+        "typ": 58,
+        "typklar": "Campingplatz"
+      },
+      {
+        "proposal_b": "low_rise_residential",
+        "typ": 59,
+        "typklar": "Wochenendhaus- und kleingarten\u00e4hnliches Gebiet"
+      },
+      {
+        "proposal_b": "public_and_special",
+        "typ": 60,
+        "typklar": "Sonstiges und heterogenes Gemeinbedarfs- und Sondergebiet"
+      },
+      {
+        "proposal_b": "interwar_block_and_row",
+        "typ": 72,
+        "typklar": "Parallele Zeilenbebauung mit architektonischem Zeilengr\u00fcn (1920er - 1930er), 2 - 5-geschossig"
+      },
+      {
+        "proposal_b": "postwar_open_and_highrise",
+        "typ": 73,
+        "typklar": "Geschosswohnungsbau der 1990er Jahre und j\u00fcnger"
+      },
+      {
+        "proposal_b": "transport",
+        "typ": 91,
+        "typklar": "Parkplatz"
+      },
+      {
+        "proposal_b": "transport",
+        "typ": 92,
+        "typklar": "Bahnhof und Bahnanlagen ohne Gleisk\u00f6rper"
+      },
+      {
+        "proposal_b": "transport",
+        "typ": 93,
+        "typklar": "Flughafen"
+      },
+      {
+        "proposal_b": "transport",
+        "typ": 94,
+        "typklar": "sonstige Verkehrsfl\u00e4che"
+      },
+      {
+        "proposal_b": "construction",
+        "typ": 98,
+        "typklar": "Baustelle"
+      },
+      {
+        "proposal_b": "transport",
+        "typ": 99,
+        "typklar": "Gleisk\u00f6rper"
+      },
+      {
+        "proposal_b": "water",
+        "typ": 100,
+        "typklar": "Gew\u00e4sser"
+      }
+    ],
+    "typ_to_group": {
+      "1": "dense_closed_block",
+      "10": "interwar_block_and_row",
+      "100": "water",
+      "11": "postwar_open_and_highrise",
+      "12": "public_and_special",
+      "13": "public_and_special",
+      "16": "vegetated_open",
+      "17": "public_and_special",
+      "2": "dense_closed_block",
+      "21": "low_rise_residential",
+      "22": "low_rise_residential",
+      "23": "low_rise_residential",
+      "24": "low_rise_residential",
+      "25": "low_rise_residential",
+      "27": "vegetated_open",
+      "29": "commercial_industrial",
+      "3": "dense_closed_block",
+      "30": "commercial_industrial",
+      "31": "commercial_industrial",
+      "32": "commercial_industrial",
+      "33": "commercial_industrial",
+      "36": "vegetated_open",
+      "37": "vegetated_open",
+      "38": "commercial_industrial",
+      "41": "public_and_special",
+      "43": "public_and_special",
+      "44": "public_and_special",
+      "45": "public_and_special",
+      "46": "public_and_special",
+      "47": "public_and_special",
+      "49": "public_and_special",
+      "51": "public_and_special",
+      "53": "vegetated_open",
+      "54": "vegetated_open",
+      "55": "vegetated_open",
+      "56": "vegetated_open",
+      "57": "vegetated_open",
+      "58": "vegetated_open",
+      "59": "low_rise_residential",
+      "6": "dense_closed_block",
+      "60": "public_and_special",
+      "7": "dense_closed_block",
+      "72": "interwar_block_and_row",
+      "73": "postwar_open_and_highrise",
+      "8": "postwar_open_and_highrise",
+      "9": "postwar_open_and_highrise",
+      "91": "transport",
+      "92": "transport",
+      "93": "transport",
+      "94": "transport",
+      "98": "construction",
+      "99": "transport"
+    },
+    "unmapped_observed_typ": []
+  },
+  "status": "proposal_awaiting_scientific_approval"
+}
