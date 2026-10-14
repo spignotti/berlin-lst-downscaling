@@ -12,6 +12,12 @@ pipeline stage must respect.
 | Sentinel-2 L2A (PC `sentinel-2-l2a`) | `data/acquisition/sentinel2.py` | 10 m (SWIR 20 m native) | predictor (`role=predictor`) |
 | ECOSTRESS L2T LSTE v002 (NASA CMR) | `data/acquisition/ecostress.py` | 70 m | validation (`role=validation`) |
 
+ECOSTRESS stays outside the V3 feature stack. The 2026-10-14 metadata
+inventory (`docs/ecostress-feasibility.md`) found a small set of daytime
+tile overlaps with the published anchors. It did not read ECOSTRESS QC, and
+the six-id allowlist in `configs/selection/_base.yaml` is not a measured
+collocation. `±2 hours` in that config is unused by selection.
+
 **Spatial grid.** Canonical 10 m EPSG:25833 over Berlin bbox
 `[13.08, 52.34, 13.76, 52.68]`. Helpers live in `common/grid.py`.
 

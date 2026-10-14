@@ -9,6 +9,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest and
   product contracts.
+- `ecostress-feasibility.md` — read-only ECOSTRESS C2 collocation inventory
+  against the published Landsat anchors (issue #71).
 - `pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
   contract for real-data training (WB3), implemented by `modeling/`.
 - `vertex-gpu-training.md` — Vertex AI GPU launch recipe.
