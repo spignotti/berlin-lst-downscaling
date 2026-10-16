@@ -104,3 +104,82 @@ their centre inside the boundary. About 52,000 of the covered cells, and
 56 percent of the covered area, contain more than one `typ`. A single
 majority label would hide that mixture. The share tables are the
 evaluation product. Class groups are not frozen.
+
+## Class review, accessed 2026-10-15
+
+Issue #74. This review reads v1 and does not rewrite it. Group membership
+was fixed before the areas were computed. Nothing here is approved.
+`approval` stays `awaiting_scientific_review`.
+
+Machine-readable tables, including the per-class rows:
+
+`gs://berlin-lst-training-data/evaluation/stadtstruktur/class-review-v1/`
+
+Compact copy: `docs/results/stadtstruktur-class-review/report.json`.
+
+```
+uv run python scripts/operators/review_stadtstruktur_classes.py \
+  --release-dir /tmp/stadtstruktur-v1 \
+  --manifest /tmp/stadtstruktur-manifest/manifest.parquet \
+  --output-dir /tmp/stadtstruktur-class-review-v1
+
+uv run python scripts/validators/validate_stadtstruktur_class_review.py \
+  --review-dir /tmp/stadtstruktur-class-review-v1
+```
+
+`--release-dir` is a local copy of the v1 prefix. The published manifest
+is the v3 anchor list, 345 anchors.
+
+Class area is the sum of `shares.parquet` `area_m2` on cells with
+`inside_aoi`. In 2024 that is 790.82 km². The street and other unmapped
+gap stays out of every class share: 97.30 km² in the v1 coverage, about
+10.9 percent of Berlin. Cells whose centre is outside the boundary hold
+the remaining share area. Their exclusion makes the classified total
+2.55 km² smaller than the geometric source-inside area. Polygon counts
+are block parts that intersect the boundary, once per `schluessel`.
+Effective cells are `area_m2 / 10000`. A sparse label is under 1.0 km²
+or under 50 effective cells. It does not move a type into another group.
+
+Scene years for a later stratified description, not as area weights:
+2017–2019 carry back to vintage 2020 (28, 33, and 31 anchors), 2020 uses
+2020 (31), 2021–2023 use the same year (18, 42, 57), and 2025 carries
+forward to 2024 (43 anchors, with 41 in 2024 itself). Twenty-one anchors
+in 2026 are listed and left unassigned. Anchor counts are not multiplied
+by cell counts.
+
+`schluessel` matches across vintages. From 2020 to 2024, 99.1 percent of
+the earlier keys and 98.3 percent of the later keys match, so the key is
+usable as a panel. Of the matched 2024 polygon area, 98.7 percent keeps
+its `typ`. The changed area is 10.3 km².
+
+Three groupings are in the crosswalk, plus the published candidate:
+
+- A is official `ststrnr`. Its largest 2024 class is code 18, open and
+  special land, 325.76 km², 41 percent of classified area. That class is
+  the same area as published candidate B's `vegetated_open`.
+- Published candidate B stays in the file as a comparison. It is not the
+  working grouping. Wald, Park, Landwirtschaft, Brache, and Stadtplatz
+  each have 2024 area (169.47, 34.51, 34.85, 25.26, and 0.47 km²) and
+  were pooled there. The areas named here are the 2024 `typ` areas,
+  not the proposal-B group totals.
+- B splits those surfaces and keeps boundary types in their own groups:
+  shed yards, heterogeneous infill, Kerngebiet, utilities, camping, and
+  uncovered sports. Water and construction are exclusion bins. Public
+  uses stay one heterogeneous bin. Eleven of twelve comparison groups
+  clear the support floor. Stadtplatz is the one that does not, at
+  0.47 km², and it stays its own group. Camping is a sparse boundary
+  group. Construction is a sparse exclusion group. Airport (`typ` 93)
+  is 4.44 km² in 2020 and absent afterwards.
+- C pools B back into seven bins, including one open-land bin, so the
+  loss of the split is visible. C is a sensitivity.
+
+In 2024, 58 percent of covered inside cells contain more than one `typ`,
+53 percent more than one proposal-B group, and 51 percent more than one
+`ststrnr`. At 1 km, 964 of 1,008 blocks that meet those cells are mixed
+under proposal B. A majority label would still hide the mixture.
+Mapped transport touches 8,730 cells and dominates 80 percent of the
+covered cell in only 671 of them. Forest dominates at that threshold in
+15,166 of 22,766 touched cells.
+
+The working hypothesis for a later description is proposal B. Official
+06.07 stays the external reference. The choice did not use a model error.
