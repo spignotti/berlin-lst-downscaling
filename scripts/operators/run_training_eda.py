@@ -75,7 +75,12 @@ from berlin_lst_downscaling.data.eda.rules import (
 )
 from berlin_lst_downscaling.data.eda.scan import scan_scene
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
-from berlin_lst_downscaling.data.io import RunLogSession, atomic_upload, log_event
+from berlin_lst_downscaling.data.io import (
+    RunLogSession,
+    atomic_upload,
+    log_event,
+    resolve_canonical_uri,
+)
 from berlin_lst_downscaling.data.stadtstruktur.sources import RELEASE_ID as STADTSTRUKTUR_RELEASE_ID
 from berlin_lst_downscaling.data.training.contracts import (
     EXPECTED_V3_CONFIG_HASH,
@@ -190,10 +195,10 @@ def _scan_one(
         month=month_value,
         season=season,
         s2_scene_id=str(row["s2_scene_id"]),
-        landsat_cog=str(inputs["landsat_cog"]),
-        landsat_flag=str(inputs["landsat_flag"]),
-        feature_stack=str(row["feature_stack"]),
-        feature_valid=str(inputs["feature_valid"]),
+        landsat_cog=resolve_canonical_uri(str(inputs["landsat_cog"])),
+        landsat_flag=resolve_canonical_uri(str(inputs["landsat_flag"])),
+        feature_stack=resolve_canonical_uri(str(row["feature_stack"])),
+        feature_valid=resolve_canonical_uri(str(inputs["feature_valid"])),
         provenance=provenance,
     )
     eligible = scanned.gap_counts["target_valid_support_100"]
