@@ -24,7 +24,7 @@ echo ""
 # ── describe (one value per call — avoids tab-shift on empty fields) ─────────
 
 _field() {
-  rtk gcloud compute instances describe "$VM_NAME" \
+  gcloud compute instances describe "$VM_NAME" \
     --zone="$VM_ZONE" --project="$VM_PROJECT" \
     --format="value($1)" 2>/dev/null || echo "(error)"
 }
