@@ -173,6 +173,38 @@ def scan_scene(
     analysis_10: GeoBox | None = None,
 ) -> SceneScan:
     """Read one scene. Raises when the published grid or a raster does not match."""
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):
+        return _read_scene(
+            scene_id=scene_id,
+            year=year,
+            split=split,
+            month=month,
+            season=season,
+            s2_scene_id=s2_scene_id,
+            landsat_cog=landsat_cog,
+            landsat_flag=landsat_flag,
+            feature_stack=feature_stack,
+            feature_valid=feature_valid,
+            provenance=provenance,
+            analysis_10=analysis_10,
+        )
+
+
+def _read_scene(
+    *,
+    scene_id: str,
+    year: int,
+    split: str,
+    month: int | None,
+    season: str,
+    s2_scene_id: str,
+    landsat_cog: str,
+    landsat_flag: str,
+    feature_stack: str,
+    feature_valid: str,
+    provenance: dict[str, object],
+    analysis_10: GeoBox | None,
+) -> SceneScan:
     grid_10 = canon_grid_10m() if analysis_10 is None else analysis_10
     grid_100 = canon_grid_100m() if analysis_10 is None else analysis_10.zoom_out(10)
     _check_grid(provenance, grid_100)
