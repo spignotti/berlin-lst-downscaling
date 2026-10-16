@@ -21,7 +21,8 @@ collocation. `±2 hours` in that config is unused by selection.
 **Evaluation layer, not a model input.** Umweltatlas 06.07 / 06.08
 Stadtstruktur on the ISU5 block map is published separately for
 descriptive statistics and stratified evaluation. It does not enter the
-V3 feature stack. Contract and commands: `docs/stadtstruktur.md`.
+V3 feature stack. The decided evaluation grouping is proposal B from the
+2026-10-16 class review. Contract and commands: `docs/stadtstruktur.md`.
 
 **Spatial grid.** Canonical 10 m EPSG:25833 over Berlin bbox
 `[13.08, 52.34, 13.76, 52.68]`. Helpers live in `common/grid.py`.
