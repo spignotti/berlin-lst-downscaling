@@ -32,7 +32,7 @@ case "$VM_ACTUAL_STATE" in
       echo "[dry-run] Would execute: gcloud compute instances start $VM_NAME --zone=$VM_ZONE --project=$VM_PROJECT"
       exit 0
     fi
-    rtk gcloud compute instances start "$VM_NAME" --zone="$VM_ZONE" --project="$VM_PROJECT"
+    gcloud compute instances start "$VM_NAME" --zone="$VM_ZONE" --project="$VM_PROJECT"
     ;;
 esac
 

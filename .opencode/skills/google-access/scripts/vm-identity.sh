@@ -32,7 +32,7 @@ VM_KNOWN_HOSTS_ALIAS="compute.${VM_EXPECTED_ID}"
 
 _vm_describe() {
   # $1: value format expression
-  rtk gcloud compute instances describe "$VM_NAME" \
+  gcloud compute instances describe "$VM_NAME" \
     --zone="$VM_ZONE" --project="$VM_PROJECT" \
     --format="value($1)" 2>/dev/null
 }
@@ -41,7 +41,7 @@ _vm_describe() {
 
 _vm_field() {
   # $1: value format expression
-  rtk gcloud compute instances describe "$VM_NAME" \
+  gcloud compute instances describe "$VM_NAME" \
     --zone="$VM_ZONE" --project="$VM_PROJECT" \
     --format="value($1)" 2>/dev/null
 }
@@ -148,7 +148,7 @@ assert_vm_identity() {
 
 vm_external_ip() {
   # Print external IP of the running VM, or empty string if not available.
-  rtk gcloud compute instances describe "$VM_NAME" \
+  gcloud compute instances describe "$VM_NAME" \
     --zone="$VM_ZONE" --project="$VM_PROJECT" \
     --format="get(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null \
     || true

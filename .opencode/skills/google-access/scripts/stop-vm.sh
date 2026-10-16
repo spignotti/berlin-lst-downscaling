@@ -26,7 +26,7 @@ case "$VM_ACTUAL_STATE" in
     if [[ "$DRY_RUN" == "true" ]]; then
       echo "[dry-run] Would execute: gcloud compute instances stop $VM_NAME --zone=$VM_ZONE --project=$VM_PROJECT"
     else
-      rtk gcloud compute instances stop "$VM_NAME" --zone="$VM_ZONE" --project="$VM_PROJECT"
+      gcloud compute instances stop "$VM_NAME" --zone="$VM_ZONE" --project="$VM_PROJECT"
     fi
     ;;
   TERMINATED|STOPPED)
