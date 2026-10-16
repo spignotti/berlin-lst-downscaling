@@ -5,10 +5,16 @@ differenziert) on the ISU5 1:5,000 block map. The layer supports
 descriptive statistics and stratified evaluation. It is not a V3 feature
 channel, and it does not change the frozen 28-band contract.
 
-Scientific class groups are not frozen. Notion holds that decision:
-[Datenbasis & Feature Engineering](https://app.notion.com/p/3f3356451f668118953ae616cf7ecfc8).
-The page does not yet record an approved consolidation. Candidate
-groupings in the release stay `proposal_awaiting_scientific_approval`.
+The evaluation grouping was decided on 2026-10-16: proposal B from the
+class review, the split in `class_review.py` (`PROPOSAL_B`). Official
+06.07 `ststrnr` stays the external reference. The coarser candidate B
+stored in v1, which pools open land as `vegetated_open`, was not
+selected. Proposal B is the grouping for later stratified description.
+It is not a V3 feature and it is not written as a cell label. The v1
+files keep `proposal_awaiting_scientific_approval` because that release
+was not rewritten. The class-review report keeps
+`awaiting_scientific_review` as the record of the check before this
+decision.
 
 ## Sources
 
@@ -103,13 +109,16 @@ Each vintage covers 90,447 canonical 100 m cells, of which 89,066 have
 their centre inside the boundary. About 52,000 of the covered cells, and
 56 percent of the covered area, contain more than one `typ`. A single
 majority label would hide that mixture. The share tables are the
-evaluation product. Class groups are not frozen.
+evaluation product. The v1 files do not store a chosen class label.
+The decision is recorded at the top of this document.
 
 ## Class review, accessed 2026-10-15
 
 Issue #74. This review reads v1 and does not rewrite it. Group membership
-was fixed before the areas were computed. Nothing here is approved.
-`approval` stays `awaiting_scientific_review`.
+was fixed before the areas were computed. The published report still
+says `awaiting_scientific_review`. That field is the state of the check.
+On 2026-10-16 proposal B was adopted for later stratified description.
+The report file is evidence and stays as published.
 
 Machine-readable tables, including the per-class rows:
 
@@ -181,5 +190,7 @@ Mapped transport touches 8,730 cells and dominates 80 percent of the
 covered cell in only 671 of them. Forest dominates at that threshold in
 15,166 of 22,766 touched cells.
 
-The working hypothesis for a later description is proposal B. Official
+Proposal B is the decided grouping for a later description. Official
 06.07 stays the external reference. The choice did not use a model error.
+Stadtplatz, camping, and construction stay in the groups fixed before
+the area tables, including where those groups are sparse.

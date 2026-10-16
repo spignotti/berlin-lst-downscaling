@@ -10,7 +10,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest and
   product contracts.
 - `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer. Not a
-  V3 feature channel. Class groups await scientific approval.
+  V3 feature channel. Proposal B is the decided evaluation grouping
+  (2026-10-16).
 - `ecostress-feasibility.md` — read-only ECOSTRESS C2 collocation inventory
   against the published Landsat anchors (issue #71).
 - `pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
