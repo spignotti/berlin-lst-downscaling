@@ -42,9 +42,9 @@ TRAINING_SCHEMA_VERSION: int = 1
 # ── immutable input basis ─────────────────────────────────────────────
 
 # Pinned feature-release hash. The name stays EXPECTED_V3_CONFIG_HASH.
-# The value is feature release v4 (imperviousness v3, QA-hardened Landsat).
+# The value is feature release v5 (area-mean Landsat ARD, imperviousness v3).
 # Feature releases v1 and v2 stay rejected.
-EXPECTED_V3_CONFIG_HASH: str = "8b9d7725bc97b012"
+EXPECTED_V3_CONFIG_HASH: str = "2d2086f9d36e48fe"
 
 # ── temporal split contract (user-mandated) ───────────────────────────
 

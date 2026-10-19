@@ -491,8 +491,8 @@ nearest). `qa_pixel` is not averaged: each relevant bit is evaluated at
 The canonical grid is unchanged. The method is stored in the Landsat
 ARD schema hash (`7|st=average|qa=native_bit_or`) under
 `ard/full/2017-2026-qa-avg-20261019`. The feature config hash
-fingerprints that ledger, so it changes with the new ARD and is pinned
-in `EXPECTED_V3_CONFIG_HASH` once the ledger exists. Training publishes
+fingerprints that ledger, so it changes with the new ARD. It is pinned
+in `EXPECTED_V3_CONFIG_HASH` as `2d2086f9d36e48fe`. Training publishes
 `gs://berlin-lst-training-data/training/v2`. The pipeline
 still rejects feature releases v1 and v2. It checks the pinned root,
 the ledger (324 done rows, pinned hash), and each scene's
