@@ -481,11 +481,15 @@ into leakage-free training inputs for WB3. It is published under
 manifest, cell index, scaler, and release marker), built by
 `scripts/runners/run_training_data.py` (`data/training/`).
 
-**Input basis.** Feature Release V3 is the only permitted input
-(user-mandated; V1/V2 are hard-rejected). The pipeline verifies the
-features root, the V3 ledger (324 done rows, config hash
-`d9eb25995b2f4911`), and each scene's `provenance.json` (config hash +
-canonical 28-channel order) before any publication.
+**Input basis.** The published v1 handoff used Feature Release V3
+(324 done rows, config hash `d9eb25995b2f4911`). This branch pins
+feature release v4 (`gs://berlin-lst-training-data/features/v4`,
+config hash `8b9d7725bc97b012`) and publishes
+`gs://berlin-lst-training-data/training/v2`. Landsat flags for that
+release come from `ard/full/2017-2026-qa-20261019`. The pipeline
+still rejects feature releases v1 and v2. It checks the pinned root,
+the ledger (324 done rows, pinned hash), and each scene's
+`provenance.json` before publication.
 
 **Temporal split contract** (user-mandated). 2017-2023 train, 2024
 validation, 2025 test, 2026 inference. 2026 anchors are metadata-only

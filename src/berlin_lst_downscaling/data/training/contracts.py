@@ -41,10 +41,10 @@ TRAINING_SCHEMA_VERSION: int = 1
 
 # ── immutable input basis ─────────────────────────────────────────────
 
-# Feature Release V3 is the only permitted input basis (user-mandated;
-# V1/V2 must never be consumed). Pinned from the live features ledger —
-# every V3 row carries this config hash.
-EXPECTED_V3_CONFIG_HASH: str = "d9eb25995b2f4911"
+# Pinned feature-release hash. The name stays EXPECTED_V3_CONFIG_HASH.
+# The value is feature release v4 (imperviousness v3, QA-hardened Landsat).
+# Feature releases v1 and v2 stay rejected.
+EXPECTED_V3_CONFIG_HASH: str = "8b9d7725bc97b012"
 
 # ── temporal split contract (user-mandated) ───────────────────────────
 

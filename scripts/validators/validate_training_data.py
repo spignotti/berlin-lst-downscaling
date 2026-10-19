@@ -79,7 +79,7 @@ _CANON_X = 369190.0
 _CANON_Y = 5838410.0
 _CELL = 100.0
 
-_V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v3"
+_V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v4"
 
 
 def _read_json(uri: str) -> dict:
