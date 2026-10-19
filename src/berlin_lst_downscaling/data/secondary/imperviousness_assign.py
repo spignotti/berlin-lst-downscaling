@@ -290,11 +290,14 @@ def fill_shadows_outside_blocks(
     Ties take the first pixel in row-major order inside the window.
     Returns the number of pixels filled.
     """
-    pending = np.argwhere((codes == 101) & np.isnan(out))
+    # In-block shadows that the ring could not fill stay NaN. Only pixels
+    # outside every polygon may borrow a neighbour.
+    pending = np.argwhere((codes == 101) & (block_id == 0) & np.isnan(out))
     if pending.size == 0:
         return 0
     height, width = codes.shape
     filled = 0
+    max_dist2 = search_px * search_px
     finite_blocks = np.isfinite(block_fill)
     for row, col in pending:
         y0 = max(0, int(row) - search_px)
@@ -313,7 +316,10 @@ def fill_shadows_outside_blocks(
         cy = int(row) - y0
         cx = int(col) - x0
         dist = (coords[:, 0] - cy) ** 2 + (coords[:, 1] - cx) ** 2
-        nearest = coords[int(np.argmin(dist))]
+        nearest_i = int(np.argmin(dist))
+        if int(dist[nearest_i]) > max_dist2:
+            continue
+        nearest = coords[nearest_i]
         bid = int(window[int(nearest[0]), int(nearest[1])])
         out[int(row), int(col)] = np.float32(block_fill[bid])
         filled += 1

@@ -45,8 +45,12 @@ Per the v3 manifest: 345 Landsat anchors, 509 manifest rows.
 
 Umweltatlas 01.02 rasters (`Versiegelung_Raster_2016.zip`,
 `Versiegelung_Raster_2021.zip`) store class codes, not percents. The
-config hash (`imperviousness:v3` plus the street and block checksums)
-covers the mapping. `feature_valid` is unchanged: a finite percent in
+config hash (`imperviousness:v3` plus content checksums of the street
+features and the Stadtstruktur blocks) covers the mapping. Each
+checksum is `schluessel`, the mapped field (`vg` or `typ`), and WKB,
+sorted so a GeoPackage or parquet rewrite that keeps those features
+does not change the hash. The file checksums stay in the product
+provenance. `feature_valid` is unchanged: a finite percent in
 `[-0.01, 100.01]` is valid.
 
 | Code | Percent |
@@ -64,8 +68,9 @@ Water wins over a street where the two overlap. Donor pixels are codes
 0, 5–95, 100, 102, and 110 (110 contributes 100). A block with targets
 and no donor uses the equal-area mean of donor pixels in a 100 m ring
 outside the polygon. Code 101 whose center is outside every polygon
-uses the nearest block with a finite donor mean within 100 m. Anything
-still unassigned stays NaN.
+uses the nearest block with a finite donor mean at a Euclidean
+distance of at most 100 m. Ties take the first pixel in row-major
+order inside that radius. Anything still unassigned stays NaN.
 
 The water mask is Stadtstruktur v1 vintage 2024,
 `evaluation/stadtstruktur/v1/source/2024/blocks.parquet`, `typ` 100.

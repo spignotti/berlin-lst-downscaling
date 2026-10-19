@@ -117,8 +117,8 @@ def _run_imperviousness(
         item_id = f"imperviousness_{vintage}"
         c_hash = config_hash_for_vintage(
             vintage,
-            street_sha256=aux.street_sha256,
-            blocks_sha256=aux.blocks_sha256,
+            street_content_sha256=aux.street_content_sha256,
+            blocks_content_sha256=aux.blocks_content_sha256,
         )
 
         items = [(item_id, "imperviousness", str(vintage))]

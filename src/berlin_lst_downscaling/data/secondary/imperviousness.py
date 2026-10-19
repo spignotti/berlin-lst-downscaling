@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import struct
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pyarrow.parquet as pq
+import pyogrio
 import rasterio
 import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
@@ -99,6 +102,8 @@ class ImperviousnessAux:
     blocks_path: str
     street_sha256: str
     blocks_sha256: str
+    street_content_sha256: str
+    blocks_content_sha256: str
     street_uri: str
     blocks_source_uri: str
 
@@ -121,17 +126,68 @@ def contract_for_imperviousness() -> Contract:
         flag_mode="none",
     )
 
+def _content_digest(header: bytes, rows: list[tuple[bytes, bytes, bytes]]) -> str:
+    """Hash mapping-relevant fields, independent of file metadata and row order."""
+    digest = sha256()
+    digest.update(header)
+    for row in sorted(rows):
+        for part in row:
+            digest.update(struct.pack("<I", len(part)))
+            digest.update(part)
+    return digest.hexdigest()
+
+
+def content_sha256_streets(path: str) -> str:
+    """Checksum ``schluessel``, ``vg``, and ISO WKB of the street layer.
+
+    A GeoPackage rewrite that only changes the file header keeps this
+    digest. ``vg`` is stored as little-endian float64 bits.
+    """
+    frame = pyogrio.read_dataframe(path, columns=["schluessel", STREET_FIELD])
+    if frame[STREET_FIELD].isna().any():
+        raise ValueError(f"street layer {path} contains null {STREET_FIELD}")
+    rows: list[tuple[bytes, bytes, bytes]] = []
+    for schluessel, vg, geom in zip(
+        frame["schluessel"], frame[STREET_FIELD], frame.geometry, strict=True
+    ):
+        if geom is None or geom.is_empty:
+            raise ValueError(f"street feature {schluessel} has no geometry")
+        rows.append(
+            (
+                str(schluessel).encode(),
+                struct.pack("<d", float(vg)),
+                geom.wkb,
+            )
+        )
+    return _content_digest(b"streets:schluessel,vg,wkb\n", rows)
+
+
+def content_sha256_blocks(path: str) -> str:
+    """Checksum ``schluessel``, ``typ``, and WKB of the Stadtstruktur blocks."""
+    table = pq.read_table(path, columns=["schluessel", "typ", "geometry"])
+    schluessel = table.column("schluessel").to_pylist()
+    typ = table.column("typ").to_pylist()
+    geometry = table.column("geometry").to_pylist()
+    rows: list[tuple[bytes, bytes, bytes]] = []
+    for key, typ_value, wkb in zip(schluessel, typ, geometry, strict=True):
+        if wkb is None:
+            raise ValueError(f"block {key} has no geometry")
+        rows.append((str(key).encode(), struct.pack("<q", int(typ_value)), bytes(wkb)))
+    return _content_digest(b"blocks:schluessel,typ,wkb\n", rows)
+
+
 def config_hash_for_vintage(
     vintage: int,
     *,
-    street_sha256: str,
-    blocks_sha256: str,
+    street_content_sha256: str,
+    blocks_content_sha256: str,
 ) -> str:
     """Return a stable config hash for one vintage.
 
-    The payload is the mapping, the source identifiers, and the checksums
-    of the street GeoPackage and the Stadtstruktur blocks. A changed rule
-    or a changed source file changes the hash.
+    The payload is the mapping, the source identifiers, and content
+    checksums of the street features and the Stadtstruktur blocks. A
+    changed rule or a changed feature changes the hash. A GeoPackage or
+    parquet rewrite that keeps those features does not.
     """
     payload = {
         "rules": MAPPING_RULES_ID,
@@ -139,14 +195,15 @@ def config_hash_for_vintage(
         "archive_url": IMPERVIOUSNESS_URLS[vintage],
         "direct": {"0": 0, "5_to_95_step_10": "code", "100": 100, "102": 100, "110": 100},
         "code_110": "map_rendering_100_rule_set_would_be_0",
-        "code_101": "block_donor_mean_or_nearest_block_within_100m",
+        "code_101": "block_donor_mean_or_nearest_block_within_euclidean_100m",
         "code_103": "water_0_then_street_vg_then_block_donor_mean_else_nan",
         "unknown_codes": "nan_counted",
         "water": {
             "source": BLOCKS_SOURCE_URI,
             "vintage": 2024,
             "typ": 100,
-            "sha256": blocks_sha256,
+            "content_sha256": blocks_content_sha256,
+            "content_fields": "schluessel,typ,wkb",
         },
         "streets": {
             "wfs": "https://gdi.berlin.de/services/wfs/ua_versiegelung_2021",
@@ -154,14 +211,15 @@ def config_hash_for_vintage(
             "field": STREET_FIELD,
             "trackbed": "sealed",
             "survey_status": "2014",
-            "sha256": street_sha256,
+            "content_sha256": street_content_sha256,
+            "content_fields": "schluessel,vg,wkb",
             "used_for_vintages": [2016, 2021],
         },
         "block_fill": {
             "donors": [0, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 100, 102, 110],
             "reducer": "equal_area_mean_of_pixel_centers",
             "empty_block": "100m_exterior_ring_mean",
-            "shadow_outside_block": "nearest_finite_block_within_100m",
+            "shadow_outside_block": "nearest_finite_block_within_euclidean_100m",
         },
         "resample": "canonical_10m_epsg25833_average",
         "format_doc": FORMAT_DOC_URL,
@@ -218,8 +276,8 @@ def prepare_imperviousness(
     aux = aux or load_imperviousness_auxiliaries(output_root)
     c_hash = config_hash_for_vintage(
         vintage,
-        street_sha256=aux.street_sha256,
-        blocks_sha256=aux.blocks_sha256,
+        street_content_sha256=aux.street_content_sha256,
+        blocks_content_sha256=aux.blocks_content_sha256,
     )
 
     # ── 1. materialise raw ZIP via shared downloader (no full-RAM load) ──
@@ -291,9 +349,11 @@ def prepare_imperviousness(
             "street_layer": STREET_LAYER,
             "street_field": STREET_FIELD,
             "street_sha256": aux.street_sha256,
+            "street_content_sha256": aux.street_content_sha256,
             "street_uri": aux.street_uri,
             "blocks_source_uri": aux.blocks_source_uri,
             "blocks_sha256": aux.blocks_sha256,
+            "blocks_content_sha256": aux.blocks_content_sha256,
             "water_typ": 100,
             "format_doc": FORMAT_DOC_URL,
             "code_110": "100; rule set would be 0, map rendering is 100",
@@ -381,6 +441,8 @@ def load_imperviousness_auxiliaries(output_root: str) -> ImperviousnessAux:
         blocks_path=str(blocks_cache),
         street_sha256=sha256_file(receipt.local_cache_path),
         blocks_sha256=sha256_file(str(blocks_cache)),
+        street_content_sha256=content_sha256_streets(receipt.local_cache_path),
+        blocks_content_sha256=content_sha256_blocks(str(blocks_cache)),
         street_uri=street_uri,
         blocks_source_uri=BLOCKS_SOURCE_URI,
     )
