@@ -137,8 +137,9 @@ def training_policy_hash(
     Covers every policy decision that changes the published handoff: the
     temporal split mapping, the strict support rule, the cell-ID formula,
     the scaler transformations, the canonical channel order, the feature
-    schema version, and the pinned V3 config hash. Any change invalidates
-    the published artifacts via the ledger's ``config_changed`` reconcile.
+    schema version, the pinned V3 config hash, and the implausible-LST
+    scene denylist. Any change invalidates the published artifacts via
+    the ledger's ``config_changed`` reconcile.
     """
     channel_schema = [
         {

@@ -507,6 +507,9 @@ subpixels are valid (strict 100/100 support; edge-truncated cells are
 never eligible). No imputation, no extra input masks, no sparse category:
 a scene with zero eligible cells is excluded with reason
 `no_eligible_cells` (its all-zero mask is still published for audit).
+`LC09_L2SP_193023_20220827_02_T2` and `LC09_L2SP_193024_20220827_02_T2`
+are excluded before that rule with reason `usgs_st_implausible_20220827`.
+They publish no eligibility mask, no cells, and no scaler contribution.
 
 **Artifacts.** Per scene:
 `<scene_id>.training_eligible_100m.tif` (uint8 0/1, canonical 100 m
@@ -533,8 +536,9 @@ and policy hash.
 
 **Policy hash.** `training_policy_hash` (in `data/training/contracts.py`)
 covers the split mapping, support rule, cell-ID formula, scaler policy,
-channel order, and V3 config hash. Any policy change invalidates the
-published artifacts via the ledger's `config_changed` reconcile path.
+channel order, V3 config hash, and the implausible-LST scene denylist.
+Any policy change invalidates the published artifacts via the ledger's
+`config_changed` reconcile path.
 
 **Validation.** `scripts/validators/validate_training_data.py` is an independent
 read-only probe over the release root: V3 source gate, per-scene COG
@@ -574,7 +578,10 @@ windows a future dataset reads, without touching the immutable
 create-only completion marker), built by
 `scripts/runners/run_patch_index.py` from the `training/v1` scene manifest
 and the per-scene `training_eligible@100m` COGs. No feature pixels are
-recomputed and no patch rasters are written.
+recomputed and no patch rasters are written. This branch publishes the
+corrected index at `gs://berlin-lst-training-data/training/patch-index/v2`,
+built from `training/v2`. The two implausible-LST scenes are skipped
+there and are not counted as `no_eligible_cells`.
 
 **Patch geometry** (fixed, issue #14). The main patch is 160×160 px at
 10 m = 16×16 cells at 100 m (1.6 km), the depth-4 U-Net edge requirement.

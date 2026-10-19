@@ -18,7 +18,8 @@ and verifies, **independently of the publisher implementation**:
 - the scene manifest: full year coverage 2017-2026, temporal split
   assignment (2017-2023 train, 2024 validation, 2025 test, 2026
   inference), no duplicate s2_scene_id across non-inference splits,
-  no sparse category (only ``no_eligible_cells``);
+  no sparse category (``no_eligible_cells``, plus the explicit
+  implausible-LST denylist ``usgs_st_implausible_20220827``);
 - the cell index: every row references an eligible cell of a published
   scene, splits match the manifest, cell IDs are deterministic from the
   canonical EPSG:25833 grid, no 2026 cells;
@@ -58,6 +59,8 @@ from berlin_lst_downscaling.data.features.contracts import (
 from berlin_lst_downscaling.data.io import exists, read_bytes
 from berlin_lst_downscaling.data.training.contracts import (
     EXPECTED_V3_CONFIG_HASH,
+    IMPLAUSIBLE_LST_REASON,
+    IMPLAUSIBLE_LST_SCENE_IDS,
     INFERENCE_DEFERRED_REASON,
     NO_ELIGIBLE_CELLS_REASON,
     SPLIT_BY_YEAR,
@@ -241,24 +244,46 @@ def _check_manifest(
                     f"{sid}: s2_scene_id {s2!r} spans splits {prior!r}/{split!r} (leakage)"
                 )
             split_of_s2.setdefault(s2, split)
-        # No sparse category: the only training exclusion reason is no_eligible_cells;
-        # inference scenes are metadata-only with inference_deferred.
+        # No sparse category. Zero-cell scenes use no_eligible_cells.
+        # The two cold 2022 scenes are an explicit denylist: excluded
+        # before eligibility, with no mask and no cells.
+        reason = str(cols["exclusion_reason"][i])
         if split == "inference":
-            if str(cols["exclusion_reason"][i]) != INFERENCE_DEFERRED_REASON:
+            if reason != INFERENCE_DEFERRED_REASON:
                 errors.append(
-                    f"{sid}: 2026 inference reason {cols['exclusion_reason'][i]!r}, "
+                    f"{sid}: 2026 inference reason {reason!r}, "
                     f"expected {INFERENCE_DEFERRED_REASON!r}"
                 )
             if str(cols["eligible_cells"][i]) not in ("0", 0):
                 errors.append(f"{sid}: 2026 inference scene has eligible cells")
-        elif str(cols["status"][i]) == "excluded":
-            if str(cols["exclusion_reason"][i]) != NO_ELIGIBLE_CELLS_REASON:
+        elif sid in IMPLAUSIBLE_LST_SCENE_IDS:
+            if str(cols["status"][i]) != "excluded" or reason != IMPLAUSIBLE_LST_REASON:
                 errors.append(
-                    f"{sid}: excluded reason {cols['exclusion_reason'][i]!r}, "
+                    f"{sid}: implausible LST scene status {cols['status'][i]!r} "
+                    f"reason {reason!r}, expected excluded / {IMPLAUSIBLE_LST_REASON!r}"
+                )
+            elif int(cols["eligible_cells"][i]) != 0:
+                errors.append(f"{sid}: implausible LST scene has eligible cells")
+            else:
+                for field in ("feature_stack", "feature_valid", "eligibility_mask"):
+                    if cols[field][i] not in ("", None):
+                        errors.append(f"{sid}: implausible LST scene publishes {field}")
+        elif str(cols["status"][i]) == "excluded":
+            if reason != NO_ELIGIBLE_CELLS_REASON:
+                errors.append(
+                    f"{sid}: excluded reason {reason!r}, "
                     f"expected {NO_ELIGIBLE_CELLS_REASON!r}"
                 )
             if int(cols["eligible_cells"][i]) != 0:
                 errors.append(f"{sid}: excluded with {cols['eligible_cells'][i]} cells")
+
+    if expected_scenes is not None:
+        missing_denied = IMPLAUSIBLE_LST_SCENE_IDS - set(manifest)
+        if missing_denied:
+            errors.append(
+                "full release missing implausible LST scenes: "
+                f"{sorted(missing_denied)}"
+            )
 
     # CSV consistency.
     try:
@@ -508,8 +533,13 @@ def main() -> int:
     _check_v3_source(root, errors)
 
     manifest = _check_manifest(root, errors, warnings, args.expected_scenes)
-    # Only non-inference scenes carry a published eligibility COG.
-    scene_ids = sorted(s for s, m in manifest.items() if m["split"] != "inference")
+    # Inference scenes and the implausible-LST denylist publish no mask.
+    # Zero-cell exclusions still carry an all-zero mask.
+    scene_ids = sorted(
+        s
+        for s, m in manifest.items()
+        if m["split"] != "inference" and s not in IMPLAUSIBLE_LST_SCENE_IDS
+    )
     cog_counts, cog_cell_ids = _check_eligibility_cogs(
         root, scene_ids, errors, args.expected_scenes
     )
