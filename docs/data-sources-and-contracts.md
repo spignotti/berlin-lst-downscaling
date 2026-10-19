@@ -84,6 +84,12 @@ that survey already carry the district mean inside `vg`. The 2016 class
 raster uses the same 2021 segments. Both vintages are averaged onto the
 canonical 10 m EPSG:25833 grid.
 
+The corrected COGs are published at
+`gs://berlin-lst-training-data/static/sources/imperviousness-v3/`
+(config hash 2016 `826b245461e8`, 2021 `02be2b1ab273`). The
+`static/sources/full` rasters are unchanged. The merged ledger at
+that root keeps every other static source on its previous URI.
+
 ### Historical LoD morphometry vintages
 
 The historical LoD backfill consumed three CityGML archives supplied

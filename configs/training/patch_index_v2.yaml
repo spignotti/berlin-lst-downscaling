@@ -1,0 +1,8 @@
+# @package _global_
+# Patch index over the training v2 eligibility masks.
+defaults:
+  - _base
+  - _self_
+
+source_root: "gs://berlin-lst-training-data/training/v2"
+output_root: "gs://berlin-lst-training-data/training/patch-index/v2"
