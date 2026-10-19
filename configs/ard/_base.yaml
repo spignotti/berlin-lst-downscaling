@@ -11,6 +11,13 @@ target_crs: "EPSG:25833"
 target_resolution_low: 100          # Landsat LST native
 target_resolution_high: 10          # S2 and other bands
 
+# Landsat 30 m -> 100 m. lwir11 is an area mean. qa_pixel is a bitmask and
+# is aggregated with a native-resolution OR, not a mean. odc-stac 0.5.2
+# defaults to nearest when resampling is omitted; these names are stored
+# in the Landsat ledger schema hash. nearest/nearest keeps the old path.
+landsat_st_resampling: average
+landsat_qa_aggregation: native_bit_or
+
 # Cloud masking
 cloud_dilation_px: 2              # morphological dilation radius for cloud buffer
 

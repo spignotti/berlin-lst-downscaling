@@ -483,10 +483,17 @@ manifest, cell index, scaler, and release marker), built by
 
 **Input basis.** The published v1 handoff used Feature Release V3
 (324 done rows, config hash `d9eb25995b2f4911`). This branch pins
-feature release v4 (`gs://berlin-lst-training-data/features/v4`,
-config hash `8b9d7725bc97b012`) and publishes
-`gs://berlin-lst-training-data/training/v2`. Landsat flags for that
-release come from `ard/full/2017-2026-qa-20261019`. The pipeline
+feature release v5 (`gs://berlin-lst-training-data/features/v5`).
+Landsat ST in that release is the area mean of the delivered 30 m
+`lwir11` samples (`resampling=average`; odc-stac 0.5.2 defaults to
+nearest). `qa_pixel` is not averaged: each relevant bit is evaluated at
+30 m and a 100 m cell takes the bit if any overlapping sample has it.
+The canonical grid is unchanged. The method is stored in the Landsat
+ARD schema hash (`7|st=average|qa=native_bit_or`) under
+`ard/full/2017-2026-qa-avg-20261019`. The feature config hash
+fingerprints that ledger, so it changes with the new ARD and is pinned
+in `EXPECTED_V3_CONFIG_HASH` once the ledger exists. Training publishes
+`gs://berlin-lst-training-data/training/v2`. The pipeline
 still rejects feature releases v1 and v2. It checks the pinned root,
 the ledger (324 done rows, pinned hash), and each scene's
 `provenance.json` before publication.

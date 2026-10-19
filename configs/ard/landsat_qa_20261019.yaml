@@ -13,3 +13,6 @@ manifest_uri: "gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260
 output_root: "gs://berlin-lst-training-data/ard/full/2017-2026-qa-20261019"
 target_resolution_low: 100
 target_resolution_high: 10
+# Published product used nearest. Do not inherit the area-mean default.
+landsat_st_resampling: nearest
+landsat_qa_aggregation: nearest

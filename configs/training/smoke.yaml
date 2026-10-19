@@ -19,7 +19,7 @@ scene_ids:
 # 10m px). Matches configs/features/smoke.yaml and configs/qa/*_smoke.yaml.
 bbox: [13.4602832, 52.4041766, 13.6691668, 52.4965573]
 
-features_root: "gs://berlin-lst-training-data/features/v4"
-ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-qa-20261019"
+features_root: "gs://berlin-lst-training-data/features/v5"
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019"
 static_sources_root: "gs://berlin-lst-training-data/static/sources/imperviousness-v3"
 output_root: "data/smoke/training-data"

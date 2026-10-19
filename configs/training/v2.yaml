@@ -1,11 +1,11 @@
 # @package _global_
-# Training release v2. Reads feature release v4 and the QA-hardened
+# Training release v2. Reads feature release v5 and the area-mean
 # Landsat ARD. training/v1 stays unchanged.
 defaults:
   - _base
   - _self_
 
-ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-qa-20261019"
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019"
 static_sources_root: "gs://berlin-lst-training-data/static/sources/imperviousness-v3"
-features_root: "gs://berlin-lst-training-data/features/v4"
+features_root: "gs://berlin-lst-training-data/features/v5"
 output_root: "gs://berlin-lst-training-data/training/v2"

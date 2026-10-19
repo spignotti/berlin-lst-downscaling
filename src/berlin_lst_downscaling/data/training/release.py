@@ -52,7 +52,7 @@ _logger = logging.getLogger(__name__)
 
 # Pinned feature release for this training handoff. Older feature
 # releases are rejected. Smoke reads the same published root.
-V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v4"
+V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v5"
 
 
 # ── V3 release gate ───────────────────────────────────────────────────

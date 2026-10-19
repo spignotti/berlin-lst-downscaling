@@ -35,8 +35,20 @@ from berlin_lst_downscaling.data.acquisition.sentinel2 import (
 from berlin_lst_downscaling.data.ard.aoi import compute_aoi_metrics
 from berlin_lst_downscaling.data.ard.contract import Contract, contract_for_source
 from berlin_lst_downscaling.data.ard.idempotency import reconcile
+from berlin_lst_downscaling.data.ard.landsat_target import (
+    LWIR11_NODATA_DN,
+    landsat_schema_hash,
+    policy_from_config,
+    usgs_30m_geobox_covering,
+)
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
-from berlin_lst_downscaling.data.ard.masking import mask_ecostress, mask_landsat, mask_s2
+from berlin_lst_downscaling.data.ard.masking import (
+    landsat_uses_area_mean,
+    mask_ecostress,
+    mask_landsat,
+    mask_landsat_area_mean,
+    mask_s2,
+)
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.product import finalize_ard_product
 from berlin_lst_downscaling.data.ard.reports import qa_report
@@ -49,6 +61,15 @@ from berlin_lst_downscaling.data.ard.writer import (
 from berlin_lst_downscaling.data.io import log_event
 
 _logger = logging.getLogger(__name__)
+
+
+def _schema_hash(source: str, contract: Contract, cfg: DictConfig) -> str:
+    """Ledger schema hash. Landsat rows also record the target policy."""
+    if source == "landsat-c2-l2":
+        st_resampling, qa_aggregation = policy_from_config(cfg)
+        return landsat_schema_hash(contract.schema_version, st_resampling, qa_aggregation)
+    return contract.schema_version_str()
+
 
 # ── per-source runner registry ───────────────────────────────────────
 
@@ -67,19 +88,47 @@ def _run_landsat_scene(
     """Load + mask a Landsat C2 L2 scene."""
     effective_date = scene_date or cfg.scene_date
     bbox = tuple(cfg.bbox)
+    resolution = int(cfg.target_resolution_low)
+    if landsat_uses_area_mean(cfg):
+        target = canon_grid_for_resolution(resolution)
+        st_resampling, _qa = policy_from_config(cfg)
+        ds, loaded_ids = load_landsat_scene(
+            date=effective_date,
+            bbox=bbox,
+            bands=["lwir11"],
+            resolution=resolution,
+            items=items,
+            geobox=target,
+            resampling=st_resampling,
+            nodata=LWIR11_NODATA_DN,
+        )
+        qa_ds, _qa_ids = load_landsat_scene(
+            date=effective_date,
+            bbox=bbox,
+            bands=["qa_pixel"],
+            items=items,
+            geobox=usgs_30m_geobox_covering(target),
+            resampling="nearest",
+        )
+        if scene_id not in loaded_ids:
+            raise RuntimeError(
+                f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
+                f"Date {effective_date!r} or bbox may not cover the requested scene."
+            )
+        return mask_landsat_area_mean(ds, qa_ds, cfg)
     ds, loaded_ids = load_landsat_scene(
         date=effective_date,
         bbox=bbox,
-        resolution=int(cfg.target_resolution_low),
+        resolution=resolution,
         items=items,
+        resampling="nearest",
     )
     if scene_id not in loaded_ids:
         raise RuntimeError(
             f"Scene {scene_id!r} not in loaded items {loaded_ids}. "
             f"Date {effective_date!r} or bbox may not cover the requested scene."
         )
-    masked = mask_landsat(ds, cfg)
-    return masked
+    return mask_landsat(ds, cfg)
 
 def _run_sentinel2_scene(
     scene_id: str,
@@ -574,7 +623,7 @@ def _run_scene(
                 path_flag=flag_dst if contract.flag_mode == "separate" else None,
                 path_stac=stac_dst,
                 status="done",
-                schema_hash=contract.schema_version_str(),
+                schema_hash=_schema_hash(source, contract, cfg),
                 schema_version=contract.schema_version,
                 run_id=run_id,
                 updated_at=datetime.now(UTC),

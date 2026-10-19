@@ -16,6 +16,14 @@ from rasterio.warp import Resampling
 from scipy.ndimage import binary_dilation
 
 from berlin_lst_downscaling.data.ard.contract import contract_for_source
+from berlin_lst_downscaling.data.ard.landsat_target import (
+    QA_AGGREGATION_BIT_OR,
+    ST_RESAMPLING_AVERAGE,
+    aggregate_condition_planes,
+    pack_landsat_flags,
+    policy_from_config,
+    qa_condition_planes,
+)
 
 # ── Landsat ─────────────────────────────────────────────────────────##
 
@@ -51,6 +59,39 @@ def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
         | cirrus.astype(bool)
         | snow.astype(bool)
     )
+
+def mask_landsat_area_mean(
+    st_ds: xr.Dataset,
+    qa_ds: xr.Dataset,
+    cfg: DictConfig,
+) -> xr.Dataset:
+    """Area-mean ST on the canonical grid, bit-OR QA from the 30 m grid.
+
+    ``st_ds`` is ``lwir11`` loaded with ``resampling="average"`` and
+    nodata DN 0, so fill samples do not enter the mean. The scale is
+    linear, so the mean of DN converted to Kelvin is the mean of Kelvin.
+    A 100 m cell is flagged when any overlapping 30 m pixel trips a
+    relevant QA condition. ST is NaN where that aggregated fill bit is set.
+    Cloudy, shadow, cirrus, and snow samples can still enter the mean of
+    a mixed cell. Those cells stay flagged and are ineligible for training.
+    """
+    contract = contract_for_source("landsat-c2-l2")
+    lwir = st_ds["lwir11"]
+    qa = np.asarray(qa_ds["qa_pixel"].values).squeeze().astype(np.uint16)
+    dst_shape = (int(lwir.shape[-2]), int(lwir.shape[-1]))
+    planes = aggregate_condition_planes(
+        qa_condition_planes(qa),
+        qa_ds["qa_pixel"].rio.transform(),
+        lwir.rio.transform(),
+        dst_shape,
+    )
+    dilate_px = int(cfg.get("cloud_dilation_px", 2))
+    flag = pack_landsat_flags(planes, contract, dilate_px=dilate_px)
+    raw = np.asarray(lwir.values).squeeze().astype(np.float32)
+    st_kelvin = raw * _LS_ST_SCALE + _LS_ST_OFFSET
+    st_kelvin[(flag & contract.FLAG_FILL) != 0] = np.float32(np.nan)
+    return _assemble_landsat(st_kelvin, flag, lwir, st_ds)
+
 
 def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """Apply Landsat ARD masking: ST (Kelvin) + flag band.
@@ -95,35 +136,56 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
         flag[dilated & ~cloudy] |= contract.FLAG_FILL
 
     raw = ds["lwir11"].values.squeeze().astype(np.float32)
-    # DN=0 is fill in USGS C2 L2 ST; not always caught by QA_PIXEL bit 0
+    # DN=0 is fill in USGS C2 L2 ST; not always caught by QA_PIXEL bit 0.
+    # The area-mean path excludes this DN via nodata before the resample.
     flag[raw == 0] |= contract.FLAG_FILL
     st_kelvin = raw * _LS_ST_SCALE + _LS_ST_OFFSET
-    st_kelvin[(flag & contract.FLAG_FILL) != 0] = float("nan")
+    st_kelvin[(flag & contract.FLAG_FILL) != 0] = np.float32(np.nan)
+    return _assemble_landsat(st_kelvin, flag, ds["lwir11"], ds)
 
-    coords = dict(ds.coords)
-    dims = ds.dims
 
+def _assemble_landsat(
+    st_kelvin: np.ndarray,
+    flag: np.ndarray,
+    template: xr.DataArray,
+    crs_ds: xr.Dataset,
+) -> xr.Dataset:
+    """Build the ST + flag dataset on the template grid."""
+    dims = template.dims
+    timed = "time" in dims
     out = xr.Dataset(
         {
             "st": xr.DataArray(
-                st_kelvin[np.newaxis, ...] if "time" in dims else st_kelvin,
-                dims=ds["lwir11"].dims,
+                st_kelvin[np.newaxis, ...] if timed else st_kelvin,
+                dims=dims,
                 attrs={"long_name": "Surface Temperature", "units": "K"},
             ),
             "flag": xr.DataArray(
-                flag[np.newaxis, ...] if "time" in dims else flag,
-                dims=ds["lwir11"].dims,
+                flag[np.newaxis, ...] if timed else flag,
+                dims=dims,
                 attrs={"long_name": "Quality flag", "flags": _FLAG_DOC},
             ),
         },
-        coords=coords,
+        coords=dict(template.coords),
     )
-    # propagate CRS via rioxarray
     for var in out.data_vars:
-        out[var].rio.write_crs(ds.rio.crs, inplace=True)
-        out[var].rio.write_transform(ds.rio.transform(), inplace=True)
-
+        out[var].rio.write_crs(crs_ds.rio.crs, inplace=True)
+        out[var].rio.write_transform(template.rio.transform(), inplace=True)
     return out
+
+
+def landsat_uses_area_mean(cfg: DictConfig) -> bool:
+    """True when this config selects the area-mean target."""
+    st, qa = policy_from_config(cfg)
+    if st == ST_RESAMPLING_AVERAGE and qa == QA_AGGREGATION_BIT_OR:
+        return True
+    if st == "nearest" and qa == "nearest":
+        return False
+    raise ValueError(
+        f"unsupported Landsat target policy st={st!r} qa={qa!r}; "
+        f"use {ST_RESAMPLING_AVERAGE}/{QA_AGGREGATION_BIT_OR} "
+        "or nearest/nearest"
+    )
 
 # ── Sentinel-2 ───────────────────────────────────────────────────────##
 
