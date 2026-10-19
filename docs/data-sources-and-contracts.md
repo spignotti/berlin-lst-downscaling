@@ -35,11 +35,49 @@ across all scenes (`geometry_temporal_mode: retrospective_static`):
 | LoD2 CityGML morphometry | 2024 | `https://gdi.berlin.de/data/a_lod2/atom/` (CityGML v2.0 ZIP per 1 km tile) |
 | DGM 1 m terrain height | 2021 | ALS acquisition Feb–Mar 2021 |
 | Vegetation height (DOM − DGM) | 2020 | Berlin opacity/WMS, derived |
-| Versiegelung (imperviousness) | 2016, 2021 | Hausumringe WMS, piece-wise constant per scene year |
+| Versiegelung (imperviousness) | 2016, 2021 | Class raster plus the rules in the next section |
 
 Each scene year maps to a fixed source vintage
 (`data/secondary/{lod2,dgm,vegetation_height,imperviousness}.py`).
 Per the v3 manifest: 345 Landsat anchors, 509 manifest rows.
+
+### Versiegelung class codes
+
+Umweltatlas 01.02 rasters (`Versiegelung_Raster_2016.zip`,
+`Versiegelung_Raster_2021.zip`) store class codes, not percents. The
+config hash (`imperviousness:v3` plus the street and block checksums)
+covers the mapping. `feature_valid` is unchanged: a finite percent in
+`[-0.01, 100.01]` is valid.
+
+| Code | Percent |
+|------|---------|
+| 0 | 0 |
+| 5, 15, …, 95 | the code |
+| 100, 102 | 100 |
+| 110 Gleisschotter | 100. The rule set would use 0; the map rendering uses 100. |
+| 103 inside Stadtstruktur 2024 `typ` 100 | 0 |
+| 103 on street land | segment `vg` from the 2021 street layer |
+| 103 inside another block, and all 101 | equal-area mean of donor pixels in that block |
+| any other code | NaN, counted |
+
+Water wins over a street where the two overlap. Donor pixels are codes
+0, 5–95, 100, 102, and 110 (110 contributes 100). A block with targets
+and no donor uses the equal-area mean of donor pixels in a 100 m ring
+outside the polygon. Code 101 whose center is outside every polygon
+uses the nearest block with a finite donor mean within 100 m. Anything
+still unassigned stays NaN.
+
+The water mask is Stadtstruktur v1 vintage 2024,
+`evaluation/stadtstruktur/v1/source/2024/blocks.parquet`, `typ` 100.
+Street land is WFS
+`https://gdi.berlin.de/services/wfs/ua_versiegelung_2021`, layer
+`ua_versiegelung_2021:versieg2021_str` (title "Versiegelung der
+Straßenflächen 2021"), field `vg` (track ballast counted as sealed).
+Field names and the 2014 street-survey status are in
+`Datenformatbeschreibung_versiegelung2021.pdf`. Segments absent from
+that survey already carry the district mean inside `vg`. The 2016 class
+raster uses the same 2021 segments. Both vintages are averaged onto the
+canonical 10 m EPSG:25833 grid.
 
 ### Historical LoD morphometry vintages
 
@@ -172,12 +210,15 @@ Schema versions are per-source: Landsat v6, ECOSTRESS v7, Sentinel-2 v8
 | 2 | 4 | cloud shadow | S2 SCL 3 (+ directional projection), Landsat QA bit 4 |
 | 3 | 8 | cirrus | S2 SCL 10, Landsat QA bit 2 |
 | 4 | 16 | saturated | S2 SCL 1, ECOSTRESS QC degraded |
-| 5 | 32 | snow/ice | S2 SCL 11 |
+| 5 | 32 | snow/ice | S2 SCL 11, Landsat QA_PIXEL bit 5 |
 
-Sentinel-2 SCL class 11 (snow/ice) is flagged and excluded from clear
-pixels — matching the selection layer, which already treats SCL 11 as
-not clear. AOI metrics count it as `aoi_snow_ice_px` and include it in
-`aoi_total_px`; `aoi_clear_px` counts only pixels with no flag bit set.
+Sentinel-2 SCL class 11 (snow/ice) and Landsat QA_PIXEL bit 5 are
+flagged and excluded from clear pixels. Selection uses the same Landsat
+rule (`landsat_qa_to_clear_bits`). Cloud confidence bits 8–9 ≥ 2 are
+cloudy even when the cloud bit (bit 3) is unset; confidence 0 and 1
+stay clear. Water (QA_PIXEL bit 7) stays clear. AOI metrics count snow
+as `aoi_snow_ice_px` and include it in `aoi_total_px`; `aoi_clear_px`
+counts only pixels with no flag bit set.
 
 Land/Imperviousness products accept exact COG contracts via
 `data.ard.contract.Contract` (`data.secondary.contract.Contract` was
@@ -330,7 +371,8 @@ breaking schema change → new URI version):
   static source products** (`lod2_morphology` bands 1-4 per the scene's
   LoD vintage via `geometry_mapping.json`, `vegetation_height/2020`
   bands 1-2, and `imperviousness` band 1 per scene year: 2017-2019 →
-  vintage 2016, 2020-2025 → vintage 2021); only `svf` remains a derived
+  vintage 2016, 2020-2025 → vintage 2021, mapped as in "Versiegelung
+  class codes" above); only `svf` remains a derived
   product. The DSMs (`building_dsm`, `vegetation_dsm`, `combined_dsm`)
   are **not model inputs** — they remain internal auxiliaries for SVF,
   horizon, and shadow computation.

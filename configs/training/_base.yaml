@@ -21,8 +21,10 @@ features_root: "gs://berlin-lst-training-data/features/v3"
 # Canonical training-data release root.
 output_root: "gs://berlin-lst-training-data/training/v1"
 
-# Full run: 324 assessable anchor scenes (2017-2025). Skipped when
-# scene_ids restrict the run (smoke).
+# Full run: 324 artifact-assessable anchor scenes (2017-2025). Two of
+# them are then excluded in code (IMPLAUSIBLE_LST_SCENE_IDS,
+# usgs_st_implausible_20220827): LC09_L2SP_193023_20220827_02_T2 and
+# LC09_L2SP_193024_20220827_02_T2. Skipped when scene_ids restrict the run.
 expected_scene_count: 324
 
 # Optional smoke restriction (overridden by the smoke config).

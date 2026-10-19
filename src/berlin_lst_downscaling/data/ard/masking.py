@@ -23,29 +23,34 @@ _LS_ST_SCALE = 0.00341802  # USGS Collection 2 Level-2 ST scale
 _LS_ST_OFFSET = 149.0  # K
 
 def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
-    """Return boolean array — True = pixel is clear of cloud/shadow/cirrus/fill.
+    """Return boolean array — True = pixel is clear of cloud/shadow/cirrus/snow/fill.
 
     Landsat C2 L2 QA_PIXEL bits used:
       bit 0 (1)  — Fill (designated nodata)
       bit 2 (4)  — Cirrus (high confidence)
-      bit 3 (8)  — Cloud (raw flag)
       bit 4 (16) — Cloud shadow
-    Cloud with confidence ≥ medium (bits 8–9 ≥ 2) is the canonical
-    "cloud" interpretation; lower-confidence hints are ignored.
+      bit 5 (32) — Snow
+    Cloud confidence bits 8–9 ≥ 2 are cloudy even when the cloud bit
+    (bit 3) is unset. Confidence 0 and 1 stay clear.
     Bit 1 (dilated cloud) is not included — it is handled separately
     as an ARD-only dilation buffer.
 
-    Snow (bit 6, value 64) and water (clear-water QA=192) are *clear*
-    by this function — water bodies are common in the AOI and must not
-    be excluded from coupling.
+    Water (bit 7) stays clear. Water bodies are common in the AOI and
+    must not be excluded from coupling. Snow does not.
     """
-    cloud_raw = (qa >> 3) & 1
     cloud_conf = (qa >> 8) & 0b11
-    cloudy = (cloud_raw != 0) & (cloud_conf >= 2)
+    cloudy = cloud_conf >= 2
     cirrus = (qa >> 2) & 1
     shadow = (qa >> 4) & 1
+    snow = (qa >> 5) & 1
     fill = qa & 1
-    return ~(fill.astype(bool) | cloudy | shadow.astype(bool) | cirrus.astype(bool))
+    return ~(
+        fill.astype(bool)
+        | cloudy
+        | shadow.astype(bool)
+        | cirrus.astype(bool)
+        | snow.astype(bool)
+    )
 
 def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """Apply Landsat ARD masking: ST (Kelvin) + flag band.
@@ -67,16 +72,18 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     qa = ds["qa_pixel"].values.squeeze().astype(np.uint16)
     flag = np.zeros(qa.shape, dtype=np.uint8)
 
-    cloud_raw = (qa >> 3) & 1
     cloud_conf = (qa >> 8) & 0b11
-    cloudy = (cloud_raw != 0) & (cloud_conf >= 2)
+    # Medium/high cloud confidence is cloudy even when bit 3 is unset.
+    cloudy = cloud_conf >= 2
     shadow = (qa >> 4) & 1
     cirrus = (qa >> 2) & 1
+    snow = (qa >> 5) & 1
 
     flag[(qa & 1) != 0] |= contract.FLAG_FILL
     flag[cloudy] |= contract.FLAG_CLOUDY
     flag[shadow.astype(bool)] |= contract.FLAG_SHADOW
     flag[cirrus.astype(bool)] |= contract.FLAG_CIRRUS
+    flag[snow.astype(bool)] |= contract.FLAG_SNOW_ICE
 
     # apply additional dilation to the cloud mask (ARD-only buffer)
     dilate_px = cfg.get("cloud_dilation_px", 2)
@@ -84,7 +91,8 @@ def mask_landsat(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
         struct = np.ones((dilate_px * 2 + 1, dilate_px * 2 + 1), dtype=bool)
         buffered = binary_dilation(cloudy, structure=struct)
         # dilated buffer → fill bit
-        flag[buffered & ~cloudy] |= contract.FLAG_FILL
+        dilated = np.asarray(buffered, dtype=bool)
+        flag[dilated & ~cloudy] |= contract.FLAG_FILL
 
     raw = ds["lwir11"].values.squeeze().astype(np.float32)
     # DN=0 is fill in USGS C2 L2 ST; not always caught by QA_PIXEL bit 0

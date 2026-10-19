@@ -104,16 +104,22 @@ def _run_imperviousness(
     """Process both imperviousness vintages."""
     from berlin_lst_downscaling.data.secondary.imperviousness import (
         config_hash_for_vintage,
+        load_imperviousness_auxiliaries,
         prepare_imperviousness,
     )
 
     vintages: list[int] = list(cfg.get("vintages", [2016, 2021]))
     grid = grid or canon_grid_10m()
     failed = 0
+    aux = load_imperviousness_auxiliaries(source_root)
 
     for vintage in vintages:
         item_id = f"imperviousness_{vintage}"
-        c_hash = config_hash_for_vintage(vintage)
+        c_hash = config_hash_for_vintage(
+            vintage,
+            street_sha256=aux.street_sha256,
+            blocks_sha256=aux.blocks_sha256,
+        )
 
         items = [(item_id, "imperviousness", str(vintage))]
         todo = reconcile(items, led, c_hash)
@@ -142,7 +148,9 @@ def _run_imperviousness(
                 vintage=vintage,
                 reason=reason,
             )
-            prepared = prepare_imperviousness(vintage, source_root, run_id, grid=grid)
+            prepared = prepare_imperviousness(
+                vintage, source_root, run_id, grid=grid, aux=aux
+            )
             prod_dir = source_product_dir(source_root, "imperviousness", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared,
