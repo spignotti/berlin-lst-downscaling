@@ -30,6 +30,13 @@ Backbone, temporal split, patch geometry, residual prior, seeds, and the
 cheap Stage-1 runtime (batch 4, AMP, workers 0) stay frozen. Job-local cache
 budgets scale with channel count from the Stage-1 12 GiB / C=10 floor.
 
+Kelvin aggregation for priors and 10 m → 100 m pooling is configured with the
+top-level `aggregation` key (`arithmetic` default). All locked profiles above
+require `aggregation: arithmetic`; T4 is available only on generic modeling
+paths. Stage 5 logs support-weighted thermal objective terms (L1, SSIM penalty,
+gradient) separately for train and validation while checkpoint selection remains
+`validation/mae_100m`.
+
 Smoke (GCS-free):
 
 ```bash
