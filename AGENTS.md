@@ -19,13 +19,15 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 
 ## Validation
 
-- Default nox sessions are `lint`, `typecheck`, `tests`, `validate-ablation-configs`, `smoke-modeling`, and `smoke-modeling-contract`. New or changed computational logic (math, masks, splits, aggregation, hashing) needs unit tests. Tests must be offline and small.
+- Default nox sessions are `lint`, `typecheck`, `tests`, `validate-ablation-configs`, `smoke-training-contract-cpu`, `smoke-modeling`, and `smoke-modeling-contract`. New or changed computational logic (math, masks, splits, aggregation, hashing) needs unit tests. Tests must be offline and small.
 - CI on `main` and pull requests runs `uv run --locked nox` (job name `validate`).
 
 ## Git
 
 - Work on a feature branch. Open a pull request into `main`. Squash-merge after the `validate` check is green.
 - A change to method, a data product, or a training run needs an explicit task with acceptance criteria from the project owner (a GitHub issue or an agent task). The task states the current state, the desired state, and what is out of scope. Agents must not decide new scientific choices (thresholds, exclusions, new channels, split changes) themselves; report them back instead. Hygiene (lint, harness, typos) needs no task. Notion holds the plan.
+- PR titles and commits follow Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `docs: ...`, `test: ...`, `chore: ...`).
+- When a task comes with acceptance criteria, copy them verbatim into the PR description under `## Acceptance criteria` as a checklist. Tick an item only when it is implemented and tested, and give the file or test that covers it. List anything not done, and why.
 
 ## Cursor Cloud specific instructions
 
