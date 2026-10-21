@@ -8,7 +8,8 @@ scaled predictors always use arithmetic pooling elsewhere.
 from __future__ import annotations
 
 import math
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -49,6 +50,33 @@ def resolve_aggregation_method(
     if value is None:
         return AGGREGATION_ARITHMETIC
     return validate_aggregation_method(value, label=label)
+
+
+def _optional_aggregation_field(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text or None
+
+
+def resolve_report_aggregation(report: Mapping[str, Any]) -> AggregationMethod:
+    """Read aggregation from a baseline or RF report payload.
+
+    Current writers store the method under ``source.aggregation``. A legacy
+    top-level ``aggregation`` field is accepted when it agrees with ``source``;
+    when both are set and differ, this raises. When neither is set, historical
+    artifacts default to arithmetic.
+    """
+    top = _optional_aggregation_field(report.get("aggregation"))
+    source = report.get("source")
+    nested: str | None = None
+    if isinstance(source, Mapping):
+        nested = _optional_aggregation_field(source.get("aggregation"))
+    if top is not None and nested is not None and top != nested:
+        raise ValueError(
+            f"report aggregation mismatch: top-level {top!r} != source {nested!r}"
+        )
+    return resolve_aggregation_method(top if top is not None else nested)
 
 
 def min_eligible_cells_from_fraction(fraction: float) -> int:
@@ -150,5 +178,6 @@ __all__ = [
     "pool_10m_to_100m",
     "pool_block_means_from_accumulators",
     "resolve_aggregation_method",
+    "resolve_report_aggregation",
     "validate_aggregation_method",
 ]

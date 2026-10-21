@@ -53,6 +53,7 @@ import rasterio
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
+from berlin_lst_downscaling.modeling.aggregation import resolve_report_aggregation
 
 _CANON_X = 369190.0
 _CANON_Y = 5838410.0
@@ -233,13 +234,6 @@ def _prove_prior_gap(
 # ── independent recomputation ─────────────────────────────────────────
 
 
-def _resolve_aggregation(report: dict) -> str:
-    method = str(report.get("aggregation") or "arithmetic").strip().lower()
-    if method not in ("arithmetic", "t4"):
-        raise ValueError(f"unknown baseline aggregation {method!r}")
-    return method
-
-
 def _block_grid(
     landsat_cog: str, landsat_flag: str, *, method: str = "arithmetic"
 ) -> tuple[dict, dict]:
@@ -375,7 +369,7 @@ def main() -> int:
     errors: list[str] = []
     report = _read_json(args.report)
     try:
-        aggregation = _resolve_aggregation(report)
+        aggregation = resolve_report_aggregation(report)
     except ValueError as exc:
         errors.append(str(exc))
         aggregation = "arithmetic"

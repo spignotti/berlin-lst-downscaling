@@ -66,6 +66,7 @@ from rasterio.windows import Window
 
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
 from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
+from berlin_lst_downscaling.modeling.aggregation import resolve_report_aggregation
 from berlin_lst_downscaling.modeling.random_forest import load_model
 
 _CANON_X = 369190.0
@@ -683,9 +684,11 @@ def main() -> int:
     report = _read_json(str(report_path))
     print(f"Validating random forest report: {args.report}")
 
-    aggregation = str(report.get("aggregation") or "arithmetic").strip().lower()
-    if aggregation not in ("arithmetic", "t4"):
-        errors.append(f"unknown report aggregation {aggregation!r}")
+    try:
+        aggregation = resolve_report_aggregation(report)
+    except ValueError as exc:
+        errors.append(str(exc))
+        aggregation = "arithmetic"
 
     if int(report["train_pool"]["max_cells"]) < 1:  # cheap shape probe
         errors.append("train_pool.max_cells is not positive")
@@ -875,7 +878,11 @@ def main() -> int:
             naive = _read_json(naive_path)
             naive["_require_full"] = full
             print(f"  naive evidence: {naive_path}")
-            naive_agg = str(naive.get("aggregation") or "arithmetic").strip().lower()
+            try:
+                naive_agg = resolve_report_aggregation(naive)
+            except ValueError as exc:
+                errors.append(str(exc))
+                naive_agg = aggregation
             if naive_agg != aggregation:
                 errors.append(
                     f"aggregation {aggregation!r} != naive baseline {naive_agg!r} — "
