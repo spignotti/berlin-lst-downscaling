@@ -110,16 +110,17 @@ def select_train_scenes(
     keys = sorted(strata)
     if len(keys) > 30:
         rng = random.Random(seed)  # noqa: S311
+        chosen_keys = sorted(rng.sample(keys, 30))
         picked: list[SceneMeta] = []
-        for key in keys:
+        for key in chosen_keys:
             candidates = sorted(strata[key], key=lambda s: (s.scene_date, s.scene_id))
             picked.append(rng.choice(candidates))
-        picked = sorted(picked, key=lambda s: (s.year, s.scene_date, s.scene_id))[:30]
         ids = [s.scene_id for s in picked]
         return ids, {
-            "rule": "at_most_one_scene_per_stratum_when_gt_30_strata",
+            "rule": "seeded_sample_of_30_strata_one_scene_each_when_gt_30_strata",
             "seed": seed,
             "strata_count": len(keys),
+            "selected_strata": [{"year": y, "month": m} for y, m in chosen_keys],
             "scene_ids": ids,
         }
     weights = [float(len(strata[k])) for k in keys]
