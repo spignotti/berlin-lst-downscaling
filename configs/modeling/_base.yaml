@@ -27,7 +27,10 @@ features_root: "gs://berlin-lst-training-data/features/v3"
 # Kelvin aggregation for priors and 10 m → 100 m pooling (issue #80).
 aggregation: arithmetic
 
-# Optional expectation lock for Vertex reruns (issue #80). mode: off | warn | error
+# Optional expectation lock for Vertex reruns (issue #80).
+# With no non-null ``expect`` fields, identity is recorded only. When any
+# expectation is set, mismatches abort by default; use ``mode: warn`` to log
+# instead. ``mode: off`` applies only when ``expect`` is entirely unset.
 run_lock:
   mode: off
   expect:
