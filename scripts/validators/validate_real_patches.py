@@ -130,7 +130,10 @@ class LandsatProbe:
     read, which also cross-checks the reader's block indexing.
     """
 
-    def __init__(self, cog: str, flag: str) -> None:
+    def __init__(self, cog: str, flag: str, *, method: str = "arithmetic") -> None:
+        if method not in ("arithmetic", "t4"):
+            raise ValueError(f"unknown aggregation method {method!r}")
+        self._method = method
         with rasterio.open(cog) as src:
             if str(src.crs) != "EPSG:25833":
                 raise RuntimeError(f"landsat_cog CRS {src.crs!r} != EPSG:25833")
@@ -168,7 +171,15 @@ class LandsatProbe:
                 flag = fsrc.read(1, window=window)
             valid = np.isfinite(st) & (flag == 0) & (st >= _LST_MIN) & (st <= _LST_MAX)
             if valid.any():
-                value = float(st[valid].mean())
+                vals = st[valid]
+                if self._method == "arithmetic":
+                    value = float(vals.mean())
+                else:
+                    if np.any(vals <= 0):
+                        raise RuntimeError(
+                            f"block ({brow}, {bcol}) has non-positive native-valid Kelvin"
+                        )
+                    value = float(np.power(np.mean(np.power(vals, 4)), 0.25))
         self._cache[(brow, bcol)] = value
         return value
 
@@ -201,7 +212,7 @@ def _check_patch(
         errors.append(f"{ref.patch_id}: reader could not resolve the Landsat target")
         return {}
 
-    probe = LandsatProbe(prior.landsat_cog, prior.landsat_flag)
+    probe = LandsatProbe(prior.landsat_cog, prior.landsat_flag, method=reader.cfg.aggregation)
     if (probe.col0, probe.row0) != (prior.col0, prior.row0):
         errors.append(
             f"{ref.patch_id}: Landsat grid offset differs (validator "
@@ -318,6 +329,12 @@ def main() -> int:
     parser.add_argument(
         "--per-split", type=int, default=2, help="patches to check per split (default 2)"
     )
+    parser.add_argument(
+        "--aggregation",
+        default="arithmetic",
+        choices=("arithmetic", "t4"),
+        help="temperature aggregation the reader is configured to use",
+    )
     args = parser.parse_args()
 
     cfg = RealSourceConfig(
@@ -325,6 +342,7 @@ def main() -> int:
         training_root=args.training_root.rstrip("/"),
         features_root=args.features_root.rstrip("/"),
         ard_root=args.ard_root.rstrip("/"),
+        aggregation=args.aggregation,
     )
     errors: list[str] = []
     print(f"Validating real patch reader against {cfg.patch_index_root}")

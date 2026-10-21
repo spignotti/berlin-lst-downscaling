@@ -174,7 +174,9 @@ def _load_scaler(training_root: str) -> dict:
 # ── independent recomputation ─────────────────────────────────────────
 
 
-def _block_grid(landsat_cog: str, landsat_flag: str) -> tuple[dict, dict]:
+def _block_grid(
+    landsat_cog: str, landsat_flag: str, *, method: str = "arithmetic"
+) -> tuple[dict, dict]:
     """Whole-COG 1000 m block means over native-valid cells, keyed globally."""
     with rasterio.open(landsat_cog) as src:
         _check_raster(src, res=_CELL_100, scene=landsat_cog, what="Landsat COG")
@@ -199,10 +201,18 @@ def _block_grid(landsat_cog: str, landsat_flag: str) -> tuple[dict, dict]:
     flat = (((brow - brow0) * nbc) + (bcol - bcol0)).ravel()
     sel = valid.ravel()
     counts = np.bincount(flat[sel], minlength=nbr * nbc)
-    sums = np.bincount(flat[sel], weights=st.ravel()[sel], minlength=nbr * nbc)
+    temps = st.ravel()[sel]
+    sums = np.bincount(flat[sel], weights=temps, minlength=nbr * nbc)
     means = np.full(nbr * nbc, np.nan, dtype=np.float64)
     ok = counts > 0
-    means[ok] = sums[ok] / counts[ok]
+    if method == "arithmetic":
+        means[ok] = sums[ok] / counts[ok]
+    else:
+        sums_t4 = np.bincount(flat[sel], weights=np.power(temps, 4), minlength=nbr * nbc)
+        powered = sums_t4[ok] / counts[ok]
+        if np.any(powered <= 0) or np.any(~np.isfinite(powered)):
+            raise RuntimeError("T4 block recomputation encountered non-positive mean(T**4)")
+        means[ok] = np.power(powered, 0.25)
     grid = {
         "means": means.reshape(nbr, nbc).astype(np.float32),
         "brow0": brow0,
@@ -337,6 +347,8 @@ def _recompute_patch(
     grids: dict[str, tuple[dict, dict]],
     scaler: dict,
     features_root: str,
+    *,
+    method: str,
 ) -> tuple[dict | None, str | None]:
     """Rebuild target/mask/prior/features of one patch, or return a reason."""
     scene_id = str(index_row["scene_id"])
@@ -344,7 +356,7 @@ def _recompute_patch(
     if uris is None:
         return None, "landsat_unresolved"
     if scene_id not in grids:
-        grids[scene_id] = _block_grid(uris[0], uris[1])
+        grids[scene_id] = _block_grid(uris[0], uris[1], method=method)
     grid, _ = grids[scene_id]
     row, col = int(index_row["row"]), int(index_row["col"])
     prior = _prior_cells(grid, row, col)
@@ -576,13 +588,28 @@ def _native_inputs(features: np.ndarray, prior: np.ndarray, stage: int) -> np.nd
     return np.ascontiguousarray(np.column_stack((selected, expanded.ravel())), dtype=np.float32)
 
 
-def _prediction_100m(prior: np.ndarray, residual: np.ndarray) -> np.ndarray:
+def _pool_temperature_10m_to_100m(values: np.ndarray, method: str) -> np.ndarray:
+    """Pool a single-channel 10 m temperature field (features stay arithmetic)."""
+    c, h, w = values.shape
+    reshaped = values.astype(np.float64).reshape(c, h // _POOL, _POOL, w // _POOL, _POOL)
+    if method == "arithmetic":
+        return reshaped.mean(axis=(2, 4)).astype(np.float32)[0]
+    flat = reshaped.reshape(c, h // _POOL, w // _POOL, _POOL * _POOL)
+    if np.any(flat <= 0):
+        raise ValueError("temperature pooling requires positive Kelvin inputs")
+    powered = np.mean(np.power(flat, 4), axis=-1)
+    return np.power(powered, 0.25).astype(np.float32)[0]
+
+
+def _prediction_100m(
+    prior: np.ndarray, residual: np.ndarray, *, method: str = "arithmetic"
+) -> np.ndarray:
     """Add the native residual before independently pooling exact 10x10 blocks."""
     if residual.shape != (_PATCH_PX, _PATCH_PX):
         raise ValueError("native residual shape must be (160, 160)")
     expanded = np.repeat(np.repeat(prior, _POOL, axis=0), _POOL, axis=1)
     native = expanded.astype(np.float32) + residual.astype(np.float32)
-    return _pool_10m_cells_to_100m(native[None])[0]
+    return _pool_temperature_10m_to_100m(native[None], method)
 
 
 def _check_protocol(report: dict, index_rows: list[dict], errors: list[str]) -> None:
@@ -655,6 +682,10 @@ def main() -> int:
     report_dir = report_path.parent
     report = _read_json(str(report_path))
     print(f"Validating random forest report: {args.report}")
+
+    aggregation = str(report.get("aggregation") or "arithmetic").strip().lower()
+    if aggregation not in ("arithmetic", "t4"):
+        errors.append(f"unknown report aggregation {aggregation!r}")
 
     if int(report["train_pool"]["max_cells"]) < 1:  # cheap shape probe
         errors.append("train_pool.max_cells is not positive")
@@ -844,6 +875,12 @@ def main() -> int:
             naive = _read_json(naive_path)
             naive["_require_full"] = full
             print(f"  naive evidence: {naive_path}")
+            naive_agg = str(naive.get("aggregation") or "arithmetic").strip().lower()
+            if naive_agg != aggregation:
+                errors.append(
+                    f"aggregation {aggregation!r} != naive baseline {naive_agg!r} — "
+                    "incompatible comparison"
+                )
             for key in ("index_policy_hash", "source_policy_hash", "patches_total"):
                 if str(naive.get("fingerprints", {}).get(key, "")) != str(
                     report["fingerprints"].get(key, "")
@@ -915,7 +952,9 @@ def main() -> int:
             if index_row is None:
                 errors.append(f"{record['patch_id']}: not in the published index")
                 continue
-            rebuilt, reason = _recompute_patch(index_row, landsat, grids, scaler, features_root)
+            rebuilt, reason = _recompute_patch(
+                index_row, landsat, grids, scaler, features_root, method=aggregation
+            )
             if rebuilt is None:
                 errors.append(f"{record['patch_id']}: recomputation unavailable ({reason})")
                 continue
@@ -937,7 +976,7 @@ def main() -> int:
                 residual = np.asarray(model.predict(cells), dtype=np.float32).reshape(
                     _PATCH_PX, _PATCH_PX
                 )
-                prediction = _prediction_100m(rebuilt["prior"], residual)
+                prediction = _prediction_100m(rebuilt["prior"], residual, method=aggregation)
                 cells_count, total = _error_sum(prediction, rebuilt["target"], rebuilt["mask"])
                 artifact = next(
                     r
@@ -1000,7 +1039,9 @@ def main() -> int:
             if index_row is None:
                 errors.append(f"{pid}: probe patch not in the published index")
                 continue
-            rebuilt, reason = _recompute_patch(index_row, landsat, grids, scaler, features_root)
+            rebuilt, reason = _recompute_patch(
+                index_row, landsat, grids, scaler, features_root, method=aggregation
+            )
             if rebuilt is None:
                 errors.append(f"{pid}: probe recomputation unavailable ({reason})")
                 continue
@@ -1039,7 +1080,9 @@ def main() -> int:
                 if artifact is None:
                     errors.append(f"{pid} stage {stage_id}: no report record for the probe")
                     continue
-                prediction = _prediction_100m(probe["prior_100m"][k], stored)
+                prediction = _prediction_100m(
+                    probe["prior_100m"][k], stored, method=aggregation
+                )
                 _, total = _error_sum(prediction, rebuilt["target"], rebuilt["mask"])
                 if not np.isclose(
                     total, float(artifact["abs_error_sum"]), rtol=_SUM_RTOL, atol=_SUM_ATOL
