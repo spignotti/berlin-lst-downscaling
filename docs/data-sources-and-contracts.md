@@ -630,3 +630,11 @@ and recomputes the accepted windows directly from the source eligibility
 COGs for every scene with patches. The smoke gate (`nox -s
 smoke-training-data`) builds the index twice over its local smoke release,
 asserts byte-identical Parquet and QA artifacts, and runs the validator.
+
+## Training-data EDA (evaluation/eda/v2)
+
+`docs/eda-v1.md` is the descriptive pass over this release. It reads
+`training/v2`, Feature Release v5, the v3 anchor dates, patch index v2,
+and `evaluation/stadtstruktur/v1`. It writes tables only, under
+`evaluation/eda/v2`. Proposal B is the stratification and is not refit.
+The command and the validator are in that document.
