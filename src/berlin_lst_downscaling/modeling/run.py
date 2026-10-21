@@ -36,6 +36,10 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.data.io import log_event, run_context_path
+from berlin_lst_downscaling.modeling.aggregation import (
+    AggregationMethod,
+    resolve_aggregation_method,
+)
 from berlin_lst_downscaling.modeling.channels import selection_from_config
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
@@ -64,6 +68,11 @@ from berlin_lst_downscaling.modeling.real_task import (
     RealLSTTask,
     RealPatchDataModule,
     reconstruct_prior_kelvin,
+)
+from berlin_lst_downscaling.modeling.run_identity import (
+    enforce_run_lock,
+    persist_run_identity,
+    resolve_run_identity,
 )
 from berlin_lst_downscaling.modeling.synthetic import (
     ContractSyntheticDataModule,
@@ -325,6 +334,7 @@ def real_source_config(cfg: DictConfig) -> RealSourceConfig:
         training_root=str(cfg.training_root),
         features_root=str(cfg.features_root),
         ard_root=str(cfg.ard_root),
+        aggregation=resolve_aggregation_method(cfg.get("aggregation")),
     )
 
 
@@ -356,6 +366,14 @@ class EpochMetricsRecorder(Callback):
                 "validation_valid_cells": None,
                 "validation_ssim_100m": None,
                 "validation_ssim_windows": None,
+                "train_thermal_l1_unweighted": None,
+                "train_thermal_ssim_unweighted": None,
+                "train_thermal_grad_unweighted": None,
+                "validation_thermal_l1_unweighted": None,
+                "validation_thermal_ssim_unweighted": None,
+                "validation_thermal_grad_unweighted": None,
+                "validation_ssim_coverage": None,
+                "validation_grad_coverage": None,
                 "amp_scale": None,
                 "amp_scale_decreased": False,
             },
@@ -371,11 +389,25 @@ class EpochMetricsRecorder(Callback):
         entry["validation_valid_cells"] = self._read(trainer, "validation/valid_cells")
         entry["validation_ssim_100m"] = self._read(trainer, "validation/ssim_100m")
         entry["validation_ssim_windows"] = self._read(trainer, "validation/ssim_windows")
+        for key, field in (
+            ("validation/thermal_l1_unweighted", "validation_thermal_l1_unweighted"),
+            ("validation/thermal_ssim_unweighted", "validation_thermal_ssim_unweighted"),
+            ("validation/thermal_grad_unweighted", "validation_thermal_grad_unweighted"),
+            ("validation/ssim_coverage", "validation_ssim_coverage"),
+            ("validation/grad_coverage", "validation_grad_coverage"),
+        ):
+            entry[field] = self._read(trainer, key)
         self._write()
 
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         entry = self._entry(int(trainer.current_epoch) + 1)
         entry["train_mae_100m"] = self._read(trainer, "train/mae_100m")
+        for key, field in (
+            ("train/thermal_l1_unweighted", "train_thermal_l1_unweighted"),
+            ("train/thermal_ssim_unweighted", "train_thermal_ssim_unweighted"),
+            ("train/thermal_grad_unweighted", "train_thermal_grad_unweighted"),
+        ):
+            entry[field] = self._read(trainer, key)
         scaler = getattr(trainer.precision_plugin, "scaler", None)
         if scaler is not None and scaler.is_enabled():
             # One scaler read per epoch; per-batch get_scale() would introduce
@@ -402,7 +434,9 @@ class EpochMetricsRecorder(Callback):
 RESIDUAL_IDENTITY_TOLERANCE_K = 1e-3
 
 
-def _residual_identity_mae(task: RealLSTTask, val_loader) -> float:
+def _residual_identity_mae(
+    task: RealLSTTask, val_loader, *, aggregation: AggregationMethod
+) -> float:
     """Masked MAE between the zero-init residual output and the pooled prior arm.
 
     Both sides use the shared 10x10 pooling and the same validation mask, on the
@@ -415,8 +449,8 @@ def _residual_identity_mae(task: RealLSTTask, val_loader) -> float:
             validate_real_batch(batch, n_active_channels=task.n_active_channels)
             prior_k = reconstruct_prior_kelvin(batch.lst_prior)
             metric.update(
-                pool_10m_to_100m(task(batch)),
-                pool_10m_to_100m(prior_k),
+                pool_10m_to_100m(task(batch), aggregation),
+                pool_10m_to_100m(prior_k, aggregation),
                 batch.mask_100m,
             )
     return float(metric.compute())
@@ -468,7 +502,11 @@ def _score_test_once(
                 )
             if not torch.isfinite(prediction).all():
                 raise RuntimeError("test pass produced non-finite predictions")
-            metric.update(pool_10m_to_100m(prediction), batch.target_100m, batch.mask_100m)
+            metric.update(
+                pool_10m_to_100m(prediction, resolve_aggregation_method(cfg.get("aggregation"))),
+                batch.target_100m,
+                batch.mask_100m,
+            )
 
     patches = scope.get("patches_per_split", {})
     return {
@@ -496,6 +534,7 @@ def _fit_contract_lifecycle(
     """
     seed = int(cfg.seed)
     seed_everything(seed)
+    aggregation = resolve_aggregation_method(cfg.get("aggregation"))
 
     is_probe = bool(cfg.get("stage1_probe", False))
     is_full = bool(cfg.get("stage1_full", False)) or bool(cfg.get("ablation_lock", False))
@@ -510,12 +549,32 @@ def _fit_contract_lifecycle(
         record_probe_metrics=is_probe or is_full,
         residual_prior=residual_prior,
         loss_name=loss_name,
+        aggregation=aggregation,
     )
 
     output_root = Path(str(cfg.output_root))
+    source_for_identity = (
+        data_module.source if isinstance(data_module, RealPatchDataModule) else None
+    )
+    run_identity = resolve_run_identity(
+        cfg,
+        run_id=run_id,
+        output_root=str(output_root),
+        source=source_for_identity,
+    )
+    enforce_run_lock(cfg, run_identity)
+    persist_run_identity(output_root, run_identity)
     checkpoint_dir = output_root / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     wandb_logger = _logger_for(cfg, output_root)
+    if wandb_logger.experiment is not None:
+        wandb_logger.experiment.config.update(
+            {
+                "aggregation": aggregation,
+                "run_identity": run_identity.to_payload(),
+            },
+            allow_val_change=True,
+        )
 
     # Record the read scope before fitting: which patches entered each split and
     # which were dropped, with reasons. Retained beside the run.
@@ -543,7 +602,9 @@ def _fit_contract_lifecycle(
         was_training = task.training
         task.eval()
         try:
-            residual_identity_mae = _residual_identity_mae(task, data_module.val_dataloader())
+            residual_identity_mae = _residual_identity_mae(
+                task, data_module.val_dataloader(), aggregation=aggregation
+            )
         finally:
             task.train(was_training)
         if (
@@ -625,6 +686,7 @@ def _fit_contract_lifecycle(
             run_context_path(str(cfg.output_root), "modeling", run_id)
         ),
         "reproducibility": reproducibility,
+        "run_identity": run_identity.to_payload(),
         **source_metadata,
     }
     log_event(_logger, logging.INFO, "run_start", **metadata)
@@ -665,12 +727,11 @@ def _fit_contract_lifecycle(
                     )
                 if not torch.isfinite(prediction).all():
                     raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
-                pooled_prediction = pool_10m_to_100m(prediction)
+                pooled_prediction = pool_10m_to_100m(prediction, aggregation)
                 recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
                 if residual_prior:
-                    correction = pool_10m_to_100m(
-                        prediction - reconstruct_prior_kelvin(batch.lst_prior)
-                    )
+                    prior_k = reconstruct_prior_kelvin(batch.lst_prior)
+                    correction = pooled_prediction - pool_10m_to_100m(prior_k, aggregation)
                     valid = batch.mask_100m.bool()
                     correction_abs_sum += float(correction[valid].abs().sum())
                     correction_cells += float(valid.sum())

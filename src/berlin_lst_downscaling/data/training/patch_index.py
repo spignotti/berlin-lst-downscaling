@@ -52,6 +52,7 @@ from berlin_lst_downscaling.data.training.paths import (
     release_completion,
 )
 from berlin_lst_downscaling.data.training.report import now_iso
+from berlin_lst_downscaling.modeling.aggregation import min_eligible_cells_from_fraction
 
 # ── frozen patch geometry (WB3 decision, issue #14) ───────────────────
 
@@ -74,6 +75,7 @@ MIN_ELIGIBLE_CELLS: int = math.ceil(MIN_ELIGIBLE_FRACTION * N_CELLS)
 NO_VALID_PATCH_REASON: str = "no_valid_patch"
 
 PATCH_INDEX_SCHEMA_VERSION: int = 1
+PATCH_INDEX_SCHEMA_VERSION_SPLIT_ADMISSION: int = 2
 
 PATCH_INDEX_FIELDNAMES = [
     "scene_id",
@@ -92,6 +94,28 @@ PATCH_INDEX_FIELDNAMES = [
     "n_total",
     "eligible_frac",
 ]
+
+
+@dataclass(frozen=True)
+class PatchIndexAdmissionPolicy:
+    """Split-aware window admission for patch-index builds (issue #80).
+
+    Train admits windows at ``train_min_eligible_fraction`` of the 256 cells.
+    Validation and test always use the strict ``MIN_ELIGIBLE_CELLS`` threshold
+    (244 at the default 0.95 fraction), independent of the train setting.
+    """
+
+    train_min_eligible_fraction: float = MIN_ELIGIBLE_FRACTION
+
+    def __post_init__(self) -> None:
+        min_eligible_cells_from_fraction(self.train_min_eligible_fraction)
+
+    def min_eligible_cells_for_split(self, split: str) -> int:
+        if split == "train":
+            return min_eligible_cells_from_fraction(self.train_min_eligible_fraction)
+        if split in ("validation", "test"):
+            return MIN_ELIGIBLE_CELLS
+        raise ValueError(f"split {split!r} has no patch-index admission rule")
 
 
 def patch_index_policy_hash() -> str:
@@ -123,6 +147,79 @@ def patch_index_policy_hash() -> str:
         sort_keys=True,
     )
     return sha256_bytes(payload.encode())[:16]
+
+
+def patch_index_policy_hash_for(policy: PatchIndexAdmissionPolicy) -> str:
+    """Return the policy fingerprint, preserving the legacy hash at 0.95 train."""
+    if policy.train_min_eligible_fraction == MIN_ELIGIBLE_FRACTION:
+        return patch_index_policy_hash()
+    train_cells = policy.min_eligible_cells_for_split("train")
+    payload = json.dumps(
+        {
+            "schema_version": PATCH_INDEX_SCHEMA_VERSION_SPLIT_ADMISSION,
+            "patch_cells": PATCH_CELLS,
+            "patch_size_10m": PATCH_SIZE_10M,
+            "stride_cells": PATCH_STRIDE_CELLS,
+            "n_total": N_CELLS,
+            "admission_by_split": {
+                "train": {
+                    "min_eligible_fraction": policy.train_min_eligible_fraction,
+                    "min_eligible_cells": train_cells,
+                },
+                "validation": {
+                    "min_eligible_fraction": MIN_ELIGIBLE_FRACTION,
+                    "min_eligible_cells": MIN_ELIGIBLE_CELLS,
+                },
+                "test": {
+                    "min_eligible_fraction": MIN_ELIGIBLE_FRACTION,
+                    "min_eligible_cells": MIN_ELIGIBLE_CELLS,
+                },
+            },
+            "anchor_rule": (
+                "complete windows anchored on the global canonical EPSG:25833 "
+                "100 m lattice; anchor row/col are multiples of the stride"
+            ),
+            "cell_id_formula": (
+                "E{origin_x + col*100}N{origin_y - row*100} on canonical EPSG:25833"
+            ),
+        },
+        sort_keys=True,
+    )
+    return sha256_bytes(payload.encode())[:16]
+
+
+def _geometry_metadata(policy: PatchIndexAdmissionPolicy) -> dict:
+    """QA geometry block: legacy flat fields or per-split admission thresholds."""
+    if policy.train_min_eligible_fraction == MIN_ELIGIBLE_FRACTION:
+        return {
+            "crs": "EPSG:25833",
+            "patch_cells": PATCH_CELLS,
+            "patch_size_10m": PATCH_SIZE_10M,
+            "stride_cells": PATCH_STRIDE_CELLS,
+            "n_total": N_CELLS,
+            "min_eligible_fraction": MIN_ELIGIBLE_FRACTION,
+            "min_eligible_cells": MIN_ELIGIBLE_CELLS,
+            "anchor_rule": "global canonical 100 m lattice, multiples of stride",
+        }
+    return {
+        "crs": "EPSG:25833",
+        "patch_cells": PATCH_CELLS,
+        "patch_size_10m": PATCH_SIZE_10M,
+        "stride_cells": PATCH_STRIDE_CELLS,
+        "n_total": N_CELLS,
+        "anchor_rule": "global canonical 100 m lattice, multiples of stride",
+        "admission_by_split": {
+            split: {
+                "min_eligible_fraction": (
+                    policy.train_min_eligible_fraction
+                    if split == "train"
+                    else MIN_ELIGIBLE_FRACTION
+                ),
+                "min_eligible_cells": policy.min_eligible_cells_for_split(split),
+            }
+            for split in ("train", "validation", "test")
+        },
+    }
 
 
 # ── pure window enumeration ───────────────────────────────────────────
@@ -248,7 +345,11 @@ class PatchIndexBuild:
     readback: dict = field(default_factory=dict)
 
 
-def build_patch_index(*, source_root: str) -> PatchIndexBuild:
+def build_patch_index(
+    *,
+    source_root: str,
+    policy: PatchIndexAdmissionPolicy | None = None,
+) -> PatchIndexBuild:
     """Build the patch index from a completed ``training/v1`` release.
 
     Reads the published scene manifest and the per-scene eligibility COGs.
@@ -257,6 +358,8 @@ def build_patch_index(*, source_root: str) -> PatchIndexBuild:
     already excluded in the release keep their existing reason and are
     skipped. Inference (2026) rows carry no mask and are skipped.
     """
+    admission = policy or PatchIndexAdmissionPolicy()
+    index_policy_hash = patch_index_policy_hash_for(admission)
     source_policy_hash = _verify_source_release(source_root)
     manifest = _read_manifest(source_root)
 
@@ -291,7 +394,12 @@ def build_patch_index(*, source_root: str) -> PatchIndexBuild:
                 f"in the source manifest"
             )
 
-        scene_rows = _scene_windows(scene=scene, scene_id=scene_id, mask_uri=mask_uri)
+        scene_rows = _scene_windows(
+            scene=scene,
+            scene_id=scene_id,
+            mask_uri=mask_uri,
+            policy=admission,
+        )
         if not scene_rows:
             exclusions[NO_VALID_PATCH_REASON] = exclusions.get(NO_VALID_PATCH_REASON, 0) + 1
             no_valid_patch_ids.append(scene_id)
@@ -308,13 +416,14 @@ def build_patch_index(*, source_root: str) -> PatchIndexBuild:
         scenes_with_patches=scenes_with_patches,
         source_root=source_root,
         source_policy_hash=source_policy_hash,
-        index_policy_hash=patch_index_policy_hash(),
+        index_policy_hash=index_policy_hash,
+        policy=admission,
     )
     return PatchIndexBuild(
         rows=rows,
         qa=qa,
         source_policy_hash=source_policy_hash,
-        index_policy_hash=patch_index_policy_hash(),
+        index_policy_hash=index_policy_hash,
     )
 
 
@@ -323,6 +432,7 @@ def _scene_windows(
     scene: dict,
     scene_id: str,
     mask_uri: str,
+    policy: PatchIndexAdmissionPolicy,
 ) -> list[dict]:
     """Return the accepted patch rows for one published scene."""
     # The stored mask URI points at the publication-time bucket; resolve it
@@ -344,10 +454,12 @@ def _scene_windows(
     integral = _integral(eligible)
     anchors = enumerate_window_anchors(height, width, row0=grow0, col0=gcol0)
 
+    split = str(scene["split"])
+    min_cells = policy.min_eligible_cells_for_split(split)
     rows: list[dict] = []
     for grow, gcol, r, c in anchors:
         n_eligible = _window_count(integral, r, c)
-        if n_eligible < MIN_ELIGIBLE_CELLS:
+        if n_eligible < min_cells:
             continue
         rows.append(
             {
@@ -381,6 +493,7 @@ def _build_qa(
     source_root: str,
     source_policy_hash: str,
     index_policy_hash: str,
+    policy: PatchIndexAdmissionPolicy,
 ) -> dict:
     """Build the deterministic QA summary (counts, splits/years, coverage)."""
     by_split: dict[str, int] = {}
@@ -397,23 +510,19 @@ def _build_qa(
     fracs = [float(row["eligible_frac"]) for row in rows]
     anchors = {(int(row["row"]), int(row["col"])) for row in rows}
 
+    schema_version = (
+        PATCH_INDEX_SCHEMA_VERSION
+        if policy.train_min_eligible_fraction == MIN_ELIGIBLE_FRACTION
+        else PATCH_INDEX_SCHEMA_VERSION_SPLIT_ADMISSION
+    )
     return {
-        "schema_version": PATCH_INDEX_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "index_policy_hash": index_policy_hash,
         "source": {
             "release_root": source_root,
             "policy_hash": source_policy_hash,
         },
-        "geometry": {
-            "crs": "EPSG:25833",
-            "patch_cells": PATCH_CELLS,
-            "patch_size_10m": PATCH_SIZE_10M,
-            "stride_cells": PATCH_STRIDE_CELLS,
-            "n_total": N_CELLS,
-            "min_eligible_fraction": MIN_ELIGIBLE_FRACTION,
-            "min_eligible_cells": MIN_ELIGIBLE_CELLS,
-            "anchor_rule": "global canonical 100 m lattice, multiples of stride",
-        },
+        "geometry": _geometry_metadata(policy),
         "patches_total": len(rows),
         "scenes_with_patches": scenes_with_patches,
         "scenes_no_valid_patch": exclusions.get(NO_VALID_PATCH_REASON, 0),
@@ -678,12 +787,15 @@ __all__ = [
     "PATCH_CELLS",
     "PATCH_INDEX_FIELDNAMES",
     "PATCH_INDEX_SCHEMA_VERSION",
+    "PATCH_INDEX_SCHEMA_VERSION_SPLIT_ADMISSION",
     "PATCH_SIZE_10M",
     "PATCH_SIZE_M",
     "PATCH_STRIDE_CELLS",
+    "PatchIndexAdmissionPolicy",
     "PatchIndexBuild",
     "build_patch_index",
     "enumerate_window_anchors",
     "patch_index_policy_hash",
+    "patch_index_policy_hash_for",
     "publish_patch_index",
 ]

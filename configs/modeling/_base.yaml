@@ -24,6 +24,22 @@ contract:
 data_release_id: "training/v1"
 features_root: "gs://berlin-lst-training-data/features/v3"
 
+# Kelvin aggregation for priors and 10 m → 100 m pooling (issue #80).
+aggregation: arithmetic
+
+# Optional expectation lock for Vertex reruns (issue #80). mode: off | warn | error
+run_lock:
+  mode: off
+  expect:
+    git_commit: null
+    vertex_source_sha: null
+    image_digest: null
+    data_release_id: null
+    training_policy_hash: null
+    index_policy_hash: null
+    source_policy_hash: null
+    aggregation: null
+
 # ── published roots for the real path (data.kind=real) ────────────────
 # Required only by the real lifecycle; the synthetic path never reads them.
 patch_index_root: null

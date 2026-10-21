@@ -9,3 +9,5 @@ defaults:
 
 source_root: "gs://berlin-lst-training-data/training/v1"
 output_root: "gs://berlin-lst-training-data/training/patch-index/v1"
+
+train_min_eligible_fraction: 0.95
