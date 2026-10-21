@@ -41,10 +41,10 @@ TRAINING_SCHEMA_VERSION: int = 1
 
 # ── immutable input basis ─────────────────────────────────────────────
 
-# Feature Release V3 is the only permitted input basis (user-mandated;
-# V1/V2 must never be consumed). Pinned from the live features ledger —
-# every V3 row carries this config hash.
-EXPECTED_V3_CONFIG_HASH: str = "d9eb25995b2f4911"
+# Pinned feature-release hash. The name stays EXPECTED_V3_CONFIG_HASH.
+# The value is feature release v5 (area-mean Landsat ARD, imperviousness v3).
+# Feature releases v1 and v2 stay rejected.
+EXPECTED_V3_CONFIG_HASH: str = "2d2086f9d36e48fe"
 
 # ── temporal split contract (user-mandated) ───────────────────────────
 
@@ -71,6 +71,18 @@ NO_ELIGIBLE_CELLS_REASON: str = "no_eligible_cells"
 # 2026 scenes are metadata-only: no feature materialisation, no eligibility
 # mask, no cells, no scaler contribution (user decision, 2026-08-26).
 INFERENCE_DEFERRED_REASON: str = "inference_deferred"
+
+# USGS surface temperature on these two 27 Aug 2022 path-193 scenes is
+# physically implausible for that day (clear-pixel means below 280 K while
+# the air temperature was about 19–24 °C). They stay out of the training
+# release even where a patch would otherwise clear the support gate.
+IMPLAUSIBLE_LST_REASON: str = "usgs_st_implausible_20220827"
+IMPLAUSIBLE_LST_SCENE_IDS: frozenset[str] = frozenset(
+    {
+        "LC09_L2SP_193023_20220827_02_T2",
+        "LC09_L2SP_193024_20220827_02_T2",
+    }
+)
 
 # ── canonical 100 m grid (EPSG:25833) ─────────────────────────────────
 
@@ -125,8 +137,9 @@ def training_policy_hash(
     Covers every policy decision that changes the published handoff: the
     temporal split mapping, the strict support rule, the cell-ID formula,
     the scaler transformations, the canonical channel order, the feature
-    schema version, and the pinned V3 config hash. Any change invalidates
-    the published artifacts via the ledger's ``config_changed`` reconcile.
+    schema version, the pinned V3 config hash, and the implausible-LST
+    scene denylist. Any change invalidates the published artifacts via
+    the ledger's ``config_changed`` reconcile.
     """
     channel_schema = [
         {
@@ -144,6 +157,9 @@ def training_policy_hash(
             "channel_schema": channel_schema,
             "splits_by_year": SPLIT_BY_YEAR,
             "support_pixels": SUPPORT_PIXELS,
+            "excluded_scenes": {
+                IMPLAUSIBLE_LST_REASON: sorted(IMPLAUSIBLE_LST_SCENE_IDS),
+            },
             "cell_id_formula": (
                 "E{origin_x + col*100}N{origin_y - row*100} on canonical EPSG:25833"
             ),
@@ -164,6 +180,8 @@ __all__ = [
     "CANON_GRID_ORIGIN_Y",
     "CELL_SIZE_M",
     "EXPECTED_V3_CONFIG_HASH",
+    "IMPLAUSIBLE_LST_REASON",
+    "IMPLAUSIBLE_LST_SCENE_IDS",
     "INFERENCE_DEFERRED_REASON",
     "NO_ELIGIBLE_CELLS_REASON",
     "PRECIP_CHANNELS",

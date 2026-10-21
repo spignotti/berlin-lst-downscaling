@@ -264,12 +264,13 @@ def _landsat_diagnostics(qa: np.ndarray) -> tuple[float, float]:
     """Return ``(native_clear_frac, extra_candidate_frac)`` on the 30 m grid.
 
     Native clear uses the production definition
-    (``data/ard.masking.landsat_qa_to_clear_bits``). Extra candidates are
-    pixels the production mask keeps clear that carry a residual QA hint:
-    the raw cloud flag (bit 3) at any confidence or the USGS dilated-cloud
-    bit (bit 1). Low-confidence bits 8-15 are *not* treated as hints —
-    USGS Collection 2 sets them to 01 as the baseline for clear pixels
-    (canonical clear-land value 0x5540), so they carry no residual signal.
+    (``data/ard.masking.landsat_qa_to_clear_bits``): fill, cirrus, cloud
+    shadow, snow (bit 5), and cloud confidence ≥ 2 even when bit 3 is
+    unset. Extra candidates are pixels that definition still keeps clear
+    and that carry a residual QA hint: the raw cloud flag (bit 3) at
+    confidence 0 or 1, or the USGS dilated-cloud bit (bit 1). Confidence
+    1 on bits 8–9 is the USGS baseline for clear land (0x5540) and is not
+    a hint.
     """
     qa = qa.astype(np.uint16)
     from berlin_lst_downscaling.data.ard.masking import landsat_qa_to_clear_bits

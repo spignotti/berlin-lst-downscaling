@@ -35,11 +35,60 @@ across all scenes (`geometry_temporal_mode: retrospective_static`):
 | LoD2 CityGML morphometry | 2024 | `https://gdi.berlin.de/data/a_lod2/atom/` (CityGML v2.0 ZIP per 1 km tile) |
 | DGM 1 m terrain height | 2021 | ALS acquisition Feb–Mar 2021 |
 | Vegetation height (DOM − DGM) | 2020 | Berlin opacity/WMS, derived |
-| Versiegelung (imperviousness) | 2016, 2021 | Hausumringe WMS, piece-wise constant per scene year |
+| Versiegelung (imperviousness) | 2016, 2021 | Class raster plus the rules in the next section |
 
 Each scene year maps to a fixed source vintage
 (`data/secondary/{lod2,dgm,vegetation_height,imperviousness}.py`).
 Per the v3 manifest: 345 Landsat anchors, 509 manifest rows.
+
+### Versiegelung class codes
+
+Umweltatlas 01.02 rasters (`Versiegelung_Raster_2016.zip`,
+`Versiegelung_Raster_2021.zip`) store class codes, not percents. The
+config hash (`imperviousness:v3` plus content checksums of the street
+features and the Stadtstruktur blocks) covers the mapping. Each
+checksum is `schluessel`, the mapped field (`vg` or `typ`), and WKB,
+sorted so a GeoPackage or parquet rewrite that keeps those features
+does not change the hash. The file checksums stay in the product
+provenance. `feature_valid` is unchanged: a finite percent in
+`[-0.01, 100.01]` is valid.
+
+| Code | Percent |
+|------|---------|
+| 0 | 0 |
+| 5, 15, …, 95 | the code |
+| 100, 102 | 100 |
+| 110 Gleisschotter | 100. The rule set would use 0; the map rendering uses 100. |
+| 103 inside Stadtstruktur 2024 `typ` 100 | 0 |
+| 103 on street land | segment `vg` from the 2021 street layer |
+| 103 inside another block, and all 101 | equal-area mean of donor pixels in that block |
+| any other code | NaN, counted |
+
+Water wins over a street where the two overlap. Donor pixels are codes
+0, 5–95, 100, 102, and 110 (110 contributes 100). A block with targets
+and no donor uses the equal-area mean of donor pixels in a 100 m ring
+outside the polygon. Code 101 whose center is outside every polygon
+uses the nearest block with a finite donor mean at a Euclidean
+distance of at most 100 m. Ties take the first pixel in row-major
+order inside that radius. Anything still unassigned stays NaN.
+
+The water mask is Stadtstruktur v1 vintage 2024,
+`evaluation/stadtstruktur/v1/source/2024/blocks.parquet`, `typ` 100.
+Street land is WFS
+`https://gdi.berlin.de/services/wfs/ua_versiegelung_2021`, layer
+`ua_versiegelung_2021:versieg2021_str` (title "Versiegelung der
+Straßenflächen 2021"), field `vg` (track ballast counted as sealed).
+Field names and the 2014 street-survey status are in
+`Datenformatbeschreibung_versiegelung2021.pdf`. Segments absent from
+that survey already carry the district mean inside `vg`. The 2016 class
+raster uses the same 2021 segments. Both vintages are averaged onto the
+canonical 10 m EPSG:25833 grid.
+
+The corrected COGs are published at
+`gs://berlin-lst-training-data/static/sources/imperviousness-v3/`
+(config hash 2016 `826b245461e8`, 2021 `02be2b1ab273`). The
+`static/sources/full` rasters are unchanged. The merged ledger at
+that root keeps every other static source on its previous URI.
 
 ### Historical LoD morphometry vintages
 
@@ -172,12 +221,15 @@ Schema versions are per-source: Landsat v6, ECOSTRESS v7, Sentinel-2 v8
 | 2 | 4 | cloud shadow | S2 SCL 3 (+ directional projection), Landsat QA bit 4 |
 | 3 | 8 | cirrus | S2 SCL 10, Landsat QA bit 2 |
 | 4 | 16 | saturated | S2 SCL 1, ECOSTRESS QC degraded |
-| 5 | 32 | snow/ice | S2 SCL 11 |
+| 5 | 32 | snow/ice | S2 SCL 11, Landsat QA_PIXEL bit 5 |
 
-Sentinel-2 SCL class 11 (snow/ice) is flagged and excluded from clear
-pixels — matching the selection layer, which already treats SCL 11 as
-not clear. AOI metrics count it as `aoi_snow_ice_px` and include it in
-`aoi_total_px`; `aoi_clear_px` counts only pixels with no flag bit set.
+Sentinel-2 SCL class 11 (snow/ice) and Landsat QA_PIXEL bit 5 are
+flagged and excluded from clear pixels. Selection uses the same Landsat
+rule (`landsat_qa_to_clear_bits`). Cloud confidence bits 8–9 ≥ 2 are
+cloudy even when the cloud bit (bit 3) is unset; confidence 0 and 1
+stay clear. Water (QA_PIXEL bit 7) stays clear. AOI metrics count snow
+as `aoi_snow_ice_px` and include it in `aoi_total_px`; `aoi_clear_px`
+counts only pixels with no flag bit set.
 
 Land/Imperviousness products accept exact COG contracts via
 `data.ard.contract.Contract` (`data.secondary.contract.Contract` was
@@ -330,7 +382,8 @@ breaking schema change → new URI version):
   static source products** (`lod2_morphology` bands 1-4 per the scene's
   LoD vintage via `geometry_mapping.json`, `vegetation_height/2020`
   bands 1-2, and `imperviousness` band 1 per scene year: 2017-2019 →
-  vintage 2016, 2020-2025 → vintage 2021); only `svf` remains a derived
+  vintage 2016, 2020-2025 → vintage 2021, mapped as in "Versiegelung
+  class codes" above); only `svf` remains a derived
   product. The DSMs (`building_dsm`, `vegetation_dsm`, `combined_dsm`)
   are **not model inputs** — they remain internal auxiliaries for SVF,
   horizon, and shadow computation.
@@ -428,11 +481,22 @@ into leakage-free training inputs for WB3. It is published under
 manifest, cell index, scaler, and release marker), built by
 `scripts/runners/run_training_data.py` (`data/training/`).
 
-**Input basis.** Feature Release V3 is the only permitted input
-(user-mandated; V1/V2 are hard-rejected). The pipeline verifies the
-features root, the V3 ledger (324 done rows, config hash
-`d9eb25995b2f4911`), and each scene's `provenance.json` (config hash +
-canonical 28-channel order) before any publication.
+**Input basis.** The published v1 handoff used Feature Release V3
+(324 done rows, config hash `d9eb25995b2f4911`). This branch pins
+feature release v5 (`gs://berlin-lst-training-data/features/v5`).
+Landsat ST in that release is the area mean of the delivered 30 m
+`lwir11` samples (`resampling=average`; odc-stac 0.5.2 defaults to
+nearest). `qa_pixel` is not averaged: each relevant bit is evaluated at
+30 m and a 100 m cell takes the bit if any overlapping sample has it.
+The canonical grid is unchanged. The method is stored in the Landsat
+ARD schema hash (`7|st=average|qa=native_bit_or`) under
+`ard/full/2017-2026-qa-avg-20261019`. The feature config hash
+fingerprints that ledger, so it changes with the new ARD. It is pinned
+in `EXPECTED_V3_CONFIG_HASH` as `2d2086f9d36e48fe`. Training publishes
+`gs://berlin-lst-training-data/training/v2`. The pipeline
+still rejects feature releases v1 and v2. It checks the pinned root,
+the ledger (324 done rows, pinned hash), and each scene's
+`provenance.json` before publication.
 
 **Temporal split contract** (user-mandated). 2017-2023 train, 2024
 validation, 2025 test, 2026 inference. 2026 anchors are metadata-only
@@ -450,6 +514,9 @@ subpixels are valid (strict 100/100 support; edge-truncated cells are
 never eligible). No imputation, no extra input masks, no sparse category:
 a scene with zero eligible cells is excluded with reason
 `no_eligible_cells` (its all-zero mask is still published for audit).
+`LC09_L2SP_193023_20220827_02_T2` and `LC09_L2SP_193024_20220827_02_T2`
+are excluded before that rule with reason `usgs_st_implausible_20220827`.
+They publish no eligibility mask, no cells, and no scaler contribution.
 
 **Artifacts.** Per scene:
 `<scene_id>.training_eligible_100m.tif` (uint8 0/1, canonical 100 m
@@ -476,8 +543,9 @@ and policy hash.
 
 **Policy hash.** `training_policy_hash` (in `data/training/contracts.py`)
 covers the split mapping, support rule, cell-ID formula, scaler policy,
-channel order, and V3 config hash. Any policy change invalidates the
-published artifacts via the ledger's `config_changed` reconcile path.
+channel order, V3 config hash, and the implausible-LST scene denylist.
+Any policy change invalidates the published artifacts via the ledger's
+`config_changed` reconcile path.
 
 **Validation.** `scripts/validators/validate_training_data.py` is an independent
 read-only probe over the release root: V3 source gate, per-scene COG
@@ -517,7 +585,10 @@ windows a future dataset reads, without touching the immutable
 create-only completion marker), built by
 `scripts/runners/run_patch_index.py` from the `training/v1` scene manifest
 and the per-scene `training_eligible@100m` COGs. No feature pixels are
-recomputed and no patch rasters are written.
+recomputed and no patch rasters are written. This branch publishes the
+corrected index at `gs://berlin-lst-training-data/training/patch-index/v2`,
+built from `training/v2`. The two implausible-LST scenes are skipped
+there and are not counted as `no_eligible_cells`.
 
 **Patch geometry** (fixed, issue #14). The main patch is 160×160 px at
 10 m = 16×16 cells at 100 m (1.6 km), the depth-4 U-Net edge requirement.

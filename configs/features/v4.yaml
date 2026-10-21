@@ -1,0 +1,13 @@
+# @package _global_
+# Feature release v4. Imperviousness comes from the v3 static-source
+# ledger; Landsat flags come from the QA republish. features/v3 stays
+# unchanged.
+defaults:
+  - _base
+  - _self_
+
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-qa-20261019"
+static_sources_root: "gs://berlin-lst-training-data/static/sources/imperviousness-v3"
+output_root: "gs://berlin-lst-training-data/features/v4"
+scene_ids: []
+bbox: null

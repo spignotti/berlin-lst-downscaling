@@ -50,10 +50,9 @@ from berlin_lst_downscaling.data.training.scaler import fit_scaler
 
 _logger = logging.getLogger(__name__)
 
-# Only Feature Release V3 may be consumed (user-mandated). The canonical
-# root is ``gs://berlin-lst-training-data/features/v3``; smoke configs use the same
-# published root (they read real GCS stacks).
-V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v3"
+# Pinned feature release for this training handoff. Older feature
+# releases are rejected. Smoke reads the same published root.
+V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v5"
 
 
 # ── V3 release gate ───────────────────────────────────────────────────
@@ -70,8 +69,8 @@ def _verify_v3_release(
     Checks, in order:
 
     - ``features_root`` must be the canonical V3 root;
-    - every features-ledger row must be ``done`` and carry the pinned V3
-      config hash ``d9eb25995b2f4911`` (individual row check — a missing
+    - every features-ledger row must be ``done`` and carry
+      ``EXPECTED_V3_CONFIG_HASH`` (individual row check — a missing
       hash on any row is a hard failure, never filtered out);
     - on full runs the ledger must hold exactly ``expected_scene_count``
       rows;
@@ -83,8 +82,8 @@ def _verify_v3_release(
     """
     if features_root.rstrip("/") != V3_FEATURES_ROOT:
         raise RuntimeError(
-            f"features_root {features_root!r} is not Feature Release V3 "
-            f"({V3_FEATURES_ROOT!r}) — V1/V2 must never be consumed"
+            f"features_root {features_root!r} is not the pinned feature release "
+            f"({V3_FEATURES_ROOT!r})"
         )
 
     led_uri = features_ledger_path(features_root)
