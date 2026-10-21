@@ -52,10 +52,14 @@ from berlin_lst_downscaling.modeling.contracts import (
     validate_real_batch,
 )
 from berlin_lst_downscaling.modeling.metrics import (
+    THERMAL_AWARE_GRAD_WEIGHT,
+    THERMAL_AWARE_SSIM_WEIGHT,
     MaskedMAE,
     MaskedSSIM,
+    ScaledSupportWeightedSum,
     SupportCounter,
     SupportedWindows,
+    SupportRatio,
     SupportWeightedSum,
     ThermalObjectiveBatch,
     ValidCells,
@@ -667,11 +671,19 @@ class RealLSTTask(LightningModule):
         self.train_thermal_l1 = SupportWeightedSum()
         self.train_thermal_ssim = SupportWeightedSum()
         self.train_thermal_grad = SupportWeightedSum()
+        self.train_thermal_l1_weighted = ScaledSupportWeightedSum(1.0)
+        self.train_thermal_ssim_weighted = ScaledSupportWeightedSum(THERMAL_AWARE_SSIM_WEIGHT)
+        self.train_thermal_grad_weighted = ScaledSupportWeightedSum(THERMAL_AWARE_GRAD_WEIGHT)
         self.val_thermal_l1 = SupportWeightedSum()
         self.val_thermal_ssim = SupportWeightedSum()
         self.val_thermal_grad = SupportWeightedSum()
+        self.val_thermal_l1_weighted = ScaledSupportWeightedSum(1.0)
+        self.val_thermal_ssim_weighted = ScaledSupportWeightedSum(THERMAL_AWARE_SSIM_WEIGHT)
+        self.val_thermal_grad_weighted = ScaledSupportWeightedSum(THERMAL_AWARE_GRAD_WEIGHT)
         self.val_ssim_candidate = SupportCounter()
         self.val_grad_candidate = SupportCounter()
+        self.val_ssim_coverage = SupportRatio()
+        self.val_grad_coverage = SupportRatio()
         # Reconstructible model/loss configuration for load_from_checkpoint.
         self.save_hyperparameters()
 
@@ -688,64 +700,50 @@ class RealLSTTask(LightningModule):
         l1_metric = self.train_thermal_l1 if train else self.val_thermal_l1
         ssim_metric = self.train_thermal_ssim if train else self.val_thermal_ssim
         grad_metric = self.train_thermal_grad if train else self.val_thermal_grad
+        l1_w = self.train_thermal_l1_weighted if train else self.val_thermal_l1_weighted
+        ssim_w = self.train_thermal_ssim_weighted if train else self.val_thermal_ssim_weighted
+        grad_w = self.train_thermal_grad_weighted if train else self.val_thermal_grad_weighted
         l1_metric.update(batch_stats.l1_sum, batch_stats.l1_count)
+        l1_w.update(batch_stats.l1_sum, batch_stats.l1_count)
         if float(batch_stats.ssim_supported) > 0.0:
             penalty_sum = batch_stats.ssim_supported - batch_stats.ssim_sum
             ssim_metric.update(penalty_sum, batch_stats.ssim_supported)
+            ssim_w.update(penalty_sum, batch_stats.ssim_supported)
         if float(batch_stats.grad_supported) > 0.0:
             grad_metric.update(batch_stats.grad_sum, batch_stats.grad_supported)
+            grad_w.update(batch_stats.grad_sum, batch_stats.grad_supported)
         if not train:
             self.val_ssim_candidate.update(batch_stats.ssim_candidate)
             self.val_grad_candidate.update(batch_stats.grad_candidate)
+            self.val_ssim_coverage.update(batch_stats.ssim_supported, batch_stats.ssim_candidate)
+            self.val_grad_coverage.update(batch_stats.grad_supported, batch_stats.grad_candidate)
 
-    def _log_thermal_epoch_metrics(self, *, train: bool) -> None:
+    def _log_thermal_batch_metrics(self, *, train: bool) -> None:
+        """Register thermal audit metrics for Lightning epoch reduction (auto-reset)."""
         if self.loss_name != "thermal_aware":
             return
-        from berlin_lst_downscaling.modeling.metrics import (
-            THERMAL_AWARE_GRAD_WEIGHT,
-            THERMAL_AWARE_SSIM_WEIGHT,
-        )
-
         prefix = "train" if train else "validation"
-        l1_metric = self.train_thermal_l1 if train else self.val_thermal_l1
-        ssim_metric = self.train_thermal_ssim if train else self.val_thermal_ssim
-        grad_metric = self.train_thermal_grad if train else self.val_thermal_grad
-        l1 = l1_metric.compute()
-        ssim_pen = ssim_metric.compute()
-        grad = grad_metric.compute()
-        self.log(f"{prefix}/thermal_l1_unweighted", l1, on_step=False, on_epoch=True)
-        self.log(f"{prefix}/thermal_l1_weighted", l1, on_step=False, on_epoch=True)
-        self.log(f"{prefix}/thermal_ssim_unweighted", ssim_pen, on_step=False, on_epoch=True)
-        self.log(
-            f"{prefix}/thermal_ssim_weighted",
-            ssim_pen * THERMAL_AWARE_SSIM_WEIGHT,
-            on_step=False,
-            on_epoch=True,
+        if train:
+            l1_u, l1_w = self.train_thermal_l1, self.train_thermal_l1_weighted
+            ssim_u, ssim_w = self.train_thermal_ssim, self.train_thermal_ssim_weighted
+            grad_u, grad_w = self.train_thermal_grad, self.train_thermal_grad_weighted
+        else:
+            l1_u, l1_w = self.val_thermal_l1, self.val_thermal_l1_weighted
+            ssim_u, ssim_w = self.val_thermal_ssim, self.val_thermal_ssim_weighted
+            grad_u, grad_w = self.val_thermal_grad, self.val_thermal_grad_weighted
+        pairs = (
+            (f"{prefix}/thermal_l1_unweighted", l1_u),
+            (f"{prefix}/thermal_l1_weighted", l1_w),
+            (f"{prefix}/thermal_ssim_unweighted", ssim_u),
+            (f"{prefix}/thermal_ssim_weighted", ssim_w),
+            (f"{prefix}/thermal_grad_unweighted", grad_u),
+            (f"{prefix}/thermal_grad_weighted", grad_w),
         )
-        self.log(f"{prefix}/thermal_grad_unweighted", grad, on_step=False, on_epoch=True)
-        self.log(
-            f"{prefix}/thermal_grad_weighted",
-            grad * THERMAL_AWARE_GRAD_WEIGHT,
-            on_step=False,
-            on_epoch=True,
-        )
+        for key, metric in pairs:
+            self.log(key, metric, on_step=False, on_epoch=True)
         if not train:
-            ssim_supported = self.val_thermal_ssim.denominator
-            grad_supported = self.val_thermal_grad.denominator
-            ssim_candidate = self.val_ssim_candidate.compute()
-            grad_candidate = self.val_grad_candidate.compute()
-            self.log(
-                "validation/ssim_coverage",
-                ssim_supported / torch.clamp(ssim_candidate, min=1.0),
-                on_step=False,
-                on_epoch=True,
-            )
-            self.log(
-                "validation/grad_coverage",
-                grad_supported / torch.clamp(grad_candidate, min=1.0),
-                on_step=False,
-                on_epoch=True,
-            )
+            self.log("validation/ssim_coverage", self.val_ssim_coverage, on_epoch=True)
+            self.log("validation/grad_coverage", self.val_grad_coverage, on_epoch=True)
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
@@ -759,22 +757,22 @@ class RealLSTTask(LightningModule):
         return reconstruct_prior_kelvin(batch.lst_prior).float() + delta.float()
 
     def training_step(self, batch: RealBatch, batch_idx: int) -> Tensor:
-        prediction_100m = pool_10m_to_100m(self(batch), self.aggregation)
+        prediction_100m = pool_10m_to_100m(
+            self(batch), self.aggregation, batch.mask_100m
+        )
         if self.loss_name == "thermal_aware":
             objective = thermal_objective_batch(
                 prediction_100m, batch.target_100m, batch.mask_100m
             )
             loss = objective.loss
             self._accumulate_thermal_audit(objective, train=True)
+            self._log_thermal_batch_metrics(train=True)
         else:
             loss = self._training_loss(prediction_100m, batch.target_100m, batch.mask_100m)
         self.log("train/loss", loss, on_step=True, on_epoch=False, prog_bar=True)
         self.train_mae.update(prediction_100m, batch.target_100m, batch.mask_100m)
         self.log("train/mae_100m", self.train_mae, on_step=False, on_epoch=True)
         return loss
-
-    def on_train_epoch_end(self) -> None:
-        self._log_thermal_epoch_metrics(train=True)
 
     def validation_step(self, batch: RealBatch, batch_idx: int) -> None:
         # The whole validation computation stays in FP32: Lightning's
@@ -783,13 +781,16 @@ class RealLSTTask(LightningModule):
         # where Kelvin-scale moments overflow (J4 NaN SSIM).
         with torch.autocast(device_type=batch.features.device.type, enabled=False):
             prediction = self(batch)
-            prediction_100m = pool_10m_to_100m(prediction.float(), self.aggregation)
+            prediction_100m = pool_10m_to_100m(
+                prediction.float(), self.aggregation, batch.mask_100m
+            )
             self.val_mae.update(prediction_100m, batch.target_100m, batch.mask_100m)
             if self.loss_name == "thermal_aware":
                 objective = thermal_objective_batch(
                     prediction_100m, batch.target_100m, batch.mask_100m
                 )
                 self._accumulate_thermal_audit(objective, train=False)
+                self._log_thermal_batch_metrics(train=False)
             ssim_sum, ssim_count = masked_ssim_stats(
                 prediction_100m, batch.target_100m, batch.mask_100m
             )
@@ -802,9 +803,6 @@ class RealLSTTask(LightningModule):
         self.log("validation/ssim_windows", self.val_ssim_windows, on_step=False, on_epoch=True)
         if self.record_probe_metrics:
             self.log("validation/valid_cells", self.val_valid_cells, on_step=False, on_epoch=True)
-
-    def on_validation_epoch_end(self) -> None:
-        self._log_thermal_epoch_metrics(train=False)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         return torch.optim.AdamW(

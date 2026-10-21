@@ -68,12 +68,17 @@ def _require_positive_kelvin(values: Tensor, *, context: str) -> None:
 
 
 def pool_10m_to_100m(
-    prediction_10m: Tensor, method: AggregationMethod = AGGREGATION_ARITHMETIC
+    prediction_10m: Tensor,
+    method: AggregationMethod = AGGREGATION_ARITHMETIC,
+    mask_100m: Tensor | None = None,
 ) -> Tensor:
     """Exact nested 10×10 reduction on the canonical 100 m grid.
 
     ``method='arithmetic'`` is the block mean. ``method='t4'`` applies the fourth-
-    root-of-mean-fourth-powers reduction on physical Kelvin inputs.
+    root-of-mean-fourth-powers reduction on physical Kelvin inputs. When
+    ``mask_100m`` is supplied, the positive-finite Kelvin contract applies only
+    to 10 m pixels inside blocks whose 100 m supervision cell is valid; excluded
+    blocks are sanitized before ``pow`` so they cannot disturb gradients.
     """
     method = validate_aggregation_method(method)
     b, c, h, w = prediction_10m.shape
@@ -84,10 +89,31 @@ def pool_10m_to_100m(
     )
     if method == AGGREGATION_ARITHMETIC:
         return blocks.mean(dim=(3, 5))
+    hb, wb = h // POOL_FACTOR, w // POOL_FACTOR
     with torch.autocast(device_type=prediction_10m.device.type, enabled=False):
-        flat = blocks.reshape(b, c, h // POOL_FACTOR, w // POOL_FACTOR, POOL_FACTOR * POOL_FACTOR)
-        _require_positive_kelvin(flat, context="10 m → 100 m T4 pooling")
-        powered = flat.float().pow(4).mean(dim=-1)
+        tiles = blocks.permute(0, 1, 2, 4, 3, 5).float()
+        if mask_100m is not None:
+            if mask_100m.shape != (b, c, hb, wb):
+                raise ValueError(
+                    f"mask_100m shape {tuple(mask_100m.shape)} does not match pooled grid "
+                    f"{(b, c, hb, wb)}"
+                )
+            block_valid = mask_100m.bool().reshape(b, c, hb, wb)
+            if bool(block_valid.any()):
+                contributing = tiles[block_valid]
+                _require_positive_kelvin(
+                    contributing,
+                    context="10 m → 100 m T4 pooling (contributing block)",
+                )
+            safe = torch.where(
+                block_valid.unsqueeze(-1).unsqueeze(-1),
+                tiles,
+                torch.ones_like(tiles),
+            )
+            powered = safe.pow(4).mean(dim=(-2, -1))
+        else:
+            _require_positive_kelvin(tiles, context="10 m → 100 m T4 pooling")
+            powered = tiles.pow(4).mean(dim=(-2, -1))
         return powered.pow(0.25)
 
 

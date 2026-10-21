@@ -11,6 +11,7 @@ from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.aggregation import (
     AGGREGATION_ARITHMETIC,
+    AggregationContractError,
     pool_10m_to_100m,
     pool_block_means_from_accumulators,
 )
@@ -36,6 +37,23 @@ def test_t4_pooling_is_at_least_arithmetic_within_one_block() -> None:
     arith = float(pool_10m_to_100m(block, AGGREGATION_ARITHMETIC))
     t4 = float(pool_10m_to_100m(block, "t4"))
     assert t4 >= arith
+
+
+def test_t4_mask_ignores_non_positive_pixels_in_excluded_blocks() -> None:
+    block = torch.full((1, 1, 10, 20), -5.0)
+    block[0, 0, :, :10] = 300.0
+    mask = torch.zeros((1, 1, 1, 2), dtype=torch.bool)
+    mask[0, 0, 0, 0] = True
+    pooled = pool_10m_to_100m(block, "t4", mask)
+    assert float(pooled[0, 0, 0, 0]) == pytest.approx(300.0)
+
+
+def test_t4_mask_raises_for_non_positive_contributing_block() -> None:
+    block = torch.full((1, 1, 10, 10), 300.0)
+    block[0, 0, 0, 0] = -1.0
+    mask = torch.ones((1, 1, 1, 1), dtype=torch.bool)
+    with pytest.raises(AggregationContractError):
+        pool_10m_to_100m(block, "t4", mask)
 
 
 def test_prior_t4_from_accumulators() -> None:

@@ -449,8 +449,8 @@ def _residual_identity_mae(
             validate_real_batch(batch, n_active_channels=task.n_active_channels)
             prior_k = reconstruct_prior_kelvin(batch.lst_prior)
             metric.update(
-                pool_10m_to_100m(task(batch), aggregation),
-                pool_10m_to_100m(prior_k, aggregation),
+                pool_10m_to_100m(task(batch), aggregation, batch.mask_100m),
+                pool_10m_to_100m(prior_k, aggregation, batch.mask_100m),
                 batch.mask_100m,
             )
     return float(metric.compute())
@@ -502,8 +502,9 @@ def _score_test_once(
                 )
             if not torch.isfinite(prediction).all():
                 raise RuntimeError("test pass produced non-finite predictions")
+            method = resolve_aggregation_method(cfg.get("aggregation"))
             metric.update(
-                pool_10m_to_100m(prediction, resolve_aggregation_method(cfg.get("aggregation"))),
+                pool_10m_to_100m(prediction, method, batch.mask_100m),
                 batch.target_100m,
                 batch.mask_100m,
             )
@@ -727,11 +728,12 @@ def _fit_contract_lifecycle(
                     )
                 if not torch.isfinite(prediction).all():
                     raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
-                pooled_prediction = pool_10m_to_100m(prediction, aggregation)
+                pooled_prediction = pool_10m_to_100m(prediction, aggregation, batch.mask_100m)
                 recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
                 if residual_prior:
                     prior_k = reconstruct_prior_kelvin(batch.lst_prior)
-                    correction = pooled_prediction - pool_10m_to_100m(prior_k, aggregation)
+                    pooled_prior = pool_10m_to_100m(prior_k, aggregation, batch.mask_100m)
+                    correction = pooled_prediction - pooled_prior
                     valid = batch.mask_100m.bool()
                     correction_abs_sum += float(correction[valid].abs().sum())
                     correction_cells += float(valid.sum())

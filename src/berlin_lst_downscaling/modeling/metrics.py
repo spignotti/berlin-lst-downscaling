@@ -31,10 +31,12 @@ SSIM_K2: float = 0.03
 
 
 def pool_10m_to_100m(
-    prediction_10m: Tensor, method: AggregationMethod = AGGREGATION_ARITHMETIC
+    prediction_10m: Tensor,
+    method: AggregationMethod = AGGREGATION_ARITHMETIC,
+    mask_100m: Tensor | None = None,
 ) -> Tensor:
     """Exact nested 10×10 block reduction on the canonical 100 m grid."""
-    return _pool_10m_to_100m(prediction_10m, method)
+    return _pool_10m_to_100m(prediction_10m, method, mask_100m)
 
 
 def masked_abs_error_sums(
@@ -321,6 +323,20 @@ class SupportWeightedSum(Metric):
         return self.numerator / self.denominator
 
 
+class ScaledSupportWeightedSum(SupportWeightedSum):
+    """Support-weighted mean scaled by a fixed objective weight."""
+
+    def __init__(self, weight: float) -> None:
+        super().__init__()
+        self._weight = float(weight)
+
+    def compute(self) -> Tensor:
+        base = super().compute()
+        if not bool(torch.isfinite(base).all()):
+            return base
+        return base * self._weight
+
+
 class SupportCounter(Metric):
     def __init__(self) -> None:
         super().__init__()
@@ -331,6 +347,24 @@ class SupportCounter(Metric):
 
     def compute(self) -> Tensor:
         return self.total
+
+
+class SupportRatio(Metric):
+    """Epoch ratio of summed numerator to summed denominator."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.add_state("numerator", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("denominator", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def update(self, numerator: Tensor, denominator: Tensor) -> None:
+        self.numerator = self.numerator + numerator
+        self.denominator = self.denominator + denominator
+
+    def compute(self) -> Tensor:
+        if float(self.denominator) <= 0.0:
+            return torch.tensor(float("nan"), device=self.numerator.device)
+        return self.numerator / self.denominator
 
 
 class MaskedSSIM(Metric):
@@ -381,7 +415,9 @@ __all__ = [
     "THERMAL_AWARE_SSIM_WEIGHT",
     "MaskedMAE",
     "MaskedSSIM",
+    "ScaledSupportWeightedSum",
     "SupportCounter",
+    "SupportRatio",
     "SupportWeightedSum",
     "SupportedWindows",
     "ThermalObjectiveBatch",

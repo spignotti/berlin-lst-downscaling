@@ -584,9 +584,9 @@ def score_stage(
         features = np.load(cache.feature_files[i], allow_pickle=False)
         residual = predict_10m(model, features, cache.prior_100m[i], stage)
         prediction = torch.from_numpy(reconstruct_10m_prediction(cache.prior_100m[i], residual))
-        pooled = pool_10m_to_100m(prediction, aggregation)
         target = torch.from_numpy(cache.target_100m[i][None, None])
         mask = torch.from_numpy(cache.mask_100m[i][None, None])
+        pooled = pool_10m_to_100m(prediction, aggregation, mask)
         error_sum, count = masked_abs_error_sums(pooled, target, mask)
         ssim_sum, ssim_windows = masked_ssim_stats(pooled, target, mask)
         records.append(
