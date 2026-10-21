@@ -19,13 +19,19 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 
 ## Validation
 
-- Default nox sessions are `lint` and `typecheck`. There is no pytest session. Quality is real-data smoke and QA gates (`uv run nox -s smoke-*` and the stage validators). Do not add tests unless asked.
-- CI on `main` and pull requests runs `uv run --locked nox`.
+- Default nox sessions are `lint`, `typecheck`, `tests`, `validate-ablation-configs`, `smoke-modeling`, and `smoke-modeling-contract`. New or changed computational logic (math, masks, splits, aggregation, hashing) needs unit tests. Tests must be offline and small.
+- CI on `main` and pull requests runs `uv run --locked nox` (job name `validate`).
 
 ## Git
 
 - Work on a feature branch. Open a pull request into `main`. Squash-merge after the `validate` check is green.
-- Open a GitHub issue for a change to method, a data product, or a training run. The title says what changes. The body states the current state, the desired state, and what is out of scope. Hygiene (lint, harness, typos) needs no issue. Notion holds the plan.
+- A change to method, a data product, or a training run needs an explicit task with acceptance criteria from the project owner (a GitHub issue or an agent task). The task states the current state, the desired state, and what is out of scope. Agents must not decide new scientific choices (thresholds, exclusions, new channels, split changes) themselves; report them back instead. Hygiene (lint, harness, typos) needs no task. Notion holds the plan.
+
+## Cursor Cloud specific instructions
+
+- Cloud agents work on code only. They never publish data, start pipelines, republishes, or trainings, and they do not use the VM or Vertex launchers.
+- Validation in the cloud VM is `uv run --locked nox` (the default sessions).
+- The bucket and evidence rules above still apply: do not delete or rewrite canonical products, do not edit retained evidence, and do not touch `docs/results/` or other frozen result write-ups.
 
 ## Planning
 

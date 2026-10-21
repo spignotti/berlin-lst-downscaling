@@ -2,7 +2,16 @@
 
 import nox
 
-nox.options.sessions = ["lint", "typecheck"]
+# `ruff format --check` is not a default session. A format pass would rewrite
+# 108 files that are not formatted today; that diff is out of scope here.
+nox.options.sessions = [
+    "lint",
+    "typecheck",
+    "tests",
+    "validate-ablation-configs",
+    "smoke-modeling",
+    "smoke-modeling-contract",
+]
 
 
 # ── universal ──────────────────────────────────────────────────────────
@@ -118,6 +127,24 @@ def fix(session: nox.Session) -> None:
 @nox.session(venv_backend="none")
 def typecheck(session: nox.Session) -> None:
     session.run("uv", "run", "pyright", external=True)
+
+
+@nox.session(venv_backend="none")
+def tests(session: nox.Session) -> None:
+    """Run the offline unit tests. No network and no published data."""
+    session.run("uv", "run", "pytest", external=True)
+
+
+@nox.session(venv_backend="none", name="validate-ablation-configs")
+def validate_ablation_configs(session: nox.Session) -> None:
+    """Check locked ablation profiles without reading GCS."""
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/validators/validate_ablation_configs.py",
+        external=True,
+    )
 
 
 # ── manifest-driven smoke test ────────────────────────────────────────
