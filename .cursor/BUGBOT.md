@@ -41,3 +41,8 @@ Review-only rules for this repository. Flag methodological drift. A missing test
 ## Scientific choices
 
 - Flag new scientific decisions in code (thresholds, exclusions, new channels, split changes) that do not come from an explicit task with acceptance criteria.
+
+## Acceptance criteria
+
+- If the PR description has an `## Acceptance criteria` checklist, check each item against the diff. Report every item that the diff does not implement, or implements only partially, as a finding that names the item. Also flag a checked box with no matching change or test.
+- If a PR changes method, a data product, or training code and has no `## Acceptance criteria` section, flag that.
