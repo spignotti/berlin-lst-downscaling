@@ -53,6 +53,7 @@ import rasterio
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
+from berlin_lst_downscaling.modeling.aggregation import resolve_report_aggregation
 
 _CANON_X = 369190.0
 _CANON_Y = 5838410.0
@@ -233,7 +234,9 @@ def _prove_prior_gap(
 # ── independent recomputation ─────────────────────────────────────────
 
 
-def _block_grid(landsat_cog: str, landsat_flag: str) -> tuple[dict, dict]:
+def _block_grid(
+    landsat_cog: str, landsat_flag: str, *, method: str = "arithmetic"
+) -> tuple[dict, dict]:
     """Whole-COG 1000 m block means over native-valid cells, keyed globally."""
     with rasterio.open(landsat_cog) as src:
         if str(src.crs) != "EPSG:25833":
@@ -260,10 +263,18 @@ def _block_grid(landsat_cog: str, landsat_flag: str) -> tuple[dict, dict]:
     flat = (((brow - brow0) * nbc) + (bcol - bcol0)).ravel()
     sel = valid.ravel()
     counts = np.bincount(flat[sel], minlength=nbr * nbc)
-    sums = np.bincount(flat[sel], weights=st.ravel()[sel], minlength=nbr * nbc)
+    temps = st.ravel()[sel]
+    sums = np.bincount(flat[sel], weights=temps, minlength=nbr * nbc)
     means = np.full(nbr * nbc, np.nan, dtype=np.float64)
     ok = counts > 0
-    means[ok] = sums[ok] / counts[ok]
+    if method == "arithmetic":
+        means[ok] = sums[ok] / counts[ok]
+    else:
+        sums_t4 = np.bincount(flat[sel], weights=np.power(temps, 4), minlength=nbr * nbc)
+        powered = sums_t4[ok] / counts[ok]
+        if np.any(powered <= 0) or np.any(~np.isfinite(powered)):
+            raise RuntimeError("T4 block recomputation encountered non-positive mean(T**4)")
+        means[ok] = np.power(powered, 0.25)
     grid = {"means": means.reshape(nbr, nbc), "brow0": brow0, "bcol0": bcol0}
     return grid, {"col0": col0, "row0": row0}
 
@@ -304,6 +315,8 @@ def _recompute_patch(
     index_row: dict,
     landsat: dict[str, tuple[str, str]],
     grids: dict[str, tuple[dict, dict]],
+    *,
+    method: str,
 ) -> tuple[int, float, int] | None:
     """Return ``(valid_cells, abs_error_sum, ssim_support)`` or None if unavailable."""
     scene_id = str(index_row["scene_id"])
@@ -311,7 +324,7 @@ def _recompute_patch(
     if uris is None:
         return None
     if scene_id not in grids:
-        grids[scene_id] = _block_grid(uris[0], uris[1])
+        grids[scene_id] = _block_grid(uris[0], uris[1], method=method)
     grid, geometry = grids[scene_id]
 
     row, col = int(index_row["row"]), int(index_row["col"])
@@ -355,6 +368,11 @@ def main() -> int:
 
     errors: list[str] = []
     report = _read_json(args.report)
+    try:
+        aggregation = resolve_report_aggregation(report)
+    except ValueError as exc:
+        errors.append(str(exc))
+        aggregation = "arithmetic"
     source = report["source"]
     index_root = resolve_canonical_uri(
         args.patch_index_root or str(source["patch_index_root"])
@@ -467,7 +485,7 @@ def main() -> int:
             if index_row is None:
                 errors.append(f"{patch_id}: not present in the published index")
                 continue
-            recomputed = _recompute_patch(index_row, landsat, grids)
+            recomputed = _recompute_patch(index_row, landsat, grids, method=aggregation)
             if recomputed is None:
                 errors.append(f"{patch_id}: recomputed prediction unavailable")
                 continue

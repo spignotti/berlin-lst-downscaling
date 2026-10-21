@@ -71,6 +71,12 @@ from berlin_lst_downscaling.data.training.paths import (
     patch_index_parquet,
     scaler_json,
 )
+from berlin_lst_downscaling.modeling.aggregation import (
+    AGGREGATION_ARITHMETIC,
+    AggregationMethod,
+    pool_block_means_from_accumulators,
+    validate_aggregation_method,
+)
 from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
     NO_PRIOR_REASON,
@@ -130,6 +136,7 @@ class RealSourceConfig:
     training_root: str
     features_root: str
     ard_root: str
+    aggregation: AggregationMethod = AGGREGATION_ARITHMETIC
 
 
 @dataclass(frozen=True)
@@ -452,8 +459,15 @@ class ScenePrior:
         return PRIOR_OUTSIDE_REASON if outside else NO_PRIOR_BLOCK_REASON
 
 
-def _build_scene_prior(scene_id: str, landsat_cog: str, landsat_flag: str) -> ScenePrior:
+def _build_scene_prior(
+    scene_id: str,
+    landsat_cog: str,
+    landsat_flag: str,
+    *,
+    method: str = AGGREGATION_ARITHMETIC,
+) -> ScenePrior:
     """Build the scene-wide 1000 m block means from native Landsat pixels."""
+    method = validate_aggregation_method(method)
     with rasterio.open(landsat_cog) as src:
         if str(src.crs) != "EPSG:25833":
             raise RuntimeError(f"{scene_id}: Landsat COG CRS is {src.crs!r}, expected EPSG:25833")
@@ -490,10 +504,19 @@ def _build_scene_prior(scene_id: str, landsat_cog: str, landsat_flag: str) -> Sc
     flat = (ri * nbc + ci).ravel()
     sel = valid.ravel()
     counts = np.bincount(flat[sel], minlength=nbr * nbc)
-    sums = np.bincount(flat[sel], weights=st.ravel()[sel].astype(np.float64), minlength=nbr * nbc)
-    means = np.full(nbr * nbc, np.nan, dtype=np.float64)
-    ok = counts > 0
-    means[ok] = sums[ok] / counts[ok]
+    temps = st.ravel()[sel].astype(np.float64)
+    sums = np.bincount(flat[sel], weights=temps, minlength=nbr * nbc)
+    sums_t4 = (
+        np.bincount(flat[sel], weights=np.power(temps, 4), minlength=nbr * nbc)
+        if method != AGGREGATION_ARITHMETIC
+        else None
+    )
+    block_means = pool_block_means_from_accumulators(
+        sums.reshape(nbr, nbc),
+        sums_t4.reshape(nbr, nbc) if sums_t4 is not None else None,
+        counts.reshape(nbr, nbc),
+        method=method,
+    )
 
     return ScenePrior(
         scene_id=scene_id,
@@ -505,7 +528,7 @@ def _build_scene_prior(scene_id: str, landsat_cog: str, landsat_flag: str) -> Sc
         width=width,
         block_col0=block_col0,
         block_row0=block_row0,
-        block_means=means.reshape(nbr, nbc).astype(np.float32),
+        block_means=block_means,
         native_valid_cells=int(valid.sum()),
     )
 
@@ -600,7 +623,9 @@ class RealPatchReader:
         uris = self._landsat_uris({scene_id}).get(scene_id)
         if uris is None:
             return None
-        prior = _build_scene_prior(scene_id, uris[0], uris[1])
+        prior = _build_scene_prior(
+            scene_id, uris[0], uris[1], method=self.cfg.aggregation
+        )
         self._priors[scene_id] = prior
         return prior
 

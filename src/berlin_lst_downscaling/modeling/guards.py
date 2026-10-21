@@ -15,6 +15,10 @@ import os
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from berlin_lst_downscaling.data.training.contracts import split_for_year
+from berlin_lst_downscaling.modeling.aggregation import (
+    AGGREGATION_ARITHMETIC,
+    resolve_aggregation_method,
+)
 from berlin_lst_downscaling.modeling.channels import (
     ABLATION_ISOLATION_CHANNELS,
     ABLATION_LOCKED_CONFIG_NAMES,
@@ -785,6 +789,26 @@ def assert_stage1_verification(cfg: DictConfig) -> None:
         raise ValueError("stage1 verification config is off-contract: " + "; ".join(problems))
 
 
+_LOCKED_AGGREGATION_CONFIGS = frozenset(
+    {
+        STAGE1_LOCKED_CONFIG_NAME,
+        *ABLATION_LOCKED_CONFIG_NAMES,
+    }
+)
+
+
+def assert_aggregation_arithmetic_for_locked(cfg: DictConfig, config_name: str | None) -> None:
+    """Locked Stage-1 and Tag-11 profiles must keep arithmetic aggregation."""
+    if config_name not in _LOCKED_AGGREGATION_CONFIGS:
+        return
+    method = resolve_aggregation_method(cfg.get("aggregation"))
+    if method != AGGREGATION_ARITHMETIC:
+        raise ValueError(
+            f"config {config_name!r} is locked to aggregation='arithmetic'; "
+            f"got {method!r}"
+        )
+
+
 def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     """Run the config-identity guards before any run directory or source read.
 
@@ -848,9 +872,11 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         assert_ablation_lock(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
         assert_vertex_smoke_bounds(cfg)
+    assert_aggregation_arithmetic_for_locked(cfg, config_name)
 
 
 __all__ = [
+    "assert_aggregation_arithmetic_for_locked",
     "assert_ablation_lock",
     "assert_efficiency_fit_runtime",
     "assert_probe_minima",

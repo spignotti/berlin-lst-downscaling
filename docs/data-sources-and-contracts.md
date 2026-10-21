@@ -599,7 +599,11 @@ Windows that would extend past a mask edge are never emitted.
 
 **Acceptance rule.** A window is valid when at least 95% of its 256 100 m
 cells are `training_eligible`; 243/256 = 0.9492 fails, so the integer
-minimum is 244. The v1 default is non-overlapping (stride 16). An
+minimum is 244 for validation and test (and for train at the v1 default).
+Future train-only indices may lower the train fraction via
+`train_min_eligible_fraction` while keeping validation/test at 244; the QA
+geometry records per-split thresholds when they differ. The v1 default is
+non-overlapping (stride 16). An
 assessable scene with eligible cells but no accepted window is excluded
 with reason `no_valid_patch`, reported separately from the release's
 `no_eligible_cells`.

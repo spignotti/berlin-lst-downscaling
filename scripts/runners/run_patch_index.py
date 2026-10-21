@@ -27,6 +27,7 @@ from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.data.training.patch_index import (
+    PatchIndexAdmissionPolicy,
     build_patch_index,
     publish_patch_index,
 )
@@ -55,7 +56,9 @@ def main(cfg: DictConfig) -> int:
             source_root=source_root,
             output_root=output_root,
         )
-        build = build_patch_index(source_root=source_root)
+        train_fraction = float(cfg.get("train_min_eligible_fraction", 0.95))
+        policy = PatchIndexAdmissionPolicy(train_min_eligible_fraction=train_fraction)
+        build = build_patch_index(source_root=source_root, policy=policy)
         uris = publish_patch_index(build, output_root=output_root, run_id=run_id)
 
         qa = build.qa

@@ -30,6 +30,7 @@ import torch
 
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.data.training.report import now_iso
+from berlin_lst_downscaling.modeling.aggregation import AggregationMethod
 from berlin_lst_downscaling.modeling.metrics import (
     masked_abs_error_sums,
     masked_ssim_stats,
@@ -172,7 +173,7 @@ def evaluate_baseline(
             sample = reader.read_patch(ref)
             if sample is None:
                 continue
-            record = _score_patch(sample)
+            record = _score_patch(sample, aggregation=reader.cfg.aggregation)
             records.append(record)
             valid_cells += record.valid_cells
             abs_error_sum += record.abs_error_sum
@@ -208,12 +209,12 @@ def evaluate_baseline(
     return records, summaries
 
 
-def _score_patch(sample: RealSample) -> PatchRecord:
+def _score_patch(sample: RealSample, *, aggregation: AggregationMethod) -> PatchRecord:
     """Score one patch with the shared pooling and metric path."""
     prior_10m = torch.from_numpy(sample.lst_prior_k[None])  # (1, 1, H, W)
     target = torch.from_numpy(sample.target_100m[None])
     mask = torch.from_numpy(sample.mask_100m[None])
-    prediction_100m = pool_10m_to_100m(prior_10m)
+    prediction_100m = pool_10m_to_100m(prior_10m, aggregation)
     error_sum, count = masked_abs_error_sums(prediction_100m, target, mask)
     ssim_sum, ssim_count = masked_ssim_stats(prediction_100m, target, mask)
     return PatchRecord(
@@ -252,6 +253,7 @@ def build_report(
             "training_root": cfg.training_root,
             "features_root": cfg.features_root,
             "ard_root": cfg.ard_root,
+            "aggregation": cfg.aggregation,
         },
         fingerprints=patch_index_fingerprints(cfg.patch_index_root),
         git_revision=git_revision,
