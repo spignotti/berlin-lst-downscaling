@@ -203,6 +203,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         failures.append(f"stage1_locked regression: {exc}")
 
+    with initialize_config_dir(config_dir=_CONFIG_DIR, version_base=None):
+        locked_t4 = compose(config_name="stage5_locked", overrides=["aggregation=t4"])
+    try:
+        guard_modeling_config(locked_t4, "stage5_locked")
+        failures.append("stage5_locked must reject aggregation=t4")
+    except ValueError:
+        pass
+
     if failures:
         for line in failures:
             print(f"FAIL: {line}", file=sys.stderr)

@@ -52,6 +52,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.data.training.report import now_iso
+from berlin_lst_downscaling.modeling.aggregation import AGGREGATION_ARITHMETIC, AggregationMethod
 from berlin_lst_downscaling.modeling.baseline import PRIOR_RULE, PatchRecord, SplitSummary
 from berlin_lst_downscaling.modeling.channels import (
     ABLATION_STAGE_CHANNELS,
@@ -561,7 +562,11 @@ def collect_eval_split(
 
 
 def score_stage(
-    cache: EvalSplit, model: RandomForestRegressor, stage: StageSelection
+    cache: EvalSplit,
+    model: RandomForestRegressor,
+    stage: StageSelection,
+    *,
+    aggregation: AggregationMethod = AGGREGATION_ARITHMETIC,
 ) -> list[PatchRecord]:
     """Score one stage over a cached split through the shared 10 m pooling path."""
     records: list[PatchRecord] = []
@@ -579,9 +584,9 @@ def score_stage(
         features = np.load(cache.feature_files[i], allow_pickle=False)
         residual = predict_10m(model, features, cache.prior_100m[i], stage)
         prediction = torch.from_numpy(reconstruct_10m_prediction(cache.prior_100m[i], residual))
-        pooled = pool_10m_to_100m(prediction)
         target = torch.from_numpy(cache.target_100m[i][None, None])
         mask = torch.from_numpy(cache.mask_100m[i][None, None])
+        pooled = pool_10m_to_100m(prediction, aggregation, mask)
         error_sum, count = masked_abs_error_sums(pooled, target, mask)
         ssim_sum, ssim_windows = masked_ssim_stats(pooled, target, mask)
         records.append(
@@ -824,6 +829,7 @@ def build_report(
             "training_root": cfg.training_root,
             "features_root": cfg.features_root,
             "ard_root": cfg.ard_root,
+            "aggregation": cfg.aggregation,
         },
         fingerprints=patch_index_fingerprints(cfg.patch_index_root),
         resolved_config=resolved_config,

@@ -41,6 +41,7 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn.ensemble import RandomForestRegressor
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
+from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
@@ -90,6 +91,7 @@ def _source_config(cfg: DictConfig) -> RealSourceConfig:
         training_root=str(cfg.training_root),
         features_root=str(cfg.features_root),
         ard_root=str(cfg.ard_root),
+        aggregation=resolve_aggregation_method(cfg.get("aggregation")),
     )
 
 
@@ -300,7 +302,7 @@ def main(cfg: DictConfig) -> int:
             summaries = {}
             for split in splits:
                 cache = caches[split]
-                records = score_stage(cache, model, stage)
+                records = score_stage(cache, model, stage, aggregation=source.aggregation)
                 summaries[split] = summarize_records(
                     records,
                     requested=cache.requested_patches,

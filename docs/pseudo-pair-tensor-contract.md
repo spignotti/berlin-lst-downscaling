@@ -75,13 +75,17 @@ it.
 
 ## Variant B (main contract)
 
-The model predicts at 10 m. Training compares a **10×10 nested block mean
-of the 10 m prediction** against the **native 100 m Landsat LST**, on the
+The model predicts at 10 m. Training compares a **10×10 nested block
+reduction of the 10 m prediction** against the **native 100 m Landsat LST**
+(physical Kelvin), on the
 `training_eligible@100m` mask.
 
-1. Nested 10×10 mean pooling of `prediction_10m` gives `prediction_100m`
-   on the canonical 100 m grid. Pooling is exact over each disjoint 10×10
-   block; no resampling and no partial-block handling beyond the mask.
+1. Nested 10×10 pooling of `prediction_10m` gives `prediction_100m` on the
+   canonical 100 m grid. The default is the block **arithmetic mean**;
+   optional **T4** \((\mathrm{mean}(T^4))^{1/4}\) applies only to physical
+   Kelvin fields (prior construction and LST pooling). Feature channels stay
+   arithmetic. Pooling is exact over each disjoint 10×10 block; no
+   resampling and no partial-block handling beyond the mask.
 2. The loss compares `prediction_100m` with `target_100m` only where
    `mask_100m` is true.
 

@@ -9,6 +9,7 @@ nox.options.sessions = [
     "typecheck",
     "tests",
     "validate-ablation-configs",
+    "smoke-training-contract-cpu",
     "smoke-modeling",
     "smoke-modeling-contract",
 ]
@@ -1466,6 +1467,19 @@ def smoke_modeling(session: nox.Session) -> None:
 
 
 # ── WB3 contract-shaped synthetic smoke (opt-in, no GCS) ──────────────
+
+
+@nox.session(venv_backend="none", name="smoke-training-contract-cpu")
+def smoke_training_contract_cpu(session: nox.Session) -> None:
+    """Issue #80 section 5 CPU verification matrix (synthetic, offline)."""
+    session.run(
+        "uv",
+        "run",
+        "pytest",
+        "tests/test_issue80_training_contract_cpu.py",
+        "-q",
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none", name="smoke-modeling-contract")

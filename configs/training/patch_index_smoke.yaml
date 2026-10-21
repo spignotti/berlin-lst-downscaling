@@ -9,3 +9,5 @@ defaults:
 
 source_root: "data/smoke/training-data"
 output_root: "data/smoke/patch-index"
+
+train_min_eligible_fraction: 0.95
