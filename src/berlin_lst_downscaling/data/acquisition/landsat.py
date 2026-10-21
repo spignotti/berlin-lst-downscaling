@@ -35,6 +35,7 @@ def load_landsat_scene(
     max_items: int | None = None,
     resolution: int | None = None,
     items: list[pystac.Item] | None = None,
+    geobox: Any | None = None,
     **odc_kw: Any,
 ) -> tuple[xr.Dataset, list[str]]:
     """Search Planetary Computer for Landsat scenes and load them.
@@ -63,9 +64,15 @@ def load_landsat_scene(
         ``max_items`` are ignored and no STAC search is performed.
         Use this for manifest-driven ``mode=full`` to avoid
         re-querying PC by date.
+    geobox :
+        Destination grid. When omitted, the canonical grid at
+        ``resolution`` is used. The area-mean path passes the canonical
+        100 m grid for ``lwir11`` and a USGS-aligned 30 m grid for
+        ``qa_pixel``.
     **odc_kw :
         Additional keyword arguments forwarded to ``odc.stac.load``
-        (e.g. ``chunks``, ``resampling``).
+        (e.g. ``chunks``, ``resampling``, ``nodata``). ``resampling``
+        omitted means nearest in odc-stac 0.5.2. Pass it explicitly.
 
     Returns
     -------
@@ -99,11 +106,13 @@ def load_landsat_scene(
 
     bands = list(bands) if bands is not None else _LANDSAT_BANDS
     res = resolution if resolution is not None else TARGET_RESOLUTION
+    if geobox is None:
+        geobox = canon_grid_for_resolution(res)
 
     ds = stac_load(
         items=items,
         bands=bands,
-        geobox=canon_grid_for_resolution(res),
+        geobox=geobox,
         chunks={"x": 2048, "y": 2048},
         groupby="solar_day",
         **odc_kw,

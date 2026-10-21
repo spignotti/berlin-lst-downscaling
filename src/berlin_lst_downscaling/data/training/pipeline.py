@@ -37,6 +37,8 @@ from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.training.contracts import (
     EXPECTED_V3_CONFIG_HASH,
+    IMPLAUSIBLE_LST_REASON,
+    IMPLAUSIBLE_LST_SCENE_IDS,
     INFERENCE_DEFERRED_REASON,
     NO_ELIGIBLE_CELLS_REASON,
     split_for_year,
@@ -146,6 +148,22 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
                     year=scene.year,
                     s2_scene_id=scene.s2_scene_id,
                     split=split,
+                    status="excluded",
+                    sensor=_sensor(scene.scene_id),
+                    exclusion_reason=reason,
+                )
+            )
+            exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
+            continue
+
+        if scene.scene_id in IMPLAUSIBLE_LST_SCENE_IDS:
+            reason = IMPLAUSIBLE_LST_REASON
+            results.append(
+                SceneTrainingResult(
+                    scene_id=scene.scene_id,
+                    year=scene.year,
+                    s2_scene_id=scene.s2_scene_id,
+                    split=split_for_year(scene.year),
                     status="excluded",
                     sensor=_sensor(scene.scene_id),
                     exclusion_reason=reason,
