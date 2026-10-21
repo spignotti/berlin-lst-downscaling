@@ -12,11 +12,11 @@ can be drawn from the saved tables without scanning the rasters again.
 
 Read only:
 
-- `gs://berlin-lst-training-data/training/v1` — manifest, eligible-cell
+- `gs://berlin-lst-training-data/training/v2` — manifest, eligible-cell
   index, per-scene provenance, scaler fingerprint
-- Feature Release V3 — 28 channels and `feature_valid`
+- Feature Release v5 — 28 channels and `feature_valid`
 - the v3 anchor manifest — acquisition month and meteorological season
-- `gs://berlin-lst-training-data/training/patch-index/v1` — patch
+- `gs://berlin-lst-training-data/training/patch-index/v2` — patch
   acceptance, kept separate from cell counts
 - `gs://berlin-lst-training-data/evaluation/stadtstruktur/v1` — share
   areas on cells whose centre is inside the Berlin boundary
@@ -61,7 +61,7 @@ support, including edge cells with fewer than 100 present subpixels.
 
 ## Output
 
-`gs://berlin-lst-training-data/evaluation/eda/v1/`
+`gs://berlin-lst-training-data/evaluation/eda/v2/`
 
 Tables are under `tables/`. One Parquet per scene with eligible cells is
 under `observations/`. `summary.json` holds the input fingerprints, the
@@ -71,21 +71,23 @@ rules above, the population counts, and the data gaps. Logs are under
 ## Reproduce
 
 ```
-uv run python scripts/operators/run_training_eda.py --output-dir /tmp/eda-v1
+uv run python scripts/operators/run_training_eda.py --output-dir /tmp/eda-v2
 uv run python scripts/validators/validate_training_eda.py \
-  --eda-dir /tmp/eda-v1 \
-  --manifest gs://berlin-lst-training-data/training/v1/manifest.parquet
+  --eda-dir /tmp/eda-v2 \
+  --manifest gs://berlin-lst-training-data/training/v2/manifest.parquet
 ```
 
 The full raster scan runs on `berlin-lst-vm` through
 `.opencode/skills/google-access/scripts/run-training-eda-vm.sh`. That
-launcher writes to `/workspace/eda-v1` on the boot disk. The validator's
+launcher writes to `/workspace/eda-v2` on the boot disk. The validator's
 `--self-check` locks the season map, the vintage map, the quantiles, the
 neighbor rule, and the area weights without reading GCS.
 
 ## Findings
 
-The release is `gs://berlin-lst-training-data/evaluation/eda/v1/`. The
+The counts in this section are the scan of
+`gs://berlin-lst-training-data/evaluation/eda/v1/` over `training/v1`.
+They stay until the `evaluation/eda/v2` scan replaces them. The
 scan commit recorded in `summary.json` is
 `d7074f0e073737cda6157d8f3c6d040cd3b3b9c0`. The copy under
 `docs/results/eda-v1/summary.json` is that file. Counts below are exact.

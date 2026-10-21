@@ -7,7 +7,7 @@ uv run python scripts/validators/validate_training_eda.py --self-check
 
 uv run python scripts/validators/validate_training_eda.py \\
     --eda-dir /tmp/eda-v1 \\
-    --manifest gs://berlin-lst-training-data/training/v1/manifest.parquet
+    --manifest gs://berlin-lst-training-data/training/v2/manifest.parquet
 """
 
 from __future__ import annotations

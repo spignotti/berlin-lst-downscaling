@@ -17,7 +17,7 @@ uv run python scripts/operators/run_training_eda.py \\
 
 uv run python scripts/operators/run_training_eda.py \\
     --output-dir /tmp/eda-v1 --upload-only \\
-    --upload-uri gs://berlin-lst-training-data/evaluation/eda/v1
+    --upload-uri gs://berlin-lst-training-data/evaluation/eda/v2
 """
 
 from __future__ import annotations

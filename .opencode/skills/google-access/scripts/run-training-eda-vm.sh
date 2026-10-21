@@ -14,8 +14,8 @@ source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 BRANCH="${1:-analysis/eda-v1}"
 PIPELINE_LABEL="Training EDA"
 MARKER_CONFIG="eda_v1"
-RELEASE_ROOT="gs://berlin-lst-training-data/evaluation/eda/v1"
-REMOTE_CMD="uv run python scripts/operators/run_training_eda.py --output-dir /workspace/eda-v1 && uv run python scripts/validators/validate_training_eda.py --eda-dir /workspace/eda-v1 --manifest gs://berlin-lst-training-data/training/v1/manifest.parquet && uv run python scripts/operators/run_training_eda.py --output-dir /workspace/eda-v1 --upload-only --upload-uri ${RELEASE_ROOT}"
+RELEASE_ROOT="gs://berlin-lst-training-data/evaluation/eda/v2"
+REMOTE_CMD="uv run python scripts/operators/run_training_eda.py --output-dir /workspace/eda-v2 && uv run python scripts/validators/validate_training_eda.py --eda-dir /workspace/eda-v2 --manifest gs://berlin-lst-training-data/training/v2/manifest.parquet && uv run python scripts/operators/run_training_eda.py --output-dir /workspace/eda-v2 --upload-only --upload-uri ${RELEASE_ROOT}"
 POLL_MAX_SECONDS=64800
 
 vm_init_run "training-eda"

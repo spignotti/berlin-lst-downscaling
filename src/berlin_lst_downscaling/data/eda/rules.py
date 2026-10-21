@@ -15,11 +15,11 @@ from berlin_lst_downscaling.data.stadtstruktur.class_review import (
 )
 
 RELEASE_ID = "eda-v1"
-OUTPUT_URI = "gs://berlin-lst-training-data/evaluation/eda/v1"
-TRAINING_ROOT = "gs://berlin-lst-training-data/training/v1"
-FEATURES_ROOT = "gs://berlin-lst-training-data/features/v3"
+OUTPUT_URI = "gs://berlin-lst-training-data/evaluation/eda/v2"
+TRAINING_ROOT = "gs://berlin-lst-training-data/training/v2"
+FEATURES_ROOT = "gs://berlin-lst-training-data/features/v5"
 STADTSTRUKTUR_ROOT = "gs://berlin-lst-training-data/evaluation/stadtstruktur/v1"
-PATCH_INDEX_ROOT = "gs://berlin-lst-training-data/training/patch-index/v1"
+PATCH_INDEX_ROOT = "gs://berlin-lst-training-data/training/patch-index/v2"
 V3_MANIFEST_URI = (
     "gs://berlin-lst-training-data/manifests/v3/"
     "2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet"
