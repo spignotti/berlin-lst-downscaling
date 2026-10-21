@@ -137,7 +137,15 @@ def _check_marker(root: str, errors: list[str]) -> dict:
     return marker
 
 
-def _check_rows(rows: list[dict], errors: list[str]) -> dict:
+def _min_eligible_cells_for_row(row: dict, geometry: dict) -> int:
+    split = str(row["split"])
+    by_split = geometry.get("admission_by_split")
+    if isinstance(by_split, dict) and split in by_split:
+        return int(by_split[split]["min_eligible_cells"])
+    return _MIN_ELIGIBLE_CELLS
+
+
+def _check_rows(rows: list[dict], errors: list[str], *, geometry: dict) -> dict:
     """Verify the per-row contract and return derived aggregates."""
     by_split: dict[str, int] = {}
     by_year: dict[str, int] = {}
@@ -160,12 +168,14 @@ def _check_rows(rows: list[dict], errors: list[str]) -> dict:
             errors.append(f"{sid}: anchor ({grow}, {gcol}) not a multiple of {_PATCH_CELLS}")
         if int(row["n_total"]) != _N_CELLS:
             errors.append(f"{sid}: n_total {row['n_total']} != {_N_CELLS}")
+        split = str(row["split"])
         n_elig = int(row["n_eligible"])
         if not 0 <= n_elig <= _N_CELLS:
             errors.append(f"{sid}: n_eligible {n_elig} outside [0, {_N_CELLS}]")
-        if n_elig < _MIN_ELIGIBLE_CELLS:
+        min_cells = _min_eligible_cells_for_row(row, geometry)
+        if n_elig < min_cells:
             errors.append(
-                f"{sid}: ({grow}, {gcol}) n_eligible {n_elig} < {_MIN_ELIGIBLE_CELLS}"
+                f"{sid}: ({grow}, {gcol}) n_eligible {n_elig} < {min_cells} ({split})"
             )
         frac = float(row["eligible_frac"])
         if frac != n_elig / _N_CELLS:
@@ -178,7 +188,6 @@ def _check_rows(rows: list[dict], errors: list[str]) -> dict:
         expected_cy = _CANON_Y - grow * _CELL - _PATCH_CELLS * _CELL / 2
         if float(row["center_x"]) != expected_cx or float(row["center_y"]) != expected_cy:
             errors.append(f"{sid}: ({grow}, {gcol}) center coordinates mismatch")
-        split = str(row["split"])
         if split not in _NON_INFERENCE_SPLITS:
             errors.append(f"{sid}: split {split!r} is not a training split")
         if not str(row["eligibility_mask"] or ""):
@@ -245,7 +254,16 @@ def _check_qa(qa: dict, derived: dict, marker: dict, errors: list[str]) -> None:
         errors.append(f"qa geometry patch_cells {geometry.get('patch_cells')!r} != {_PATCH_CELLS}")
     if geometry.get("n_total") != _N_CELLS:
         errors.append(f"qa geometry n_total {geometry.get('n_total')!r} != {_N_CELLS}")
-    if geometry.get("min_eligible_cells") != _MIN_ELIGIBLE_CELLS:
+    by_split = geometry.get("admission_by_split")
+    if by_split:
+        for split in ("train", "validation", "test"):
+            entry = by_split.get(split) or {}
+            min_cells = entry.get("min_eligible_cells")
+            if split in ("validation", "test") and min_cells != _MIN_ELIGIBLE_CELLS:
+                errors.append(
+                    f"qa geometry {split} min_eligible_cells must stay at {_MIN_ELIGIBLE_CELLS}"
+                )
+    elif geometry.get("min_eligible_cells") != _MIN_ELIGIBLE_CELLS:
         errors.append("qa geometry min_eligible_cells does not match the 95% rule")
     if geometry.get("stride_cells") != _PATCH_CELLS:
         errors.append("qa geometry stride_cells is not the non-overlapping patch size")
@@ -343,6 +361,7 @@ def _recompute_scenes(
     rows_by_scene: dict[str, list[dict]],
     *,
     max_scenes: int,
+    geometry: dict,
     errors: list[str],
 ) -> int:
     """Recompute accepted windows from the source COGs for sampled scenes."""
@@ -381,10 +400,17 @@ def _recompute_scenes(
             errors.append(f"{sid}: mask has values outside {{0, 1}}")
         eligible = mask == 1
 
+        scene_split = str(rows_by_scene[sid][0]["split"])
+        by_split = geometry.get("admission_by_split") or {}
+        if scene_split in by_split:
+            min_cells = int(by_split[scene_split]["min_eligible_cells"])
+        else:
+            min_cells = _MIN_ELIGIBLE_CELLS
+
         accepted: dict[tuple[int, int], int] = {}
         for grow, gcol, r, c in _window_anchors(height, width, row0=grow0, col0=gcol0):
             n_elig = int(eligible[r : r + _PATCH_CELLS, c : c + _PATCH_CELLS].sum())
-            if n_elig >= _MIN_ELIGIBLE_CELLS:
+            if n_elig >= min_cells:
                 accepted[(grow, gcol)] = n_elig
 
         indexed = {
@@ -454,7 +480,8 @@ def main() -> int:
         print(f"FAIL: {len(errors)} finding(s)")
         return 1
 
-    derived = _check_rows(rows, errors)
+    geometry = qa.get("geometry") if isinstance(qa.get("geometry"), dict) else {}
+    derived = _check_rows(rows, errors, geometry=geometry)
     _check_qa(qa, derived, marker, errors)
 
     source_root = args.source_root or str(qa.get("source", {}).get("release_root") or "")
@@ -466,7 +493,12 @@ def main() -> int:
     rows_by_scene: dict[str, list[dict]] = {}
     for row in rows:
         rows_by_scene.setdefault(str(row["scene_id"]), []).append(row)
-    checked = _recompute_scenes(rows_by_scene, max_scenes=args.max_scene_checks, errors=errors)
+    checked = _recompute_scenes(
+        rows_by_scene,
+        max_scenes=args.max_scene_checks,
+        geometry=geometry,
+        errors=errors,
+    )
 
     for e in errors:
         print(f"  ✗ {e}")

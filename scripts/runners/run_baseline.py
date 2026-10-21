@@ -32,6 +32,7 @@ import hydra
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
+from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
 from berlin_lst_downscaling.modeling.baseline import (
     build_report,
     evaluate_baseline,
@@ -55,6 +56,7 @@ def _source_config(cfg: DictConfig) -> RealSourceConfig:
         training_root=str(cfg.training_root),
         features_root=str(cfg.features_root),
         ard_root=str(cfg.ard_root),
+        aggregation=resolve_aggregation_method(cfg.get("aggregation")),
     )
 
 
