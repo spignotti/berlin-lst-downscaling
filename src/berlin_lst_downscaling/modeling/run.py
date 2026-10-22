@@ -366,6 +366,9 @@ class EpochMetricsRecorder(Callback):
                 "validation_valid_cells": None,
                 "validation_ssim_100m": None,
                 "validation_ssim_windows": None,
+                "validation_ssim_supported": None,
+                "validation_pred_outside_lst_range_frac": None,
+                "train_ssim_supported": None,
                 "train_thermal_l1_unweighted": None,
                 "train_thermal_ssim_unweighted": None,
                 "train_thermal_grad_unweighted": None,
@@ -389,6 +392,10 @@ class EpochMetricsRecorder(Callback):
         entry["validation_valid_cells"] = self._read(trainer, "validation/valid_cells")
         entry["validation_ssim_100m"] = self._read(trainer, "validation/ssim_100m")
         entry["validation_ssim_windows"] = self._read(trainer, "validation/ssim_windows")
+        entry["validation_ssim_supported"] = self._read(trainer, "validation/ssim_supported")
+        entry["validation_pred_outside_lst_range_frac"] = self._read(
+            trainer, "validation/pred_outside_lst_range_frac"
+        )
         for key, field in (
             ("validation/thermal_l1_unweighted", "validation_thermal_l1_unweighted"),
             ("validation/thermal_ssim_unweighted", "validation_thermal_ssim_unweighted"),
@@ -402,6 +409,7 @@ class EpochMetricsRecorder(Callback):
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         entry = self._entry(int(trainer.current_epoch) + 1)
         entry["train_mae_100m"] = self._read(trainer, "train/mae_100m")
+        entry["train_ssim_supported"] = self._read(trainer, "train/ssim_supported")
         for key, field in (
             ("train/thermal_l1_unweighted", "train_thermal_l1_unweighted"),
             ("train/thermal_ssim_unweighted", "train_thermal_ssim_unweighted"),
