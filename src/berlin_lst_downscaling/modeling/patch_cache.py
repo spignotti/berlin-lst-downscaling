@@ -177,19 +177,27 @@ def build_patch_cache(
     count = len(patch_ids)
     arrays = {
         "features": np.lib.format.open_memmap(
-            root / _ARRAYS["features"][0], mode="w+", dtype="float32",
+            root / _ARRAYS["features"][0],
+            mode="w+",
+            dtype="float32",
             shape=_feature_shape(count, active_channels),
         ),
         "prior": np.lib.format.open_memmap(
-            root / _ARRAYS["prior"][0], mode="w+", dtype="float32",
+            root / _ARRAYS["prior"][0],
+            mode="w+",
+            dtype="float32",
             shape=(count, 1, REAL_PATCH_PX, REAL_PATCH_PX),
         ),
         "target": np.lib.format.open_memmap(
-            root / _ARRAYS["target"][0], mode="w+", dtype="float32",
+            root / _ARRAYS["target"][0],
+            mode="w+",
+            dtype="float32",
             shape=(count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
         ),
         "mask": np.lib.format.open_memmap(
-            root / _ARRAYS["mask"][0], mode="w+", dtype="bool",
+            root / _ARRAYS["mask"][0],
+            mode="w+",
+            dtype="bool",
             shape=(count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
         ),
     }

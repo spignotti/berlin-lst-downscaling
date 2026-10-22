@@ -14,6 +14,7 @@ _AOI_CENTROID = (52.51, 13.42)  # Berlin approximate centroid (lat, lon)
 
 # ── public API ───────────────────────────────────────────────────────
 
+
 def solar_position(
     dt: datetime,
     lat: float | None = None,
@@ -43,9 +44,11 @@ def solar_position(
 
     return _noaa_solar_position(dt, lat, lon)
 
+
 # ── NOAA solar position algorithm (simplified) ───────────────────────
 # Based on the NOAA Solar Calculator / ESRL algorithm.
 # Accuracy ~ ±1° — sufficient for shadow-offset projection at 10 m.
+
 
 def _noaa_solar_position(dt: datetime, lat_deg: float, lon_deg: float) -> tuple[float, float]:
     """Compute solar azimuth (from N) and elevation (above horizon)."""
@@ -103,6 +106,7 @@ def _noaa_solar_position(dt: datetime, lat_deg: float, lon_deg: float) -> tuple[
         az = 360.0 - az
 
     return (az, elevation)
+
 
 __all__ = [
     "solar_position",

@@ -174,9 +174,7 @@ def _check_rows(rows: list[dict], errors: list[str], *, geometry: dict) -> dict:
             errors.append(f"{sid}: n_eligible {n_elig} outside [0, {_N_CELLS}]")
         min_cells = _min_eligible_cells_for_row(row, geometry)
         if n_elig < min_cells:
-            errors.append(
-                f"{sid}: ({grow}, {gcol}) n_eligible {n_elig} < {min_cells} ({split})"
-            )
+            errors.append(f"{sid}: ({grow}, {gcol}) n_eligible {n_elig} < {min_cells} ({split})")
         frac = float(row["eligible_frac"])
         if frac != n_elig / _N_CELLS:
             errors.append(f"{sid}: ({grow}, {gcol}) eligible_frac {frac} != {n_elig}/{_N_CELLS}")
@@ -414,8 +412,7 @@ def _recompute_scenes(
                 accepted[(grow, gcol)] = n_elig
 
         indexed = {
-            (int(row["row"]), int(row["col"])): int(row["n_eligible"])
-            for row in rows_by_scene[sid]
+            (int(row["row"]), int(row["col"])): int(row["n_eligible"]) for row in rows_by_scene[sid]
         }
         missing = sorted(set(accepted) - set(indexed))
         extra = sorted(set(indexed) - set(accepted))

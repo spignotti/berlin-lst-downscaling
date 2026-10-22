@@ -54,6 +54,7 @@ def _read_table(uri: str):
     """Read a Parquet table from local path or GCS."""
     if uri.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import read_bytes
+
         return pq.read_table(io.BytesIO(read_bytes(uri)))
     return pq.read_table(uri)
 
@@ -120,6 +121,7 @@ def main() -> int:
 
     # ── Count validation ───────────────────────────────────────────
     from collections import Counter
+
     source_counts = Counter(r["source"][0] for r in done_rows)
     print(f"Done by source: {dict(source_counts)}")
 
@@ -157,6 +159,7 @@ def main() -> int:
 
         # Check file existence (local or GCS)
         from berlin_lst_downscaling.data.io import exists
+
         for label, uri in [
             ("COG", path_cog),
             ("STAC", path_stac),
@@ -235,10 +238,7 @@ def _validate_s2_six_bands(cog_uri: str, res: SceneResult) -> None:
                 arr = src.read(i + 1, out_shape=(out_h, out_w)).astype(np.float64)
                 valid = arr[np.isfinite(arr)]
                 if valid.size == 0:
-                    res.fail(
-                        f"S2 band {src.descriptions[i]} is entirely NaN "
-                        f"(sampled overview)"
-                    )
+                    res.fail(f"S2 band {src.descriptions[i]} is entirely NaN (sampled overview)")
                     continue
                 if valid.min() < 0.0 or valid.max() > 1.0:
                     res.fail(
@@ -304,10 +304,7 @@ def _validate_stac(stac_uri: str, res: SceneResult, schema_version: int | None =
         if schema_version is not None:
             stac_version = props.get("ard:schema_version")
             if stac_version != str(schema_version):
-                res.fail(
-                    f"STAC ard:schema_version {stac_version!r} != ledger "
-                    f"{schema_version!r}"
-                )
+                res.fail(f"STAC ard:schema_version {stac_version!r} != ledger {schema_version!r}")
 
     except Exception as exc:
         res.fail(f"Cannot validate STAC: {exc}")

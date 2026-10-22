@@ -32,6 +32,7 @@ class DownloadReceipt:
     checksum: str  # SHA-256 hex digest
     local_cache_path: str | None = None  # local path to the archive, if retained
 
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, max=10),
@@ -121,7 +122,9 @@ def download_to_raw(
             local_cache_path=str(local_cache_path) if local_cache_path else None,
         )
 
+
 # ── helpers ───────────────────────────────────────────────────────────────
+
 
 def _stream_sha256_gcs(uri: str) -> str:
     """Stream-download a GCS object and compute its SHA-256."""
@@ -142,6 +145,7 @@ def _stream_sha256_gcs(uri: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
 def _cache_from_gcs(uri: str, cache_path: str) -> None:
     """Download a GCS object to a local cache path, skipping if cached."""
     from google.cloud import storage  # type: ignore[import-untyped]
@@ -156,6 +160,7 @@ def _cache_from_gcs(uri: str, cache_path: str) -> None:
     blob = client.bucket(bucket_name).blob(key)
     blob.download_to_filename(str(cp))
 
+
 def _ensure_local_cache(src: Path, cache_path: str) -> None:
     """Copy *src* to *cache_path* unless the cache already holds the file."""
     cp = Path(cache_path).expanduser()
@@ -163,6 +168,7 @@ def _ensure_local_cache(src: Path, cache_path: str) -> None:
         return
     cp.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(src), str(cp))
+
 
 __all__ = [
     "DownloadReceipt",

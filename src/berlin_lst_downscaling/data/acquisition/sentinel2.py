@@ -22,6 +22,7 @@ _S2_BANDS = ["B02", "B03", "B04", "B08", "SCL"]
 # the SWIR bands can be masked at native resolution before resampling.
 S2_SWIR_BANDS = ["B11", "B12", "SCL"]
 
+
 def load_s2_scene(
     date: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,

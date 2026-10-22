@@ -5,6 +5,7 @@ canonical v3 manifest bundle. The thin Hydra adapter in
 ``scripts/runners/build_manifest.py`` is the entry point; this module holds
 the work so the heavy lifting lives alongside the selection stages.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from omegaconf import DictConfig
 
 _logger = logging.getLogger(__name__)
+
 
 def run_couple(cfg: DictConfig) -> int:
     """Build the canonical v3 manifest bundle from the configured selection policy.
@@ -156,9 +158,7 @@ def run_couple(cfg: DictConfig) -> int:
         cutoff_utc=cfg.get("cutoff_utc"),
         cfg=cfg,
     )
-    coupling_rate = (
-        result.n_coupled / result.n_anchors if result.n_anchors > 0 else 0.0
-    )
+    coupling_rate = result.n_coupled / result.n_anchors if result.n_anchors > 0 else 0.0
     log_event(
         _logger,
         logging.INFO,
@@ -177,6 +177,7 @@ def run_couple(cfg: DictConfig) -> int:
     )
     return 0
 
+
 def _resolve_landsat_items(anchor: dict, cfg) -> list:
     """Resolve STAC items for one Landsat anchor (± 1 day tolerance)."""
     from datetime import timedelta
@@ -192,6 +193,7 @@ def _resolve_landsat_items(anchor: dict, cfg) -> list:
         datetime=f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}",
     )
     return list(search.items())
+
 
 def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
     """Resolve the fixed ECOSTRESS validation granules from the configured allowlist."""
@@ -223,5 +225,6 @@ def _resolve_ecostress_allowlist(cfg: DictConfig) -> list[dict]:
             }
         )
     return granules
+
 
 __all__ = ["run_couple"]

@@ -14,12 +14,14 @@ def scene_dir(root: str, source: str, year: int, scene_id: str) -> str:
     # that's why we join with f-strings here.
     return f"{root.rstrip('/')}/{source}/{year}/{scene_id}"
 
+
 def cog_path(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the full output path for the scene's COG.
 
     Example: ``<root>/landsat-c2-l2/2024/LC09_L2SP_193024_20240629_02_T1/…``
     """
     return f"{scene_dir(root, source, year, scene_id)}/{scene_id}.tif"
+
 
 def stac_path(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the full output path for the scene's STAC item.
@@ -28,6 +30,7 @@ def stac_path(root: str, source: str, year: int, scene_id: str) -> str:
     """
     return f"{scene_dir(root, source, year, scene_id)}/{scene_id}.stac.json"
 
+
 def flag_path(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the output path for the scene's flag COG (uint8 bitmask).
 
@@ -35,13 +38,16 @@ def flag_path(root: str, source: str, year: int, scene_id: str) -> str:
     """
     return f"{scene_dir(root, source, year, scene_id)}/{scene_id}.flag.tif"
 
+
 def provenance_path(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the output path for the scene's provenance JSON."""
     return f"{scene_dir(root, source, year, scene_id)}/provenance.json"
 
+
 def completion_path(root: str, source: str, year: int, scene_id: str) -> str:
     """Return the output path for the scene's completion marker."""
     return f"{scene_dir(root, source, year, scene_id)}/complete.json"
+
 
 __all__ = [
     "scene_dir",

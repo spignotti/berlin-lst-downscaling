@@ -229,7 +229,8 @@ def publish_release(
             # release becomes visible only when every artifact is in place AND
             # readback passed.
             marker = {
-                "published_at": now_iso(), "run_id": run_id,
+                "published_at": now_iso(),
+                "run_id": run_id,
                 "policy_hash": policy_hash,
             }
             atomic_write(

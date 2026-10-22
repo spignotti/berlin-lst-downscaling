@@ -37,6 +37,7 @@ from berlin_lst_downscaling.data.secondary.source_products import (
 
 _logger = logging.getLogger(__name__)
 
+
 def run_derived(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the derived geometry pipeline (Pipeline B).
 
@@ -128,6 +129,7 @@ def run_derived(cfg: DictConfig, run_id: str | None = None) -> int:
     elapsed = time.perf_counter() - t0
     log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
     return 0 if failed == 0 else 1
+
 
 # ── DSM stage ────────────────────────────────────────────────────────
 
@@ -435,7 +437,9 @@ def _run_dsm_products(
 
     return failed
 
+
 # ── Horizons + SVF stage ────────────────────────────────────────────
+
 
 def _run_horizon_svf(
     led: SecondaryLedger,
@@ -745,7 +749,9 @@ def _run_horizon_svf(
 
     return failed
 
+
 # ── helpers ──────────────────────────────────────────────────────────
+
 
 def _ledger_product_hash(led: SecondaryLedger, item_id: str, geometry_id: str) -> str:
     """Return the config_hash of a done derived ledger row, else ``""``."""

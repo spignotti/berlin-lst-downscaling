@@ -130,6 +130,7 @@ def compute_aoi_metrics(
         "aoi_clear_frac": aoi_clear_frac,
     }
 
+
 __all__ = [
     "compute_aoi_metrics",
 ]

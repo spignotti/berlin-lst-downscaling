@@ -335,9 +335,7 @@ def _scan_stack(
         cog_uri, analysis_10, n_bands=len(FEATURE_CHANNELS), dtype="float32"
     )
     errors += _check_stack_metadata(mask_uri, analysis_10, n_bands=1, dtype="uint8")
-    sidecar_errors, coverage = _check_sidecars(
-        scene_id, cog_uri, stac_uri, prov_uri, comp_uri
-    )
+    sidecar_errors, coverage = _check_sidecars(scene_id, cog_uri, stac_uri, prov_uri, comp_uri)
     errors += sidecar_errors
 
     # ── Landsat target (100 m, full read — tiny) ───────────────────────
@@ -398,8 +396,7 @@ def _scan_stack(
 
                 if not set(np.unique(mask)).issubset({0, 1}):
                     findings.append(
-                        f"{scene_id}: mask values {np.unique(mask)} not in {{0,1}} "
-                        f"(tile {r0},{c0})"
+                        f"{scene_id}: mask values {np.unique(mask)} not in {{0,1}} (tile {r0},{c0})"
                     )
 
                 # ── independent mask reconstruction ───────────────────
@@ -468,9 +465,7 @@ def _scan_stack(
                     m[:bh, :bw] = valid
                 else:
                     m = valid.astype(np.uint8)
-                block_sum = m.reshape(ph // 10, 10, pw // 10, 10).sum(axis=(1, 3)).astype(
-                    np.int32
-                )
+                block_sum = m.reshape(ph // 10, 10, pw // 10, 10).sum(axis=(1, 3)).astype(np.int32)
                 br0, bc0 = r0 // 10, c0 // 10
                 support[br0 : br0 + ph // 10, bc0 : bc0 + pw // 10] += block_sum
     except Exception as exc:  # noqa: BLE001

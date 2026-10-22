@@ -224,8 +224,7 @@ class ContractSyntheticDataModule(LightningDataModule):
         counts = {"train": self.n_train, "validation": self.n_val, "test": self.n_test}
         generator = torch.Generator().manual_seed(self.seed)
         self._datasets = {
-            split: self._generate(split, counts[split], generator)
-            for split in _CONTRACT_SPLITS
+            split: self._generate(split, counts[split], generator) for split in _CONTRACT_SPLITS
         }
 
     def _generate(

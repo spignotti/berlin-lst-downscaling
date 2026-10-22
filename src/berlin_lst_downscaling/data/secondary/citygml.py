@@ -308,9 +308,7 @@ def _lod1_footprint(building_elem: ET.Element, ns: dict[str, str]) -> Polygon | 
 
     horizontal_faces.sort(key=lambda pair: pair[0])
     base_z = horizontal_faces[0][0]
-    base_faces: list[Polygon] = [
-        poly for z, poly in horizontal_faces if abs(z - base_z) <= 1e-3
-    ]
+    base_faces: list[Polygon] = [poly for z, poly in horizontal_faces if abs(z - base_z) <= 1e-3]
 
     try:
         merged = unary_union(base_faces)

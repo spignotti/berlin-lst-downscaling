@@ -107,6 +107,7 @@ class ImperviousnessAux:
     street_uri: str
     blocks_source_uri: str
 
+
 def contract_for_imperviousness() -> Contract:
     """Return the output Contract for imperviousness COGs."""
     return Contract(
@@ -125,6 +126,7 @@ def contract_for_imperviousness() -> Contract:
         schema_version=1,
         flag_mode="none",
     )
+
 
 def _content_digest(header: bytes, rows: list[tuple[bytes, bytes, bytes]]) -> str:
     """Hash mapping-relevant fields, independent of file metadata and row order."""
@@ -227,7 +229,9 @@ def config_hash_for_vintage(
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return sha256(raw.encode()).hexdigest()[:12]
 
+
 # ── scene-year → vintage mapping ──────────────────────────────────────
+
 
 def vintage_for_scene_year(year: int) -> int:
     """Return the imperviousness vintage that applies to a scene year.
@@ -241,7 +245,9 @@ def vintage_for_scene_year(year: int) -> int:
         return 2016
     return 2021
 
+
 # ── prepare ───────────────────────────────────────────────────────────
+
 
 def prepare_imperviousness(
     vintage: int,
@@ -368,7 +374,9 @@ def prepare_imperviousness(
         config_hash=c_hash,
     )
 
+
 # ── helpers ───────────────────────────────────────────────────────────
+
 
 def _raw_zip_uri(output_root: str, vintage: int) -> str:
     """Return the raw ZIP URI for a vintage."""
@@ -376,6 +384,7 @@ def _raw_zip_uri(output_root: str, vintage: int) -> str:
         f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/"
         f"{vintage}/Versiegelung_Raster_{vintage}.zip"
     )
+
 
 def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
     """Return a writable local cache path even when output_root is GCS.
@@ -389,6 +398,7 @@ def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/imperviousness_{vintage}.zip"
     return _raw_zip_uri(output_root, vintage)
+
 
 @contextlib.contextmanager
 def _zip_tiff_open(zip_path: Path):
@@ -407,6 +417,7 @@ def _zip_tiff_open(zip_path: Path):
     with rasterio.open(f"zip://{zip_path}!/{member}") as src:
         yield src
 
+
 def load_imperviousness_auxiliaries(output_root: str) -> ImperviousnessAux:
     """Download the street GeoPackage and the Stadtstruktur blocks.
 
@@ -417,9 +428,7 @@ def load_imperviousness_auxiliaries(output_root: str) -> ImperviousnessAux:
     cache_root = Path(tempfile.gettempdir()) / "berlin_lst"
     cache_root.mkdir(parents=True, exist_ok=True)
     street_cache = cache_root / "versieg2021_str.gpkg"
-    street_uri = (
-        f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/aux/versieg2021_str.gpkg"
-    )
+    street_uri = f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/aux/versieg2021_str.gpkg"
     receipt = download_to_raw(
         url=STREET_WFS_URL,
         destination=street_uri,
@@ -430,9 +439,7 @@ def load_imperviousness_auxiliaries(output_root: str) -> ImperviousnessAux:
 
     blocks_cache = cache_root / "stadtstruktur_2024_blocks.parquet"
     _ensure_local_gcs(BLOCKS_SOURCE_URI, blocks_cache)
-    blocks_copy = (
-        f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/aux/blocks_2024.parquet"
-    )
+    blocks_copy = f"{output_root.rstrip('/')}/_raw/secondary/imperviousness/aux/blocks_2024.parquet"
     if not exists(blocks_copy):
         atomic_upload(blocks_cache, blocks_copy)
 
@@ -499,9 +506,7 @@ def _map_codes(
     built = built_frame(blocks)
     means = donor_means(codes, block_id, n_blocks)
     targets = target_counts(codes, block_id, water, street_count, n_blocks)
-    ring_ids = fill_empty_blocks_from_ring(
-        codes, built, shape, src_transform, means, targets
-    )
+    ring_ids = fill_empty_blocks_from_ring(codes, built, shape, src_transform, means, targets)
     percent, stats = apply_mapping(
         codes,
         street_vg_sum=street_sum,

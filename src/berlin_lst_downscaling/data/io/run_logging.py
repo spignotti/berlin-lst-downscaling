@@ -38,6 +38,7 @@ from typing import Any
 
 # ── context filter ────────────────────────────────────────────────────
 
+
 class _ContextFilter(logging.Filter):
     """Inject pipeline and run_id into every LogRecord processed by a handler."""
 
@@ -51,7 +52,9 @@ class _ContextFilter(logging.Filter):
         record.run_id = self.run_id  # type: ignore[attr-defined]
         return True
 
+
 # ── formatters ────────────────────────────────────────────────────────
+
 
 class _TextFormatter(logging.Formatter):
     """Concise human-readable stderr output."""
@@ -62,6 +65,7 @@ class _TextFormatter(logging.Formatter):
         pipeline = getattr(record, "pipeline", "")
         prefix = f"[{pipeline}] " if pipeline else ""
         return f"{ts} {prefix}{event}"
+
 
 class _JSONLFormatter(logging.Formatter):
     """Structured JSONL output for machine consumption."""
@@ -87,7 +91,9 @@ class _JSONLFormatter(logging.Formatter):
             entry["exception"] = "".join(traceback.format_exception(*record.exc_info))
         return json.dumps(entry, default=str)
 
+
 # ── handlers ──────────────────────────────────────────────────────────
+
 
 class _StderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
     """Stream handler targeting stderr with the text formatter."""
@@ -95,6 +101,7 @@ class _StderrHandler(logging.StreamHandler):  # type: ignore[type-arg]
     def __init__(self) -> None:
         super().__init__(stream=__import__("sys").stderr)
         self.setFormatter(_TextFormatter())
+
 
 class _JSONLFileHandler(logging.FileHandler):  # type: ignore[type-arg]
     """File handler writing JSONL lines."""
@@ -104,7 +111,9 @@ class _JSONLFileHandler(logging.FileHandler):  # type: ignore[type-arg]
         super().__init__(str(path), encoding="utf-8")
         self.setFormatter(_JSONLFormatter())
 
+
 # ── helpers ───────────────────────────────────────────────────────────
+
 
 def run_log_path(
     output_root: str,
@@ -154,13 +163,17 @@ def write_run_context(
     try:
         result = subprocess.run(  # noqa: S607
             ["git", "rev-parse", "HEAD"],  # noqa: S607
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             ctx["git_commit"] = result.stdout.strip()
         result_dirty = subprocess.run(  # noqa: S607
             ["git", "status", "--porcelain"],  # noqa: S607
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result_dirty.returncode == 0:
             ctx["git_dirty"] = bool(result_dirty.stdout.strip())
@@ -176,6 +189,7 @@ def write_run_context(
     # Write to local or spool+upload for GCS
     if uri.startswith("gs://"):
         from berlin_lst_downscaling.data.io.storage import atomic_write
+
         atomic_write(uri, json_bytes, overwrite=True)
     else:
         path = Path(uri)
@@ -183,6 +197,7 @@ def write_run_context(
         path.write_bytes(json_bytes)
 
     return uri
+
 
 def log_event(
     logger: logging.Logger,
@@ -197,7 +212,9 @@ def log_event(
     """
     logger.log(level, event, extra={"fields": fields})
 
+
 # ── session ───────────────────────────────────────────────────────────
+
 
 class RunLogSession:
     """Context manager that configures stderr + JSONL logging for a run.
@@ -314,6 +331,7 @@ class RunLogSession:
             raise RuntimeError(
                 f"GCS log publication failed for {self._final_uri}: {upload_exc}"
             ) from upload_exc
+
 
 __all__ = [
     "RunLogSession",

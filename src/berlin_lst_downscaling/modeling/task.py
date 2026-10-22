@@ -66,9 +66,7 @@ class LSTRegressionTask(LightningModule):
         super().__init__()
         # The model is built from serializable config so ``load_from_checkpoint``
         # can reconstruct it; only the loss factory is excluded from hparams.
-        self.model = UNet(
-            in_channels=n_active_channels, base_width=base_width, depth=depth
-        )
+        self.model = UNet(in_channels=n_active_channels, base_width=base_width, depth=depth)
         self.n_active_channels = n_active_channels
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay

@@ -119,9 +119,7 @@ def finalize_feature_product(
     # accidental re-run overwriting a published stack before the
     # create-only marker write below would fail).
     if exists(completion_uri):
-        raise FileExistsError(
-            f"scene {prepared.scene_id} already published: {completion_uri}"
-        )
+        raise FileExistsError(f"scene {prepared.scene_id} already published: {completion_uri}")
 
     # Per-scene publish lock (atomic create-only): exactly one publisher
     # may hold the lock; a concurrent publisher aborts here instead of
@@ -140,13 +138,20 @@ def finalize_feature_product(
                     f"scene {prepared.scene_id} already published: {completion_uri}"
                 )
             return _finalize_locked(
-                prepared, grid, base, run_id, completed_at, cog_uri, mask_uri,
-                provenance_uri, stac_uri, completion_uri,
+                prepared,
+                grid,
+                base,
+                run_id,
+                completed_at,
+                cog_uri,
+                mask_uri,
+                provenance_uri,
+                stac_uri,
+                completion_uri,
             )
     except FileExistsError:
         raise RuntimeError(
-            f"scene {prepared.scene_id} is being published by another run "
-            f"(lock {lock_uri})"
+            f"scene {prepared.scene_id} is being published by another run (lock {lock_uri})"
         ) from None
 
 
@@ -305,8 +310,9 @@ def _validate_mask_pair(
         if src.dtypes[0] != "uint8":
             raise ValueError(f"pair validation: mask dtype {src.dtypes[0]!r}, expected 'uint8'")
         if (src.height, src.width) != (h, w):
-            raise ValueError(f"pair validation: shape mismatch mask {(src.height, src.width)} "
-                             f"vs data {(h, w)}")
+            raise ValueError(
+                f"pair validation: shape mismatch mask {(src.height, src.width)} vs data {(h, w)}"
+            )
 
     seen_values: set[int] = set()
     n_bad_mask = 0  # mask==1 but not all-finite-and-in-range
@@ -334,8 +340,7 @@ def _validate_mask_pair(
 
     if not seen_values.issubset({0, 1}):
         raise ValueError(
-            f"pair validation: mask has unexpected values {sorted(seen_values)}, "
-            "expected only 0/1"
+            f"pair validation: mask has unexpected values {sorted(seen_values)}, expected only 0/1"
         )
     if n_bad_mask:
         raise ValueError(

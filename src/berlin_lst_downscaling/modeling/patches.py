@@ -623,9 +623,7 @@ class RealPatchReader:
         uris = self._landsat_uris({scene_id}).get(scene_id)
         if uris is None:
             return None
-        prior = _build_scene_prior(
-            scene_id, uris[0], uris[1], method=self.cfg.aggregation
-        )
+        prior = _build_scene_prior(scene_id, uris[0], uris[1], method=self.cfg.aggregation)
         self._priors[scene_id] = prior
         return prior
 
@@ -714,9 +712,7 @@ class RealPatchReader:
         if outside:
             return None, TARGET_OUTSIDE_REASON
         with rasterio.open(prior.landsat_cog) as src:
-            window = Window.from_slices(
-                (r0, r0 + REAL_PATCH_CELLS), (c0, c0 + REAL_PATCH_CELLS)
-            )
+            window = Window.from_slices((r0, r0 + REAL_PATCH_CELLS), (c0, c0 + REAL_PATCH_CELLS))
             target = src.read(1, window=window).astype(np.float32)
 
         # The patch index stores the mask URI written at publication time;
@@ -774,9 +770,7 @@ class RealPatchReader:
                     f"{ref.patch_id}: feature window ({r0}, {c0}) is outside the stack "
                     f"({src.height}, {src.width})"
                 )
-            fwindow = Window.from_slices(
-                (r0, r0 + REAL_PATCH_PX), (c0, c0 + REAL_PATCH_PX)
-            )
+            fwindow = Window.from_slices((r0, r0 + REAL_PATCH_PX), (c0, c0 + REAL_PATCH_PX))
             bands = src.read(window=fwindow).astype(np.float32)
 
         self.scaler.apply(bands)
@@ -822,12 +816,8 @@ def collate_real_batch(
         if len(set(indices)) != len(indices):
             raise ValueError("channel_indices must be unique")
     index_array = np.asarray(indices, dtype=np.intp)
-    features = torch.from_numpy(
-        np.stack([s.features[index_array] for s in samples])
-    )
-    prior = torch.from_numpy(
-        np.stack([prior_model_channel(s.lst_prior_k) for s in samples])
-    )
+    features = torch.from_numpy(np.stack([s.features[index_array] for s in samples]))
+    prior = torch.from_numpy(np.stack([prior_model_channel(s.lst_prior_k) for s in samples]))
     target = torch.from_numpy(np.stack([s.target_100m for s in samples]))
     mask = torch.from_numpy(np.stack([s.mask_100m for s in samples]))
     return RealBatch(

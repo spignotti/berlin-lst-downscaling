@@ -84,9 +84,7 @@ def _anchor_counts(manifest_path: Path) -> dict[int, int]:
 def _upload(output_dir: Path, output_root: str) -> None:
     root = output_root.rstrip("/")
     files = sorted(
-        path
-        for path in output_dir.rglob("*")
-        if path.is_file() and path.name != "complete.json"
+        path for path in output_dir.rglob("*") if path.is_file() and path.name != "complete.json"
     )
     for path in files:
         relative = path.relative_to(output_dir).as_posix()

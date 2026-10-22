@@ -46,8 +46,7 @@ def resolve_canonical_uri(uri: str) -> str:
         return uri
     if uri.startswith("gs://"):
         raise ValueError(
-            f"asset URI {uri!r} does not belong to the canonical bucket "
-            f"{CANONICAL_BUCKET!r}"
+            f"asset URI {uri!r} does not belong to the canonical bucket {CANONICAL_BUCKET!r}"
         )
     return uri
 

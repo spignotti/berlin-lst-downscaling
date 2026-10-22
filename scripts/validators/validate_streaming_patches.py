@@ -163,9 +163,7 @@ def _batch_difference(a: RealBatch, b: RealBatch) -> str | None:
     return None
 
 
-def _first_c_difference(
-    a: RealBatch, b: RealBatch, n_active_channels: int
-) -> str | None:
+def _first_c_difference(a: RealBatch, b: RealBatch, n_active_channels: int) -> str | None:
     """Return the first field where a first-C batch differs from a 28-channel one.
 
     ``a`` is the selected-channel batch and ``b`` the full reference: the prior,
@@ -182,8 +180,7 @@ def _first_c_difference(
         return "target_100m differs"
     if a.features.shape[1] != n_active_channels:
         return (
-            f"selected batch carries {a.features.shape[1]} channels, "
-            f"expected {n_active_channels}"
+            f"selected batch carries {a.features.shape[1]} channels, expected {n_active_channels}"
         )
     if not _float_values_equal(a.features, b.features[:, :n_active_channels]):
         return f"features[:{n_active_channels}] differs from the full 28-channel read"
@@ -223,9 +220,7 @@ def main() -> int:
     # or unbounded) to the validator's own bound. The effective bound is
     # reported so the evidence states what was read.
     max_patches = (
-        _VALIDATOR_MAX_PATCHES
-        if raw_bound is None
-        else min(int(raw_bound), _VALIDATOR_MAX_PATCHES)
+        _VALIDATOR_MAX_PATCHES if raw_bound is None else min(int(raw_bound), _VALIDATOR_MAX_PATCHES)
     )
 
     errors: list[str] = []
@@ -379,9 +374,7 @@ def main() -> int:
         ref_scope = reference.stats()
         for split in _SPLITS:
             if ref_scope["patch_ids"][split] != eager["patch_ids"][split]:
-                errors.append(
-                    f"first-C reference: {split} admitted IDs differ from eager"
-                )
+                errors.append(f"first-C reference: {split} admitted IDs differ from eager")
         for split in _SPLITS:
             if not _usable("eager", split):
                 continue
@@ -400,9 +393,7 @@ def main() -> int:
             for i, (x, y) in enumerate(zip(selected, ref_batches, strict=True)):
                 difference = _first_c_difference(x, y, n_active)
                 if difference is not None:
-                    errors.append(
-                        f"first-C vs full-28 {split} batch {i}: {difference}"
-                    )
+                    errors.append(f"first-C vs full-28 {split} batch {i}: {difference}")
 
     # ── human-oriented QA summary ──
     for name in _ARMS:

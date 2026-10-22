@@ -93,9 +93,7 @@ def _check_no_raster(prefix: str, errors: list[str]) -> None:
     objects = _list_objects(prefix)
     masks = [o for o in objects if o.endswith(".tif")]
     if masks:
-        errors.append(
-            f"no-raster invariant violated: {len(masks)} .tif artifact(s) under {prefix}"
-        )
+        errors.append(f"no-raster invariant violated: {len(masks)} .tif artifact(s) under {prefix}")
 
 
 def _check_source_fingerprints(summary: dict, errors: list[str], warnings: list[str]) -> None:

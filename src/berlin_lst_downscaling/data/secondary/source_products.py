@@ -25,6 +25,7 @@ class ResolvedSource:
     completion_uri: str
     config_hash: str
 
+
 @dataclass
 class ResolutionReport:
     """Result of resolving all Pipeline A sources."""
@@ -36,12 +37,14 @@ class ResolutionReport:
     def ok(self) -> bool:
         return len(self.errors) == 0 and len(self.resolved) > 0
 
+
 # Sources consumed by Pipeline B — only geometry-relevant upstreams.
 _REQUIRED_SOURCES: dict[str, list[str]] = {
     "terrain_height": ["2021"],
     "vegetation_height": ["2020"],
     "lod2_morphology": ["2024"],
 }
+
 
 def resolve_source_products(
     source_root: str,
@@ -69,6 +72,7 @@ def resolve_source_products(
                 report.errors.append(f"{src}/{rev}: missing artifacts at {source_root}")
 
     return report
+
 
 def _check_source(
     source_root: str,
@@ -99,6 +103,7 @@ def _check_source(
         completion_uri=comp,
         config_hash=config_hash,
     )
+
 
 __all__ = [
     "ResolutionReport",

@@ -56,6 +56,7 @@ def load_aoi_mask(
     )
     return destination.astype(bool)
 
+
 def select_time_slice(
     ds: xr.Dataset,
     target_dt: datetime | pd.Timestamp,

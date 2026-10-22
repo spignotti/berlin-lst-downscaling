@@ -191,9 +191,7 @@ def compose_feature_stack(
         )
     cov = np.asarray(inputs.lod_coverage, dtype=bool)
     if cov.shape != lod_all_nan.shape:
-        raise ValueError(
-            f"lod_coverage shape {cov.shape} != grid {lod_all_nan.shape}"
-        )
+        raise ValueError(f"lod_coverage shape {cov.shape} != grid {lod_all_nan.shape}")
     covered_no_building = lod_all_nan & cov & aoi
     for arr in lod:
         arr[covered_no_building] = 0.0

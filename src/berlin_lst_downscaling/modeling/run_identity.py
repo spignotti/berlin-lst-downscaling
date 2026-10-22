@@ -202,8 +202,7 @@ def resolve_run_identity(
         index_source = _patch_index_source_root(patch_index_root)
         if training_root and index_source and index_source.rstrip("/") != training_root.rstrip("/"):
             raise ValueError(
-                f"patch-index QA source release {index_source!r} != training root "
-                f"{training_root!r}"
+                f"patch-index QA source release {index_source!r} != training root {training_root!r}"
             )
 
     vertex_sha = os.environ.get("VERTEX_SOURCE_SHA")

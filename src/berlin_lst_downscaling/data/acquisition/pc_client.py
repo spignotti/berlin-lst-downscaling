@@ -26,6 +26,7 @@ def get_catalog() -> pystac_client.Client:
         modifier=planetary_computer.sign_inplace,
     )
 
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=4, max=60),
@@ -56,6 +57,7 @@ def stac_load(**kwargs):
 
     kwargs.setdefault("patch_url", planetary_computer.sign_url)
     return odc.stac.load(**kwargs)
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -95,6 +97,7 @@ def pc_search(
     items = list(search.items())
     return items
 
+
 def resolve_exact_item(
     collection: str,
     scene_id: str,
@@ -115,6 +118,7 @@ def resolve_exact_item(
     if item.id != scene_id:
         raise RuntimeError(f"STAC returned item {item.id!r} but expected {scene_id!r}")
     return item
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -154,6 +158,7 @@ def resolve_item_from_href(
     # Sign assets for Planetary Computer access
     planetary_computer.sign_inplace(item)
     return item
+
 
 __all__ = [
     "get_catalog",

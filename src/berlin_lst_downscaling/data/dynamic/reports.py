@@ -101,6 +101,7 @@ def dynamic_qa_report(
 
     return report
 
+
 def persist_dynamic_report(
     report: dict[str, Any],
     output_root: str,
@@ -109,6 +110,7 @@ def persist_dynamic_report(
     uri = qa_report_path(output_root, report["run_id"])
     atomic_write(uri, json.dumps(report, indent=2), overwrite=True)
     return uri
+
 
 def format_dynamic_report(report: dict[str, Any]) -> str:
     """Format a dynamic QA report for console output."""
@@ -151,6 +153,7 @@ def format_dynamic_report(report: dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
 
 __all__ = [
     "dynamic_qa_report",

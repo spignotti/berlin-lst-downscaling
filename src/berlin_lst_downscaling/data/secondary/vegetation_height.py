@@ -62,6 +62,7 @@ VEGETATION_HEIGHT_LICENSE = "dl-de/zero-2.0"
 
 _CONFIG_HASH_PREFIX = "vegetation_height:v3:"
 
+
 def contract_for_vegetation_height() -> Contract:
     """Return the output Contract for vegetation-height COGs (2 bands)."""
     return Contract(
@@ -96,12 +97,15 @@ def contract_for_vegetation_height() -> Contract:
         flag_mode="none",
     )
 
+
 def config_hash_for_vintage(vintage: int) -> str:
     """Return a stable config hash for a given vintage."""
     raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
     return sha256(raw.encode()).hexdigest()[:12]
 
+
 # ── prepare ───────────────────────────────────────────────────────────────
+
 
 def prepare_vegetation_height(
     vintage: int,
@@ -236,6 +240,7 @@ def prepare_vegetation_height(
         config_hash=c_hash,
     )
 
+
 def _normalize_non_vegetated(arr: np.ndarray, grid: GeoBox) -> None:
     """Replace NaN with 0 for cells inside the AOI.
 
@@ -258,7 +263,9 @@ def _normalize_non_vegetated(arr: np.ndarray, grid: GeoBox) -> None:
     # This is correct because canon_grid_10m() IS the AOI extent.
     arr[np.isnan(arr)] = 0.0
 
+
 # ── path helpers ──────────────────────────────────────────────────────────
+
 
 def _raw_zip_uri(output_root: str, vintage: int) -> str:
     return (
@@ -266,13 +273,16 @@ def _raw_zip_uri(output_root: str, vintage: int) -> str:
         f"{vintage}/veghoehe_{vintage}.zip"
     )
 
+
 def _raw_zip_cache_uri(output_root: str, vintage: int) -> str:
     """Return a writable local cache path even when output_root is GCS."""
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/vegetation_height_{vintage}.zip"
     return _raw_zip_uri(output_root, vintage)
 
+
 # ── archive helpers ───────────────────────────────────────────────────────
+
 
 def _locate_tiff_member(zip_path: Path) -> str:
     """Return the name of the GeoTIFF member inside *zip_path*."""
@@ -286,6 +296,7 @@ def _locate_tiff_member(zip_path: Path) -> str:
                 f"Expected exactly one GeoTIFF member; got {len(tif_names)}: {tif_names}"
             )
         return tif_names[0]
+
 
 def _extract_native_metadata(zip_path: Path) -> dict[str, Any]:
     """Extract metadata from the inner GeoTIFF without loading pixels."""
@@ -309,6 +320,7 @@ def _extract_native_metadata(zip_path: Path) -> dict[str, Any]:
             "res_x": abs(src.transform.a),
             "res_y": abs(src.transform.e),
         }
+
 
 def _validate_native_metadata(meta: dict[str, Any]) -> None:
     """Fail fast if the native raster does not match the expected contract."""
@@ -335,6 +347,7 @@ def _validate_native_metadata(meta: dict[str, Any]) -> None:
             f"Native bounds {b} do not overlap canonical grid "
             f"({origin_x}, {origin_y}, {grid_right}, {grid_bottom})"
         )
+
 
 __all__ = [
     "VEGETATION_HEIGHT_URLS",

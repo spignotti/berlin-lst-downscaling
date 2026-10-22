@@ -40,6 +40,7 @@ _PROJ_EXT = "https://stac-extensions.github.io/projection/v2.0.0/schema.json"
 _RASTER_EXT = "https://stac-extensions.github.io/raster/v1.1.0/schema.json"
 _STAC_VERSION = "1.0.0"
 
+
 @dataclass
 class PreparedSecondaryProduct:
     """Payload produced by a source adapter and handed to finalisation.
@@ -63,6 +64,7 @@ class PreparedSecondaryProduct:
     acquisition_datetime: datetime | None = None
     stac_properties: dict | None = None
 
+
 @dataclass
 class ProductArtifacts:
     """The four URIs emitted by finalisation."""
@@ -72,7 +74,9 @@ class ProductArtifacts:
     provenance_uri: str
     completion_uri: str
 
+
 # ── STAC builder ──────────────────────────────────────────────────────
+
 
 def build_secondary_stac_item(
     prepared: PreparedSecondaryProduct,
@@ -172,6 +176,7 @@ def build_secondary_stac_item(
 
     return item
 
+
 def build_provenance(
     prepared: PreparedSecondaryProduct,
     run_id: str,
@@ -198,7 +203,9 @@ def build_provenance(
         prov["acquisition_datetime"] = prepared.acquisition_datetime.isoformat()
     return prov
 
+
 # ── finalisation ──────────────────────────────────────────────────────
+
 
 def finalize_secondary_product(
     prepared: PreparedSecondaryProduct,
@@ -274,9 +281,11 @@ def finalize_secondary_product(
         completion_uri=completion_uri,
     )
 
+
 def vintage_interval(vintage: int) -> tuple[str, str]:
     """Return the nominal RFC 3339 interval for a vintage year."""
     return (f"{vintage}-01-01T00:00:00Z", f"{vintage}-12-31T23:59:59Z")
+
 
 def _is_nan(value: float) -> bool:
     """Return True if *value* is NaN (safe for non-float inputs)."""
@@ -284,6 +293,7 @@ def _is_nan(value: float) -> bool:
         return math.isnan(value)
     except (TypeError, ValueError):
         return False
+
 
 __all__ = [
     "PreparedSecondaryProduct",

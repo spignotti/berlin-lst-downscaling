@@ -423,7 +423,9 @@ class _Bucket:
     n_dominant_cell_0_8: int = 0
 
 
-def _accumulate(cell_ids: list[str], class_ids: list[str], areas: list[float]) -> tuple[
+def _accumulate(
+    cell_ids: list[str], class_ids: list[str], areas: list[float]
+) -> tuple[
     dict[str, _Bucket],
     int,
     int,
@@ -562,9 +564,7 @@ def build_crosswalk(slim_by_year: dict[int, pd.DataFrame]) -> list[dict[str, obj
     )
     ststr_pairs: dict[int, list[int | None]] = {}
     ststr_names: list[tuple[str, str | None]] = []
-    for typ, ststr, name in zip(
-        typ_codes, combined["ststrnr"], combined["ststrname"], strict=True
-    ):
+    for typ, ststr, name in zip(typ_codes, combined["ststrnr"], combined["ststrname"], strict=True):
         parsed = as_int(ststr)
         ststr_pairs.setdefault(typ, []).append(parsed)
         ststr_names.append((_ststr_id(parsed), _text(name)))
@@ -618,21 +618,13 @@ def _catalog_from_crosswalk(
             ststr[class_id] = str(label)
     if UNASSIGNED_06_07 not in ststr:
         ststr[UNASSIGNED_06_07] = "No 06.07 code (water)"
-    ststr_rows = [
-        (class_id, ststr[class_id], "official_06_07") for class_id in sorted(ststr)
-    ]
+    ststr_rows = [(class_id, ststr[class_id], "official_06_07") for class_id in sorted(ststr)]
     published: dict[str, str] = {}
     for row in crosswalk:
         published[str(row["published_b"])] = str(row["published_b"])
-    published_rows = [
-        (class_id, class_id, "published_proposal") for class_id in sorted(published)
-    ]
-    proposal_b_rows = [
-        (spec.group_id, spec.label, spec.role) for spec in PROPOSAL_B_GROUPS
-    ]
-    proposal_c_rows = [
-        (spec.group_id, spec.label, spec.role) for spec in PROPOSAL_C_GROUPS
-    ]
+    published_rows = [(class_id, class_id, "published_proposal") for class_id in sorted(published)]
+    proposal_b_rows = [(spec.group_id, spec.label, spec.role) for spec in PROPOSAL_B_GROUPS]
+    proposal_c_rows = [(spec.group_id, spec.label, spec.role) for spec in PROPOSAL_C_GROUPS]
     return {
         "typ": typ_rows,
         "ststrnr": ststr_rows,
@@ -907,11 +899,7 @@ def scene_assignment(anchor_counts: dict[int, int]) -> list[dict[str, object]]:
 def _rows_for(
     support: list[dict[str, object]], *, vintage: int, level: str
 ) -> list[dict[str, object]]:
-    return [
-        row
-        for row in support
-        if row["vintage"] == vintage and row["level"] == level
-    ]
+    return [row for row in support if row["vintage"] == vintage and row["level"] == level]
 
 
 def recommend(support: list[dict[str, object]]) -> dict[str, object]:
@@ -1002,9 +990,7 @@ def reconcile_year(
     report_aoi_area_m2: float,
 ) -> dict[str, object]:
     """Check conservation. The centre rule is reported, not forced onto the gap."""
-    share_diff = _check_area(
-        f"{vintage} share area", share_area_m2, report_share_area_m2
-    )
+    share_diff = _check_area(f"{vintage} share area", share_area_m2, report_share_area_m2)
     split_diff = _check_area(
         f"{vintage} centre split", inside_area_m2 + outside_area_m2, share_area_m2
     )
@@ -1149,9 +1135,7 @@ def build_class_review(
             catalogs=catalogs,
             classified_area_m2=classified,
         )
-        typ_area = sum(
-            _as_float(row["area_m2"]) for row in level_rows if row["level"] == "typ"
-        )
+        typ_area = sum(_as_float(row["area_m2"]) for row in level_rows if row["level"] == "typ")
         _check_area(f"{year} typ support", typ_area, classified)
         for level in ("ststrnr", "published_b", "proposal_b", "proposal_c"):
             level_area = sum(
@@ -1184,9 +1168,7 @@ def build_class_review(
         )
     transitions, flows = transition_summary(slim_by_year)
     recommendation = recommend(support)
-    page_sha = {
-        str(year): str(by_year[year]["page_sha256"]) for year in sorted(by_year)
-    }
+    page_sha = {str(year): str(by_year[year]["page_sha256"]) for year in sorted(by_year)}
     report: dict[str, object] = {
         "release_id": RELEASE_ID,
         "source_release_id": SOURCE_RELEASE_ID,

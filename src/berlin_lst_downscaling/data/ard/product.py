@@ -137,11 +137,7 @@ def build_ard_stac_item(
             ],
         },
         "properties": {
-            "datetime": (
-                acq_dt.isoformat()
-                if acq_dt
-                else f"{year}-01-01T00:00:00Z"
-            ),
+            "datetime": (acq_dt.isoformat() if acq_dt else f"{year}-01-01T00:00:00Z"),
             "proj:code": str(crs),
             "proj:shape": [height, width],
             "proj:transform": list(geo_transform),
@@ -233,7 +229,11 @@ def finalize_ard_product(
 
     # Write provenance
     provenance = build_ard_provenance(
-        scene_id, source, year, contract, run_id,
+        scene_id,
+        source,
+        year,
+        contract,
+        run_id,
         source_metadata=source_metadata,
     )
     atomic_write(prov_dst, json.dumps(provenance, indent=2), overwrite=True)
@@ -242,7 +242,11 @@ def finalize_ard_product(
     prov_href = "provenance.json"
     flag_href = flag_uri.split("/")[-1] if flag_uri else None
     stac_item = build_ard_stac_item(
-        scene_id, source, year, masked, contract,
+        scene_id,
+        source,
+        year,
+        masked,
+        contract,
         cog_href=f"{scene_id}.tif",
         target_resolution=target_resolution,
         flag_href=flag_href,

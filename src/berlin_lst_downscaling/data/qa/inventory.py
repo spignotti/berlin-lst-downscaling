@@ -270,10 +270,20 @@ def _resolve_scene(
     # so an incomplete 2026 ledger never produces a hard finding.
     if year is not None and year >= 2026:
         return ResolvedScene(
-            scene_id=ls_id, year=year, s2_scene_id=s2_id, geometry_id="",
-            landsat_cog="", landsat_flag="", s2_cog="", s2_flag="",
-            dynamic={}, static_derived={}, static_derived_meta={},
-            static_sources={}, exclusion_reason=INFERENCE_EXCLUSION_REASON, errors=errors,
+            scene_id=ls_id,
+            year=year,
+            s2_scene_id=s2_id,
+            geometry_id="",
+            landsat_cog="",
+            landsat_flag="",
+            s2_cog="",
+            s2_flag="",
+            dynamic={},
+            static_derived={},
+            static_derived_meta={},
+            static_sources={},
+            exclusion_reason=INFERENCE_EXCLUSION_REASON,
+            errors=errors,
         )
 
     # ── Landsat ARD row ────────────────────────────────────────────────
@@ -353,9 +363,7 @@ def _resolve_scene(
                 item_id = f"lod2_morphology_{lod_vintage}"
                 row = source_rows.get(item_id)
                 if row is not None and row.get("output_uri"):
-                    static_src["lod2_morphology"] = resolve_canonical_uri(
-                        str(row["output_uri"])
-                    )
+                    static_src["lod2_morphology"] = resolve_canonical_uri(str(row["output_uri"]))
         # Vegetation height — fixed 2020 carry-forward
         vh_row = source_rows.get("vegetation_height_2020")
         if vh_row is not None and vh_row.get("output_uri"):

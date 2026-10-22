@@ -311,9 +311,7 @@ def _select_refs(refs: list[PatchRef], per_split: int) -> list[PatchRef]:
         split_refs = by_split[split]
         picked = split_refs[:per_split]
         if not any(_spans_block_boundary(r.row, r.col) for r in picked):
-            boundary = next(
-                (r for r in split_refs if _spans_block_boundary(r.row, r.col)), None
-            )
+            boundary = next((r for r in split_refs if _spans_block_boundary(r.row, r.col)), None)
             if boundary is not None:
                 picked = [*picked[: max(0, per_split - 1)], boundary]
         chosen.extend(picked)

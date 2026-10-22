@@ -30,6 +30,7 @@ from berlin_lst_downscaling.data.ard.landsat_target import (
 _LS_ST_SCALE = 0.00341802  # USGS Collection 2 Level-2 ST scale
 _LS_ST_OFFSET = 149.0  # K
 
+
 def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
     """Return boolean array — True = pixel is clear of cloud/shadow/cirrus/snow/fill.
 
@@ -53,12 +54,9 @@ def landsat_qa_to_clear_bits(qa: np.ndarray) -> np.ndarray:
     snow = (qa >> 5) & 1
     fill = qa & 1
     return ~(
-        fill.astype(bool)
-        | cloudy
-        | shadow.astype(bool)
-        | cirrus.astype(bool)
-        | snow.astype(bool)
+        fill.astype(bool) | cloudy | shadow.astype(bool) | cirrus.astype(bool) | snow.astype(bool)
     )
+
 
 def mask_landsat_area_mean(
     st_ds: xr.Dataset,
@@ -187,12 +185,14 @@ def landsat_uses_area_mean(cfg: DictConfig) -> bool:
         "or nearest/nearest"
     )
 
+
 # ── Sentinel-2 ───────────────────────────────────────────────────────##
 
 _S2_DN_SCALE = 1.0 / 10000.0  # Baseline 04.00 scaled reflectance
 
 # Native 20m SWIR bands, masked at 20m before bilinear 20→10m resampling.
 _S2_SWIR_BAND_NAMES = ("B11", "B12")
+
 
 def _s2_flag(
     scl: np.ndarray,
@@ -346,19 +346,21 @@ def mask_s2(
     target_10m = ds_10m["B08"] if "time" not in dims else ds_10m["B08"].isel(time=0)
 
     for b in _S2_SWIR_BAND_NAMES:
-        swir_da = xr.DataArray(
-            swir_scaled[b],
-            dims=("y", "x"),
-            attrs={"long_name": f"S2 {b}", "units": "1"},
-        ).rio.write_crs(ds_20m.rio.crs).rio.write_transform(ds_20m.rio.transform())
+        swir_da = (
+            xr.DataArray(
+                swir_scaled[b],
+                dims=("y", "x"),
+                attrs={"long_name": f"S2 {b}", "units": "1"},
+            )
+            .rio.write_crs(ds_20m.rio.crs)
+            .rio.write_transform(ds_20m.rio.transform())
+        )
         # Declare NaN as nodata so GDAL excludes invalid SWIR samples
         # from the bilinear kernel instead of smearing them (see docstring).
         swir_da = swir_da.rio.write_nodata(float("nan"), encoded=False)
         # Match the loaded 10m grid (rioxarray requires rio metadata on
         # the target; ds_10m bands carry it from the odc load).
-        swir_10m = swir_da.rio.reproject_match(
-            target_10m, resampling=Resampling.bilinear
-        )
+        swir_10m = swir_da.rio.reproject_match(target_10m, resampling=Resampling.bilinear)
         arr_10m = np.asarray(swir_10m.values.squeeze(), dtype=np.float32)
         arr_10m[(flag & contract.FLAG_FILL) != 0] = float("nan")
         out_vars[b] = xr.DataArray(
@@ -380,7 +382,9 @@ def mask_s2(
 
     return out
 
+
 # ── cloud-shadow projection (directional offset, not ray-cast) ───────##
+
 
 def _project_cloud_shadow(
     cloud_mask: np.ndarray,
@@ -433,7 +437,9 @@ def _project_cloud_shadow(
     )
     return shifted > 0.5
 
+
 # ── ECOSTRESS ───────────────────────────────────────────────────────##
+
 
 def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
     """Apply ECOSTRESS L2T masking: LST + flag band from cloud/water/QC layers.
@@ -513,6 +519,7 @@ def mask_ecostress(ds: xr.Dataset, cfg: DictConfig) -> xr.Dataset:
         out[var].rio.write_transform(ds.rio.transform(), inplace=True)
 
     return out
+
 
 _FLAG_DOC = "bit0=fill, bit1=cloudy, bit2=cloud_shadow, bit3=cirrus, bit4=saturated, bit5=snow_ice"
 

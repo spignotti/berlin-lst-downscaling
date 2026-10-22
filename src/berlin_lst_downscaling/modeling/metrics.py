@@ -62,9 +62,7 @@ def masked_abs_error_sums(
     return diff.sum(), count
 
 
-def masked_l1_loss(
-    prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
-) -> Tensor:
+def masked_l1_loss(prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor) -> Tensor:
     """Return the masked L1 over valid 100 m cells (the Stage-1 training loss)."""
     total, count = masked_abs_error_sums(prediction_100m, target_100m, mask_100m)
     return total / count
@@ -122,9 +120,7 @@ def masked_gradient_stats(
     return selected.sum(), count, candidate_t
 
 
-def _masked_gradient_l1(
-    prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
-) -> Tensor:
+def _masked_gradient_l1(prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor) -> Tensor:
     """Masked L1 on finite differences where both adjacent cells are valid."""
     total, count, _ = masked_gradient_stats(prediction_100m, target_100m, mask_100m)
     if float(count) <= 0.0:

@@ -120,9 +120,7 @@ def _check_stage(config_name: str) -> list[str]:
         got = batch.features[0, -2:].detach().cpu().numpy()
         expect = sample.features[np.asarray(selection.indices[-2:], dtype=np.intp)]
         if not np.array_equal(got, expect):
-            failures.append(
-                f"{config_name}: shadow selection did not use the resolved V3 indices"
-            )
+            failures.append(f"{config_name}: shadow selection did not use the resolved V3 indices")
     if config_name == "isolate_shadows_locked" and selection.indices != (
         *range(10),
         26,
@@ -157,9 +155,7 @@ def _check_stage(config_name: str) -> list[str]:
     # backward is banned under Trainer(deterministic=True). The pad-free map
     # must survive a deterministic backward on CPU (and on CUDA when present).
     if loss_name == "thermal_aware":
-        pred = torch.randn(
-            1, 1, REAL_PATCH_PX // 10, REAL_PATCH_PX // 10, requires_grad=True
-        )
+        pred = torch.randn(1, 1, REAL_PATCH_PX // 10, REAL_PATCH_PX // 10, requires_grad=True)
         target = pred.detach() + 0.1
         mask = torch.ones_like(pred)
         was_det = torch.are_deterministic_algorithms_enabled()

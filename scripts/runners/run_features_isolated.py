@@ -100,9 +100,7 @@ def _scene_done(output_root: str, scene_id: str) -> bool:
     if row is None or row.status != "done":
         return False
     output_ok = row.output_uri and exists(resolve_canonical_uri(row.output_uri))
-    completion_ok = row.completion_uri and exists(
-        resolve_canonical_uri(row.completion_uri)
-    )
+    completion_ok = row.completion_uri and exists(resolve_canonical_uri(row.completion_uri))
     return output_ok and completion_ok
 
 
@@ -129,8 +127,7 @@ def _coverage_summary(output_root: str, scene_ids: list[str]) -> dict:
         try:
             prov = json.loads(read_bytes(resolve_canonical_uri(row.provenance_uri)))
         except Exception as exc:  # coverage summary is best-effort, never fatal
-            _logger.warning("coverage summary: could not read provenance for %s: %s",
-                            scene_id, exc)
+            _logger.warning("coverage summary: could not read provenance for %s: %s", scene_id, exc)
             continue
         cov = prov.get("coverage", {})
         for key in agg:
@@ -338,8 +335,11 @@ def main() -> int:
 
     # ── non-gating sparse-support diagnostic ────────────────────────────
     sparse = [r for r in coverage["per_scene"] if r["fraction"] < _SPARSE_FRAC]
-    print(f"\n[isolated] SPARSE SUPPORT BELOW {_SPARSE_FRAC:.0%} "
-          f"({len(sparse)} scenes, non-gating diagnostic)", flush=True)
+    print(
+        f"\n[isolated] SPARSE SUPPORT BELOW {_SPARSE_FRAC:.0%} "
+        f"({len(sparse)} scenes, non-gating diagnostic)",
+        flush=True,
+    )
     for r in sparse:
         print(
             f"  {r['scene_id']}: feature_valid_px={r['feature_valid_px']} "
@@ -356,9 +356,7 @@ def main() -> int:
         "failed": summary.failed,
         "duration_s": summary.total_duration_s,
         "failed_scenes": [
-            {"scene_id": r.scene_id, "error": r.error}
-            for r in summary.results
-            if not r.ok
+            {"scene_id": r.scene_id, "error": r.error} for r in summary.results if not r.ok
         ],
         "coverage": agg,
         "sparse_support_below_1pct": sparse,

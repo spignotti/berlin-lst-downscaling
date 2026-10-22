@@ -73,9 +73,7 @@ def resolve_report_aggregation(report: Mapping[str, Any]) -> AggregationMethod:
     if isinstance(source, Mapping):
         nested = _optional_aggregation_field(source.get("aggregation"))
     if top is not None and nested is not None and top != nested:
-        raise ValueError(
-            f"report aggregation mismatch: top-level {top!r} != source {nested!r}"
-        )
+        raise ValueError(f"report aggregation mismatch: top-level {top!r} != source {nested!r}")
     return resolve_aggregation_method(top if top is not None else nested)
 
 

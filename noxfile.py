@@ -2,8 +2,6 @@
 
 import nox
 
-# `ruff format --check` is not a default session. A format pass would rewrite
-# 108 files that are not formatted today; that diff is out of scope here.
 nox.options.sessions = [
     "lint",
     "typecheck",
@@ -20,6 +18,7 @@ nox.options.sessions = [
 
 @nox.session(venv_backend="none")
 def lint(session: nox.Session) -> None:
+    session.run("uv", "run", "ruff", "format", "--check", ".", external=True)
     session.run("uv", "run", "ruff", "check", ".", external=True)
 
 
@@ -584,7 +583,9 @@ def cloud_static_derived(session: nox.Session) -> None:
     session.env.setdefault("UV_ENV_FILE", ".env")
 
     source_root = (
-        session.posargs[0] if session.posargs else "gs://berlin-lst-training-data/static/sources/full"
+        session.posargs[0]
+        if session.posargs
+        else "gs://berlin-lst-training-data/static/sources/full"
     )
 
     run_id = f"stat-drv-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -1295,8 +1296,7 @@ def smoke_training_data(session: nox.Session) -> None:
         for name in release_files:
             if h1.get(name) != h2.get(name):
                 session.error(
-                    f"non-deterministic release artifact {name}: "
-                    f"{h1.get(name)} vs {h2.get(name)}"
+                    f"non-deterministic release artifact {name}: {h1.get(name)} vs {h2.get(name)}"
                 )
 
         # The completion marker is not byte-deterministic (timestamps), but
@@ -1574,10 +1574,7 @@ def smoke_modeling_contract(session: nox.Session) -> None:
             session.error(f"non-deterministic validation MAE: {m1} vs {m2}")
         if m1["pipeline"] != "modeling" or not m1["git_commit"]:
             session.error(f"run context incomplete: {m1}")
-        print(
-            f"smoke-modeling-contract OK — val MAE={m1['val_loss']}, "
-            f"git={m1['git_commit'][:8]}"
-        )
+        print(f"smoke-modeling-contract OK — val MAE={m1['val_loss']}, git={m1['git_commit'][:8]}")
     finally:
         if os.path.isdir(output_root):
             shutil.rmtree(output_root)
@@ -1625,8 +1622,14 @@ def smoke_real_comparison(session: nox.Session) -> None:
         if os.path.isdir(model_root):
             shutil.rmtree(model_root)
         session.run(
-            "uv", "run", "python", "scripts/runners/run_modeling.py",
-            "--config-name", "real_smoke", *overrides, external=True,
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_modeling.py",
+            "--config-name",
+            "real_smoke",
+            *overrides,
+            external=True,
         )
         with open(os.path.join(model_root, "data_scope.json"), encoding="utf-8") as fh:
             scope = json.load(fh)
@@ -1647,26 +1650,30 @@ def smoke_real_comparison(session: nox.Session) -> None:
         # One bounded model arm proves the Lightning fit/checkpoint/reload path
         # on a real streamed subset; the stream-invariance of the read path
         # itself is proved by the non-training validator below.
-        scope = _run_model(
-            ["data.mode=stream", "data.num_workers=2", "data.shuffle_train=true"]
-        )
+        scope = _run_model(["data.mode=stream", "data.num_workers=2", "data.shuffle_train=true"])
         if scope.get("mode") != "stream":
             session.error(f"model arm did not run in stream mode: {scope.get('mode')!r}")
         if not scope.get("train_shuffle_order"):
             session.error("model arm recorded no train shuffle order")
 
         session.run(
-            "uv", "run", "python", "scripts/validators/validate_streaming_patches.py",
+            "uv",
+            "run",
+            "python",
+            "scripts/validators/validate_streaming_patches.py",
             external=True,
         )
 
         session.run(
-            "uv", "run", "python", "scripts/runners/run_baseline.py",
-            "--config-name", "baseline_smoke", external=True,
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_baseline.py",
+            "--config-name",
+            "baseline_smoke",
+            external=True,
         )
-        with open(
-            os.path.join(baseline_root, "baseline_report.json"), encoding="utf-8"
-        ) as fh:
+        with open(os.path.join(baseline_root, "baseline_report.json"), encoding="utf-8") as fh:
             report = json.load(fh)
 
         # The shared comparison universe is the point of this session.
@@ -1682,9 +1689,15 @@ def smoke_real_comparison(session: nox.Session) -> None:
                 )
 
         session.run(
-            "uv", "run", "python", "scripts/validators/validate_baseline.py",
-            "--report", os.path.join(baseline_root, "baseline_report.json"),
-            "--max-patches", "4", external=True,
+            "uv",
+            "run",
+            "python",
+            "scripts/validators/validate_baseline.py",
+            "--report",
+            os.path.join(baseline_root, "baseline_report.json"),
+            "--max-patches",
+            "4",
+            external=True,
         )
 
         print("Real comparison (one model arm plus the streaming validator):")
@@ -1716,13 +1729,23 @@ def smoke_random_forest(session: nox.Session) -> None:
     with TemporaryDirectory(prefix="berlin-rf-smoke-", dir="/tmp") as scratch:
         output_root = str(Path(scratch) / "run")
         session.run(
-            "uv", "run", "python", "scripts/runners/run_random_forest.py",
-            "--config-name", "random_forest_smoke", f"output_root={output_root}",
+            "uv",
+            "run",
+            "python",
+            "scripts/runners/run_random_forest.py",
+            "--config-name",
+            "random_forest_smoke",
+            f"output_root={output_root}",
             external=True,
         )
         session.run(
-            "uv", "run", "python", "scripts/validators/validate_random_forest.py",
-            "--report", str(Path(output_root) / "random_forest_report.json"),
-            "--max-patches", "4", external=True,
+            "uv",
+            "run",
+            "python",
+            "scripts/validators/validate_random_forest.py",
+            "--report",
+            str(Path(output_root) / "random_forest_report.json"),
+            "--max-patches",
+            "4",
+            external=True,
         )
-
