@@ -139,6 +139,10 @@ def compose_feature_stack(
     :func:`load_aoi_mask_on_grid`).
     """
     # ── S2 spectral bands + flag ───────────────────────────────────────
+    # Reflectance is already harmonized in S2 ARD schema 9
+    # (BOA_ADD_OFFSET applied before the [0, 1] clip). Do not subtract
+    # 0.1 here: a second offset would shift pre-baseline scenes and
+    # cannot repair DN that the old clip already destroyed.
     s2 = [_read_band(inputs.s2_cog, i, grid) for i in range(1, 7)]
     b02, b03, b04, b08, b11, b12 = s2
     s2_flag = _read_band(inputs.s2_flag, 1, grid, dtype="uint8")

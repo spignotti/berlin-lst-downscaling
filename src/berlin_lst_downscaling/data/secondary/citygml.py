@@ -1,14 +1,37 @@
 """Reusable CityGML readers for static LoD morphology vintages.
 
-Parses Berlin GDI CityGML 1.0 building footprints and ``measuredHeight``
-values for both LoD1 (block-extruded) and LoD2 (ground surface + roof)
-tiles.  Designed for memory-bounded streaming of large XML members:
+Parses Berlin GDI CityGML 1.0 and 2.0 building footprints and heights
+for both LoD1 (block-extruded) and LoD2 (ground surface + roof) tiles.
+Designed for memory-bounded streaming of large XML members.
 
-- LoD2 building = ``measuredHeight`` + merged ``GroundSurface`` polygons.
-- LoD1 building = ``measuredHeight`` + the lowest horizontal face of the
-  ``lod1Solid`` block.  LoD1 has no ``GroundSurface``; the footprint is
-  derived by scanning every wall/roof polygon for the face with the
-  lowest Z coordinate and taking its (x, y) ring.
+LoD2 height policy
+------------------
+A CityGML building is a tree: ``Building`` → ``consistsOfBuildingPart``
+→ ``BuildingPart``. Berlin stores ``measuredHeight`` on the part when
+the building is split. Each emitted unit is one part, or the building
+itself when no part can be emitted.
+
+Height for a unit, in order:
+
+1. The unit's own direct ``measuredHeight`` child, when it is finite
+   and greater than 0.
+2. Else the vertical span of that unit's own coordinates
+   (maximum Z − minimum Z), ignoring nested parts, when the span is
+   greater than 1 mm.
+3. Else, for a part only, the parent building's direct
+   ``measuredHeight``. The parent's Z span is not copied onto a part.
+4. Else the unit is excluded and counted. It is never stored as 0 m.
+
+Footprints come from the unit's own ``GroundSurface`` polygons. When
+any part is emitted, the parent footprint is not emitted as well, so
+the parent's ground surface is not added on top of its parts.
+
+LoD1
+----
+LoD1 building = ``measuredHeight`` + the lowest horizontal face of the
+``lod1Solid`` block. LoD1 has no ``GroundSurface``; the footprint is
+derived by scanning every wall/roof polygon for the face with the
+lowest Z coordinate and taking its (x, y) ring.
 
 The module returns plain dataclasses so downstream code can pick the
 shape it needs without depending on the XML library.
@@ -28,7 +51,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 import zipfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -56,11 +79,47 @@ _CITYGML_NS_MAP: dict[int, dict[str, str]] = {
 
 @dataclass
 class Building:
-    """A single building extracted from CityGML."""
+    """A single building or building part extracted from CityGML.
+
+    ``measured_height`` is metres above ground. It is ``None`` only for
+    the historical parser's rejected records; the current parser does
+    not emit a unit whose height could not be resolved, and it never
+    substitutes 0.
+    """
 
     building_id: str
     footprint: Polygon | MultiPolygon | None
-    measured_height: float | None  # metres above ground
+    measured_height: float | None
+    height_source: str = "measured"  # measured | z_extent | inherited
+
+
+@dataclass
+class Lod2ParseStats:
+    """Counters for one LoD2 parse. Missing heights are counted, not zeroed."""
+
+    source_buildings: int = 0
+    emitted: int = 0
+    parts_emitted: int = 0
+    dropped_missing_height: int = 0
+    dropped_missing_footprint: int = 0
+    height_from_measured: int = 0
+    height_from_z_extent: int = 0
+    height_inherited: int = 0
+
+    def add(self, other: Lod2ParseStats) -> None:
+        """Add *other*'s counters into this object."""
+        self.source_buildings += other.source_buildings
+        self.emitted += other.emitted
+        self.parts_emitted += other.parts_emitted
+        self.dropped_missing_height += other.dropped_missing_height
+        self.dropped_missing_footprint += other.dropped_missing_footprint
+        self.height_from_measured += other.height_from_measured
+        self.height_from_z_extent += other.height_from_z_extent
+        self.height_inherited += other.height_inherited
+
+    def as_dict(self) -> dict[str, int]:
+        """Return the counters as a plain dictionary."""
+        return {key: int(value) for key, value in asdict(self).items()}
 
 
 @dataclass
@@ -196,27 +255,299 @@ def _polygon_z_extent(polygon_elem: ET.Element, ns: dict[str, str]) -> tuple[flo
 # ── LoD2 building extractor ──────────────────────────────────────────
 
 
-def _lod2_ground_polygons(building_elem: ET.Element, ns: dict[str, str]) -> list[Polygon]:
-    """Return every parsed polygon under ``bldg:GroundSurface`` children."""
+def _gml_id(elem: ET.Element, ns: dict[str, str]) -> str:
+    """Return the ``gml:id`` of *elem*, or an empty string."""
+    return elem.get(f"{{{ns.get('gml', '')}}}id", elem.get("gml:id", "")) or ""
+
+
+def _is_under(node: ET.Element, ancestors: list[ET.Element]) -> bool:
+    """True when *node* is *ancestor* or a descendant of one of them."""
+    for ancestor in ancestors:
+        for found in ancestor.iter():
+            if found is node:
+                return True
+    return False
+
+
+def _direct_building_parts(elem: ET.Element, ns: dict[str, str]) -> list[ET.Element]:
+    """Return ``BuildingPart`` children that are not nested in another part."""
+    part_tag = f"{{{ns['bldg']}}}BuildingPart"
+    parts = [part for part in elem.iter(part_tag) if part is not elem]
+    nested: set[int] = set()
+    for part in parts:
+        for inner in part.iter(part_tag):
+            if inner is not part:
+                nested.add(id(inner))
+    return [part for part in parts if id(part) not in nested]
+
+
+def _direct_measured_height(elem: ET.Element, ns: dict[str, str]) -> float | None:
+    """Return a direct ``measuredHeight`` child when it is finite and > 0.
+
+    ``find`` does not descend into ``BuildingPart``. A missing, zero, or
+    negative value returns ``None`` so the caller can try the next
+    fallback. Zero is not a height.
+    """
+    for tag in (
+        f"{{{ns['bldg']}}}measuredHeight",
+        "bldg:measuredHeight",
+    ):
+        height_elem = elem.find(tag)
+        if height_elem is None or not height_elem.text:
+            continue
+        try:
+            height = float(height_elem.text.strip())
+        except ValueError:
+            continue
+        if np.isfinite(height) and height > 0.0:
+            return float(height)
+    return None
+
+
+def _own_z_extent(elem: ET.Element, ns: dict[str, str]) -> float | None:
+    """Return max Z − min Z of *elem*, excluding nested building parts.
+
+    A flat ring (span ≤ 1 mm) is not a height. Absolute ellipsoidal Z
+    cancels in the difference, which is the building height.
+    """
+    part_tag = f"{{{ns['bldg']}}}BuildingPart"
+    parts = [part for part in elem.iter(part_tag) if part is not elem]
+    z_values: list[float] = []
+    for pos_list in elem.iter(f"{{{ns['gml']}}}posList"):
+        if parts and _is_under(pos_list, parts):
+            continue
+        if not pos_list.text:
+            continue
+        srs_dim = _resolve_srs_dimension(pos_list)
+        if srs_dim != 3:
+            continue
+        for _, _, z_value in _parse_gml_ring_3d(pos_list.text, srs_dim):
+            if np.isfinite(z_value):
+                z_values.append(z_value)
+    if len(z_values) < 2:
+        return None
+    span = max(z_values) - min(z_values)
+    if span <= 1e-3:
+        return None
+    return float(span)
+
+
+def _own_ground_polygons(elem: ET.Element, ns: dict[str, str]) -> list[Polygon]:
+    """Return ``GroundSurface`` polygons that belong to *elem*, not its parts."""
+    part_tag = f"{{{ns['bldg']}}}BuildingPart"
+    parts = [part for part in elem.iter(part_tag) if part is not elem]
     out: list[Polygon] = []
-    for gs_elem in building_elem.iter(f"{{{ns['bldg']}}}GroundSurface"):
-        for poly_elem in gs_elem.iter(f"{{{ns['gml']}}}Polygon"):
+    ground_tag = f"{{{ns['bldg']}}}GroundSurface"
+    polygon_tag = f"{{{ns['gml']}}}Polygon"
+    for ground in elem.iter(ground_tag):
+        if parts and _is_under(ground, parts):
+            continue
+        for poly_elem in ground.iter(polygon_tag):
             poly = _parse_polygon(poly_elem, ns)
             if poly is not None:
                 out.append(poly)
     return out
 
 
-def _extract_lod2_building(
+def _merge_footprint(polygons: list[Polygon]) -> Polygon | MultiPolygon | None:
+    """Union ground polygons into one footprint, or return None."""
+    if not polygons:
+        return None
+    try:
+        merged = unary_union(polygons)
+    except Exception:
+        return None
+    if not isinstance(merged, (Polygon, MultiPolygon)):
+        return None
+    if merged.is_empty:
+        return None
+    if not merged.is_valid:
+        merged = merged.buffer(0)
+        if (
+            not isinstance(merged, (Polygon, MultiPolygon))
+            or merged.is_empty
+            or not merged.is_valid
+        ):
+            return None
+    return merged
+
+
+def _resolve_height(
+    elem: ET.Element,
+    ns: dict[str, str],
+    parent_measured: float | None,
+) -> tuple[float | None, str | None]:
+    """Resolve one unit's height. Never returns 0."""
+    measured = _direct_measured_height(elem, ns)
+    if measured is not None:
+        return measured, "measured"
+    z_span = _own_z_extent(elem, ns)
+    if z_span is not None:
+        return z_span, "z_extent"
+    if parent_measured is not None and np.isfinite(parent_measured) and parent_measured > 0.0:
+        return float(parent_measured), "inherited"
+    return None, None
+
+
+def _record_height_source(stats: Lod2ParseStats, source: str) -> None:
+    if source == "measured":
+        stats.height_from_measured += 1
+    elif source == "z_extent":
+        stats.height_from_z_extent += 1
+    elif source == "inherited":
+        stats.height_inherited += 1
+
+
+def _emit_lod2_units(
+    elem: ET.Element,
+    ns: dict[str, str],
+    stats: Lod2ParseStats,
+    *,
+    parent_measured: float | None,
+) -> list[Building]:
+    """Emit part units, or this element when no part can be emitted."""
+    parts = _direct_building_parts(elem, ns)
+    own_measured = _direct_measured_height(elem, ns)
+    inherit_from = own_measured if own_measured is not None else parent_measured
+    if parts:
+        units: list[Building] = []
+        for part in parts:
+            units.extend(_emit_lod2_units(part, ns, stats, parent_measured=inherit_from))
+        if units:
+            return units
+
+    height, source = _resolve_height(elem, ns, parent_measured)
+    footprint = _merge_footprint(_own_ground_polygons(elem, ns))
+    if footprint is None:
+        stats.dropped_missing_footprint += 1
+        return []
+    if height is None or source is None:
+        stats.dropped_missing_height += 1
+        return []
+
+    stats.emitted += 1
+    if elem.tag == f"{{{ns['bldg']}}}BuildingPart":
+        stats.parts_emitted += 1
+    _record_height_source(stats, source)
+    return [
+        Building(
+            building_id=_gml_id(elem, ns),
+            footprint=footprint,
+            measured_height=height,
+            height_source=source,
+        )
+    ]
+
+
+def _top_level_buildings(root: ET.Element, ns: dict[str, str]) -> list[ET.Element]:
+    """Return ``bldg:Building`` elements that are not nested in another building."""
+    building_tag = f"{{{ns['bldg']}}}Building"
+    buildings = list(root.iter(building_tag))
+    nested: set[int] = set()
+    for building in buildings:
+        for inner in building.iter(building_tag):
+            if inner is not building:
+                nested.add(id(inner))
+    return [building for building in buildings if id(building) not in nested]
+
+
+def parse_lod2_buildings_with_stats(
+    xml_bytes: bytes,
+) -> tuple[list[Building], Lod2ParseStats]:
+    """Parse LoD2 buildings, including parts, and return drop counters.
+
+    See the module docstring for the height and footprint policy.
+    """
+    stats = Lod2ParseStats()
+    version = detect_citygml_version(xml_bytes)
+    ns = _CITYGML_NS_MAP[version]
+    try:
+        root = ET.fromstring(xml_bytes)  # noqa: S314 — trusted CityGML
+    except ET.ParseError as exc:
+        _logger.warning("citygml parse error: %s", exc)
+        return [], stats
+
+    buildings: list[Building] = []
+    for building_elem in _top_level_buildings(root, ns):
+        stats.source_buildings += 1
+        buildings.extend(_emit_lod2_units(building_elem, ns, stats, parent_measured=None))
+    return buildings, stats
+
+
+def describe_lod2_height_locations(xml_bytes: bytes) -> dict[str, int]:
+    """Count where ``measuredHeight`` is stored, before the fallback.
+
+    ``buildingpart_only_measured_height`` is the number of top-level
+    buildings that have no direct positive ``measuredHeight`` and at
+    least one ``BuildingPart`` that does. ``missing_measured_height``
+    counts top-level buildings with no direct positive
+    ``measuredHeight``, whether or not a part has one.
+    ``parts_missing_measured_height`` counts parts with no direct
+    positive ``measuredHeight``.
+    """
+    version = detect_citygml_version(xml_bytes)
+    ns = _CITYGML_NS_MAP[version]
+    try:
+        root = ET.fromstring(xml_bytes)  # noqa: S314 — trusted CityGML
+    except ET.ParseError as exc:
+        _logger.warning("citygml parse error: %s", exc)
+        return {
+            "source_buildings": 0,
+            "buildingpart_only_measured_height": 0,
+            "missing_measured_height": 0,
+            "parts_missing_measured_height": 0,
+            "parts": 0,
+        }
+
+    part_tag = f"{{{ns['bldg']}}}BuildingPart"
+    buildings = _top_level_buildings(root, ns)
+    part_only = 0
+    missing = 0
+    parts_missing = 0
+    part_count = 0
+    for building in buildings:
+        own = _direct_measured_height(building, ns)
+        parts = [part for part in building.iter(part_tag)]
+        part_count += len(parts)
+        part_heights = sum(1 for part in parts if _direct_measured_height(part, ns) is not None)
+        parts_missing += sum(1 for part in parts if _direct_measured_height(part, ns) is None)
+        if own is None:
+            missing += 1
+            if part_heights > 0:
+                part_only += 1
+    return {
+        "source_buildings": len(buildings),
+        "buildingpart_only_measured_height": part_only,
+        "missing_measured_height": missing,
+        "parts_missing_measured_height": parts_missing,
+        "parts": part_count,
+    }
+
+
+def parse_lod2_buildings(xml_bytes: bytes) -> list[Building]:
+    """Parse every LoD2 building or building part from raw XML bytes.
+
+    This is the current parser. Heights that live only on
+    ``BuildingPart`` are kept. Missing heights are omitted, not stored
+    as 0. Use :func:`parse_lod2_buildings_with_stats` for the counters
+    and :func:`parse_lod2_buildings_legacy` to reproduce the previous
+    behaviour for diagnostics.
+    """
+    buildings, _stats = parse_lod2_buildings_with_stats(xml_bytes)
+    return buildings
+
+
+def _legacy_extract_lod2_building(
     building_elem: ET.Element,
     ns: dict[str, str],
 ) -> Building | None:
-    """Extract a single LoD2 building's footprint + ``measuredHeight``."""
-    bid = building_elem.get(
-        f"{{{ns.get('gml', '')}}}id",
-        building_elem.get("gml:id", ""),
-    )
+    """Historical v5 extractor: direct ``measuredHeight`` on ``Building`` only.
 
+    ``BuildingPart`` is ignored. A missing or non-positive
+    ``measuredHeight`` drops the whole building, including part
+    footprints. Kept so diagnostics can compare height distributions.
+    """
+    bid = _gml_id(building_elem, ns)
     height = None
     for tag in (
         f"{{{ns['bldg']}}}measuredHeight",
@@ -229,42 +560,43 @@ def _extract_lod2_building(
             except ValueError:
                 continue
             break
-
     if height is None or height <= 0:
         return None
 
-    ground_polys = _lod2_ground_polygons(building_elem, ns)
-    if not ground_polys:
+    ground_polys: list[Polygon] = []
+    for ground in building_elem.iter(f"{{{ns['bldg']}}}GroundSurface"):
+        for poly_elem in ground.iter(f"{{{ns['gml']}}}Polygon"):
+            poly = _parse_polygon(poly_elem, ns)
+            if poly is not None:
+                ground_polys.append(poly)
+    footprint = _merge_footprint(ground_polys)
+    if footprint is None:
         return None
-
-    try:
-        merged = unary_union(ground_polys)
-    except Exception:
-        return None
-    if isinstance(merged, (Polygon, MultiPolygon)):
-        footprint = merged
-    else:
-        return None
-    if footprint.is_empty or not footprint.is_valid:
-        return None
-
-    return Building(building_id=bid, footprint=footprint, measured_height=height)
+    return Building(
+        building_id=bid,
+        footprint=footprint,
+        measured_height=height,
+        height_source="measured",
+    )
 
 
-def parse_lod2_buildings(xml_bytes: bytes) -> list[Building]:
-    """Parse every ``bldg:Building`` from raw XML bytes (CityGML 1.0 or 2.0)."""
+def parse_lod2_buildings_legacy(xml_bytes: bytes) -> list[Building]:
+    """Parse with the v5 rules: no parts, no geometry fallback.
+
+    Buildings whose only ``measuredHeight`` is on a ``BuildingPart`` are
+    absent from the result. This function is for diagnostics. The
+    morphology products use :func:`parse_lod2_buildings`.
+    """
     version = detect_citygml_version(xml_bytes)
     ns = _CITYGML_NS_MAP[version]
-
     try:
-        root = ET.fromstring(xml_bytes)  # noqa: S314 — trusted XML
+        root = ET.fromstring(xml_bytes)  # noqa: S314 — trusted CityGML
     except ET.ParseError as exc:
         _logger.warning("citygml parse error: %s", exc)
         return []
-
     buildings: list[Building] = []
     for building_elem in root.iter(f"{{{ns['bldg']}}}Building"):
-        building = _extract_lod2_building(building_elem, ns)
+        building = _legacy_extract_lod2_building(building_elem, ns)
         if building is not None:
             buildings.append(building)
     return buildings
@@ -410,6 +742,8 @@ def _z_extents(polygons: list[Polygon]) -> np.ndarray:
 __all__ = [
     "Building",
     "Footprint",
+    "Lod2ParseStats",
+    "describe_lod2_height_locations",
     "detect_citygml_version",
     "iter_xml_members",
     "parse_lod1_footprints",
@@ -418,5 +752,7 @@ __all__ = [
     "parse_lod2_buildings",
     "parse_lod2_buildings_from_file",
     "parse_lod2_buildings_from_zip_member",
+    "parse_lod2_buildings_legacy",
+    "parse_lod2_buildings_with_stats",
     "read_xml_member",
 ]

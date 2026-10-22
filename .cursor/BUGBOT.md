@@ -42,6 +42,15 @@ Review-only rules for this repository. Flag methodological drift. A missing test
 
 - Flag new scientific decisions in code (thresholds, exclusions, new channels, split changes) that do not come from an explicit task with acceptance criteria.
 
+## Data-correctness invariants
+
+- Sentinel-2 BOA reflectance is harmonized per scene from product metadata (`BOA_ADD_OFFSET`, `raster:bands`, or `s2:processing_baseline`). The acquisition date is not a fallback. The offset is applied to digital numbers before the published `[0, 1]` clip. Non-finite DN stays non-finite. Digital number 0 is a valid code and is not nodata; SCL class 0 is the nodata mask.
+- A feature-step correction of already clipped ARD (`clip(DN / 10000, 0, 1)`) is not exact for DN above 10000. Features/v6 reads republished schema-9 ARD and does not apply a second offset.
+- LoD2 heights are read from `BuildingPart` when that is where `measuredHeight` lives. A missing height is never stored as 0. The fallback is the unit's own Z extent, then a part may inherit its parent's direct `measuredHeight`, otherwise the unit is excluded and counted.
+- Building coverage at 10 m is the polygon–cell intersection area divided by 100 m². A building that misses every cell center is still counted. Heights are area-weighted.
+- `total_buildings` counts emitted buildings handed to the rasterizer. It is not left at zero.
+- Diagnostics under `evaluation/diagnostics/<run-id>/` are read-only with respect to releases. The diagnostics script does not start the VM.
+
 ## Acceptance criteria
 
 - If the PR description has an `## Acceptance criteria` checklist, check each item against the diff. Report every item that the diff does not implement, or implements only partially, as a finding that names the item. Also flag a checked box with no matching change or test.

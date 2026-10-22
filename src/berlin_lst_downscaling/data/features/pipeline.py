@@ -29,6 +29,7 @@ import pyarrow.parquet as pq
 from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.common.util import sha256_bytes
+from berlin_lst_downscaling.data.ard.publish_guard import assert_feature_output_root
 from berlin_lst_downscaling.data.dynamic.geometry import load_geometry_mapping
 from berlin_lst_downscaling.data.features.lod_coverage import (
     rasterize_lod_coverage,
@@ -146,6 +147,8 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     if run_id is None:
         run_id = uuid4().hex[:8]
     timestamp = datetime.now(UTC).isoformat()
+    output_root = str(cfg.output_root)
+    assert_feature_output_root(output_root)
 
     manifest_uri = str(cfg.manifest_uri)
     ard_root = str(cfg.ard_root)
@@ -154,7 +157,6 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     dynamic_root = str(cfg.dynamic_root)
     geometry_mapping_uri = str(cfg.geometry_mapping_uri)
     aoi_uri = str(cfg.aoi_mask_uri)
-    output_root = str(cfg.output_root)
     scene_ids = [str(s) for s in cfg.get("scene_ids", []) or []]
     bbox = tuple(cfg.get("bbox", None)) if cfg.get("bbox") else None
     carry_forward_vintage = int(cfg.get("vegetation_carry_forward_vintage", 2024))

@@ -126,6 +126,23 @@ recorded in `<source_root>/ard/static/sources/lod_vintages/raw_manifest_<vintage
 The 2017 morphology provenance includes **both** input archive
 manifests (LoD1-2017 + LoD2-2021).
 
+LoD2 parsing emits each `BuildingPart` that has its own ground surface.
+When any part is emitted, the parent footprint is not also emitted.
+Height order is the unit's direct `measuredHeight` when finite and
+greater than 0, else that unit's own Z span (maximum Z minus minimum Z,
+ignoring nested parts) when the span is greater than 1 mm, else a part
+may inherit the parent building's direct `measuredHeight`. Otherwise the
+unit is excluded and counted. A missing height is never stored as 0.
+Coverage at 10 m is the exact polygon–cell intersection area divided by
+the 100 m² cell, clipped to `[0, 1]` after overlapping footprints are
+summed. Mean and standard deviation of height are area-weighted. A
+building that misses every cell center still contributes its intersection.
+The LoD2 morphology config hash prefix is `lod2_morphology:v2:` and the
+contract schema version is 3. The 2017, 2021, 2022, and 2024 morphology
+products, the building DSM, the combined DSM, building horizons,
+building shadows, and SVF are rebuilt before features/v6. `total_buildings`
+in the morphology QA payload is the number of emitted units.
+
 Year → vintage carry-forward mapping is published at
 `<metadata_root>/geometry_mapping.json` (default
 `gs://berlin-lst-training-data/static/geometry_vintages/v1/`); the runner only
@@ -263,9 +280,24 @@ STAC `spatial_resolution` reports 10 m for all bands; the native 20 m
 origin of B11/B12 is carried in the BandSpec description and
 provenance, not in the raster metadata.
 
-The S2 schema version is 8; `full_sentinel2_swir` reprocesses exactly
-the Sentinel-2 rows (schema change) and leaves Landsat/ECOSTRESS rows
-at their published versions.
+Reflectance is `(DN + BOA_ADD_OFFSET) / 10000`, then clipped to `[0, 1]`.
+`BOA_ADD_OFFSET` is 0 before Processing Baseline 04.00 and -1000 DN from
+04.00 onward. The offset is chosen per scene from STAC metadata
+(`s2:boa_add_offset` / `boa_add_offset`, else agreeing `raster:bands`
+scale and offset, else `s2:processing_baseline`). The acquisition date
+is not a fallback. Non-finite DN stays NaN. DN 0 is a valid code; SCL
+class 0 is the only nodata mask, applied after scaling. The correction
+runs in `mask_s2` before the clip. Subtracting 0.1 from ARD that was
+stored as `clip(DN / 10000, 0, 1)` is not exact for DN above 10000, so
+existing S2 ARD is rebuilt for features/v6. The feature stack does not
+apply a second offset.
+
+The S2 schema version is 9. `configs/ard/sentinel2_harmonized_v9.yaml`
+publishes that contract at
+`gs://berlin-lst-training-data/ard/full/2017-2026-s2-harmonized-v9`.
+`full_sentinel2_swir` remains the published schema-8 root and must not
+be re-run into that prefix. Landsat and ECOSTRESS schema versions are
+unchanged.
 
 ### ERA5-Land weather group (8 bands)
 
@@ -344,7 +376,7 @@ Per paired Landsat anchor (2017-2025, 324 scenes), the features pipeline
 canonical-grid 10 m stack plus a co-registered validity mask:
 
 ```
-<root>/<scene_id>/                         (root = gs://berlin-lst-training-data/features/v3)
+<root>/<scene_id>/                         (published roots: features/v3, features/v5; next release features/v6)
     ├─ <scene_id>.tif                     # 28-band float32 COG
     ├─ <scene_id>.feature_valid.tif       # uint8 0/1 validity-mask COG
     ├─ <scene_id>.stac.json               # STAC Item (data + mask assets)
@@ -357,7 +389,7 @@ breaking schema change → new URI version):
 
 | # | Channel | Family | Unit | Range |
 |---|---------|--------|------|-------|
-| 1-6 | `B02`, `B03`, `B04`, `B08`, `B11`, `B12` | S2 ARD reflectance | 1 | [0, 1] |
+| 1-6 | `B02`, `B03`, `B04`, `B08`, `B11`, `B12` | S2 ARD reflectance, harmonized per scene in schema 9 | 1 | [0, 1] |
 | 7 | `ndvi` = (B08−B04)/(B08+B04) | index | 1 | [−1, 1] |
 | 8 | `ndwi_mcfeeters` = (B03−B08)/(B03+B08) | index | 1 | [−1, 1] |
 | 9 | `ndbi` = (B11−B08)/(B11+B08) | index | 1 | [−1, 1] |
