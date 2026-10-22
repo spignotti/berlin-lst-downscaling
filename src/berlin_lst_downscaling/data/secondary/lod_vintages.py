@@ -737,13 +737,12 @@ class _Accumulator:
 
 
 def _local_window_for_buildings(buildings: list[Building], grid: GeoBox) -> Window | None:
-    """Compute a minimal canonical-grid window covering *buildings*.
+    """Compute a canonical-grid window covering every cell the footprints touch.
 
     Returns ``None`` when the buildings do not intersect the grid.
-    The window covers the union of building footprints extended by one
-    pixel of safety, clipped to the grid extent, so neighbouring tiles
-    see overlapping footprints but each building still rasterises exactly
-    once (the caller only invokes this function once per source tile).
+    Offsets are floored and the far edge is ceiled, so a footprint that
+    only clips a cell corner is still inside the window. Rounding to the
+    nearest pixel drops that sliver and the building is never painted.
     """
     minx = math.inf
     miny = math.inf
@@ -781,13 +780,12 @@ def _local_window_for_buildings(buildings: list[Building], grid: GeoBox) -> Wind
         min(maxy, grid_maxy),
         transform=grid.transform,
     )
-    win = win.round_offsets().round_lengths()
-    if win.height <= 0 or win.width <= 0:
-        return None
-    row0 = max(0, int(win.row_off))
-    col0 = max(0, int(win.col_off))
-    row1 = min(grid.shape.y, int(win.row_off + win.height))
-    col1 = min(grid.shape.x, int(win.col_off + win.width))
+    # Expand to every overlapping cell. round_offsets() drops a footprint
+    # that only covers a fraction of a pixel.
+    row0 = max(0, math.floor(win.row_off))
+    col0 = max(0, math.floor(win.col_off))
+    row1 = min(grid.shape.y, math.ceil(win.row_off + win.height))
+    col1 = min(grid.shape.x, math.ceil(win.col_off + win.width))
     if row1 <= row0 or col1 <= col0:
         return None
     return Window(col0, row0, col1 - col0, row1 - row0)  # type: ignore[call-arg]

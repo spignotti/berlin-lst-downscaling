@@ -19,6 +19,12 @@ from shapely.geometry import box
 
 from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.ard.masking import mask_s2
+from berlin_lst_downscaling.data.ard.pipeline import run as run_ard
+from berlin_lst_downscaling.data.ard.publish_guard import (
+    FrozenPrefixError,
+    assert_feature_output_root,
+    assert_sentinel2_output_root,
+)
 from berlin_lst_downscaling.data.ard.s2_reflectance import (
     recover_harmonized_reflectance_from_clipped_ard,
     resolve_s2_reflectance_scale,
@@ -38,6 +44,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
 )
+from berlin_lst_downscaling.data.features.pipeline import run_features
 from berlin_lst_downscaling.data.secondary.atom import AtomAsset
 from berlin_lst_downscaling.data.secondary.building_raster import (
     accumulate_building,
@@ -45,6 +52,7 @@ from berlin_lst_downscaling.data.secondary.building_raster import (
     new_accumulators,
 )
 from berlin_lst_downscaling.data.secondary.citygml import (
+    Building,
     parse_lod2_buildings,
     parse_lod2_buildings_legacy,
     parse_lod2_buildings_with_stats,
@@ -561,3 +569,40 @@ def test_catalog_join_uses_manifest_columns_without_opening_gcs() -> None:
     assert rows[0]["item_href"] == "https://example.invalid/item.json"
     assert rows[0]["feature_stack"].endswith("/LC08_1/LC08_1.tif")
     assert "landsat-c2-l2/2021/LC08_1" in rows[0]["landsat_cog"]
+
+
+def test_published_prefixes_are_refused_before_any_ledger_write() -> None:
+    """Schema 9 and schema 4 cannot reconcile into the published roots."""
+    frozen_s2 = "gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-20260717T235959Z"
+    frozen_features = "gs://berlin-lst-training-data/features/v5"
+    with pytest.raises(FrozenPrefixError):
+        assert_sentinel2_output_root(frozen_s2 + "/")
+    with pytest.raises(FrozenPrefixError):
+        run_ard(OmegaConf.create({"output_root": frozen_s2, "sources": ["sentinel-2-l2a"]}))
+    assert_sentinel2_output_root(
+        "gs://berlin-lst-training-data/ard/full/2017-2026-s2-harmonized-v9"
+    )
+    with pytest.raises(FrozenPrefixError):
+        assert_feature_output_root(frozen_features)
+    with pytest.raises(FrozenPrefixError):
+        run_features(OmegaConf.create({"output_root": "gs://berlin-lst-training-data/features/v3"}))
+    assert_feature_output_root("gs://berlin-lst-training-data/features/v6")
+    assert_feature_output_root("data/smoke/features")
+
+
+def test_vintage_window_keeps_a_building_that_misses_every_cell_center() -> None:
+    """A corner sliver is painted by the vintage accumulator, not marked outside."""
+    from odc.geo.geobox import GeoBox
+
+    grid = GeoBox((2, 2), Affine(10, 0, 0, 0, -10, 20), CRS.from_epsg(25833))
+    accumulator = _Accumulator(grid)
+    shed = Building(
+        building_id="shed",
+        footprint=box(0.1, 19.6, 0.4, 19.9),
+        measured_height=6.0,
+    )
+    accumulator.add_tile([shed])
+    assert accumulator.buildings_rasterized == 1
+    assert accumulator.buildings_outside_grid == 0
+    assert accumulator.area[0, 0] == pytest.approx(0.09)
+    assert accumulator.count[0, 0] == 1

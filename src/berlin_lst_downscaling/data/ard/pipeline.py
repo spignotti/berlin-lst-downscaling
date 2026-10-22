@@ -51,6 +51,7 @@ from berlin_lst_downscaling.data.ard.masking import (
 )
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.product import finalize_ard_product
+from berlin_lst_downscaling.data.ard.publish_guard import assert_sentinel2_output_root
 from berlin_lst_downscaling.data.ard.reports import qa_report
 from berlin_lst_downscaling.data.ard.s2_reflectance import reflectance_scale_from_items
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
@@ -242,11 +243,12 @@ def run(cfg: DictConfig, run_id: str | None = None) -> int:
     if run_id is None:
         run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
+    sources = list(cfg.sources)
+    if "sentinel-2-l2a" in sources:
+        assert_sentinel2_output_root(output_root)
 
     led = Ledger.open(f"{output_root}/ledger.parquet")
     log_event(_logger, logging.INFO, "start", mode=cfg.mode, sources=list(cfg.sources))
-
-    sources = list(cfg.sources)
 
     for source in sources:
         contract = contract_for_source(source)
