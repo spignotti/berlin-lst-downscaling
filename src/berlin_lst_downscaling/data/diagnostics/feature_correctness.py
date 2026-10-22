@@ -631,6 +631,12 @@ def assert_record_assets_exist(
         raise DiagnosticsRefused(f"missing assets ({len(missing)}):\n{listed}")
 
 
+def _reset_results(output_dir: Path) -> None:
+    """Truncate ``results.jsonl`` so a rerun cannot append onto a previous scan."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / _RESULTS_NAME).write_text("", encoding="utf-8")
+
+
 def _append_jsonl(output_dir: Path, row: dict[str, Any]) -> None:
     """Append one scene result so a later crash still leaves partial output."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -843,6 +849,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: --output-dir is required to execute.")
         return 2
     output_dir: Path | None = None
+    scan_started = False
     summary: dict[str, Any] = {
         "run_id": args.run_id,
         "scopes": scopes,
@@ -852,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     try:
         output_dir = assert_output_dir(args.output_dir)
+        _reset_results(output_dir)
         if args.upload_uri is not None:
             assert_upload_uri(args.upload_uri)
         needs_scenes = "s2-baseline" in scopes or "eligibility-gaps" in scopes
@@ -861,6 +869,7 @@ def main(argv: list[str] | None = None) -> int:
         if needs_scenes and not args.metadata_only:
             assert_record_assets_exist(records)
         if "s2-baseline" in scopes:
+            scan_started = True
             baselines = []
             total = len(records)
             for index, record in enumerate(records, start=1):
@@ -870,6 +879,7 @@ def main(argv: list[str] | None = None) -> int:
                 _append_jsonl(output_dir, {"scope": "s2-baseline", **row})
             summary["s2_baseline"] = baselines
         if "eligibility-gaps" in scopes:
+            scan_started = True
             per_scene = []
             total = len(records)
             for index, record in enumerate(records, start=1):
@@ -889,12 +899,19 @@ def main(argv: list[str] | None = None) -> int:
         if "lod2-parser" in scopes:
             if not args.lod2_tiles:
                 raise DiagnosticsRefused("lod2-parser requires at least one --lod2-tile")
+            scan_started = True
             summary["lod2_parser"] = [analyze_lod2_tile(Path(tile)) for tile in args.lod2_tiles]
         _write_reports(output_dir, summary)
         if args.upload_uri is not None:
             _upload_tree(output_dir, args.upload_uri)
     except DiagnosticsRefused as exc:
-        print(f"ERROR: {exc}")
+        print(f"ERROR: {exc}", flush=True)
+        if scan_started and output_dir is not None:
+            summary["error"] = str(exc)
+            summary["traceback"] = traceback.format_exc()
+            _write_reports(output_dir, summary)
+            if args.upload_uri is not None:
+                _upload_tree(output_dir, args.upload_uri)
         return 2
     except Exception as exc:
         summary["error"] = str(exc)

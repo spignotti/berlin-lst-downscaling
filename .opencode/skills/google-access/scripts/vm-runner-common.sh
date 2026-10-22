@@ -415,7 +415,7 @@ vm_preserve_logs() {
     return 0
   fi
   local dest="/tmp/${WRAP_RUN_ID}"
-  mkdir -p "$dest"
+  mkdir -p "$dest" || true
   ssh_cmd "cat '$REMOTE_LOG'" > "$dest/nohup.log" 2>/dev/null || true
   ssh_cmd "cat '$MARKER'" > "$dest/marker.json" 2>/dev/null || true
   ssh_cmd "cat '$STATUS_FILE'" > "$dest/exit_status" 2>/dev/null || true

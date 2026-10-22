@@ -42,7 +42,7 @@ if [[ ${#TILES[@]} -gt 0 ]]; then
   done
 fi
 
-REMOTE_CMD="PYTHONUNBUFFERED=1 uv run python -u scripts/operators/diagnose_feature_correctness.py ${SCOPES} --yes --run-id ${WRAP_RUN_ID} --expected-scene-count ${EXPECTED_SCENE_COUNT} --output-dir /workspace/feature-diagnostics --upload-uri ${UPLOAD_URI} --training-manifest gs://berlin-lst-training-data/training/v2/manifest.parquet --selection-manifest gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet --features-root gs://berlin-lst-training-data/features/v5 --ard-root gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019${LOD2_ARGS}"
+REMOTE_CMD="PYTHONUNBUFFERED=1 uv run python -u scripts/operators/diagnose_feature_correctness.py ${SCOPES} --yes --run-id ${WRAP_RUN_ID} --expected-scene-count ${EXPECTED_SCENE_COUNT} --output-dir /workspace/feature-diagnostics/${WRAP_RUN_ID} --upload-uri ${UPLOAD_URI} --training-manifest gs://berlin-lst-training-data/training/v2/manifest.parquet --selection-manifest gs://berlin-lst-training-data/manifests/v3/2017-2026-cutoff-20260717T235959Z-r2/manifest.parquet --features-root gs://berlin-lst-training-data/features/v5 --ard-root gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019${LOD2_ARGS}"
 
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
 echo "  Upload: $UPLOAD_URI"

@@ -550,6 +550,8 @@ def test_diagnostics_paths_and_launcher_are_read_only() -> None:
     assert "PYTHONUNBUFFERED=1" in launcher
     assert "python -u" in launcher
     assert "--expected-scene-count ${EXPECTED_SCENE_COUNT}" in launcher
+    assert "--output-dir /workspace/feature-diagnostics/${WRAP_RUN_ID}" in launcher
+    assert 'mkdir -p "$dest" || true' in common_text
     assert 'EXPECTED_SCENE_COUNT="${EXPECTED_SCENE_COUNT:-324}"' in launcher
     allowlist = _ALLOWLIST.read_text(encoding="utf-8")
     assert allowlist.count("run-feature-diagnostics-vm.sh") >= 3
@@ -822,6 +824,107 @@ def test_mid_scan_exception_writes_summary_and_uploads(
     assert "Traceback" in summary["traceback"]
     markdown = (output / "summary.md").read_text(encoding="utf-8")
     assert "boom mid scan" in markdown
+    assert uploads == [(output, uri)]
+
+
+def test_consecutive_runs_do_not_mix_jsonl_rows(tmp_path: Path) -> None:
+    """A second run into the same directory replaces results.jsonl."""
+    output = tmp_path / "out"
+
+    def scenes(scene_id: str) -> Path:
+        path = tmp_path / f"{scene_id}.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "scene_id": scene_id,
+                        "year": 2022,
+                        "s2_scene_id": scene_id,
+                        "properties": {"s2:processing_baseline": "04.00"},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    args = [
+        "--scope",
+        "s2-baseline",
+        "--metadata-only",
+        "--yes",
+        "--output-dir",
+        str(output),
+    ]
+    assert main([*args, "--scenes-json", str(scenes("SCENE_A")), "--run-id", "a"]) == 0
+    assert main([*args, "--scenes-json", str(scenes("SCENE_B")), "--run-id", "b"]) == 0
+    lines = [
+        json.loads(line)
+        for line in (output / "results.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["scene_id"] for row in lines] == ["SCENE_B"]
+
+
+def test_mid_scan_refusal_writes_summary_and_uploads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A DiagnosticsRefused during the scan is recorded and uploaded, then exits 2."""
+    feature = tmp_path / "stack.tif"
+    landsat = tmp_path / "lst.tif"
+    flag = tmp_path / "flag.tif"
+    for path in (feature, landsat, flag):
+        path.write_bytes(b"x")
+    scenes = tmp_path / "scenes.json"
+    scenes.write_text(
+        json.dumps(
+            [
+                {
+                    "scene_id": "LC08_MISSING",
+                    "year": 2022,
+                    "s2_scene_id": "S2",
+                    "properties": {"s2:processing_baseline": "04.00"},
+                    "feature_stack": str(feature),
+                    "landsat_cog": str(landsat),
+                    "landsat_flag": str(flag),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    uploads: list[tuple[Path, str]] = []
+
+    def fake_scan(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise DiagnosticsRefused(f"cannot open raster {feature}")
+
+    monkeypatch.setattr(feature_correctness, "scan_feature_stack", fake_scan)
+    monkeypatch.setattr(
+        feature_correctness,
+        "_upload_tree",
+        lambda source, destination: uploads.append((source, destination)),
+    )
+    output = tmp_path / "out"
+    uri = "gs://berlin-lst-training-data/evaluation/diagnostics/unit-refused/"
+    code = main(
+        [
+            "--scope",
+            "eligibility-gaps",
+            "--scenes-json",
+            str(scenes),
+            "--yes",
+            "--output-dir",
+            str(output),
+            "--upload-uri",
+            uri,
+            "--run-id",
+            "unit-refused",
+        ]
+    )
+    assert code == 2
+    summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert "cannot open raster" in summary["error"]
+    assert "Traceback" in summary["traceback"]
+    assert "cannot open raster" in (output / "summary.md").read_text(encoding="utf-8")
     assert uploads == [(output, uri)]
 
 
