@@ -53,7 +53,9 @@ takes that mean. Composing from the published 8-band COG uses the same
 mean, so the two paths agree. A scene-value COG is already constant, and
 applying the mean again leaves the scalar unchanged. The published
 dynamic product stays 8-band bilinear. `configs/dynamic/v6.yaml` writes
-the new `dynamic/lod2-area-exact-v2` prefix.
+the new `dynamic/lod2-area-exact-v2` prefix. Its config hash includes the
+SHA-256 prefix of the AOI file, so a different mask invalidates the
+`scene_value` product.
 
 SVF `svf_max_radius` stays 3 cells (30 m) in `configs/static_derived/v6.yaml`.
 `scripts/validators/diagnose_svf_radius.py` compares 30/50/100/200 m on a

@@ -62,7 +62,7 @@ Review-only rules for this repository. Flag methodological drift. A missing test
 - The canopy threshold default is 2.5 m and is provisional. Changing it is a config and config-hash change.
 - `svf_max_radius` stays 3 cells (30 m) until a config change. The multi-radius diagnostic is read-only and must not write a product.
 - ERA5 v6 representation defaults to `scene_value`. `bilinear` stays available. The published dynamic product stays the 8-band bilinear contract unless the v6 dynamic config is selected.
-- `scene_value` is the mean of the bilinear 10 m field inside the exact Berlin AOI, in both the dynamic writer and the feature loader. A native-cell or bbox mean is a different quantity.
+- `scene_value` is the mean of the bilinear 10 m field inside the exact Berlin AOI, in both the dynamic writer and the feature loader. A native-cell or bbox mean is a different quantity. The dynamic `scene_value` config hash includes the AOI file fingerprint. The domain label alone does not invalidate a changed mask.
 - EDA tables follow the roster stored in the observation table. A v6 table includes `canopy_cover_fraction` and `tp_0_72h`.
 - `tp_0_72h` uses `log1p` then z-score. The v5 scaler still uses the three precipitation windows. The published training-policy hash must not move when v6 is added.
 

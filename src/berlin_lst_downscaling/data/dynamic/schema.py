@@ -59,6 +59,7 @@ def config_hash_for_era5(
     *,
     channel_set: str = "v5",
     representation: str = "bilinear",
+    aoi_fingerprint: str | None = None,
 ) -> str:
     """Config hash for ERA5 scene products specifically.
 
@@ -68,7 +69,9 @@ def config_hash_for_era5(
 
     The default arguments reproduce the published v5 bilinear hash. A v6
     channel set or a scene-scalar representation adds those fields so the
-    ledger treats the product as a new config.
+    ledger treats the product as a new config. ``scene_value`` is the AOI
+    mean of the bilinear field, so that path also requires the fingerprint
+    of the AOI file. A different mask is a different product.
     """
     body = {
         "manifest_hash": manifest_hash,
@@ -90,7 +93,10 @@ def config_hash_for_era5(
         body["channel_set"] = channel_set
         body["representation"] = representation
         if representation == "scene_value":
+            if not aoi_fingerprint:
+                raise ValueError("scene_value ERA5 hash requires the AOI file fingerprint")
             body["scene_value_domain"] = "aoi_mean_of_bilinear"
+            body["aoi_fingerprint"] = aoi_fingerprint
     payload = json.dumps(body, sort_keys=True)
     return sha256(payload.encode()).hexdigest()[:16]
 

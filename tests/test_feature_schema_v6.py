@@ -281,12 +281,31 @@ def test_scene_value_is_the_aoi_mean_of_the_bilinear_field() -> None:
     assert float(written["t2m_scene"][1, 1]) == pytest.approx(20.0)
     again = apply_era5_representation(written, "scene_value", valid_mask=aoi)
     assert np.all(again["t2m_scene"] == pytest.approx(20.0))
-    v6_hash = config_hash_for_era5("m", "g", "root", channel_set="v6", representation="scene_value")
+    with pytest.raises(ValueError, match="AOI file fingerprint"):
+        config_hash_for_era5("m", "g", "root", channel_set="v6", representation="scene_value")
+    v6_hash = config_hash_for_era5(
+        "m",
+        "g",
+        "root",
+        channel_set="v6",
+        representation="scene_value",
+        aoi_fingerprint="aoi-a",
+    )
+    other_aoi = config_hash_for_era5(
+        "m",
+        "g",
+        "root",
+        channel_set="v6",
+        representation="scene_value",
+        aoi_fingerprint="aoi-b",
+    )
     bilinear_hash = config_hash_for_era5(
         "m", "g", "root", channel_set="v6", representation="bilinear"
     )
     assert v6_hash != bilinear_hash
+    assert v6_hash != other_aoi
     assert config_hash_for_era5("m", "g", "root") == "f381861cc6b460da"
+    assert config_hash_for_era5("m", "g", "root", aoi_fingerprint="aoi-a") == "f381861cc6b460da"
 
 
 def test_eda_tables_follow_the_roster_in_the_frame() -> None:
