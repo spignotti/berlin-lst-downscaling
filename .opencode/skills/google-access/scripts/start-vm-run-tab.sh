@@ -33,6 +33,7 @@ if [[ -z "$LAUNCHER" ]]; then
   echo "  run-training-data-vm.sh run-qa-stage1-vm.sh run-qa-stage2-vm.sh" >&2
   echo "  run-modeling-smoke-vm.sh run-patch-read-timing-vm.sh" >&2
   echo "  run-baseline-vm.sh run-baseline-validation-vm.sh" >&2
+  echo "  run-feature-diagnostics-vm.sh" >&2
   exit 1
 fi
 shift
@@ -49,14 +50,14 @@ fi
 BASENAME="$(basename -- "$LAUNCHER")"
 APPROVED="$SCRIPTS_DIR/$BASENAME"
 case "$BASENAME" in
-  run-dynamic-vm.sh|run-features-vm.sh|run-training-data-vm.sh|run-qa-stage1-vm.sh|run-qa-stage2-vm.sh|run-modeling-smoke-vm.sh|run-patch-read-timing-vm.sh|run-baseline-vm.sh|run-baseline-validation-vm.sh)
+  run-dynamic-vm.sh|run-features-vm.sh|run-training-data-vm.sh|run-qa-stage1-vm.sh|run-qa-stage2-vm.sh|run-modeling-smoke-vm.sh|run-patch-read-timing-vm.sh|run-baseline-vm.sh|run-baseline-validation-vm.sh|run-feature-diagnostics-vm.sh)
     ;;
   *)
     echo "ERROR: not an approved launcher: $BASENAME" >&2
     echo "Approved: run-dynamic-vm.sh, run-features-vm.sh, run-training-data-vm.sh," >&2
     echo "  run-qa-stage1-vm.sh, run-qa-stage2-vm.sh, run-modeling-smoke-vm.sh," >&2
     echo "  run-patch-read-timing-vm.sh, run-baseline-vm.sh," >&2
-    echo "  run-baseline-validation-vm.sh" >&2
+    echo "  run-baseline-validation-vm.sh, run-feature-diagnostics-vm.sh" >&2
     exit 1
     ;;
 esac

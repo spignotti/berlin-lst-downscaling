@@ -52,6 +52,7 @@ from berlin_lst_downscaling.data.ard.masking import (
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.product import finalize_ard_product
 from berlin_lst_downscaling.data.ard.reports import qa_report
+from berlin_lst_downscaling.data.ard.s2_reflectance import reflectance_scale_from_items
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
 from berlin_lst_downscaling.data.ard.validate import validate_cog, validate_flag_cog
 from berlin_lst_downscaling.data.ard.writer import (
@@ -145,6 +146,12 @@ def _run_sentinel2_scene(
     ecostress_raw_dir: str | None = None,  # unused by S2
 ) -> xr.Dataset:
     """Load + mask a Sentinel-2 L2A scene."""
+    if not items:
+        raise ValueError(
+            f"scene {scene_id}: Sentinel-2 reflectance needs the STAC item "
+            "so BOA_ADD_OFFSET can be chosen from metadata"
+        )
+    reflectance = reflectance_scale_from_items(items)
     effective_date = scene_date or cfg.scene_date
     bbox = tuple(cfg.bbox)
     ds_10m, loaded_ids = load_s2_scene(
@@ -171,7 +178,7 @@ def _run_sentinel2_scene(
         )
     # S2 uses NOAA computation (PC items lack view:sun_*)
     az, el = _solar_for_scene(ds_10m, cfg)
-    masked = mask_s2(ds_10m, ds_20m, cfg, az, el)
+    masked = mask_s2(ds_10m, ds_20m, cfg, az, el, reflectance=reflectance)
     return masked
 
 
@@ -608,6 +615,9 @@ def _run_scene(
             resolution = int(cfg.target_resolution_low)
         else:
             resolution = int(cfg.target_resolution_high)
+        source_metadata = masked.attrs.get("s2_reflectance")
+        if source_metadata is not None and not isinstance(source_metadata, dict):
+            source_metadata = None
         finalize_ard_product(
             scene_id=scene_id,
             source=source,
@@ -618,6 +628,7 @@ def _run_scene(
             run_id=run_id,
             flag_uri=flag_dst if contract.flag_mode == "separate" else None,
             target_resolution=resolution,
+            source_metadata=source_metadata,
         )
         stac_dst = stac_path(root, source, year, scene_id)
         elapsed = time.perf_counter() - t0

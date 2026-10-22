@@ -24,6 +24,10 @@ from berlin_lst_downscaling.data.ard.landsat_target import (
     policy_from_config,
     qa_condition_planes,
 )
+from berlin_lst_downscaling.data.ard.s2_reflectance import (
+    S2ReflectanceScale,
+    scale_s2_digital_numbers,
+)
 
 # ── Landsat ─────────────────────────────────────────────────────────##
 
@@ -188,8 +192,6 @@ def landsat_uses_area_mean(cfg: DictConfig) -> bool:
 
 # ── Sentinel-2 ───────────────────────────────────────────────────────##
 
-_S2_DN_SCALE = 1.0 / 10000.0  # Baseline 04.00 scaled reflectance
-
 # Native 20m SWIR bands, masked at 20m before bilinear 20→10m resampling.
 _S2_SWIR_BAND_NAMES = ("B11", "B12")
 
@@ -258,6 +260,8 @@ def mask_s2(
     cfg: DictConfig,
     sun_azimuth_deg: float,
     sun_elevation_deg: float,
+    *,
+    reflectance: S2ReflectanceScale,
 ) -> xr.Dataset:
     """Apply S2 ARD masking: six scaled-reflectance bands + flag band.
 
@@ -274,11 +278,16 @@ def mask_s2(
         Hydra config (uses ``cloud_base_height_m``).
     sun_azimuth_deg, sun_elevation_deg :
         Solar position for cloud-shadow projection.
+    reflectance :
+        Per-scene BOA offset from STAC metadata. Applied to the raw DN
+        before the ``[0, 1]`` clip. SCL fill is applied after scaling
+        and is the only nodata mask; DN 0 is not nodata.
 
     Returns
     -------
     xr.Dataset with bands ``B02, B03, B04, B08, B11, B12`` (float32 0-1)
-    and ``flag`` (uint8, 10m).
+    and ``flag`` (uint8, 10m). ``attrs["s2_reflectance"]`` records the
+    offset decision for provenance.
 
     SWIR handling: B11/B12 are masked at their native 20m resolution
     (any non-zero SCL flag → NaN) **before** the bilinear 20→10m
@@ -310,9 +319,7 @@ def mask_s2(
 
     swir_scaled: dict[str, np.ndarray] = {}
     for b in _S2_SWIR_BAND_NAMES:
-        arr = ds_20m[b].values.squeeze().astype(np.float32)
-        arr = arr * _S2_DN_SCALE
-        arr = np.clip(arr, 0.0, 1.0)
+        arr = scale_s2_digital_numbers(ds_20m[b].values.squeeze(), reflectance)
         # any non-zero flag → invalid SWIR sample, excluded from the
         # bilinear kernel (NaN propagates; see docstring)
         arr[flag_20m != 0] = float("nan")
@@ -322,9 +329,7 @@ def mask_s2(
     bands_10m = ["B02", "B03", "B04", "B08"]
     scaled: dict[str, np.ndarray] = {}
     for b in bands_10m:
-        arr = ds_10m[b].values.squeeze().astype(np.float32)
-        arr = arr * _S2_DN_SCALE
-        arr = np.clip(arr, 0.0, 1.0)
+        arr = scale_s2_digital_numbers(ds_10m[b].values.squeeze(), reflectance)
         # propagate fill NaN
         arr[(flag & contract.FLAG_FILL) != 0] = float("nan")
         scaled[b] = arr
@@ -376,6 +381,7 @@ def mask_s2(
     )
 
     out = xr.Dataset(out_vars, coords=coords)
+    out.attrs["s2_reflectance"] = reflectance.as_dict()
     for var in out.data_vars:
         out[var].rio.write_crs(ds_10m.rio.crs, inplace=True)
         out[var].rio.write_transform(ds_10m.rio.transform(), inplace=True)

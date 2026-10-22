@@ -76,7 +76,10 @@ ALBEDO_WEIGHTS: tuple[float, ...] = (0.2266, 0.1236, 0.1573, 0.3417, 0.1170, 0.0
 # Formulas + channel schema version. Bump when index math or the channel
 # roster changes — the value feeds the config hash and invalidates every
 # published stack (model interface contract).
-FEATURE_SCHEMA_VERSION: int = 3
+# 4: S2 reflectance is the baseline-harmonized ARD (schema 9). The stack
+# does not apply a second offset. LoD morphology consumed by the stack
+# is the BuildingPart / area-exact product (lod2_morphology config v2).
+FEATURE_SCHEMA_VERSION: int = 4
 
 # Sentinel-2 ARD band names, in published COG order (data/ard/contract.py).
 _S2_BAND_NAMES = ("B02", "B03", "B04", "B08", "B11", "B12")
@@ -114,7 +117,10 @@ def _s2_channels() -> list[FeatureChannel]:
         FeatureChannel(
             name=b,
             family="spectral",
-            description=f"Sentinel-2 {b} scaled reflectance [0,1]",
+            description=(
+                f"Sentinel-2 {b} BOA reflectance harmonized per scene "
+                "from product metadata, scaled to [0, 1]"
+            ),
             valid_range=(0.0, 1.0),
         )
         for b in _S2_BAND_NAMES

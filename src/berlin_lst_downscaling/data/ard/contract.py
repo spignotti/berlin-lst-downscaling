@@ -65,14 +65,17 @@ class Contract:
 # ── factories ────────────────────────────────────────────────────────
 
 # Per-source schema versions. Bumping ``sentinel-2-l2a`` (six-band
-# contract) forces exactly the 158 S2 scenes to reprocess via
-# ``reconcile`` (schema_changed) on a source-restricted run. The
-# published Landsat rows are v6 (content unchanged since); a future
-# full ``run_ard`` rewrites them to the current Landsat contract
-# version deterministically.
+# contract) forces exactly the S2 scenes to reprocess via
+# ``reconcile`` (schema_changed) on a source-restricted run. Schema 9
+# applies BOA_ADD_OFFSET from scene metadata before the reflectance
+# clip. Publish that run to a new ARD prefix
+# (``configs/ard/sentinel2_harmonized_v9.yaml``). Do not point it at
+# the published features/v5 ARD root. The published Landsat rows stay
+# on their current contract; a future full ``run_ard`` rewrites them
+# only when their own schema version changes.
 _SCHEMA_VERSIONS: dict[str, int] = {
     "landsat-c2-l2": 7,
-    "sentinel-2-l2a": 8,
+    "sentinel-2-l2a": 9,
     "ecostress": 7,
 }
 
@@ -111,7 +114,10 @@ _S2_BANDS = (
         name="B02",
         dtype="float32",
         nodata=_NAN,
-        description="Sentinel-2 band 2 (blue); scaled reflectance 0-1",
+        description=(
+            "Sentinel-2 band 2 (blue); BOA reflectance harmonized with "
+            "the scene BOA_ADD_OFFSET, clipped to [0, 1]"
+        ),
         unit="1",
         valid_range=(0.0, 1.0),
     ),
@@ -119,7 +125,7 @@ _S2_BANDS = (
         name="B03",
         dtype="float32",
         nodata=_NAN,
-        description="Sentinel-2 band 3 (green); scaled reflectance 0-1",
+        description="Sentinel-2 band 3 (green); harmonized BOA reflectance [0, 1]",
         unit="1",
         valid_range=(0.0, 1.0),
     ),
@@ -127,7 +133,7 @@ _S2_BANDS = (
         name="B04",
         dtype="float32",
         nodata=_NAN,
-        description="Sentinel-2 band 4 (red); scaled reflectance 0-1",
+        description="Sentinel-2 band 4 (red); harmonized BOA reflectance [0, 1]",
         unit="1",
         valid_range=(0.0, 1.0),
     ),
@@ -135,7 +141,7 @@ _S2_BANDS = (
         name="B08",
         dtype="float32",
         nodata=_NAN,
-        description="Sentinel-2 band 8 (NIR); scaled reflectance 0-1",
+        description="Sentinel-2 band 8 (NIR); harmonized BOA reflectance [0, 1]",
         unit="1",
         valid_range=(0.0, 1.0),
     ),
@@ -144,7 +150,7 @@ _S2_BANDS = (
         dtype="float32",
         nodata=_NAN,
         description=(
-            "Sentinel-2 band 11 (SWIR1); scaled reflectance 0-1. "
+            "Sentinel-2 band 11 (SWIR1); harmonized BOA reflectance [0, 1]. "
             "Native 20m, masked at 20m then bilinearly resampled to 10m "
             "(no 10m detail claim)."
         ),
@@ -156,7 +162,7 @@ _S2_BANDS = (
         dtype="float32",
         nodata=_NAN,
         description=(
-            "Sentinel-2 band 12 (SWIR2); scaled reflectance 0-1. "
+            "Sentinel-2 band 12 (SWIR2); harmonized BOA reflectance [0, 1]. "
             "Native 20m, masked at 20m then bilinearly resampled to 10m "
             "(no 10m detail claim)."
         ),

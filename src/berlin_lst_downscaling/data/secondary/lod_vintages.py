@@ -71,18 +71,21 @@ import rasterio.windows
 import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
-from rasterio.features import rasterize
 from rasterio.windows import Window
-from shapely.geometry import mapping
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.io import atomic_upload, atomic_write, log_event
+from berlin_lst_downscaling.data.secondary.building_raster import (
+    accumulate_building,
+    morphology_bands,
+)
 from berlin_lst_downscaling.data.secondary.citygml import (
     Building,
     Footprint,
+    Lod2ParseStats,
     iter_xml_members,
     parse_lod1_footprints,
-    parse_lod2_buildings,
+    parse_lod2_buildings_with_stats,
 )
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.lod2 import (
@@ -495,8 +498,13 @@ def iter_lod2_tiles(
     *,
     grid: GeoBox | None = None,
     max_tiles: int | None = None,
+    stats_sink: Lod2ParseStats | None = None,
 ) -> Iterator[tuple[str, list[Building]]]:
-    """Yield ``(tile_key, buildings)`` pairs from a LoD2 ZIP archive."""
+    """Yield ``(tile_key, buildings)`` pairs from a LoD2 ZIP archive.
+
+    Buildings include ``BuildingPart`` units. When *stats_sink* is set,
+    parse counters (dropped heights, part counts) accumulate into it.
+    """
     with zipfile.ZipFile(archive_path) as z:
         members = sorted(iter_xml_members(archive_path))
         if grid is not None:
@@ -507,7 +515,10 @@ def iter_lod2_tiles(
         for member in members:
             data = z.read(member)
             tile_key = _lod2_tile_key(member)
-            yield tile_key, parse_lod2_buildings(data)
+            buildings, stats = parse_lod2_buildings_with_stats(data)
+            if stats_sink is not None:
+                stats_sink.add(stats)
+            yield tile_key, buildings
 
 
 # ── 2017 stock filter ────────────────────────────────────────────────
@@ -641,11 +652,10 @@ class _Accumulator:
     """Pre-allocated 10 m-grid statistics buffers for one vintage product.
 
     Rasterisation is performed into a *local* window per CityGML tile
-    rather than against the full canonical Berlin grid.  Each building is
-    still rasterised individually so per-building ``n_cells`` and the
-    existing height/area accumulation semantics are preserved exactly.
-    The global grid stays in memory; only the per-tile allocations are
-    tiny.
+    rather than against the full canonical Berlin grid. Each building
+    contributes the exact intersection of its footprint with each 10 m
+    cell. The global grid stays in memory; only the per-tile views are
+    updated.
     """
 
     def __init__(self, grid: GeoBox) -> None:
@@ -656,19 +666,24 @@ class _Accumulator:
         self.count = np.zeros(shape, dtype=np.int32)
         self.area = np.zeros(shape, dtype=np.float64)
         self.max = np.zeros(shape, dtype=np.float32)
+        self.total_buildings = 0
+        self.buildings_rasterized = 0
+        self.buildings_outside_grid = 0
+        self.skipped_missing_height = 0
 
     def add_tile(self, buildings: list[Building]) -> None:
-        # Decide the local window once per CityGML tile from the union of
-        # building bounds; only build a window if the tile intersects the
-        # grid at all.
+        """Accumulate *buildings* and count every unit that was passed in."""
+        self.total_buildings += len(buildings)
         window = _local_window_for_buildings(buildings, self.grid)
         if window is None:
+            self.buildings_outside_grid += len(buildings)
             return
 
         local_transform = rasterio.windows.transform(window, self.grid.transform)
         local_h = int(window.height)
         local_w = int(window.width)
         if local_h <= 0 or local_w <= 0:
+            self.buildings_outside_grid += len(buildings)
             return
 
         row_off = int(window.row_off)
@@ -680,55 +695,32 @@ class _Accumulator:
         max_slice = self.max[row_off : row_off + local_h, col_off : col_off + local_w]
 
         for bldg in buildings:
-            if bldg.footprint is None or bldg.measured_height is None:
+            if bldg.footprint is None or bldg.measured_height is None or bldg.measured_height <= 0:
+                self.skipped_missing_height += 1
                 continue
-            try:
-                geom = mapping(bldg.footprint)
-                mask = rasterize(
-                    [(geom, 1)],
-                    out_shape=(local_h, local_w),
-                    transform=local_transform,
-                    fill=0,
-                    dtype=np.uint8,
-                )
-                if mask is None:
-                    continue
-            except Exception:  # noqa: S112 — skip buildings with bad geometry
-                continue
-            cells = mask > 0
-            n_cells = int(np.sum(cells))
-            if n_cells == 0:
-                continue
-
-            h = bldg.measured_height
-            sum_slice[cells] += h
-            sumsq_slice[cells] += h * h
-            count_slice[cells] += 1
-            area_slice[cells] += bldg.footprint.area / n_cells
-            np.maximum.at(max_slice, cells, h)
+            hit = accumulate_building(
+                bldg.footprint,
+                float(bldg.measured_height),
+                transform=local_transform,
+                shape=(local_h, local_w),
+                sum_h=sum_slice,
+                sum_h2=sumsq_slice,
+                sum_area=area_slice,
+                count=count_slice,
+                max_h=max_slice,
+            )
+            if hit:
+                self.buildings_rasterized += 1
+            else:
+                self.buildings_outside_grid += 1
 
     def to_dataset(self) -> xr.Dataset:
         """Render the accumulated statistics into the canonical 4-band dataset."""
-        count_f = self.count.astype(np.float64)
-        empty = self.count == 0
-
-        mean_arr = np.where(count_f > 0, self.sum / count_f, np.nan).astype(np.float32)
-        variance = np.where(
-            count_f > 1,
-            (self.sumsq - (self.sum * self.sum) / count_f) / (count_f - 1),
-            0.0,
-        )
-        std_arr = np.where(count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan).astype(
-            np.float32
-        )
-        bcr_arr = np.where(count_f > 0, self.area / 100.0, np.nan).astype(np.float32)
-        bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
-        max_arr = np.where(count_f > 0, self.max, np.nan).astype(np.float32)
-
-        # Mask untouched cells as NaN so partial-grid runs do not
-        # masquerade as full-grids.
-        for arr in (mean_arr, std_arr, bcr_arr, max_arr):
-            arr[empty] = np.nan
+        bands = morphology_bands(self.sum, self.sumsq, self.area, self.count, self.max)
+        mean_arr = bands["building_height_mean"]
+        std_arr = bands["building_height_std"]
+        bcr_arr = bands["building_coverage_ratio"]
+        max_arr = bands["building_height_max"]
 
         xs = self.grid.transform.xoff + 5.0 + np.arange(self.grid.shape.x) * 10.0
         ys = self.grid.transform.yoff - 5.0 - np.arange(self.grid.shape.y) * 10.0
@@ -859,6 +851,7 @@ def prepare_vintage_morphology(
 
     accumulator = _Accumulator(grid)
     filter_stats = FilterStats()
+    parse_stats = Lod2ParseStats()
     tile_count = 0
     log_progress_step = max(1, _LOG_PROGRESS_EVERY)
 
@@ -892,6 +885,7 @@ def prepare_vintage_morphology(
         lod2_mat.local_path,
         grid=grid,
         max_tiles=smoke_tile_count,
+        stats_sink=parse_stats,
     ):
         tile_count += 1
         if vintage == 2017:
@@ -982,6 +976,11 @@ def prepare_vintage_morphology(
             qa_stats={
                 "valid_frac": round(valid_frac, 4),
                 "tile_count": tile_count,
+                "total_buildings": accumulator.total_buildings,
+                "buildings_rasterized": accumulator.buildings_rasterized,
+                "buildings_outside_grid": accumulator.buildings_outside_grid,
+                "skipped_missing_height": accumulator.skipped_missing_height,
+                "parse": parse_stats.as_dict(),
                 **({"stock_filter": filter_stats.as_dict()} if vintage == 2017 else {}),
             },
             config_hash=c_hash,

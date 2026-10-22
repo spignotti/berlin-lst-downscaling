@@ -39,6 +39,7 @@ import logging
 import re
 import tempfile
 import zipfile
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -47,8 +48,6 @@ import numpy as np
 import rioxarray  # noqa: F401 — registers rio accessor
 import xarray as xr
 from odc.geo.geobox import GeoBox
-from rasterio.features import rasterize
-from shapely.geometry import mapping
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
@@ -57,11 +56,17 @@ from berlin_lst_downscaling.data.secondary.atom import (
     AtomAsset,
     parse_atom_feed,
 )
+from berlin_lst_downscaling.data.secondary.building_raster import (
+    accumulate_building,
+    morphology_bands,
+    new_accumulators,
+)
 from berlin_lst_downscaling.data.secondary.citygml import (
     Building as ParsedBuilding,
 )
 from berlin_lst_downscaling.data.secondary.citygml import (
-    parse_lod2_buildings,
+    Lod2ParseStats,
+    parse_lod2_buildings_with_stats,
 )
 from berlin_lst_downscaling.data.secondary.download import DownloadReceipt, download_to_raw
 from berlin_lst_downscaling.data.secondary.product import (
@@ -79,7 +84,8 @@ _LOD2_RE = re.compile(r"LoD2_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
 
 # ── contract ───────────────────────────────────────────────────────────
 
-_CONFIG_HASH_PREFIX = "lod2_morphology:v1:"
+# v2: BuildingPart heights, geometry fallback, area-exact 10 m coverage.
+_CONFIG_HASH_PREFIX = "lod2_morphology:v2:"
 
 
 def contract_for_lod2_morphology() -> Contract:
@@ -92,7 +98,10 @@ def contract_for_lod2_morphology() -> Contract:
                 name="building_height_mean",
                 dtype="float32",
                 nodata=float("nan"),
-                description="Mean building height in metres above ground",
+                description=(
+                    "Area-weighted mean building height in metres. "
+                    "Weight is the footprint intersection with the 10 m cell."
+                ),
                 unit="m",
                 valid_range=(0.0, 200.0),
             ),
@@ -100,7 +109,10 @@ def contract_for_lod2_morphology() -> Contract:
                 name="building_height_std",
                 dtype="float32",
                 nodata=float("nan"),
-                description="Standard deviation of building heights within cell",
+                description=(
+                    "Area-weighted population standard deviation of building "
+                    "heights in the cell. Zero when one building intersects it."
+                ),
                 unit="m",
                 valid_range=(0.0, 100.0),
             ),
@@ -108,7 +120,10 @@ def contract_for_lod2_morphology() -> Contract:
                 name="building_coverage_ratio",
                 dtype="float32",
                 nodata=float("nan"),
-                description="Fraction of cell area covered by building footprints [0, 1]",
+                description=(
+                    "Fraction of the 10 m cell covered by summed footprint "
+                    "intersections, clipped to [0, 1]"
+                ),
                 unit="",
                 valid_range=(-0.01, 1.01),
             ),
@@ -122,7 +137,7 @@ def contract_for_lod2_morphology() -> Contract:
             ),
         ),
         tiling=TilingSpec(),
-        schema_version=2,
+        schema_version=3,
         flag_mode="none",
     )
 
@@ -140,24 +155,60 @@ def config_hash_for_vintage(vintage: int) -> str:
 # only the streaming ZIP iteration + rasterisation glue.
 
 
+@dataclass
+class Lod2IngestStats:
+    """Buildings read from one tile run and how they were rasterized.
+
+    ``total_buildings`` is the number of emitted units (buildings or
+    parts with a footprint and a resolved height). It is not a sentinel
+    left at zero.
+    """
+
+    total_buildings: int = 0
+    buildings_rasterized: int = 0
+    buildings_outside_grid: int = 0
+    skipped_missing_height: int = 0
+    parse: Lod2ParseStats = field(default_factory=Lod2ParseStats)
+
+    def add_tile(
+        self,
+        *,
+        emitted: int,
+        rasterized: int,
+        outside_grid: int,
+        skipped_missing_height: int,
+        parse: Lod2ParseStats,
+    ) -> None:
+        """Add one tile's counters."""
+        self.total_buildings += emitted
+        self.buildings_rasterized += rasterized
+        self.buildings_outside_grid += outside_grid
+        self.skipped_missing_height += skipped_missing_height
+        self.parse.add(parse)
+
+
 def _parse_buildings_from_tile(
     zip_path: Path,
     asset: AtomAsset,
-) -> list[ParsedBuilding]:
+) -> tuple[list[ParsedBuilding], Lod2ParseStats]:
     """Parse every building from a CityGML tile ZIP."""
+    del asset  # the ZIP, not the ATOM record, carries the buildings
     buildings: list[ParsedBuilding] = []
+    stats = Lod2ParseStats()
 
     with zipfile.ZipFile(zip_path) as z:
         xml_names = [n for n in z.namelist() if n.lower().endswith((".gml", ".xml"))]
         if not xml_names:
-            return buildings
+            return buildings, stats
 
         for member in xml_names:
-            with z.open(member) as f:
-                raw = f.read()
-            buildings.extend(parse_lod2_buildings(raw))
+            with z.open(member) as handle:
+                raw = handle.read()
+            parsed, member_stats = parse_lod2_buildings_with_stats(raw)
+            buildings.extend(parsed)
+            stats.add(member_stats)
 
-    return buildings
+    return buildings, stats
 
 
 # ── rasterization ─────────────────────────────────────────────────────
@@ -171,52 +222,46 @@ def _accumulate_buildings(
     count_arr: np.ndarray,
     area_arr: np.ndarray,
     max_arr: np.ndarray,
-) -> int:
-    """Rasterize building footprints and accumulate statistics.
+) -> dict[str, int]:
+    """Rasterize footprints by cell intersection and return counters.
 
-    Returns the number of buildings processed.
+    ``total_buildings`` is ``len(buildings)``: every emitted unit handed
+    to the rasterizer, including one that misses the grid. Units with
+    no positive height are not painted and are counted in
+    ``skipped_missing_height`` instead of as 0 m.
     """
     transform = grid.transform
     shape = (grid.shape.y, grid.shape.x)
+    rasterized = 0
+    outside_grid = 0
+    skipped = 0
 
     for bldg in buildings:
-        if bldg.footprint is None or bldg.measured_height is None:
+        if bldg.footprint is None or bldg.measured_height is None or bldg.measured_height <= 0:
+            skipped += 1
             continue
+        hit = accumulate_building(
+            bldg.footprint,
+            float(bldg.measured_height),
+            transform=transform,
+            shape=shape,
+            sum_h=sum_arr,
+            sum_h2=sumsq_arr,
+            sum_area=area_arr,
+            count=count_arr,
+            max_h=max_arr,
+        )
+        if hit:
+            rasterized += 1
+        else:
+            outside_grid += 1
 
-        # Rasterize this building's footprint at 10m
-        try:
-            geom = mapping(bldg.footprint)
-            mask_result = rasterize(
-                [(geom, 1)],
-                out_shape=shape,
-                transform=transform,
-                fill=0,
-                dtype=np.uint8,
-            )
-            if mask_result is None:
-                continue
-            mask = mask_result
-        except Exception:  # noqa: S112
-            continue
-
-        cells = mask > 0
-        n_cells = int(np.sum(cells))
-        if n_cells == 0:
-            continue
-
-        h = bldg.measured_height
-        sum_arr[cells] += h
-        sumsq_arr[cells] += h * h
-        count_arr[cells] += 1
-
-        # BCR: use actual footprint area (m²) divided by cell area
-        footprint_area = bldg.footprint.area
-        area_arr[cells] += footprint_area / n_cells  # distribute evenly across touched cells
-
-        # Max height — in-place update
-        np.maximum.at(max_arr, cells, h)
-
-    return len(buildings)
+    return {
+        "total_buildings": len(buildings),
+        "buildings_rasterized": rasterized,
+        "buildings_outside_grid": outside_grid,
+        "skipped_missing_height": skipped,
+    }
 
 
 # ── prepare ───────────────────────────────────────────────────────────
@@ -263,15 +308,16 @@ def prepare_lod2_morphology(
 
     # ── 2. accumulate rasterization statistics ───────────────────────
     shape = (grid.shape.y, grid.shape.x)
-    sum_arr = np.zeros(shape, dtype=np.float64)
-    sumsq_arr = np.zeros(shape, dtype=np.float64)
-    count_arr = np.zeros(shape, dtype=np.int32)
-    area_arr = np.zeros(shape, dtype=np.float64)
-    max_arr = np.zeros(shape, dtype=np.float32)
+    buffers = new_accumulators(shape)
+    sum_arr = buffers["sum_h"]
+    sumsq_arr = buffers["sum_h2"]
+    count_arr = buffers["count"]
+    area_arr = buffers["sum_area"]
+    max_arr = buffers["max_h"]
 
     tile_receipts: list[dict] = []
     all_checksums: list[str] = []
-    total_buildings = 0
+    ingest = Lod2IngestStats()
 
     for i, asset in enumerate(manifest.assets):
         if (i + 1) % 50 == 0:
@@ -281,7 +327,7 @@ def prepare_lod2_morphology(
                 "lod2_tile_progress",
                 done=i + 1,
                 total=len(manifest.assets),
-                buildings=total_buildings,
+                buildings=ingest.total_buildings,
             )
 
         receipt = _process_lod2_tile(
@@ -293,6 +339,7 @@ def prepare_lod2_morphology(
             area_arr,
             max_arr,
             output_root,
+            ingest,
         )
         tile_receipts.append(
             {
@@ -306,18 +353,11 @@ def prepare_lod2_morphology(
         all_checksums.append(receipt.checksum)
 
     # ── 3. compute final morphology bands ────────────────────────────
-    count_f = count_arr.astype(np.float64)
-    mean_arr = np.where(count_f > 0, sum_arr / count_f, np.nan).astype(np.float32)
-    variance = np.where(
-        count_f > 1,
-        (sumsq_arr - (sum_arr * sum_arr) / count_f) / (count_f - 1),
-        0.0,
-    )
-    std_arr = np.where(count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan).astype(np.float32)
-    cell_area = 100.0  # 10m × 10m
-    bcr_arr = np.where(count_f > 0, area_arr / cell_area, np.nan).astype(np.float32)
-    bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
-    max_arr = np.where(count_f > 0, max_arr, np.nan).astype(np.float32)
+    bands = morphology_bands(sum_arr, sumsq_arr, area_arr, count_arr, max_arr)
+    mean_arr = bands["building_height_mean"]
+    std_arr = bands["building_height_std"]
+    bcr_arr = bands["building_coverage_ratio"]
+    max_out = bands["building_height_max"]
 
     # ── 4. build canonical xr.Dataset ────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
@@ -327,7 +367,7 @@ def prepare_lod2_morphology(
             "building_height_mean": (("y", "x"), mean_arr),
             "building_height_std": (("y", "x"), std_arr),
             "building_coverage_ratio": (("y", "x"), bcr_arr),
-            "building_height_max": (("y", "x"), max_arr),
+            "building_height_max": (("y", "x"), max_out),
         },
         coords={"x": xs, "y": ys},
     )
@@ -337,7 +377,6 @@ def prepare_lod2_morphology(
     combined_hash = sha256("".join(sorted(all_checksums)).encode()).hexdigest()[:16]
     retrieved_at = datetime.now(UTC).isoformat()
 
-    valid_mean = mean_arr[~np.isnan(mean_arr)]
     return PreparedSecondaryProduct(
         source="lod2_morphology",
         item_key=str(vintage),
@@ -354,21 +393,41 @@ def prepare_lod2_morphology(
             "retrieved_at": retrieved_at,
             "license": _LICENSE,
             "crs": "EPSG:25833",
-            "total_buildings": total_buildings,
+            "total_buildings": ingest.total_buildings,
+            "parse": ingest.parse.as_dict(),
         },
-        qa_stats={
-            "valid_frac": (
-                round(float(len(valid_mean)) / mean_arr.size, 4) if mean_arr.size > 0 else 0.0
-            ),
-            "min_height": float(valid_mean.min()) if len(valid_mean) > 0 else None,
-            "max_height": float(valid_mean.max()) if len(valid_mean) > 0 else None,
-            "mean_height": float(np.nanmean(valid_mean)) if len(valid_mean) > 0 else None,
-            "shape": list(mean_arr.shape),
-            "tile_count": len(manifest.assets),
-            "total_buildings": total_buildings,
-        },
+        qa_stats=lod2_qa_stats(
+            mean_arr=mean_arr,
+            ingest=ingest,
+            tile_count=len(manifest.assets),
+        ),
         config_hash=c_hash,
     )
+
+
+def lod2_qa_stats(
+    *,
+    mean_arr: np.ndarray,
+    ingest: Lod2IngestStats,
+    tile_count: int,
+) -> dict:
+    """Build the morphology QA payload, including the real building count."""
+    valid_mean = mean_arr[~np.isnan(mean_arr)]
+    return {
+        "valid_frac": (
+            round(float(len(valid_mean)) / mean_arr.size, 4) if mean_arr.size > 0 else 0.0
+        ),
+        "min_height": float(valid_mean.min()) if len(valid_mean) > 0 else None,
+        "max_height": float(valid_mean.max()) if len(valid_mean) > 0 else None,
+        "mean_height": float(np.nanmean(valid_mean)) if len(valid_mean) > 0 else None,
+        "shape": list(mean_arr.shape),
+        "tile_count": tile_count,
+        "total_buildings": ingest.total_buildings,
+        "buildings_rasterized": ingest.buildings_rasterized,
+        "buildings_outside_grid": ingest.buildings_outside_grid,
+        "skipped_missing_height": ingest.skipped_missing_height,
+        "parse": ingest.parse.as_dict(),
+    }
 
 
 def _process_lod2_tile(
@@ -380,8 +439,13 @@ def _process_lod2_tile(
     area_arr: np.ndarray,
     max_arr: np.ndarray,
     output_root: str,
+    ingest: Lod2IngestStats,
 ) -> DownloadReceipt:
-    """Download and rasterize a single LoD2 tile."""
+    """Download and rasterize a single LoD2 tile.
+
+    The emitted-building count is added to *ingest*. Dropping that
+    return value is what left ``total_buildings`` at 0.
+    """
     from berlin_lst_downscaling.data.secondary.paths import raw_dir
 
     raw_uri = f"{raw_dir(output_root, 'lod2_morphology', 'current')}/{asset.filename}"
@@ -399,8 +463,8 @@ def _process_lod2_tile(
     if zip_path is None:
         raise ValueError(f"No local cache for {asset.filename}")
 
-    buildings = _parse_buildings_from_tile(zip_path, asset)
-    n = _accumulate_buildings(
+    buildings, parse_stats = _parse_buildings_from_tile(zip_path, asset)
+    counted = _accumulate_buildings(
         buildings,
         grid,
         sum_arr,
@@ -409,7 +473,20 @@ def _process_lod2_tile(
         area_arr,
         max_arr,
     )
-    log_event(_logger, logging.DEBUG, "lod2_tile_done", filename=asset.filename, buildings=n)
+    ingest.add_tile(
+        emitted=counted["total_buildings"],
+        rasterized=counted["buildings_rasterized"],
+        outside_grid=counted["buildings_outside_grid"],
+        skipped_missing_height=counted["skipped_missing_height"],
+        parse=parse_stats,
+    )
+    log_event(
+        _logger,
+        logging.DEBUG,
+        "lod2_tile_done",
+        filename=asset.filename,
+        buildings=counted["total_buildings"],
+    )
 
     return receipt
 
@@ -422,7 +499,9 @@ def _local_cache_path(output_root: str, filename: str) -> str:
 
 
 __all__ = [
+    "Lod2IngestStats",
     "config_hash_for_vintage",
     "contract_for_lod2_morphology",
+    "lod2_qa_stats",
     "prepare_lod2_morphology",
 ]

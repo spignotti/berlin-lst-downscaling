@@ -1,9 +1,10 @@
 # @package _global_
 # Full ARD run — Sentinel-2 only, six-band SWIR contract.
 #
-# Republishes exactly the 158 Sentinel-2 scenes at schema v8 (the only
-# source whose schema version changed); Landsat and ECOSTRESS rows keep
-# their current version and are not touched by this config.
+# Published schema-8 prefix. Do not re-run it after the schema-9 change:
+# reconcile would overwrite this root. New reflectance goes to
+# configs/ard/sentinel2_harmonized_v9.yaml. Landsat and ECOSTRESS rows
+# keep their current version and are not touched by this config.
 defaults:
   - _base
   - _self_

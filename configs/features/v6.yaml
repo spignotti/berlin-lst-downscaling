@@ -1,0 +1,21 @@
+# @package _global_
+# Feature release v6. Schema 4 reads harmonized S2 ARD (schema 9) and
+# area-exact LoD2 morphology. features/v5 stays unchanged.
+#
+# static/derived and dynamic point at new prefixes that do not exist yet.
+# A run fails closed instead of mixing the published SVF and building
+# shadows (both depend on building height) into this release. ERA5 and
+# shadow_vegetation are copied forward when those prefixes are filled;
+# they are not recomputed because of the reflectance or footprint change.
+# Do not retarget this file at features/v5.
+defaults:
+  - _base
+  - _self_
+
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-s2-harmonized-v9"
+static_sources_root: "gs://berlin-lst-training-data/static/sources/imperviousness-v3"
+static_derived_root: "gs://berlin-lst-training-data/static/derived/lod2-area-exact-v2"
+dynamic_root: "gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2"
+output_root: "gs://berlin-lst-training-data/features/v6"
+scene_ids: []
+bbox: null

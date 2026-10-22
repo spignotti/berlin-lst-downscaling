@@ -2,6 +2,9 @@
 # Feature release v5. Landsat ST is the area-mean ARD. Imperviousness
 # stays on the v3 static-source ledger. features/v3 and the aborted
 # features/v4 prefix stay unchanged.
+#
+# Published prefix. Do not re-run this config after the schema-4 change:
+# reconcile would overwrite features/v5. The next release is features/v6.yaml.
 defaults:
   - _base
   - _self_

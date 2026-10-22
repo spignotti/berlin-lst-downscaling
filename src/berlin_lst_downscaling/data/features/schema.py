@@ -56,6 +56,8 @@ def config_hash_for_features(
         {
             "channel_order": list(FEATURE_CHANNEL_NAMES),
             "schema_version": FEATURE_SCHEMA_VERSION,
+            "s2_boa_offset_policy": "per_scene_metadata_before_clip_ard_v9",
+            "lod2_coverage_policy": "area_exact_building_part_v2",
             "albedo_weights": list(ALBEDO_WEIGHTS),
             "channel_schema": channel_schema,
             "manifest_hash": manifest_hash,
