@@ -56,23 +56,40 @@ def config_hash_for_era5(
     geometry_mapping_hash: str,
     era5_cache_root: str,
     antecedent_hours: int = 72,
+    *,
+    channel_set: str = "v5",
+    representation: str = "bilinear",
 ) -> str:
     """Config hash for ERA5 scene products specifically.
 
     Includes processing parameters that affect output values (CDS area order,
     grid resolution, cell selection strategy). Shadow products use a separate
     hash and are unaffected.
+
+    The default arguments reproduce the published v5 bilinear hash. A v6
+    channel set or a scene-scalar representation adds those fields so the
+    ledger treats the product as a new config.
     """
-    payload = json.dumps(
-        {
-            "manifest_hash": manifest_hash,
-            "geometry_mapping_hash": geometry_mapping_hash,
-            "era5_channels": list(ERA5_CHANNELS),
-            "era5_cache_root": era5_cache_root,
-            "antecedent_hours": antecedent_hours,
-        },
-        sort_keys=True,
-    )
+    body = {
+        "manifest_hash": manifest_hash,
+        "geometry_mapping_hash": geometry_mapping_hash,
+        "era5_channels": list(ERA5_CHANNELS),
+        "era5_cache_root": era5_cache_root,
+        "antecedent_hours": antecedent_hours,
+    }
+    if channel_set != "v5" or representation != "bilinear":
+        from berlin_lst_downscaling.data.features.contracts import (
+            FEATURE_SCHEMA_VERSION_V6,
+            feature_schema,
+        )
+
+        if channel_set == "v6":
+            body["era5_channels"] = list(
+                feature_schema(FEATURE_SCHEMA_VERSION_V6).names_in_family("era5")
+            )
+        body["channel_set"] = channel_set
+        body["representation"] = representation
+    payload = json.dumps(body, sort_keys=True)
     return sha256(payload.encode()).hexdigest()[:16]
 
 

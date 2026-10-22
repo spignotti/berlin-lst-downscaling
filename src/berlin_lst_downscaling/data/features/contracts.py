@@ -1,8 +1,10 @@
-"""Feature-stack contract — 28-channel roster, formulas, and mask semantics.
+"""Feature-stack contract — channel roster, formulas, and mask semantics.
 
-The scene feature stack is the model input interface: exactly 28 float32
-channels in a fixed order, published per Landsat anchor scene on the
-canonical 10 m grid, plus a co-registered ``feature_valid`` uint8 mask.
+``FEATURE_CHANNELS`` is the published features/v5 roster (schema version 3):
+28 float32 channels in a fixed order. features/v6 is schema version 5 and
+is returned by :func:`feature_schema`. Both are published per Landsat
+anchor scene on the canonical 10 m grid, plus a co-registered
+``feature_valid`` uint8 mask. Channel count is ``len(schema.channels)``.
 
 Validity rules
 --------------
@@ -53,7 +55,10 @@ proxy, not a BRDF-corrected physical albedo.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 # ── channel spec ──────────────────────────────────────────────────────
 
@@ -80,6 +85,26 @@ ALBEDO_WEIGHTS: tuple[float, ...] = (0.2266, 0.1236, 0.1573, 0.3417, 0.1170, 0.0
 # does not apply a second offset. LoD morphology consumed by the stack
 # is the BuildingPart / area-exact product (lod2_morphology config v2).
 FEATURE_SCHEMA_VERSION: int = 4
+
+# features/v6 channel roster. Version 4 stays the 28-channel roster from
+# the data-correctness bump. Version 5 drops building height std/max,
+# replaces vegetation_height_max with canopy cover, and slims ERA5.
+FEATURE_SCHEMA_VERSION_V6: int = 5
+
+# Provisional canopy threshold (metres). Literature may change the v6
+# config; the value is part of the v6 config hash, not a silent constant
+# inside the aggregator.
+CANOPY_COVER_THRESHOLD_M_DEFAULT: float = 2.5
+
+ERA5_REPRESENTATION_SCENE_VALUE: str = "scene_value"
+ERA5_REPRESENTATION_BILINEAR: str = "bilinear"
+ERA5_REPRESENTATIONS: tuple[str, ...] = (
+    ERA5_REPRESENTATION_SCENE_VALUE,
+    ERA5_REPRESENTATION_BILINEAR,
+)
+# Loader default for schema v6. The published dynamic v5 product stays
+# bilinear unless a v6 dynamic config selects scene_value.
+ERA5_REPRESENTATION_V6_DEFAULT: str = ERA5_REPRESENTATION_SCENE_VALUE
 
 # Sentinel-2 ARD band names, in published COG order (data/ard/contract.py).
 _S2_BAND_NAMES = ("B02", "B03", "B04", "B08", "B11", "B12")
@@ -260,8 +285,138 @@ def _shadow_channels() -> list[FeatureChannel]:
     ]
 
 
-# Fixed 28-channel order — the model input interface. Never reorder without
-# bumping FEATURE_SCHEMA_VERSION and publishing under a new features URI version.
+def _morphology_channels_v6(canopy_cover_threshold_m: float) -> list[FeatureChannel]:
+    """v6 morphology: drop height std/max, replace vegetation max with canopy cover."""
+    threshold = f"{canopy_cover_threshold_m:g}"
+    return [
+        FeatureChannel(
+            name="building_height_mean",
+            family="morphology",
+            description="Mean building height in metres above ground (LoD2)",
+            unit="m",
+            valid_range=(0.0, 200.0),
+        ),
+        FeatureChannel(
+            name="building_coverage_ratio",
+            family="morphology",
+            description="Fraction of cell area covered by building footprints (LoD2)",
+            valid_range=(-0.01, 1.01),
+        ),
+        FeatureChannel(
+            name="vegetation_height_mean",
+            family="morphology",
+            description=(
+                "Mean vegetation height in metres above ground; "
+                "fixed vegetation_height/2020 carried forward to every scene year"
+            ),
+            unit="m",
+            valid_range=(-0.01, 400.01),
+        ),
+        FeatureChannel(
+            name="canopy_cover_fraction",
+            family="morphology",
+            description=(
+                "Fraction of 1 m vegetation-height pixels strictly above "
+                f"{threshold} m in the 10 m cell. Threshold is provisional."
+            ),
+            valid_range=(-0.01, 1.01),
+        ),
+        FeatureChannel(
+            name="imperviousness",
+            family="morphology",
+            description="Sealing degree in percent (Versiegelung)",
+            unit="%",
+            valid_range=(-0.01, 100.01),
+        ),
+        FeatureChannel(
+            name="svf",
+            family="morphology",
+            description="Sky View Factor [0,1] from combined DSM (Zakek 2011)",
+            valid_range=_SVF_RANGE,
+        ),
+    ]
+
+
+def _era5_channels_v6() -> list[FeatureChannel]:
+    """v6 ERA5: t2m, ssrd, wind speed, and one 0–72 h precipitation sum."""
+    specs = (
+        (
+            "t2m_scene",
+            "K",
+            (200.0, 350.0),
+            "ERA5-Land 2m air temperature at acquisition",
+        ),
+        (
+            "ssrd_scene",
+            "W/m²",
+            (-1.0, 1500.0),
+            "ERA5-Land surface solar radiation downwards at acquisition",
+        ),
+        (
+            "wind_speed_10m_scene",
+            "m/s",
+            (0.0, 50.0),
+            "ERA5-Land 10m wind speed at acquisition",
+        ),
+        (
+            "tp_0_72h",
+            "mm",
+            (0.0, 1500.0),
+            "ERA5-Land total precipitation sum over the 72 hours before acquisition",
+        ),
+    )
+    return [
+        FeatureChannel(
+            name=name,
+            family="era5",
+            description=description,
+            unit=unit,
+            valid_range=valid_range,
+        )
+        for name, unit, valid_range, description in specs
+    ]
+
+
+@dataclass(frozen=True)
+class FeatureSchema:
+    """One versioned feature roster. Channel count is ``len(channels)``."""
+
+    version: int
+    release: str
+    channels: tuple[FeatureChannel, ...]
+    canopy_cover_threshold_m: float | None = None
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(channel.name for channel in self.channels)
+
+    @property
+    def n_channels(self) -> int:
+        return len(self.channels)
+
+    def names_in_family(self, family: str) -> tuple[str, ...]:
+        """Channel names of one family, in roster order."""
+        return tuple(channel.name for channel in self.channels if channel.family == family)
+
+
+def _v6_schema(canopy_cover_threshold_m: float) -> FeatureSchema:
+    channels = (
+        *_s2_channels(),
+        *_index_channels(),
+        *_morphology_channels_v6(canopy_cover_threshold_m),
+        *_era5_channels_v6(),
+        *_shadow_channels(),
+    )
+    return FeatureSchema(
+        version=FEATURE_SCHEMA_VERSION_V6,
+        release="v6",
+        channels=channels,
+        canopy_cover_threshold_m=canopy_cover_threshold_m,
+    )
+
+
+# Fixed v5 order — the published model input interface. Never reorder
+# without bumping FEATURE_SCHEMA_VERSION and publishing under a new URI.
 FEATURE_CHANNELS: tuple[FeatureChannel, ...] = tuple(
     [
         *_s2_channels(),
@@ -274,15 +429,123 @@ FEATURE_CHANNELS: tuple[FeatureChannel, ...] = tuple(
 
 FEATURE_CHANNEL_NAMES: tuple[str, ...] = tuple(ch.name for ch in FEATURE_CHANNELS)
 
-_N_CHANNELS = len(FEATURE_CHANNELS)
-if _N_CHANNELS != 28:  # pragma: no cover — module invariant
-    raise AssertionError(f"Feature stack must have 28 channels, got {_N_CHANNELS}")
+# Published features/v5 width. The literal locks that roster; v6 code uses
+# ``schema.n_channels`` instead of this number.
+_PUBLISHED_V5_CHANNEL_COUNT = 28
+if len(FEATURE_CHANNELS) != _PUBLISHED_V5_CHANNEL_COUNT:  # pragma: no cover
+    raise AssertionError(
+        f"features/v5 roster must have {_PUBLISHED_V5_CHANNEL_COUNT} channels, "
+        f"got {len(FEATURE_CHANNELS)}"
+    )
+
+_V5_SCHEMA = FeatureSchema(
+    version=FEATURE_SCHEMA_VERSION,
+    release="v5",
+    channels=FEATURE_CHANNELS,
+    canopy_cover_threshold_m=None,
+)
+
+
+def feature_schema(
+    version: int = FEATURE_SCHEMA_VERSION,
+    *,
+    canopy_cover_threshold_m: float | None = None,
+) -> FeatureSchema:
+    """Return the feature roster for a schema version.
+
+    Version 4 is the 28-channel roster. Version 5 is the features/v6
+    channel roster. The v6 canopy
+    threshold defaults to :data:`CANOPY_COVER_THRESHOLD_M_DEFAULT`.
+    """
+    if version == FEATURE_SCHEMA_VERSION:
+        if canopy_cover_threshold_m is not None:
+            raise ValueError("canopy_cover_threshold_m applies to feature schema v6 only")
+        return _V5_SCHEMA
+    if version == FEATURE_SCHEMA_VERSION_V6:
+        threshold = (
+            CANOPY_COVER_THRESHOLD_M_DEFAULT
+            if canopy_cover_threshold_m is None
+            else float(canopy_cover_threshold_m)
+        )
+        if not math.isfinite(threshold) or threshold < 0:
+            raise ValueError(f"canopy_cover_threshold_m must be finite and >= 0, got {threshold}")
+        return _v6_schema(threshold)
+    raise ValueError(f"unknown feature schema version {version}")
+
+
+def schema_from_provenance(provenance: Mapping[str, Any]) -> FeatureSchema:
+    """Resolve the roster recorded on a feature-stack provenance document."""
+    version = int(provenance.get("schema_version", FEATURE_SCHEMA_VERSION))
+    raw_threshold = provenance.get("canopy_cover_threshold_m")
+    threshold = None if raw_threshold is None else float(raw_threshold)
+    if version == FEATURE_SCHEMA_VERSION:
+        return feature_schema(version)
+    return feature_schema(version, canopy_cover_threshold_m=threshold)
+
+
+def schema_matching_count(count: int) -> FeatureSchema:
+    """Return the unique roster whose width equals ``count``.
+
+    Used when a reader sees a stack width and no provenance. v5 and v6
+    widths differ, so the match is unambiguous.
+    """
+    matches = [
+        feature_schema(version)
+        for version in (FEATURE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION_V6)
+        if feature_schema(version).n_channels == count
+    ]
+    if len(matches) != 1:
+        known = [
+            (feature_schema(version).release, feature_schema(version).n_channels)
+            for version in (FEATURE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION_V6)
+        ]
+        raise ValueError(f"band count {count} does not match one feature schema; known {known}")
+    return matches[0]
+
+
+def resolve_era5_representation(value: str | None) -> str:
+    """Return a v6 ERA5 representation. ``None`` selects the v6 default."""
+    if value is None or value == "":
+        return ERA5_REPRESENTATION_V6_DEFAULT
+    if value not in ERA5_REPRESENTATIONS:
+        raise ValueError(
+            f"era5_representation must be one of {ERA5_REPRESENTATIONS}, got {value!r}"
+        )
+    return value
+
+
+def era5_representation_for_schema(schema: FeatureSchema, configured: str | None) -> str | None:
+    """Representation applied when composing a feature stack.
+
+    Schema v5 keeps the published ERA5 field (``None``). Schema v6
+    defaults to ``scene_value`` when ``configured`` is omitted.
+    """
+    if schema.version == FEATURE_SCHEMA_VERSION:
+        if configured not in (None, ERA5_REPRESENTATION_BILINEAR):
+            raise ValueError(
+                "features/v5 keeps the published bilinear ERA5 field; "
+                f"got era5_representation={configured!r}"
+            )
+        return None
+    return resolve_era5_representation(configured)
 
 
 __all__ = [
     "ALBEDO_WEIGHTS",
+    "CANOPY_COVER_THRESHOLD_M_DEFAULT",
+    "ERA5_REPRESENTATION_BILINEAR",
+    "ERA5_REPRESENTATION_SCENE_VALUE",
+    "ERA5_REPRESENTATION_V6_DEFAULT",
+    "ERA5_REPRESENTATIONS",
     "FEATURE_CHANNELS",
     "FEATURE_CHANNEL_NAMES",
     "FEATURE_SCHEMA_VERSION",
+    "FEATURE_SCHEMA_VERSION_V6",
     "FeatureChannel",
+    "FeatureSchema",
+    "era5_representation_for_schema",
+    "feature_schema",
+    "resolve_era5_representation",
+    "schema_from_provenance",
+    "schema_matching_count",
 ]

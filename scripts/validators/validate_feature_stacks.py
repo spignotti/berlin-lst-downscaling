@@ -45,10 +45,13 @@ from odc.geo.geobox import GeoBox
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES, FEATURE_CHANNELS
+from berlin_lst_downscaling.data.features.contracts import (
+    FeatureChannel,
+    schema_from_provenance,
+    schema_matching_count,
+)
 from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 
-_N_EXPECTED_BANDS = 28
 _TILE = 1024  # blockwise scan tile (multiple of COG 512px blocks)
 
 
@@ -92,20 +95,23 @@ def _aoi_on_grid(aoi_uri: str, grid: GeoBox) -> np.ndarray:
 # ── per-scene checks ─────────────────────────────────────────────────
 
 
-def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]) -> GeoBox | None:
+def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]):
     try:
         with rasterio.open(cog_uri) as src:
-            if src.count != _N_EXPECTED_BANDS:
-                errors.append(f"{cog_uri}: band count {src.count}, expected {_N_EXPECTED_BANDS}")
+            try:
+                schema = schema_matching_count(src.count)
+            except ValueError as exc:
+                errors.append(f"{cog_uri}: {exc}")
+                return None
+            if src.count != schema.n_channels:
+                errors.append(f"{cog_uri}: band count {src.count}, expected {schema.n_channels}")
             if src.dtypes[0] != "float32":
                 errors.append(f"{cog_uri}: dtype {src.dtypes[0]!r}, expected float32")
             if str(src.crs).upper() != "EPSG:25833":
                 errors.append(f"{cog_uri}: CRS {src.crs!r}")
             names = [d for d in (src.descriptions or ()) if d]
-            if tuple(names) != FEATURE_CHANNEL_NAMES:
-                errors.append(
-                    f"{cog_uri}: channel order {names} != contract {FEATURE_CHANNEL_NAMES}"
-                )
+            if tuple(names) != schema.names:
+                errors.append(f"{cog_uri}: channel order {names} != contract {schema.names}")
             grid = GeoBox.from_rio(src)
             # Verify the COG sits on the canonical 10 m grid.
             canonical = canon_grid_10m()
@@ -136,7 +142,7 @@ def _check_metadata(cog_uri: str, mask_uri: str, errors: list[str]) -> GeoBox | 
                 )
     except Exception as exc:
         errors.append(f"{mask_uri}: cannot open: {exc}")
-    return grid
+    return grid, schema
 
 
 def _check_pixels(
@@ -145,6 +151,7 @@ def _check_pixels(
     aoi: np.ndarray,
     errors: list[str],
     stats: dict,
+    channels: tuple[FeatureChannel, ...],
 ) -> None:
     """Blockwise mask, AOI, and range checks."""
     with rasterio.open(cog_uri) as cog, rasterio.open(mask_uri) as msk:
@@ -167,7 +174,7 @@ def _check_pixels(
                 # availability): only unavailable bands are NaN.
                 claim = mask == 1
                 complete = np.all(np.isfinite(bands), axis=0)
-                for i, spec in enumerate(FEATURE_CHANNELS):
+                for i, spec in enumerate(channels):
                     if spec.valid_range is None:
                         continue
                     lo, hi = spec.valid_range
@@ -188,7 +195,7 @@ def _check_pixels(
 
                 # range checks on valid pixels
                 valid = mask == 1
-                for i, spec in enumerate(FEATURE_CHANNELS):
+                for i, spec in enumerate(channels):
                     if spec.valid_range is None:
                         continue
                     lo, hi = spec.valid_range
@@ -229,7 +236,8 @@ def _check_sidecars(
         errors.append(f"{scene_id}: complete.json missing published_at")
 
     prov = _read_json(prov_uri)
-    if tuple(prov.get("channel_order", ())) != FEATURE_CHANNEL_NAMES:
+    expected = schema_from_provenance(prov)
+    if tuple(prov.get("channel_order", ())) != expected.names:
         errors.append(f"{scene_id}: provenance channel_order mismatch")
     for key in ("config_hash", "coverage", "mask_semantics", "vegetation_height_policy"):
         if key not in prov:
@@ -253,8 +261,11 @@ def _check_sidecars(
         errors.append(f"{scene_id}: STAC missing data/feature_valid assets")
         return
     raster_bands = assets["data"].get("raster:bands", [])
-    if len(raster_bands) != _N_EXPECTED_BANDS:
-        errors.append(f"{scene_id}: STAC data raster:bands {len(raster_bands)}, expected 28")
+    if len(raster_bands) != expected.n_channels:
+        errors.append(
+            f"{scene_id}: STAC data raster:bands {len(raster_bands)}, "
+            f"expected {expected.n_channels}"
+        )
     fv_bands = assets["feature_valid"].get("raster:bands", [])
     if not fv_bands or fv_bands[0].get("data_type") != "uint8":
         errors.append(f"{scene_id}: STAC feature_valid asset not uint8")
@@ -377,12 +388,13 @@ def main() -> int:
         if not row["config_hash"]:
             errors.append(f"{scene_id}: missing config_hash")
 
-        grid = _check_metadata(row["cog"], mask_uri, errors)
-        if grid is None:
+        checked = _check_metadata(row["cog"], mask_uri, errors)
+        if checked is None:
             continue
+        grid, schema = checked
         aoi = _aoi_on_grid(args.aoi, grid)
         stats: dict = {}
-        _check_pixels(row["cog"], mask_uri, aoi, errors, stats)
+        _check_pixels(row["cog"], mask_uri, aoi, errors, stats, schema.channels)
         _check_sidecars(
             scene_id,
             row["cog"],

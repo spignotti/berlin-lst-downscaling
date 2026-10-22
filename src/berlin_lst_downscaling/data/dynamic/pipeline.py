@@ -131,10 +131,16 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     # ── 2. config hashes ─────────────────────────────────────────────
+    era5_channel_set = str(cfg.get("era5_channel_set", "v5"))
+    # Absent on the published dynamic configs: keep bilinear. The features/v6
+    # loader defaults to scene_value when it composes the stack.
+    era5_representation = str(cfg.get("era5_representation", "bilinear"))
     era5_hash = config_hash_for_era5(
         manifest_report.manifest_hash,
         mapping.content_hash,
         output_root,
+        channel_set=era5_channel_set,
+        representation=era5_representation,
     )
     # Building shadows keep the legacy dynamic fingerprint; vegetation
     # shadows additionally track the finalised vegetation horizon's hash
@@ -216,6 +222,8 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                             run_id,
                             grid=grid,
                             local_dir=local_dir,
+                            channel_set=era5_channel_set,
+                            representation=era5_representation,
                         )
                         prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
                         artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)

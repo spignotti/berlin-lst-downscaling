@@ -31,6 +31,11 @@ from odc.geo.geobox import GeoBox
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.ard.publish_guard import assert_feature_output_root
 from berlin_lst_downscaling.data.dynamic.geometry import load_geometry_mapping
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    era5_representation_for_schema,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.features.lod_coverage import (
     rasterize_lod_coverage,
     resolve_lod_coverage_artifacts,
@@ -161,6 +166,16 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     bbox = tuple(cfg.get("bbox", None)) if cfg.get("bbox") else None
     carry_forward_vintage = int(cfg.get("vegetation_carry_forward_vintage", 2024))
     expected_count = cfg.get("expected_scene_count")
+    schema_version = int(cfg.get("feature_schema_version", FEATURE_SCHEMA_VERSION))
+    raw_threshold = cfg.get("canopy_cover_threshold_m", None)
+    canopy_threshold = None if raw_threshold is None else float(raw_threshold)
+    if schema_version == FEATURE_SCHEMA_VERSION:
+        schema = feature_schema(schema_version)
+    else:
+        schema = feature_schema(schema_version, canopy_cover_threshold_m=canopy_threshold)
+    era5_representation = era5_representation_for_schema(
+        schema, cfg.get("era5_representation", None)
+    )
 
     log_event(
         _logger,
@@ -256,6 +271,8 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         vegetation_carry_forward_geometry_id=veg_geometry_id,
         lod_coverage_fingerprints=lod_coverage_fingerprints,
         lod_cog_fingerprints=lod_cog_fingerprints,
+        schema=schema,
+        era5_representation=era5_representation,
     )
 
     # S2 acquisition datetimes from the manifest (STAC datetime per stack).
@@ -296,6 +313,8 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
             run_id=run_id,
             coverage_masks=coverage_masks,
             lod_coverage_evidence=lod_coverage_evidence,
+            schema=schema,
+            era5_representation=era5_representation,
         )
         results.append(result)
         if result.status == "done":
@@ -377,6 +396,8 @@ def _process_scene(
     run_id: str,
     coverage_masks: dict[int, np.ndarray],
     lod_coverage_evidence: dict[int, dict],
+    schema,
+    era5_representation: str | None,
 ) -> SceneFeatureResult:
     """Compose + finalise one assessable scene; returns the report row."""
     item_id = f"feature_{scene.scene_id}"
@@ -437,6 +458,10 @@ def _process_scene(
             "imperviousness": (scene.static_sources["imperviousness"], 1),
             "svf": (scene.static_derived["svf"], 1),
         }
+        if "canopy_cover_fraction" in schema.names:
+            # Band 3 of the v6 vegetation source. Mean and max stay 1 and 2
+            # so the vegetation DSM, which reads max by description, is unchanged.
+            morphology["canopy_cover_fraction"] = (vh_uri, 3)
         inputs = FeatureInputs(
             s2_cog=scene.s2_cog,
             s2_flag=scene.s2_flag,
@@ -449,7 +474,13 @@ def _process_scene(
             lod_coverage=lod_coverage,
         )
 
-        composed = compose_feature_stack(inputs, aoi, grid)
+        composed = compose_feature_stack(
+            inputs,
+            aoi,
+            grid,
+            schema=schema,
+            era5_representation=era5_representation,
+        )
         prepared = PreparedFeatureProduct(
             scene_id=scene.scene_id,
             dataset=composed.dataset,
@@ -471,6 +502,9 @@ def _process_scene(
                 },
             },
             coverage=composed.coverage,
+            schema_version=schema.version,
+            canopy_cover_threshold_m=schema.canopy_cover_threshold_m,
+            era5_representation=era5_representation,
         )
         product_dir = scene_product_dir(output_root, scene.scene_id)
         artifacts = finalize_feature_product(prepared, grid, product_dir, run_id)

@@ -8,7 +8,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 ## Current contracts and guides
 
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest and
-  product contracts.
+  product contracts. The published features/v5 roster is the 28-channel
+  table in that document. features/v6 is `features-v6.md`.
 - `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer. Not a
   V3 feature channel. Proposal B is the decided evaluation grouping
   (2026-10-16).

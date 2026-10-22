@@ -1,0 +1,18 @@
+# @package _global_
+# Model input for features/v6. n_active_channels is null so the run
+# resolves the full roster from feature schema version 5. This is not a
+# locked ablation profile and it does not train.
+defaults:
+  - _base
+  - _self_
+
+contract:
+  feature_order: v6_registry
+
+data:
+  feature_schema_version: 5
+  n_active_channels: null
+  active_channel_names: null
+
+data_release_id: "training/v3"
+features_root: "gs://berlin-lst-training-data/features/v6"

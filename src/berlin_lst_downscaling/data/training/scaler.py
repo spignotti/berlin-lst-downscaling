@@ -28,13 +28,13 @@ from rasterio.windows import Window
 from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNEL_NAMES,
     FEATURE_CHANNELS,
+    FEATURE_SCHEMA_VERSION,
+    FeatureSchema,
+    feature_schema,
 )
 from berlin_lst_downscaling.data.features.paths import feature_cog
 from berlin_lst_downscaling.data.qa.stage1_raw import _window_offset
-from berlin_lst_downscaling.data.training.contracts import (
-    PRECIP_CHANNELS,
-    SHADOW_CHANNELS,
-)
+from berlin_lst_downscaling.data.training.contracts import scaler_transform_for
 from berlin_lst_downscaling.data.training.paths import eligibility_cog
 from berlin_lst_downscaling.data.training.report import SceneTrainingResult
 
@@ -73,12 +73,8 @@ class _Welford:
         return float(np.sqrt(self.m2 / self.count))
 
 
-def _transform_for(channel_name: str) -> str:
-    if channel_name in PRECIP_CHANNELS:
-        return "log1p_zscore"
-    if channel_name in SHADOW_CHANNELS:
-        return "identity"
-    return "zscore"
+def _transform_for(channel_name: str, schema: FeatureSchema | None = None) -> str:
+    return scaler_transform_for(channel_name, schema)
 
 
 def _apply_transform(values: np.ndarray, transform: str) -> np.ndarray:
@@ -95,6 +91,7 @@ def fit_scaler(
     features_root: str,
     output_root: str,
     grid_10m: GeoBox,
+    schema: FeatureSchema | None = None,
 ) -> dict:
     """Fit per-channel scaler statistics on train-eligible pixels only.
 
@@ -113,7 +110,15 @@ def fit_scaler(
 
     Returns a scaler payload (``channel_order`` + per-channel stats).
     """
-    n_channels = len(FEATURE_CHANNELS)
+    resolved = schema or feature_schema(FEATURE_SCHEMA_VERSION)
+    # The default call stays on the published v5 roster object.
+    channels_spec = (
+        FEATURE_CHANNELS if resolved.version == FEATURE_SCHEMA_VERSION else resolved.channels
+    )
+    channel_names = (
+        FEATURE_CHANNEL_NAMES if resolved.version == FEATURE_SCHEMA_VERSION else resolved.names
+    )
+    n_channels = len(channels_spec)
     acc = [_Welford() for _ in range(n_channels)]
 
     train_scenes = [s for s in results if s.split == "train" and (s.eligible_cells or 0) > 0]
@@ -141,8 +146,8 @@ def fit_scaler(
                     )
                     bands = cog.read(window=win)  # (28, bh, bw) float32
                     sel = eligible_10[r0:r1, c0:c1]
-                    for i, spec in enumerate(FEATURE_CHANNELS):
-                        transform = _transform_for(spec.name)
+                    for i, spec in enumerate(channels_spec):
+                        transform = _transform_for(spec.name, resolved)
                         if transform == "identity":
                             # Shadows are 0/1 and stay unchanged — count the
                             # samples for the record but accumulate no stats.
@@ -152,8 +157,8 @@ def fit_scaler(
                         acc[i].update(vals)
 
     channels = []
-    for i, spec in enumerate(FEATURE_CHANNELS):
-        transform = _transform_for(spec.name)
+    for i, spec in enumerate(channels_spec):
+        transform = _transform_for(spec.name, resolved)
         entry: dict = {
             "channel_index": i + 1,
             "channel_name": spec.name,
@@ -169,7 +174,7 @@ def fit_scaler(
         channels.append(entry)
 
     return {
-        "channel_order": list(FEATURE_CHANNEL_NAMES),
+        "channel_order": list(channel_names),
         "statistics_grain": "10m feature pixels within train-eligible 100m cells",
         "variance": "population (ddof=0), Welford streaming",
         "channels": channels,

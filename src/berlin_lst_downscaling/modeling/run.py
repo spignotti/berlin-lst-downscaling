@@ -173,7 +173,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     seed_everything(seed)
 
     data_module = SyntheticDataModule(
-        n_active_channels=int(cfg.data.n_active_channels),
+        n_active_channels=selection_from_config(cfg).n_active,
         batch_size=int(cfg.data.batch_size),
         patch_size=int(cfg.data.patch_size),
         n_train=int(cfg.data.n_train),
@@ -183,7 +183,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     )
 
     task = LSTRegressionTask(
-        n_active_channels=int(cfg.data.n_active_channels),
+        n_active_channels=selection_from_config(cfg).n_active,
         base_width=int(cfg.model.base_width),
         depth=int(cfg.model.depth),
         learning_rate=float(cfg.trainer.learning_rate),
@@ -550,7 +550,7 @@ def _fit_contract_lifecycle(
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     loss_name = str(OmegaConf.select(cfg, "contract.loss") or "masked_l1")
     task = RealLSTTask(
-        n_active_channels=int(cfg.data.n_active_channels),
+        n_active_channels=selection_from_config(cfg).n_active,
         base_width=int(cfg.model.base_width),
         depth=int(cfg.model.depth),
         learning_rate=float(cfg.trainer.learning_rate),
@@ -832,7 +832,7 @@ def run_contract_synthetic_training(cfg: DictConfig, run_id: str) -> ModelingRun
     """
     contract_invariants(cfg)
     data_module = ContractSyntheticDataModule(
-        n_active_channels=int(cfg.data.n_active_channels),
+        n_active_channels=selection_from_config(cfg).n_active,
         batch_size=int(cfg.data.batch_size),
         n_train=int(cfg.data.n_train),
         n_val=int(cfg.data.n_val),

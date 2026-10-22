@@ -1,0 +1,12 @@
+# @package _global_
+# Derived geometry for features/v6. The SVF search radius stays at the
+# published default of 3 cells (30 m) until a sample comparison decides
+# otherwise. See scripts/validators/diagnose_svf_radius.py.
+defaults:
+  - _base
+  - _self_
+
+svf_max_radius: 3
+svf_n_directions: 16
+source_root: "gs://berlin-lst-training-data/static/sources/v6"
+derived_root: "gs://berlin-lst-training-data/static/derived/v6"

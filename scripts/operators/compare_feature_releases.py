@@ -40,7 +40,7 @@ import rasterio
 from odc.geo.geobox import GeoBox
 from rasterio.windows import Window
 
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import schema_matching_count
 from berlin_lst_downscaling.data.io import read_bytes
 
 _LOD_BAND_SLICE = slice(10, 14)  # building_height_mean/std/coverage/max (0-based)
@@ -95,7 +95,9 @@ def compare_scene(
         if col_off < 0 or row_off < 0:
             errors.append(f"{scene_id}: candidate grid not inside baseline grid")
             return stats
-        if cc.count != len(FEATURE_CHANNEL_NAMES):
+        try:
+            schema_matching_count(cc.count)
+        except ValueError:
             errors.append(f"{scene_id}: candidate band count {cc.count}")
             return stats
 

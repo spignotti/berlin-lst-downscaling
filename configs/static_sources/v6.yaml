@@ -1,0 +1,10 @@
+# @package _global_
+# Static sources for features/v6. Adds canopy_cover_fraction to the
+# vegetation-height product. Mean and max bands stay, so the vegetation
+# DSM can still read vegetation_height_max. Not published by this change.
+defaults:
+  - full
+  - _self_
+
+canopy_cover_threshold_m: 2.5
+source_root: "gs://berlin-lst-training-data/static/sources/v6"

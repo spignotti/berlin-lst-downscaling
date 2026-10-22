@@ -37,6 +37,7 @@ from rasterio.warp import reproject
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
+from berlin_lst_downscaling.data.secondary.canopy_cover import canopy_cover_fraction_on_grid
 from berlin_lst_downscaling.data.secondary.download import download_to_raw
 from berlin_lst_downscaling.data.secondary.product import (
     PreparedSecondaryProduct,
@@ -63,44 +64,83 @@ VEGETATION_HEIGHT_LICENSE = "dl-de/zero-2.0"
 _CONFIG_HASH_PREFIX = "vegetation_height:v3:"
 
 
-def contract_for_vegetation_height() -> Contract:
-    """Return the output Contract for vegetation-height COGs (2 bands)."""
+def contract_for_vegetation_height(
+    *,
+    canopy_cover_threshold_m: float | None = None,
+) -> Contract:
+    """Return the output Contract for vegetation-height COGs.
+
+    The published product has two bands (mean, max). Passing a canopy
+    threshold adds ``canopy_cover_fraction`` as band 3 for features/v6.
+    """
+    bands = [
+        BandSpec(
+            name="vegetation_height_mean",
+            dtype="float32",
+            nodata=float("nan"),
+            description=(
+                "Mean vegetation height in metres above ground (10 m avg). "
+                "0 for non-vegetated cells within AOI; NaN outside AOI."
+            ),
+            unit="m",
+            valid_range=(-0.01, 400.01),
+        ),
+        BandSpec(
+            name="vegetation_height_max",
+            dtype="float32",
+            nodata=float("nan"),
+            description=(
+                "Maximum vegetation height in metres above ground (10 m max). "
+                "0 for non-vegetated cells within AOI; NaN outside AOI."
+            ),
+            unit="m",
+            valid_range=(-0.01, 400.01),
+        ),
+    ]
+    schema_version = 2
+    if canopy_cover_threshold_m is not None:
+        threshold = f"{float(canopy_cover_threshold_m):g}"
+        bands.append(
+            BandSpec(
+                name="canopy_cover_fraction",
+                dtype="float32",
+                nodata=float("nan"),
+                description=(
+                    "Fraction of 1 m vegetation-height pixels strictly above "
+                    f"{threshold} m in the 10 m cell. "
+                    "0 for cells with no source pixels inside the AOI after normalisation; "
+                    "NaN outside the AOI before normalisation."
+                ),
+                unit="1",
+                valid_range=(-0.01, 1.01),
+            )
+        )
+        schema_version = 3
     return Contract(
         source="vegetation_height",
         target_crs="EPSG:25833",
-        output_bands=(
-            BandSpec(
-                name="vegetation_height_mean",
-                dtype="float32",
-                nodata=float("nan"),
-                description=(
-                    "Mean vegetation height in metres above ground (10 m avg). "
-                    "0 for non-vegetated cells within AOI; NaN outside AOI."
-                ),
-                unit="m",
-                valid_range=(-0.01, 400.01),
-            ),
-            BandSpec(
-                name="vegetation_height_max",
-                dtype="float32",
-                nodata=float("nan"),
-                description=(
-                    "Maximum vegetation height in metres above ground (10 m max). "
-                    "0 for non-vegetated cells within AOI; NaN outside AOI."
-                ),
-                unit="m",
-                valid_range=(-0.01, 400.01),
-            ),
-        ),
+        output_bands=tuple(bands),
         tiling=TilingSpec(),
-        schema_version=2,
+        schema_version=schema_version,
         flag_mode="none",
     )
 
 
-def config_hash_for_vintage(vintage: int) -> str:
-    """Return a stable config hash for a given vintage."""
-    raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
+def config_hash_for_vintage(
+    vintage: int,
+    *,
+    canopy_cover_threshold_m: float | None = None,
+) -> str:
+    """Return a stable config hash for a given vintage.
+
+    The default hash is the published two-band product. A canopy threshold
+    selects a new hash so the ledger does not treat the third band as the
+    same product.
+    """
+    if canopy_cover_threshold_m is None:
+        raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
+    else:
+        raw = f"vegetation_height:v4:{vintage}:canopy_gt_{float(canopy_cover_threshold_m):.4f}"
     return sha256(raw.encode()).hexdigest()[:12]
 
 
@@ -113,6 +153,7 @@ def prepare_vegetation_height(
     run_id: str,
     *,
     grid=None,
+    canopy_cover_threshold_m: float | None = None,
 ) -> PreparedSecondaryProduct:
     """Download and reproject a vegetation-height vintage to 10 m.
 
@@ -128,7 +169,7 @@ def prepare_vegetation_height(
     url = VEGETATION_HEIGHT_URLS[vintage]
     raw_uri = _raw_zip_uri(output_root, vintage)
     cache_path = _raw_zip_cache_uri(output_root, vintage)
-    c_hash = config_hash_for_vintage(vintage)
+    c_hash = config_hash_for_vintage(vintage, canopy_cover_threshold_m=canopy_cover_threshold_m)
 
     # ── 1. materialise raw archive ────────────────────────────────────
     receipt = download_to_raw(
@@ -142,6 +183,9 @@ def prepare_vegetation_height(
     native_meta = _extract_native_metadata(archive_path)
     _validate_native_metadata(native_meta)
 
+    # The official raster stores vegetation heights in decimetres.
+    _DM_TO_M = 0.1
+
     # ── 3. reproject to canonical 10m grid (average + max) ───────────
     grid = grid or canon_grid_10m()
     shape = (grid.shape.y, grid.shape.x)
@@ -149,6 +193,7 @@ def prepare_vegetation_height(
     max_arr = np.empty(shape, dtype=np.float32)
 
     tif_member = _locate_tiff_member(archive_path)
+    cover_arr: np.ndarray | None = None
     with rasterio.open(f"zip://{archive_path}!/{tif_member}") as src:
         src_nodata = src.nodata
         reproject(
@@ -173,12 +218,17 @@ def prepare_vegetation_height(
             src_nodata=src_nodata,
             dst_nodata=np.nan,
         )
+        if canopy_cover_threshold_m is not None:
+            cover_arr = canopy_cover_fraction_on_grid(
+                src,
+                grid,
+                threshold_m=float(canopy_cover_threshold_m),
+                scale_to_m=_DM_TO_M,
+            )
 
     # ── 4. convert native decimetres to metres ───────────────────────
-    # The official raster stores vegetation heights in decimetres; the
-    # published contract declares metres.  Scale once, before any QA
-    # statistics are derived, so every consumer sees metres.
-    _DM_TO_M = 0.1
+    # Scale once, before any QA statistics are derived, so every consumer
+    # sees metres. Canopy cover is already a fraction in [0, 1].
     mean_arr *= _DM_TO_M
     max_arr *= _DM_TO_M
 
@@ -187,15 +237,20 @@ def prepare_vegetation_height(
     # Outside the AOI, cells remain NaN.
     _normalize_non_vegetated(mean_arr, grid)
     _normalize_non_vegetated(max_arr, grid)
+    if cover_arr is not None:
+        _normalize_non_vegetated(cover_arr, grid)
 
     # ── 6. build canonical xr.Dataset ─────────────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
+    data_vars = {
+        "vegetation_height_mean": (("y", "x"), mean_arr),
+        "vegetation_height_max": (("y", "x"), max_arr),
+    }
+    if cover_arr is not None:
+        data_vars["canopy_cover_fraction"] = (("y", "x"), cover_arr)
     ds = xr.Dataset(
-        {
-            "vegetation_height_mean": (("y", "x"), mean_arr),
-            "vegetation_height_max": (("y", "x"), max_arr),
-        },
+        data_vars,
         coords={"x": xs, "y": ys},
     )
     ds = ds.rio.write_crs(str(grid.crs))
@@ -204,30 +259,36 @@ def prepare_vegetation_height(
     valid_mean = mean_arr[~np.isnan(mean_arr)]
     retrieved_at = datetime.now(UTC).isoformat()
 
+    source_metadata: dict[str, Any] = {
+        "archive_url": url,
+        "archive_sha256": receipt.checksum,
+        "archive_bytes": int(archive_path.stat().st_size if archive_path.exists() else 0),
+        "raw_uri": raw_uri,
+        "retrieved_at": retrieved_at,
+        "license": VEGETATION_HEIGHT_LICENSE,
+        "atom_feed": VEGETATION_HEIGHT_ATOM_FEED,
+        "csw_record": VEGETATION_HEIGHT_CSW_RECORD,
+        "dataset_identifier": VEGETATION_HEIGHT_DATASET_ID,
+        "native_unit": "dm",
+        "output_unit": "m",
+        "unit_conversion_factor": _DM_TO_M,
+        "native_metadata": native_meta,
+        "bands": ["vegetation_height_mean", "vegetation_height_max"]
+        if cover_arr is None
+        else list(data_vars),
+        "resampling": {"mean": "average", "max": "max"},
+    }
+    if canopy_cover_threshold_m is not None:
+        source_metadata["canopy_cover_threshold_m"] = float(canopy_cover_threshold_m)
+
     return PreparedSecondaryProduct(
         source="vegetation_height",
         item_key=str(vintage),
         category="morphology",
         dataset=ds,
-        contract=contract_for_vegetation_height(),
+        contract=contract_for_vegetation_height(canopy_cover_threshold_m=canopy_cover_threshold_m),
         nominal_interval=vintage_interval(vintage),
-        source_metadata={
-            "archive_url": url,
-            "archive_sha256": receipt.checksum,
-            "archive_bytes": int(archive_path.stat().st_size if archive_path.exists() else 0),
-            "raw_uri": raw_uri,
-            "retrieved_at": retrieved_at,
-            "license": VEGETATION_HEIGHT_LICENSE,
-            "atom_feed": VEGETATION_HEIGHT_ATOM_FEED,
-            "csw_record": VEGETATION_HEIGHT_CSW_RECORD,
-            "dataset_identifier": VEGETATION_HEIGHT_DATASET_ID,
-            "native_unit": "dm",
-            "output_unit": "m",
-            "unit_conversion_factor": _DM_TO_M,
-            "native_metadata": native_meta,
-            "bands": ["vegetation_height_mean", "vegetation_height_max"],
-            "resampling": {"mean": "average", "max": "max"},
-        },
+        source_metadata=source_metadata,
         qa_stats={
             "valid_frac": (
                 round(float(len(valid_mean)) / mean_arr.size, 4) if mean_arr.size > 0 else 0.0

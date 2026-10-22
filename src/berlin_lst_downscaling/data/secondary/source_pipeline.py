@@ -222,10 +222,12 @@ def _run_vegetation_height(
     vintages: list[int] = list(cfg.get("vintages", [2020]))
     grid = grid or canon_grid_10m()
     failed = 0
+    raw_threshold = cfg.get("canopy_cover_threshold_m", None)
+    canopy_threshold = None if raw_threshold is None else float(raw_threshold)
 
     for vintage in vintages:
         item_id = f"vegetation_height_{vintage}"
-        c_hash = config_hash_for_vintage(vintage)
+        c_hash = config_hash_for_vintage(vintage, canopy_cover_threshold_m=canopy_threshold)
 
         items = [(item_id, "vegetation_height", str(vintage))]
         todo = reconcile(items, led, c_hash)
@@ -254,7 +256,13 @@ def _run_vegetation_height(
                 vintage=vintage,
                 reason=reason,
             )
-            prepared = prepare_vegetation_height(vintage, source_root, run_id, grid=grid)
+            prepared = prepare_vegetation_height(
+                vintage,
+                source_root,
+                run_id,
+                grid=grid,
+                canopy_cover_threshold_m=canopy_threshold,
+            )
             prod_dir = source_product_dir(source_root, "vegetation_height", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared,

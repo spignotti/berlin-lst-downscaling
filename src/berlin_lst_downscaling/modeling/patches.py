@@ -50,7 +50,11 @@ from odc.geo.geobox import GeoBox
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_CHANNEL_NAMES,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.features.paths import feature_cog
 from berlin_lst_downscaling.data.io import exists, read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
@@ -214,9 +218,15 @@ def load_scaler(training_root: str) -> ScalerSpec:
     uri = scaler_json(training_root)
     payload = json.loads(read_bytes(uri))
     order = tuple(str(n) for n in payload.get("channel_order", ()))
-    expected = training_policy_hash()
     policy_hash = str(payload.get("policy_hash", ""))
-    if order != FEATURE_CHANNEL_NAMES:
+    v6_names = feature_schema(FEATURE_SCHEMA_VERSION_V6).names
+    if order == FEATURE_CHANNEL_NAMES:
+        expected = training_policy_hash()
+        expected_n = len(FEATURE_CHANNEL_NAMES)
+    elif order == v6_names:
+        expected = training_policy_hash(schema=feature_schema(FEATURE_SCHEMA_VERSION_V6))
+        expected_n = len(v6_names)
+    else:
         raise RuntimeError(f"scaler channel order drift at {uri}: {order}")
     if policy_hash != expected:
         raise RuntimeError(
@@ -233,10 +243,8 @@ def load_scaler(training_root: str) -> ScalerSpec:
         )
         for c in payload["channels"]
     )
-    if len(channels) != N_FEATURE_CHANNELS:
-        raise RuntimeError(
-            f"scaler publishes {len(channels)} channels, expected {N_FEATURE_CHANNELS}"
-        )
+    if len(channels) != expected_n:
+        raise RuntimeError(f"scaler publishes {len(channels)} channels, expected {expected_n}")
     return ScalerSpec(channel_order=order, channels=channels, policy_hash=policy_hash)
 
 
@@ -754,10 +762,11 @@ class RealPatchReader:
                     f"{ref.scene_id}: feature stack {uri} is not aligned with the analysis "
                     f"grid (offset {off} != {(self._dcol10, self._drow10)})"
                 )
-            if src.count != N_FEATURE_CHANNELS:
+            expected_bands = len(self.scaler.channels)
+            if src.count != expected_bands:
                 raise RuntimeError(
                     f"{ref.scene_id}: feature stack has {src.count} bands, "
-                    f"expected {N_FEATURE_CHANNELS}"
+                    f"expected {expected_bands}"
                 )
             outside = (
                 r0 < 0
@@ -799,9 +808,10 @@ def collate_real_batch(
     """
     if not samples:
         raise ValueError("cannot collate an empty sample list")
-    if not 1 <= n_active_channels <= N_FEATURE_CHANNELS:
+    stack_channels = int(samples[0].features.shape[0])
+    if not 1 <= n_active_channels <= stack_channels:
         raise ValueError(
-            f"n_active_channels must be in [1, {N_FEATURE_CHANNELS}], got {n_active_channels}"
+            f"n_active_channels must be in [1, {stack_channels}], got {n_active_channels}"
         )
     if channel_indices is None:
         indices = tuple(range(n_active_channels))
@@ -811,8 +821,8 @@ def collate_real_batch(
             raise ValueError(
                 f"channel_indices length {len(indices)} != n_active_channels {n_active_channels}"
             )
-        if any(i < 0 or i >= N_FEATURE_CHANNELS for i in indices):
-            raise ValueError(f"channel_indices out of range for V3 stack: {indices}")
+        if any(i < 0 or i >= stack_channels for i in indices):
+            raise ValueError(f"channel_indices out of range for the feature stack: {indices}")
         if len(set(indices)) != len(indices):
             raise ValueError("channel_indices must be unique")
     index_array = np.asarray(indices, dtype=np.intp)
