@@ -30,6 +30,7 @@ from berlin_lst_downscaling.data.ard.s2_reflectance import (
     resolve_s2_reflectance_scale,
     scale_s2_digital_numbers,
 )
+from berlin_lst_downscaling.data.diagnostics import feature_correctness
 from berlin_lst_downscaling.data.diagnostics.feature_correctness import (
     DiagnosticsRefused,
     analyze_lod2_tile,
@@ -38,6 +39,8 @@ from berlin_lst_downscaling.data.diagnostics.feature_correctness import (
     catalog_from_frames,
     exclusion_reason_counts,
     main,
+    missing_record_assets,
+    scan_feature_stack,
     validate_plan,
 )
 from berlin_lst_downscaling.data.features.contracts import (
@@ -533,6 +536,21 @@ def test_diagnostics_paths_and_launcher_are_read_only() -> None:
         assert token in launcher
     subprocess.run(["bash", "-n", str(_LAUNCHER)], check=True)  # noqa: S603, S607
     subprocess.run(["bash", "-n", str(_ALLOWLIST)], check=True)  # noqa: S603, S607
+    common = _ROOT / ".opencode/skills/google-access/scripts/vm-runner-common.sh"
+    subprocess.run(["bash", "-n", str(common)], check=True)  # noqa: S603, S607
+    common_text = common.read_text(encoding="utf-8")
+    assert "no output yet" in common_text
+    assert "[ -s" in common_text
+    assert "vm_preserve_logs" in common_text
+    assert "gcloud storage cp" in common_text
+    assert "/tmp/${WRAP_RUN_ID}" in common_text  # noqa: S108
+    assert "tail -n 50" in common_text
+    stop = common_text.split("vm_stop()", 1)[1]
+    assert stop.index("vm_preserve_logs") < stop.index("stop-vm.sh")
+    assert "PYTHONUNBUFFERED=1" in launcher
+    assert "python -u" in launcher
+    assert "--expected-scene-count ${EXPECTED_SCENE_COUNT}" in launcher
+    assert 'EXPECTED_SCENE_COUNT="${EXPECTED_SCENE_COUNT:-324}"' in launcher
     allowlist = _ALLOWLIST.read_text(encoding="utf-8")
     assert allowlist.count("run-feature-diagnostics-vm.sh") >= 3
 
@@ -569,6 +587,242 @@ def test_catalog_join_uses_manifest_columns_without_opening_gcs() -> None:
     assert rows[0]["item_href"] == "https://example.invalid/item.json"
     assert rows[0]["feature_stack"].endswith("/LC08_1/LC08_1.tif")
     assert "landsat-c2-l2/2021/LC08_1" in rows[0]["landsat_cog"]
+
+
+def test_catalog_drops_inference_deferred_and_keeps_no_eligible_cells() -> None:
+    """2026 deferred rows have no stack; empty-eligibility rows still do."""
+    training = pd.DataFrame(
+        [
+            {
+                "scene_id": "LC08_KEEP",
+                "year": 2020,
+                "s2_scene_id": "S2_KEEP",
+                "exclusion_reason": "no_eligible_cells",
+                "feature_stack": "gs://bucket/features/v5/LC08_KEEP/LC08_KEEP.tif",
+            },
+            {
+                "scene_id": "LC08_L2SP_192023_20260503_02_T1",
+                "year": 2026,
+                "s2_scene_id": "S2_DEFER",
+                "exclusion_reason": "inference_deferred",
+                "feature_stack": "gs://bucket/features/v5/LC08_L2SP_192023_20260503_02_T1.tif",
+            },
+        ]
+    )
+    selection = pd.DataFrame(
+        [{"scene_id": "S2_KEEP", "source": "sentinel-2-l2a", "item_href": "https://example/a"}]
+    )
+    rows = catalog_from_frames(
+        training,
+        selection,
+        features_root="gs://bucket/features/v5",
+        ard_root="gs://bucket/ard",
+    )
+    assert [row["scene_id"] for row in rows] == ["LC08_KEEP"]
+    assert rows[0]["feature_stack"].endswith("LC08_KEEP.tif")
+
+
+def test_missing_assets_listed_before_scan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing feature stack exits 2 and names the path. No raster is opened."""
+    present = tmp_path / "present"
+    records = [
+        {
+            "scene_id": "LC08_KEEP",
+            "feature_stack": str(present),
+            "landsat_cog": str(tmp_path / "lst.tif"),
+            "landsat_flag": str(tmp_path / "flag.tif"),
+        }
+    ]
+
+    def fake_exists(path: str) -> bool:
+        return path == str(present)
+
+    missing = missing_record_assets(records, exists=fake_exists)
+    assert str(tmp_path / "lst.tif") in missing
+    assert str(tmp_path / "flag.tif") in missing
+    assert str(present) not in missing
+
+    scenes = tmp_path / "scenes.json"
+    scenes.write_text(
+        json.dumps(
+            [
+                {
+                    "scene_id": "LC08_MISSING",
+                    "year": 2022,
+                    "s2_scene_id": "S2",
+                    "properties": {"s2:processing_baseline": "04.00"},
+                    "feature_stack": str(tmp_path / "absent-stack.tif"),
+                    "landsat_cog": str(tmp_path / "absent-lst.tif"),
+                    "landsat_flag": str(tmp_path / "absent-flag.tif"),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def none_exist(_path: str) -> bool:
+        return False
+
+    monkey_holder = {"opened": False}
+
+    def refuse_open(*_args: object, **_kwargs: object) -> None:
+        monkey_holder["opened"] = True
+        raise AssertionError("raster opened")
+
+    original_exists = feature_correctness.storage_exists
+    original_open = feature_correctness.rasterio.open
+    feature_correctness.storage_exists = none_exist  # type: ignore[method-assign]
+    feature_correctness.rasterio.open = refuse_open  # type: ignore[method-assign]
+    try:
+        code = main(
+            [
+                "--scope",
+                "eligibility-gaps",
+                "--scenes-json",
+                str(scenes),
+                "--yes",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--expected-scene-count",
+                "1",
+            ]
+        )
+    finally:
+        feature_correctness.storage_exists = original_exists  # type: ignore[method-assign]
+        feature_correctness.rasterio.open = original_open
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "absent-stack.tif" in captured.out
+    assert "absent-lst.tif" in captured.out
+    assert "absent-flag.tif" in captured.out
+    assert monkey_holder["opened"] is False
+    assert "Scenes: 1" in captured.out
+
+
+def test_expected_scene_count_uses_selected_records(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The estimate counts selected rows and refuses a mismatched pin."""
+    scenes = tmp_path / "scenes.json"
+    scenes.write_text(
+        json.dumps(
+            [
+                {
+                    "scene_id": "A",
+                    "year": 2021,
+                    "exclusion_reason": "inference_deferred",
+                    "properties": {"s2:processing_baseline": "04.00"},
+                },
+                {
+                    "scene_id": "B",
+                    "year": 2021,
+                    "exclusion_reason": "no_eligible_cells",
+                    "properties": {"s2:processing_baseline": "04.00"},
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "--scope",
+            "s2-baseline",
+            "--estimate-only",
+            "--scenes-json",
+            str(scenes),
+            "--expected-scene-count",
+            "324",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Scenes: 1" in captured.out
+    assert "expected-scene-count 324" in captured.out
+
+
+def test_scan_feature_stack_rasterio_error_names_the_path() -> None:
+    """A 404 from rasterio becomes DiagnosticsRefused and names the stack."""
+    from rasterio.errors import RasterioIOError
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RasterioIOError("HTTP response code: 404")
+
+    original = feature_correctness.rasterio.open
+    feature_correctness.rasterio.open = boom  # type: ignore[method-assign]
+    try:
+        with pytest.raises(DiagnosticsRefused, match="features/v5/missing.tif"):
+            scan_feature_stack(
+                "gs://bucket/features/v5/missing.tif",
+                "gs://bucket/lst.tif",
+                "gs://bucket/flag.tif",
+            )
+    finally:
+        feature_correctness.rasterio.open = original
+
+
+def test_mid_scan_exception_writes_summary_and_uploads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unhandled scan error still writes the summary and uploads the tree."""
+    feature = tmp_path / "stack.tif"
+    landsat = tmp_path / "lst.tif"
+    flag = tmp_path / "flag.tif"
+    feature.write_bytes(b"not-a-real-open")
+    landsat.write_bytes(b"x")
+    flag.write_bytes(b"x")
+    scenes = tmp_path / "scenes.json"
+    scenes.write_text(
+        json.dumps(
+            [
+                {
+                    "scene_id": "LC08_BOOM",
+                    "year": 2022,
+                    "s2_scene_id": "S2",
+                    "properties": {"s2:processing_baseline": "04.00"},
+                    "feature_stack": str(feature),
+                    "landsat_cog": str(landsat),
+                    "landsat_flag": str(flag),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    uploads: list[tuple[Path, str]] = []
+
+    def fake_scan(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("boom mid scan")
+
+    def fake_upload(source: Path, destination: str) -> None:
+        uploads.append((source, destination))
+
+    monkeypatch.setattr(feature_correctness, "scan_feature_stack", fake_scan)
+    monkeypatch.setattr(feature_correctness, "_upload_tree", fake_upload)
+    output = tmp_path / "out"
+    uri = "gs://berlin-lst-training-data/evaluation/diagnostics/unit-crash/"
+    code = main(
+        [
+            "--scope",
+            "eligibility-gaps",
+            "--scenes-json",
+            str(scenes),
+            "--yes",
+            "--output-dir",
+            str(output),
+            "--upload-uri",
+            uri,
+            "--run-id",
+            "unit-crash",
+        ]
+    )
+    assert code == 1
+    summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+    assert "boom mid scan" in summary["error"]
+    assert "Traceback" in summary["traceback"]
+    markdown = (output / "summary.md").read_text(encoding="utf-8")
+    assert "boom mid scan" in markdown
+    assert uploads == [(output, uri)]
 
 
 def test_published_prefixes_are_refused_before_any_ledger_write() -> None:

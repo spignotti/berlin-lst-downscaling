@@ -15,13 +15,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import traceback
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import rasterio
+from rasterio.errors import RasterioIOError
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path
@@ -29,18 +32,22 @@ from berlin_lst_downscaling.data.ard.s2_reflectance import resolve_s2_reflectanc
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNELS
 from berlin_lst_downscaling.data.features.paths import feature_cog
 from berlin_lst_downscaling.data.io.storage import atomic_upload
+from berlin_lst_downscaling.data.io.storage import exists as storage_exists
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
 from berlin_lst_downscaling.data.secondary.citygml import (
     describe_lod2_height_locations,
     parse_lod2_buildings_legacy,
     parse_lod2_buildings_with_stats,
 )
+from berlin_lst_downscaling.data.training.contracts import INFERENCE_DEFERRED_REASON
 
 _LOGGER = logging.getLogger("berlin_lst_downscaling.data.diagnostics")
 
 DIAGNOSTICS_PREFIX = "gs://berlin-lst-training-data/evaluation/diagnostics/"
 EXPECTED_SCENE_COUNT = 324
 SCOPES = ("s2-baseline", "eligibility-gaps", "lod2-parser")
+_ASSET_KEYS = ("feature_stack", "landsat_cog", "landsat_flag")
+_RESULTS_NAME = "results.jsonl"
 _WINDOW = 640  # 10 m pixels; divisible by the 10x10 aggregation
 _LANDSAT_SOURCE = "landsat-c2-l2"
 _S2_SOURCE = "sentinel-2-l2a"
@@ -312,6 +319,21 @@ def scan_feature_stack(
     """
     if _WINDOW % 10 != 0:
         raise RuntimeError("diagnostic window must be a multiple of 10")
+    try:
+        return _scan_feature_stack_open(feature_stack, landsat_cog, landsat_flag)
+    except RasterioIOError as exc:
+        raise DiagnosticsRefused(
+            f"cannot open raster {feature_stack} "
+            f"(landsat_cog={landsat_cog}, landsat_flag={landsat_flag}): {exc}"
+        ) from exc
+
+
+def _scan_feature_stack_open(
+    feature_stack: str,
+    landsat_cog: str,
+    landsat_flag: str,
+) -> dict[str, Any]:
+    """Read one feature stack. Raster open failures propagate to the caller."""
     with rasterio.open(feature_stack) as src:
         if src.count != len(FEATURE_CHANNELS):
             raise DiagnosticsRefused(
@@ -461,6 +483,11 @@ def analyze_lod2_tile(path: Path) -> dict[str, Any]:
     }
 
 
+def _is_inference_deferred(reason: object) -> bool:
+    """True for 2026 rows whose feature stack was never materialised."""
+    return str(reason or "") == INFERENCE_DEFERRED_REASON
+
+
 def catalog_from_frames(
     training: pd.DataFrame,
     selection: pd.DataFrame,
@@ -472,6 +499,10 @@ def catalog_from_frames(
 
     Feature and Landsat paths are derived from the release roots. STAC
     properties are not fetched here.
+
+    Rows whose ``exclusion_reason`` is ``inference_deferred`` are omitted.
+    ``no_eligible_cells`` rows stay: their stacks exist and the eligibility
+    scope needs them.
     """
     needed = {"scene_id", "year", "s2_scene_id"}
     missing = needed.difference(training.columns)
@@ -489,6 +520,8 @@ def catalog_from_frames(
             href_by_scene[str(row["scene_id"])] = href
     records: list[dict[str, Any]] = []
     for row in training.to_dict(orient="records"):
+        if _is_inference_deferred(row.get("exclusion_reason")):
+            continue
         scene_id = str(row["scene_id"])
         year = int(row["year"])
         s2_scene_id = str(row["s2_scene_id"])
@@ -518,7 +551,12 @@ def _load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
         records = payload["scenes"] if isinstance(payload, dict) else payload
         if not isinstance(records, list):
             raise DiagnosticsRefused("--scenes-json must be a list or an object with scenes")
-        return records
+        return [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and not _is_inference_deferred(record.get("exclusion_reason"))
+        ]
     if args.training_manifest is None:
         raise DiagnosticsRefused(
             "pass --scenes-json or --training-manifest; the default manifest is not opened"
@@ -554,6 +592,58 @@ def _with_properties(record: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
+def missing_record_assets(
+    records: list[dict[str, Any]],
+    *,
+    exists: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """Return ``feature_stack``, ``landsat_cog``, and ``landsat_flag`` paths that are absent.
+
+    Parameters
+    ----------
+    records :
+        Selected scene records.
+    exists :
+        Existence probe. Tests pass a fake filesystem. The default reads
+        :func:`storage_exists` at call time so a monkeypatch applies.
+    """
+    probe = storage_exists if exists is None else exists
+    missing: list[str] = []
+    for record in records:
+        scene_id = record.get("scene_id", "")
+        for key in _ASSET_KEYS:
+            path = record.get(key)
+            label = path if isinstance(path, str) and path else f"{scene_id}:{key}"
+            if not isinstance(path, str) or not path or not probe(path):
+                missing.append(str(label))
+    return missing
+
+
+def assert_record_assets_exist(
+    records: list[dict[str, Any]],
+    *,
+    exists: Callable[[str], bool] | None = None,
+) -> None:
+    """Refuse when any selected stack, COG, or flag path is missing."""
+    missing = missing_record_assets(records, exists=exists)
+    if missing:
+        listed = "\n".join(missing)
+        raise DiagnosticsRefused(f"missing assets ({len(missing)}):\n{listed}")
+
+
+def _append_jsonl(output_dir: Path, row: dict[str, Any]) -> None:
+    """Append one scene result so a later crash still leaves partial output."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / _RESULTS_NAME).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, sort_keys=True) + "\n")
+        handle.flush()
+
+
+def _progress(scope: str, index: int, total: int, scene_id: object) -> None:
+    """Print one flushed progress line. Block buffering hid these on the VM."""
+    print(f"{scope} {index}/{total} {scene_id}", flush=True)
+
+
 def _write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "summary.json").write_text(
@@ -567,6 +657,15 @@ def _render_markdown(summary: dict[str, Any]) -> str:
     lines = ["# Feature-correctness diagnostics", ""]
     lines.append(f"Run id: `{summary.get('run_id', '')}`")
     lines.append("")
+    if summary.get("error"):
+        lines.append("## Error")
+        lines.append("")
+        lines.append(f"`{summary.get('error')}`")
+        lines.append("")
+        lines.append("```")
+        lines.append(str(summary.get("traceback", "")))
+        lines.append("```")
+        lines.append("")
     lines.append("```")
     lines.append(summary.get("estimate_text", ""))
     lines.append("```")
@@ -666,7 +765,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--scenes-json", type=Path, default=None)
     parser.add_argument("--lod2-tile", action="append", default=[], dest="lod2_tiles")
-    parser.add_argument("--expected-scene-count", type=int, default=EXPECTED_SCENE_COUNT)
+    parser.add_argument(
+        "--expected-scene-count",
+        type=int,
+        default=None,
+        help=(
+            "When set, refuse if the selected record count differs. "
+            f"The feature release has {EXPECTED_SCENE_COUNT} stacks."
+        ),
+    )
     parser.add_argument("--training-manifest", default=None)
     parser.add_argument("--selection-manifest", default=None)
     parser.add_argument(
@@ -681,16 +788,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _selected_scene_count(args: argparse.Namespace) -> tuple[int, list[dict[str, Any]] | None]:
+    """Load records when a scene source is present and return the selected count.
+
+    ``None`` for the record list means no scene source was passed (LoD2-only
+    or a bare estimate). The count is then zero rather than a hard-coded
+    release size.
+    """
+    if args.scenes_json is None and args.training_manifest is None:
+        return 0, None
+    records = _load_records(args)
+    return len(records), records
+
+
+def _check_expected_count(actual: int, expected: int | None) -> None:
+    """Refuse when the caller pinned a scene count that does not match."""
+    if expected is None:
+        return
+    if actual != expected:
+        raise DiagnosticsRefused(
+            f"selected scene count {actual} != --expected-scene-count {expected}"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the operator. Returns a process status code."""
     args = build_parser().parse_args(argv)
     scopes = list(args.scopes or [])
-    scene_count = args.expected_scene_count
-    if args.scenes_json is not None and args.scenes_json.exists():
-        try:
-            scene_count = len(_load_records(args))
-        except (OSError, json.JSONDecodeError, DiagnosticsRefused):
-            scene_count = args.expected_scene_count
+    try:
+        scene_count, preloaded = _selected_scene_count(args)
+    except (OSError, json.JSONDecodeError, DiagnosticsRefused) as exc:
+        print(f"ERROR: {exc}")
+        return 2
     estimate = cost_estimate(
         scopes=scopes,
         scene_count=scene_count,
@@ -701,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     try:
         validate_plan(scopes, metadata_only=args.metadata_only, lod2_tiles=args.lod2_tiles)
+        _check_expected_count(scene_count, args.expected_scene_count)
     except DiagnosticsRefused as exc:
         print(f"ERROR: {exc}")
         return 2
@@ -712,26 +842,38 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_dir is None:
         print("ERROR: --output-dir is required to execute.")
         return 2
+    output_dir: Path | None = None
+    summary: dict[str, Any] = {
+        "run_id": args.run_id,
+        "scopes": scopes,
+        "metadata_only": args.metadata_only,
+        "estimate": estimate,
+        "estimate_text": text,
+    }
     try:
         output_dir = assert_output_dir(args.output_dir)
         if args.upload_uri is not None:
             assert_upload_uri(args.upload_uri)
-        summary: dict[str, Any] = {
-            "run_id": args.run_id,
-            "scopes": scopes,
-            "metadata_only": args.metadata_only,
-            "estimate": estimate,
-            "estimate_text": text,
-        }
         needs_scenes = "s2-baseline" in scopes or "eligibility-gaps" in scopes
-        records: list[dict[str, Any]] = _load_records(args) if needs_scenes else []
+        records: list[dict[str, Any]] = (
+            preloaded if preloaded is not None else (_load_records(args) if needs_scenes else [])
+        )
+        if needs_scenes and not args.metadata_only:
+            assert_record_assets_exist(records)
         if "s2-baseline" in scopes:
-            summary["s2_baseline"] = [
-                scene_baseline_row(_with_properties(record)) for record in records
-            ]
+            baselines = []
+            total = len(records)
+            for index, record in enumerate(records, start=1):
+                _progress("s2-baseline", index, total, record.get("scene_id"))
+                row = scene_baseline_row(_with_properties(record))
+                baselines.append(row)
+                _append_jsonl(output_dir, {"scope": "s2-baseline", **row})
+            summary["s2_baseline"] = baselines
         if "eligibility-gaps" in scopes:
             per_scene = []
-            for record in records:
+            total = len(records)
+            for index, record in enumerate(records, start=1):
+                _progress("eligibility-gaps", index, total, record.get("scene_id"))
                 counted = scan_feature_stack(
                     str(record["feature_stack"]),
                     str(record["landsat_cog"]),
@@ -740,6 +882,7 @@ def main(argv: list[str] | None = None) -> int:
                 counted["scene_id"] = record.get("scene_id")
                 counted["year"] = record.get("year")
                 per_scene.append(counted)
+                _append_jsonl(output_dir, {"scope": "eligibility-gaps", **counted})
             rolled = rollup_exclusions(per_scene)
             rolled["scenes"] = per_scene
             summary["eligibility_gaps"] = rolled
@@ -753,6 +896,15 @@ def main(argv: list[str] | None = None) -> int:
     except DiagnosticsRefused as exc:
         print(f"ERROR: {exc}")
         return 2
+    except Exception as exc:
+        summary["error"] = str(exc)
+        summary["traceback"] = traceback.format_exc()
+        print(f"ERROR: {exc}", flush=True)
+        if output_dir is not None:
+            _write_reports(output_dir, summary)
+            if args.upload_uri is not None:
+                _upload_tree(output_dir, args.upload_uri)
+        return 1
     _LOGGER.info("diagnostics wrote %s", output_dir)
     return 0
 
@@ -770,6 +922,7 @@ __all__ = [
     "exclusion_reason_counts",
     "format_cost_estimate",
     "main",
+    "missing_record_assets",
     "rollup_exclusions",
     "scan_feature_stack",
     "scene_baseline_row",

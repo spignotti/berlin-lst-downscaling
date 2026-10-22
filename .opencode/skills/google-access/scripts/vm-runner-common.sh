@@ -371,7 +371,8 @@ vm_poll() {
     fi
 
     echo "  [$(date +%H:%M:%S)] $(ssh_cmd "
-      tail -1 '$REMOTE_LOG' 2>/dev/null || echo 'waiting...'
+      log='$REMOTE_LOG'
+      [ -s \"\$log\" ] && tail -1 \"\$log\" || echo 'no output yet'
     " 2>/dev/null || echo "polling...")"
   done
 }
@@ -403,9 +404,41 @@ vm_finish() {
   fi
 }
 
+# ── preserve logs (always, including a failed pipeline) ──────────────
+# Runs between vm_finish and the VM stop. Copies the remote log, marker,
+# and exit status onto the Mac, and uploads them under the diagnostics
+# prefix when UPLOAD_URI is set. A copy or upload failure must not skip
+# the stop that follows.
+
+vm_preserve_logs() {
+  if [[ -z "${WRAP_RUN_ID:-}" ]]; then
+    return 0
+  fi
+  local dest="/tmp/${WRAP_RUN_ID}"
+  mkdir -p "$dest"
+  ssh_cmd "cat '$REMOTE_LOG'" > "$dest/nohup.log" 2>/dev/null || true
+  ssh_cmd "cat '$MARKER'" > "$dest/marker.json" 2>/dev/null || true
+  ssh_cmd "cat '$STATUS_FILE'" > "$dest/exit_status" 2>/dev/null || true
+  if [[ -n "${UPLOAD_URI:-}" ]] \
+    && [[ "$UPLOAD_URI" == gs://berlin-lst-training-data/evaluation/diagnostics/* ]]; then
+    ssh_cmd "gcloud storage cp '$REMOTE_LOG' '$MARKER' '$STATUS_FILE' '${UPLOAD_URI}logs/'" \
+      || true
+  fi
+  if [[ "${PIPELINE_EXIT:-1}" != "0" ]]; then
+    echo "---- last 50 lines of nohup.log ----"
+    if [[ -s "$dest/nohup.log" ]]; then
+      tail -n 50 "$dest/nohup.log" || true
+    else
+      echo "(no local nohup.log)"
+    fi
+  fi
+  return 0
+}
+
 # ── stop VM (normal completion) ──────────────────────────────────────
 
 vm_stop() {
+  vm_preserve_logs
   echo "Stopping VM..."
   vm_started=0
   pipeline_launched=0
