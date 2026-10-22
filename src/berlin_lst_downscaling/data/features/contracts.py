@@ -473,13 +473,30 @@ def feature_schema(
     raise ValueError(f"unknown feature schema version {version}")
 
 
+# Published stacks before the data-correctness bump. Version 2 is the retired
+# features/v2 product. Version 3 is features/v3 through the published
+# features/v5 product. Both recorded the same 28-channel order as
+# FEATURE_CHANNELS. feature_schema() does not accept them: a new stack is
+# written at version 4 or 5 only.
+_PUBLISHED_28_CHANNEL_SCHEMA_VERSIONS = frozenset({2, 3})
+
+
 def schema_from_provenance(provenance: Mapping[str, Any]) -> FeatureSchema:
-    """Resolve the roster recorded on a feature-stack provenance document."""
+    """Resolve the roster recorded on a feature-stack provenance document.
+
+    Schema versions 2 and 3 are the published 28-channel order. Version 4 is
+    that same roster after the data-correctness bump. Version 5 is features/v6.
+    """
     version = int(provenance.get("schema_version", FEATURE_SCHEMA_VERSION))
     raw_threshold = provenance.get("canopy_cover_threshold_m")
     threshold = None if raw_threshold is None else float(raw_threshold)
-    if version == FEATURE_SCHEMA_VERSION:
-        return feature_schema(version)
+    if version == FEATURE_SCHEMA_VERSION or version in _PUBLISHED_28_CHANNEL_SCHEMA_VERSIONS:
+        return FeatureSchema(
+            version=version,
+            release="v5",
+            channels=FEATURE_CHANNELS,
+            canopy_cover_threshold_m=None,
+        )
     return feature_schema(version, canopy_cover_threshold_m=threshold)
 
 
@@ -520,7 +537,10 @@ def era5_representation_for_schema(schema: FeatureSchema, configured: str | None
     Schema v5 keeps the published ERA5 field (``None``). Schema v6
     defaults to ``scene_value`` when ``configured`` is omitted.
     """
-    if schema.version == FEATURE_SCHEMA_VERSION:
+    if (
+        schema.version == FEATURE_SCHEMA_VERSION
+        or schema.version in _PUBLISHED_28_CHANNEL_SCHEMA_VERSIONS
+    ):
         if configured not in (None, ERA5_REPRESENTATION_BILINEAR):
             raise ValueError(
                 "features/v5 keeps the published bilinear ERA5 field; "

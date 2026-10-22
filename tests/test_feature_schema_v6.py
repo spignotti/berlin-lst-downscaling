@@ -32,6 +32,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     era5_representation_for_schema,
     feature_schema,
     resolve_era5_representation,
+    schema_from_provenance,
 )
 from berlin_lst_downscaling.data.features.schema import config_hash_for_features
 from berlin_lst_downscaling.data.features.stack import assemble_named_channels
@@ -272,6 +273,25 @@ def test_svf_diagnostic_cli_is_read_only(
     assert "30" in captured
     assert "estimated_full_s" in captured
     assert set(tmp_path.iterdir()) == before
+
+
+def test_schema_from_provenance_reads_the_published_28_channel_versions() -> None:
+    for version in (2, 3, FEATURE_SCHEMA_VERSION):
+        schema = schema_from_provenance({"schema_version": version})
+        assert schema.version == version
+        assert schema.names == FEATURE_CHANNEL_NAMES
+    v6 = schema_from_provenance(
+        {
+            "schema_version": FEATURE_SCHEMA_VERSION_V6,
+            "canopy_cover_threshold_m": CANOPY_COVER_THRESHOLD_M_DEFAULT,
+        }
+    )
+    assert v6.n_channels == feature_schema(FEATURE_SCHEMA_VERSION_V6).n_channels
+    assert "canopy_cover_fraction" in v6.names
+    with pytest.raises(ValueError, match="unknown feature schema version"):
+        schema_from_provenance({"schema_version": 1})
+    with pytest.raises(ValueError, match="unknown feature schema version"):
+        feature_schema(3)
 
 
 def test_scene_value_is_the_aoi_mean_of_the_bilinear_field() -> None:

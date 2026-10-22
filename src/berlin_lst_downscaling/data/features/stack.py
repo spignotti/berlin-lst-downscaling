@@ -4,8 +4,10 @@ Reads the resolved per-scene inputs (S2 ARD + flag, morphology source COGs,
 ERA5-Land, shadows) plus the exact Berlin AOI mask and produces one
 canonical-grid dataset of float32 channels plus the uint8
 ``feature_valid`` mask. The channel count and order come from the feature
-schema (published features/v5 is 28 channels; features/v6 is
-``feature_schema(4).n_channels``).
+schema. Published features/v5 is ``feature_schema(FEATURE_SCHEMA_VERSION)``
+(the 28-channel roster). features/v6 is
+``feature_schema(FEATURE_SCHEMA_VERSION_V6)`` and its width is
+``schema.n_channels``.
 
 Mask semantics (data/features/contracts.py): a pixel is valid only when
 it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and every

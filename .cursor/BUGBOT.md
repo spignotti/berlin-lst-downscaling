@@ -56,6 +56,7 @@ Review-only rules for this repository. Flag methodological drift. A missing test
 
 - `FEATURE_CHANNELS` is the 28-channel roster. Do not drop, rename, or reorder those channels, and do not point `configs/features/v5.yaml` at the v6 roster or at `features/v6`.
 - The code default `FEATURE_SCHEMA_VERSION` is 4 after the data-correctness bump. It is still that 28-channel roster.
+- Provenance `schema_version` 2 and 3 recorded that same 28-channel order. `schema_from_provenance` resolves them to `FEATURE_CHANNELS`. `feature_schema` still accepts only versions 4 and 5.
 - features/v6 channel roster is `FEATURE_SCHEMA_VERSION_V6` (5) from `feature_schema`. A literal channel count on a v6 path is a finding. The width is `schema.n_channels`.
 - `building_height_std` and `building_height_max` stay on the LoD product for the building DSM. They are not v6 model inputs.
 - `vegetation_height_max` stays on the vegetation product for the vegetation DSM. The v6 model input is `canopy_cover_fraction`.

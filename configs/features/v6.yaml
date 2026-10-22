@@ -1,7 +1,7 @@
 # @package _global_
 # Feature release v6. One contract:
 # - schema-9 Sentinel-2 ARD and the area-exact LoD2 derived/dynamic roots
-# - the 22-channel roster from feature_schema (canopy cover, slim ERA5)
+# - the roster from feature_schema (schema version 5: canopy cover, slim ERA5)
 # features/v5 stays on its published roots. publish_guard refuses
 # features/v3, features/v4, and features/v5. This file does not publish.
 #
