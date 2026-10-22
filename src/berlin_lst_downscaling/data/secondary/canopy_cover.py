@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 import rasterio
 from odc.geo.geobox import GeoBox
+from rasterio.windows import Window
 
 from berlin_lst_downscaling.data.features.contracts import CANOPY_COVER_THRESHOLD_M_DEFAULT
 
@@ -95,7 +96,7 @@ def canopy_cover_fraction_on_grid(
         height = min(block_px, src.height - row_off)
         for col_off in range(0, src.width, block_px):
             width = min(block_px, src.width - col_off)
-            window = rasterio.windows.Window(col_off, row_off, width, height)
+            window = Window(col_off, row_off, width, height)  # type: ignore[call-arg]
             block = src.read(1, window=window)
             _accumulate_block(
                 block,
