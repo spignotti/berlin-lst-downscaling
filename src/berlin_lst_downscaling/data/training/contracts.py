@@ -157,10 +157,16 @@ def split_for_year(year: int) -> str:
     return split
 
 
+# Published training/v2 recorded feature schema version 3. The code
+# default FEATURE_SCHEMA_VERSION is 4 after the data-correctness bump
+# and must not move this hash.
+_PUBLISHED_TRAINING_FEATURE_SCHEMA_VERSION = 3
+
+
 def training_policy_hash(
     *,
     v3_config_hash: str = EXPECTED_V3_CONFIG_HASH,
-    feature_schema_version: int = FEATURE_SCHEMA_VERSION,
+    feature_schema_version: int = _PUBLISHED_TRAINING_FEATURE_SCHEMA_VERSION,
     schema: FeatureSchema | None = None,
 ) -> str:
     """Return a stable SHA-256 fingerprint of the training-data policy.

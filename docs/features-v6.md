@@ -1,9 +1,10 @@
 # features/v6 channel roster
 
-features/v5 (schema version 3) stays the published 28-channel contract.
-features/v6 is schema version 4. The roster and its width come from
-`feature_schema(4)` in `data/features/contracts.py`. Do not hard-code the
-width.
+The published features/v5 product stays the 28-channel contract.
+`FEATURE_SCHEMA_VERSION` is 4 after the data-correctness bump and is
+still that 28-channel roster. features/v6 is schema version 5. The
+roster and its width come from `feature_schema(5)` in
+`data/features/contracts.py`. Do not hard-code the width.
 
 Order is spectral, index, morphology, ERA5, shadow.
 
@@ -51,8 +52,8 @@ exact Berlin AOI. The dynamic/v6 writer bilinear-reprojects and then
 takes that mean. Composing from the published 8-band COG uses the same
 mean, so the two paths agree. A scene-value COG is already constant, and
 applying the mean again leaves the scalar unchanged. The published
-dynamic product stays 8-band bilinear unless `configs/dynamic/v6.yaml`
-is used.
+dynamic product stays 8-band bilinear. `configs/dynamic/v6.yaml` writes
+the new `dynamic/lod2-area-exact-v2` prefix.
 
 SVF `svf_max_radius` stays 3 cells (30 m) in `configs/static_derived/v6.yaml`.
 `scripts/validators/diagnose_svf_radius.py` compares 30/50/100/200 m on a
@@ -60,18 +61,20 @@ sample and does not write a product.
 
 ## Artifacts to regenerate
 
-This change does not publish. A later republish, after the data-correctness
-fixes land, needs:
+This change does not publish. `publish_guard` refuses Sentinel-2 writes
+into the published schema-8 roots and feature writes into `features/v3`,
+`features/v4`, and `features/v5`. Do not write `static/sources/imperviousness-v3`.
 
 | Artifact | Why |
 |----------|-----|
-| `static/sources/v6` vegetation height | third band `canopy_cover_fraction`; mean and max stay |
-| `dynamic/v6` ERA5 (optional) | four bands whose `scene_value` is the AOI mean of the bilinear field. Compose applies that same mean to the published 8-band COG |
-| `static/derived` SVF | only if the radius changes after the diagnostic. The default 30 m does not |
-| `features/v6` | new roster, canopy band, ERA5 reduction and representation |
+| `ard/full/2017-2026-s2-harmonized-v9` | schema-9 S2 ARD. The stack does not apply a second offset |
+| `static/sources/lod2-area-exact-v2` | area-exact LoD2 morphology, plus vegetation height with a third `canopy_cover_fraction` band. Mean and max stay. Imperviousness objects stay the published v3 COGs; the new ledger points at them |
+| `static/derived/lod2-area-exact-v2` | building DSM, combined DSM, building horizons, and SVF from the corrected heights. SVF radius stays 30 m unless the diagnostic changes it |
+| `dynamic/lod2-area-exact-v2` | building shadows from the corrected horizons. ERA5 `scene_value` may be written here or applied at compose time to an 8-band COG; both use the AOI mean of the bilinear field |
+| `features/v6` | 22-channel roster on the roots above |
 | `training/v3` | eligibility, train-only scaler (`tp_0_72h` is `log1p` then z-score), patch index |
 | EDA, random forest, ablation | new channels and a new training release. Frozen result write-ups stay as they are |
 
-LoD morphology does not need a republish only to drop `building_height_std`
-and `building_height_max` from the model input. Those bands remain inputs
-to the building DSM.
+`building_height_std` and `building_height_max` stay on the LoD product
+for the building DSM. Dropping them from the model input does not, by
+itself, require a morphology republish. The area-exact LoD2 rebuild does.

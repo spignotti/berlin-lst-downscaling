@@ -81,7 +81,9 @@ def _compose(config_dir: str, config_name: str):
 
 def test_published_v5_hashes_and_roster_are_unchanged() -> None:
     assert training_policy_hash() == "08c2ec4d5a257c7e"
-    assert _feature_hash() == "117385e2bd9c693b"
+    # Default path is the 28-channel roster plus the data-correctness
+    # policy keys. It does not include the v6 canopy threshold or ERA5 switch.
+    assert _feature_hash() == "a8d231b313a7ad73"
     assert config_hash_for_era5("m", "g", "root") == "f381861cc6b460da"
     assert "building_height_std" in FEATURE_CHANNEL_NAMES
     assert "building_height_max" in FEATURE_CHANNEL_NAMES
@@ -137,6 +139,13 @@ def test_v6_configs_resolve_scene_value_and_the_registry_width() -> None:
     assert feature_order_for(selection) == "v6_registry"
     derived = (_REPO / "configs" / "static_derived" / "v6.yaml").read_text()
     assert "svf_max_radius: 3" in derived
+    text = (_REPO / "configs" / "features" / "v6.yaml").read_text()
+    assert "2017-2026-s2-harmonized-v9" in text
+    assert "static/derived/lod2-area-exact-v2" in text
+    assert "dynamic/lod2-area-exact-v2" in text
+    assert "static/sources/lod2-area-exact-v2" in text
+    assert 'output_root: "gs://berlin-lst-training-data/features/v6"' in text
+    assert "qa-avg-20261019" not in text
 
 
 def test_canopy_cover_fraction_uses_a_configurable_threshold() -> None:

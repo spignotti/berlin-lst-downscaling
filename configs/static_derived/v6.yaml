@@ -8,5 +8,5 @@ defaults:
 
 svf_max_radius: 3
 svf_n_directions: 16
-source_root: "gs://berlin-lst-training-data/static/sources/v6"
-derived_root: "gs://berlin-lst-training-data/static/derived/v6"
+source_root: "gs://berlin-lst-training-data/static/sources/lod2-area-exact-v2"
+derived_root: "gs://berlin-lst-training-data/static/derived/lod2-area-exact-v2"

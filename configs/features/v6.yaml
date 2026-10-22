@@ -5,8 +5,9 @@
 # features/v5 stays on its published roots. publish_guard refuses
 # features/v3, features/v4, and features/v5. This file does not publish.
 #
-# static/derived and dynamic do not exist yet. A run fails closed instead
-# of mixing the published SVF and building shadows into this release.
+# static/sources, static/derived, and dynamic use new prefixes. A run
+# fails closed instead of mixing the published SVF and building shadows
+# into this release. Do not write static/sources/imperviousness-v3.
 # The stack reads harmonized ARD and does not apply a second S2 offset.
 defaults:
   - _base
@@ -19,7 +20,7 @@ canopy_cover_threshold_m: 2.5
 era5_representation: scene_value
 
 ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-s2-harmonized-v9"
-static_sources_root: "gs://berlin-lst-training-data/static/sources/imperviousness-v3"
+static_sources_root: "gs://berlin-lst-training-data/static/sources/lod2-area-exact-v2"
 static_derived_root: "gs://berlin-lst-training-data/static/derived/lod2-area-exact-v2"
 dynamic_root: "gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2"
 output_root: "gs://berlin-lst-training-data/features/v6"

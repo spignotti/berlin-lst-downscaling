@@ -384,8 +384,9 @@ canonical-grid 10 m stack plus a co-registered validity mask:
     └─ complete.json                      # publication marker (written last)
 ```
 
-**Fixed 28-channel order** for the published features/v5 contract (schema
-version 3). features/v6 is schema version 4 and is listed in
+**Fixed 28-channel order** for the published features/v5 product. The
+code default after the data-correctness bump is schema version 4 and is
+still this roster. features/v6 is the 22-channel schema version 5 in
 `docs/features-v6.md`. Reordering either roster is a new URI version:
 
 | # | Channel | Family | Unit | Range |
