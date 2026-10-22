@@ -9,16 +9,16 @@ the features ledger and every done scene's artifacts and verifies
 
 - ledger completeness and artifact existence (COG, mask, provenance,
   STAC, complete),
-- 28-band COG contract: band count, dtype, CRS, grid, channel order,
+- COG contract: band count from the feature schema, dtype, CRS, grid, channel order,
 - mask COG: uint8, single band, same grid, values in {0, 1},
-- mask semantics (blockwise): ``mask == 1`` implies all 28 channels are
+- mask semantics (blockwise): ``mask == 1`` implies every schema channel is
   finite and in-range; ``mask == 0`` permits finite values in any
   channel (availability is per channel),
 - AOI semantics: outside the exact Berlin AOI the mask is 0 and every
   channel is NaN,
 - per-channel value ranges on valid pixels only,
 - sidecar content: provenance channel order / coverage / mask semantics,
-  STAC data + feature_valid assets with 28 raster bands,
+  STAC data + feature_valid assets with one raster band per schema channel,
 - provenance coverage numbers against independently recomputed counts.
 
 The validator imports only the channel contract (names/ranges) — never
@@ -163,7 +163,7 @@ def _check_pixels(
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
                 win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                bands = cog.read(window=win)  # (28, bh, bw)
+                bands = cog.read(window=win)  # (n_channels, bh, bw)
                 mask = msk.read(1, window=win)
                 aoi_t = aoi[r0:r1, c0:c1]
 

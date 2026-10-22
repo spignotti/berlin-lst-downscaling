@@ -1,16 +1,18 @@
-"""Feature-stack composer — 28-band stack + feature_valid mask.
+"""Feature-stack composer — schema-width stack + feature_valid mask.
 
 Reads the resolved per-scene inputs (S2 ARD + flag, morphology source COGs,
 ERA5-Land, shadows) plus the exact Berlin AOI mask and produces one
-canonical-grid dataset of 28 float32 channels plus the uint8
-``feature_valid`` mask.
+canonical-grid dataset of float32 channels plus the uint8
+``feature_valid`` mask. The channel count and order come from the feature
+schema (published features/v5 is 28 channels; features/v6 is
+``feature_schema(4).n_channels``).
 
 Mask semantics (data/features/contracts.py): a pixel is valid only when
-it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and all
-28 channels are finite and within their declared ranges. Availability is
+it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and every
+schema channel is finite and within its declared range. Availability is
 per channel: an unavailable channel is NaN in that band only — known
 values of the other channels are preserved. ``feature_valid`` is the
-aggregate "complete 28-channel vector" availability, never a
+aggregate "complete channel vector" availability, never a
 training-selection mask. All channels are NaN only outside the AOI.
 The Landsat target and ECOSTRESS never enter this stack.
 
@@ -163,9 +165,9 @@ def _read_shadow(uri: str, grid: GeoBox) -> np.ndarray:
 
 @dataclass
 class ComposedFeatureStack:
-    """The 28-band dataset plus the validity mask and coverage metrics."""
+    """The schema-width dataset plus the validity mask and coverage metrics."""
 
-    dataset: xr.Dataset  # 28 float32 bands on the analysis grid
+    dataset: xr.Dataset  # schema.n_channels float32 bands on the analysis grid
     mask: np.ndarray  # uint8 (grid.shape), 1 = valid
     coverage: dict  # total/inside/outside/feature-valid pixel counts
 

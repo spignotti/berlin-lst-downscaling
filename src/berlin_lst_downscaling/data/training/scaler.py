@@ -144,7 +144,7 @@ def fit_scaler(
                         (r0 + cog_off[1], r0 + cog_off[1] + bh),
                         (c0 + cog_off[0], c0 + cog_off[0] + bw),
                     )
-                    bands = cog.read(window=win)  # (28, bh, bw) float32
+                    bands = cog.read(window=win)  # (n_channels, bh, bw) float32
                     sel = eligible_10[r0:r1, c0:c1]
                     for i, spec in enumerate(channels_spec):
                         transform = _transform_for(spec.name, resolved)

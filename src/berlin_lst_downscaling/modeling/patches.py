@@ -3,7 +3,7 @@
 Reads the published WB3 patch index and resolves, per accepted window, the
 four tensors fixed by ``docs/pseudo-pair-tensor-contract.md``:
 
-- ``features`` (28 channels at 10 m, train-only scaled, finite),
+- ``features`` (schema channels at 10 m, train-only scaled, finite),
 - ``lst_prior`` (1000 m block-expanded native LST at 10 m),
 - ``target_100m`` (native Landsat LST, Kelvin),
 - ``mask_100m`` (``training_eligible@100m``).
@@ -178,7 +178,7 @@ class ScalerSpec:
     policy_hash: str
 
     def apply(self, bands: np.ndarray) -> np.ndarray:
-        """Scale ``bands`` ``(28, H, W)`` in place and return it.
+        """Scale ``bands`` ``(n_channels, H, W)`` in place and return it.
 
         Non-finite pixels are left non-finite (the boundary zero-fill owns
         them). A channel with a degenerate ``std`` of zero is left unscaled
@@ -549,7 +549,7 @@ class RealSample:
     """One contract-conforming patch."""
 
     meta: RealSampleMeta
-    features: np.ndarray  # (28, 160, 160) float32, scaled, finite
+    features: np.ndarray  # (n_channels, 160, 160) float32, scaled, finite
     lst_prior_k: np.ndarray  # (1, 160, 160) float32, physical Kelvin
     target_100m: np.ndarray  # (1, 16, 16) float32, native Kelvin
     mask_100m: np.ndarray  # (1, 16, 16) bool
@@ -797,10 +797,10 @@ def collate_real_batch(
 ) -> RealBatch:
     """Stack samples into a :class:`RealBatch` (prior normalized for the model).
 
-    ``features`` keep the selected channels of each sample's 28-band stack: the
-    reader has already scaled and zero-filled them, so the selection here leaves
-    the reader, its scaler, and the naive baseline on their full 28-channel
-    behavior. When ``channel_indices`` is omitted the first
+    ``features`` keep the selected channels of each sample's schema-width stack:
+    the reader has already scaled and zero-filled them, so the selection here
+    leaves the reader, its scaler, and the naive baseline on the full channel
+    vector. When ``channel_indices`` is omitted the first
     ``n_active_channels`` of the fixed V3 order are kept (``v3_first_c``). When
     indices are given they must match ``n_active_channels`` and may be a
     non-contiguous named subset (Tag-11 stage 3). The ``lst_prior`` is a

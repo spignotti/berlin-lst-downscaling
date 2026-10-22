@@ -1,6 +1,6 @@
 """Stage-2 feature-stack QA core — blockwise verification of published stacks.
 
-Verifies every published 28-band feature stack of the training universe
+Verifies every published feature stack of the training universe
 against the feature-stack contract and computes a **diagnostic** feature
 support statistic at 100 m (valid Landsat target cell plus its
 ``feature_valid`` 10 m subpixels). No validity mask, no selection
@@ -15,10 +15,10 @@ comment at import). Range semantics derive from the feature-stack contract
 Performance design:
 
 - Pixel scans use 2560x2560 10 m tiles — an exact multiple of both the
-  COG 512 px block size and the 10x10 aggregation factor. The 28-band
-  float32 feature COG is read per tile (~730 MB peak for one tile).
+  COG 512 px block size and the 10x10 aggregation factor. The float32
+  feature COG is read per tile (about 730 MB peak for one published v5 tile).
 - The ``feature_valid`` mask is independently reconstructed per tile as
-  ``AOI ∧ S2-flag-clear ∧ all 28 channels finite ∧ in-range`` and compared
+  ``AOI ∧ S2-flag-clear ∧ every schema channel finite ∧ in-range`` and compared
   with the published mask. Availability is per channel: where the S2 flag
   is non-clear the six S2 bands and four derived indices must be NaN;
   static/dynamic channels may keep their values.
@@ -387,7 +387,7 @@ def _scan_stack(
             for (r0, c0, r1, c1), _ in _tile_windows(analysis_10):
                 bh, bw = r1 - r0, c1 - c0
                 w_cog = Window(c0 + cog_off[0], r0 + cog_off[1], bw, bh)  # type: ignore[call-arg]
-                bands = cog.read(window=w_cog)  # (28, bh, bw) float32
+                bands = cog.read(window=w_cog)  # (n_channels, bh, bw) float32
                 w_msk = Window(c0 + mask_off[0], r0 + mask_off[1], bw, bh)  # type: ignore[call-arg]
                 mask = msk.read(1, window=w_msk)
                 w_flag = Window.from_slices(

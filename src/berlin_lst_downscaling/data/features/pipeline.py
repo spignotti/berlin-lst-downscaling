@@ -8,7 +8,7 @@ For every assessable paired Landsat anchor (2017-2025, role=anchor):
    AOI mask.
 2. Reconcile against the features ledger (config-hash + completion-marker
    gated idempotency).
-3. Compose the 28-band stack + feature_valid mask, finalise the five
+3. Compose the schema-width stack + feature_valid mask, finalise the five
    artifacts (data COG, mask COG, provenance, STAC, complete), and record
    the ledger row.
 

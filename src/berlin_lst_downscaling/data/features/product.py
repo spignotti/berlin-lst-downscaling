@@ -4,7 +4,7 @@ Each scene publishes five co-located artifacts under its product directory
 (in this exact order, because GCS cannot publish multiple blobs
 atomically — the completion marker is the final visibility gate):
 
-1. ``<scene_id>.tif``                 — 28-band float32 feature COG
+1. ``<scene_id>.tif``                 — schema-width float32 feature COG
 2. ``<scene_id>.feature_valid.tif``   — uint8 0/1 validity-mask COG
 3. ``provenance.json``                — inputs, policy, coverage
 4. ``<scene_id>.stac.json``           — STAC Item (data + mask assets)
@@ -55,7 +55,7 @@ class PreparedFeatureProduct:
     """Payload produced by the composer and handed to finalisation."""
 
     scene_id: str
-    dataset: xr.Dataset  # 28 float32 bands on the canonical grid
+    dataset: xr.Dataset  # schema.n_channels float32 bands on the canonical grid
     mask: np.ndarray  # uint8 (H, W), 1 = valid
     config_hash: str
     acquisition_datetime: str  # RFC 3339 (S2 acquisition)
@@ -230,7 +230,7 @@ def _finalize_locked(
         write_flag_cog_atomic(mask_da, mask_uri, contract, overwrite=True)
 
         # ── 2b. pair validation ────────────────────────────────────────────
-        # mask is uint8 {0,1} and mask == 1 ⇔ all 28 data bands finite.
+        # mask is uint8 {0,1} and mask == 1 ⇔ every schema band is finite.
         # An all-zero mask is valid (a fully sparse stack is still a coherent
         # product). Runs after both COGs are written, before any sidecar.
         _validate_mask_pair(prepared, mask_uri, cog_uri, schema)
@@ -314,7 +314,7 @@ def _validate_mask_pair(
 
     Checks that the mask COG holds uint8 values in {0, 1}, matches the
     composed in-memory mask, and that, pixelwise, ``mask == 1`` implies
-    all 28 bands are finite and within their declared ranges. The
+    every schema band is finite and within its declared range. The
     converse is *not* required: availability is per channel, so
     ``mask == 0`` may legitimately hold finite values in any channel
     (only the unavailable bands are NaN). An all-zero mask is valid.
@@ -322,7 +322,7 @@ def _validate_mask_pair(
     the completion marker.
 
     Scanned blockwise (1024 px tiles) so the peak memory stays bounded
-    inside the per-scene subprocess — a full 28-band read would re-introduce
+    inside the per-scene subprocess — a full-stack read would re-introduce
     the large in-memory footprint the per-scene isolation exists to avoid.
 
     Callers must wrap remote reads in
@@ -354,7 +354,7 @@ def _validate_mask_pair(
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
                 win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                data = cog.read(window=win)  # (28, bh, bw)
+                data = cog.read(window=win)  # (n_channels, bh, bw)
                 mask = msk.read(1, window=win)
                 seen_values.update(np.unique(mask).tolist())
                 claim = mask == 1
@@ -392,7 +392,7 @@ def _build_feature_stac_item(
     mask_uri: str,
     provenance_uri: str,
 ) -> dict:
-    """Build the STAC 1.0.0 Item with data + mask assets and 28 raster bands."""
+    """Build the STAC 1.0.0 Item with data + mask assets and one raster band per channel."""
     height, width = grid.shape.y, grid.shape.x
     transform = grid.transform
     bounds_native = array_bounds(height, width, transform)
