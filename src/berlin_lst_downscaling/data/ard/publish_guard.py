@@ -55,7 +55,7 @@ def assert_feature_output_root(output_root: str) -> None:
     if _normalize(output_root) in _FROZEN_FEATURE_ROOTS:
         raise FrozenPrefixError(
             f"{output_root} is a published feature prefix. "
-            "Schema 4 is published only by configs/features/v6.yaml."
+            "The next feature release is published only by configs/features/v6.yaml."
         )
 
 

@@ -14,7 +14,12 @@ from dataclasses import dataclass
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_CHANNEL_NAMES,
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 
 N_FEATURE_CHANNELS: int = len(FEATURE_CHANNEL_NAMES)
 
@@ -112,7 +117,12 @@ def resolve_active_channels(
 
 
 def selection_from_config(cfg: DictConfig) -> ActiveChannelSelection:
-    """Resolve the active channel selection from a modeling Hydra config."""
+    """Resolve the active channel selection from a modeling Hydra config.
+
+    Schema version 3 keeps the published v5 path (``v3_first_c`` / named
+    subset of the 28-channel roster). Schema version 4 resolves against
+    the v6 roster. A null ``n_active_channels`` on v6 means the full roster.
+    """
     raw_names = OmegaConf.select(cfg, "data.active_channel_names")
     names: list[str] | None
     if raw_names is None:
@@ -123,18 +133,92 @@ def selection_from_config(cfg: DictConfig) -> ActiveChannelSelection:
         raise ValueError(
             f"data.active_channel_names must be a list of names or null, got {raw_names!r}"
         )
-    return resolve_active_channels(
-        n_active_channels=int(cfg.data.n_active_channels),
+    version = schema_version_from_config(cfg)
+    raw_n = OmegaConf.select(cfg, "data.n_active_channels")
+    if version == FEATURE_SCHEMA_VERSION:
+        return resolve_active_channels(
+            n_active_channels=int(raw_n),
+            active_channel_names=names,
+        )
+    raw_threshold = OmegaConf.select(cfg, "data.canopy_cover_threshold_m")
+    if raw_threshold is None:
+        raw_threshold = OmegaConf.select(cfg, "canopy_cover_threshold_m")
+    threshold = None if raw_threshold is None else float(raw_threshold)
+    n_active = None if raw_n is None else int(raw_n)
+    return resolve_schema_selection(
+        version,
+        n_active_channels=n_active,
         active_channel_names=names,
+        canopy_cover_threshold_m=threshold,
     )
 
 
 def feature_order_for(selection: ActiveChannelSelection) -> str:
     """Return the contract feature-order label for a resolved selection."""
+    v6 = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+    if selection.names == v6.names and selection.indices == tuple(range(v6.n_channels)):
+        return "v6_registry"
     prefix = FEATURE_CHANNEL_NAMES[: selection.n_active]
     if selection.names == prefix and selection.indices == tuple(range(selection.n_active)):
         return "v3_first_c"
     return "v3_named_subset"
+
+
+def schema_version_from_config(cfg: DictConfig) -> int:
+    """Feature schema version declared on a modeling or feature config."""
+    for key in ("data.feature_schema_version", "feature_schema_version"):
+        raw = OmegaConf.select(cfg, key)
+        if raw is not None:
+            return int(raw)
+    return FEATURE_SCHEMA_VERSION
+
+
+def resolve_schema_selection(
+    schema_version: int,
+    *,
+    n_active_channels: int | None,
+    active_channel_names: Sequence[str] | None = None,
+    canopy_cover_threshold_m: float | None = None,
+) -> ActiveChannelSelection:
+    """Resolve model inputs against one feature roster.
+
+    A missing count selects the whole roster. Indices are positions in
+    that roster, which is the COG order for that schema.
+    """
+    if schema_version == FEATURE_SCHEMA_VERSION:
+        schema = feature_schema(schema_version)
+    else:
+        schema = feature_schema(schema_version, canopy_cover_threshold_m=canopy_cover_threshold_m)
+    if n_active_channels is None:
+        n_active_channels = schema.n_channels
+    if isinstance(n_active_channels, bool) or not isinstance(n_active_channels, int):
+        raise ValueError(
+            f"n_active_channels must be an int in [1, {schema.n_channels}], "
+            f"got {n_active_channels!r}"
+        )
+    if not 1 <= n_active_channels <= schema.n_channels:
+        raise ValueError(
+            f"n_active_channels must be in [1, {schema.n_channels}], got {n_active_channels}"
+        )
+    if active_channel_names is None or len(active_channel_names) == 0:
+        names = schema.names[:n_active_channels]
+        return ActiveChannelSelection(names=names, indices=tuple(range(n_active_channels)))
+    names_list = [str(name) for name in active_channel_names]
+    if len(names_list) != n_active_channels:
+        raise ValueError(
+            f"n_active_channels={n_active_channels} does not match "
+            f"len(active_channel_names)={len(names_list)}"
+        )
+    if len(set(names_list)) != len(names_list):
+        raise ValueError("active_channel_names must be unique")
+    index_by_name = {name: index for index, name in enumerate(schema.names)}
+    unknown = [name for name in names_list if name not in index_by_name]
+    if unknown:
+        raise ValueError(
+            f"unknown active_channel_names (not in schema v{schema.version}): {unknown}"
+        )
+    indices = tuple(index_by_name[name] for name in names_list)
+    return ActiveChannelSelection(names=tuple(names_list), indices=indices)
 
 
 __all__ = [
@@ -145,5 +229,7 @@ __all__ = [
     "N_FEATURE_CHANNELS",
     "feature_order_for",
     "resolve_active_channels",
+    "resolve_schema_selection",
+    "schema_version_from_config",
     "selection_from_config",
 ]

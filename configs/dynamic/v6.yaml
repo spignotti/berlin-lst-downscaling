@@ -1,0 +1,13 @@
+# @package _global_
+# Dynamic products for features/v6. ERA5 is the four-channel roster with
+# one scene scalar per channel. The published dynamic/full product stays
+# the 8-band bilinear contract. The feature loader can also reduce an
+# 8-band COG, so this republish is optional if compose applies the switch.
+defaults:
+  - full
+  - _self_
+
+era5_channel_set: v6
+era5_representation: scene_value
+aoi_mask_uri: "data/boundaries/aoi_10m.tif"
+output_root: "gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2"

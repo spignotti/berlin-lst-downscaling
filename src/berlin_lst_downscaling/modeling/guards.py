@@ -14,6 +14,7 @@ import os
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
+from berlin_lst_downscaling.data.features.contracts import FEATURE_SCHEMA_VERSION_V6
 from berlin_lst_downscaling.data.training.contracts import split_for_year
 from berlin_lst_downscaling.modeling.aggregation import (
     AGGREGATION_ARITHMETIC,
@@ -24,6 +25,7 @@ from berlin_lst_downscaling.modeling.channels import (
     ABLATION_LOCKED_CONFIG_NAMES,
     ABLATION_STAGE_CHANNELS,
     feature_order_for,
+    schema_version_from_config,
     selection_from_config,
 )
 from berlin_lst_downscaling.modeling.contracts import (
@@ -33,7 +35,7 @@ from berlin_lst_downscaling.modeling.contracts import (
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 
 _ALLOWED_CONTRACT_LOSSES = frozenset({"masked_l1", "thermal_aware"})
-_ALLOWED_FEATURE_ORDERS = frozenset({"v3_first_c", "v3_named_subset"})
+_ALLOWED_FEATURE_ORDERS = frozenset({"v3_first_c", "v3_named_subset", "v6_registry"})
 
 
 def contract_invariants(cfg: DictConfig) -> None:
@@ -82,7 +84,14 @@ def contract_invariants(cfg: DictConfig) -> None:
         )
     if not bool(cfg.get("ablation_lock", False)) and loss != "masked_l1":
         raise ValueError("thermal_aware loss is only admitted on ablation_lock configs")
-    if not bool(cfg.get("ablation_lock", False)) and feature_order != "v3_first_c":
+    if feature_order == "v6_registry":
+        if bool(cfg.get("ablation_lock", False)):
+            raise ValueError("v6_registry is not an ablation-lock profile")
+        if schema_version_from_config(cfg) != FEATURE_SCHEMA_VERSION_V6:
+            raise ValueError(
+                f"v6_registry requires feature schema version {FEATURE_SCHEMA_VERSION_V6}"
+            )
+    elif not bool(cfg.get("ablation_lock", False)) and feature_order != "v3_first_c":
         raise ValueError("v3_named_subset is only admitted on ablation_lock configs")
     if split_for_year(2024) != "validation" or split_for_year(2025) != "test":
         raise RuntimeError("temporal split contract no longer maps 2024/2025 as frozen")

@@ -4,7 +4,7 @@ Each scene publishes five co-located artifacts under its product directory
 (in this exact order, because GCS cannot publish multiple blobs
 atomically — the completion marker is the final visibility gate):
 
-1. ``<scene_id>.tif``                 — 28-band float32 feature COG
+1. ``<scene_id>.tif``                 — schema-width float32 feature COG
 2. ``<scene_id>.feature_valid.tif``   — uint8 0/1 validity-mask COG
 3. ``provenance.json``                — inputs, policy, coverage
 4. ``<scene_id>.stac.json``           — STAC Item (data + mask assets)
@@ -36,6 +36,8 @@ from berlin_lst_downscaling.data.ard.writer import write_cog_atomic, write_flag_
 from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
+    FeatureSchema,
+    feature_schema,
 )
 from berlin_lst_downscaling.data.io import atomic_write, exists, publish_lock, read_bytes
 
@@ -53,12 +55,15 @@ class PreparedFeatureProduct:
     """Payload produced by the composer and handed to finalisation."""
 
     scene_id: str
-    dataset: xr.Dataset  # 28 float32 bands on the canonical grid
+    dataset: xr.Dataset  # schema.n_channels float32 bands on the canonical grid
     mask: np.ndarray  # uint8 (H, W), 1 = valid
     config_hash: str
     acquisition_datetime: str  # RFC 3339 (S2 acquisition)
     source_metadata: dict  # resolved input URIs + policy
     coverage: dict  # composer coverage metrics
+    schema_version: int = FEATURE_SCHEMA_VERSION
+    canopy_cover_threshold_m: float | None = None
+    era5_representation: str | None = None
 
 
 @dataclass
@@ -75,7 +80,18 @@ class FeatureArtifacts:
 # The feature stack is a first-class output contract: one BandSpec per
 # channel, so ``validate_cog`` checks band count, dtypes are float32, and
 # valid_range is carried for downstream QA.
-def _feature_ard_contract() -> Contract:
+def _schema_for(prepared: PreparedFeatureProduct) -> FeatureSchema:
+    """Roster for one prepared stack. Defaults keep the published v5 contract."""
+    if prepared.schema_version == FEATURE_SCHEMA_VERSION:
+        return feature_schema(FEATURE_SCHEMA_VERSION)
+    return feature_schema(
+        prepared.schema_version,
+        canopy_cover_threshold_m=prepared.canopy_cover_threshold_m,
+    )
+
+
+def _feature_ard_contract(schema: FeatureSchema | None = None) -> Contract:
+    channels = FEATURE_CHANNELS if schema is None else schema.channels
     bands = tuple(
         BandSpec(
             name=ch.name,
@@ -85,7 +101,7 @@ def _feature_ard_contract() -> Contract:
             unit=ch.unit,
             valid_range=ch.valid_range,
         )
-        for ch in FEATURE_CHANNELS
+        for ch in channels
     )
     return Contract(
         source="feature_stack",
@@ -97,6 +113,11 @@ def _feature_ard_contract() -> Contract:
 
 
 _FEATURE_CONTRACT = _feature_ard_contract()
+_V5_MASK_SEMANTICS = (
+    "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all 28 "
+    "channels finite and in-range; availability is per channel (only "
+    "unavailable bands are NaN), all channels are NaN only outside the AOI"
+)
 
 
 def finalize_feature_product(
@@ -168,7 +189,9 @@ def _finalize_locked(
     completion_uri: str,
 ) -> FeatureArtifacts:
     """Write the five artifacts while holding the per-scene publish lock."""
-    write_cog_atomic(prepared.dataset, cog_uri, _FEATURE_CONTRACT, overwrite=True)
+    schema = _schema_for(prepared)
+    contract = _feature_ard_contract(schema)
+    write_cog_atomic(prepared.dataset, cog_uri, contract, overwrite=True)
 
     # Remote validation reads (data COG validation + mask pair scan) run
     # with the GDAL directory listing disabled. GDAL caches a process-wide
@@ -184,7 +207,7 @@ def _finalize_locked(
         # (CRS, grid, band count, dtype, strict-COG) still apply.
         vig = validate_cog(
             cog_uri,
-            _FEATURE_CONTRACT,
+            contract,
             grid,
             require_min_valid_fraction=False,
         )
@@ -204,15 +227,23 @@ def _finalize_locked(
         )
         mask_da = mask_da.rio.write_crs(str(grid.crs))
         mask_da = mask_da.rio.write_transform(grid.transform)
-        write_flag_cog_atomic(mask_da, mask_uri, _FEATURE_CONTRACT, overwrite=True)
+        write_flag_cog_atomic(mask_da, mask_uri, contract, overwrite=True)
 
         # ── 2b. pair validation ────────────────────────────────────────────
-        # mask is uint8 {0,1} and mask == 1 ⇔ all 28 data bands finite.
+        # mask is uint8 {0,1} and mask == 1 ⇔ every schema band is finite.
         # An all-zero mask is valid (a fully sparse stack is still a coherent
         # product). Runs after both COGs are written, before any sidecar.
-        _validate_mask_pair(prepared, mask_uri, cog_uri)
+        _validate_mask_pair(prepared, mask_uri, cog_uri, schema)
 
     # ── 3. provenance ──────────────────────────────────────────────────
+    if schema.version == FEATURE_SCHEMA_VERSION:
+        mask_semantics = _V5_MASK_SEMANTICS
+    else:
+        mask_semantics = (
+            "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all "
+            f"{schema.n_channels} channels finite and in-range; availability is per channel "
+            "(only unavailable bands are NaN), all channels are NaN only outside the AOI"
+        )
     provenance = {
         "pipeline": "features",
         "scene_id": prepared.scene_id,
@@ -220,8 +251,8 @@ def _finalize_locked(
         "run_id": run_id,
         "completed_at": completed_at,
         "acquisition_datetime": prepared.acquisition_datetime,
-        "channel_order": [ch.name for ch in FEATURE_CHANNELS],
-        "schema_version": FEATURE_SCHEMA_VERSION,
+        "channel_order": list(schema.names),
+        "schema_version": schema.version,
         "vegetation_height_policy": prepared.source_metadata["vegetation_height_policy"],
         "aoi_uri": prepared.source_metadata["aoi_uri"],
         "aoi_fingerprint": prepared.source_metadata["aoi_fingerprint"],
@@ -229,12 +260,11 @@ def _finalize_locked(
         "inputs": prepared.source_metadata["inputs"],
         "lod_vintage": prepared.source_metadata.get("lod_vintage"),
         "lod_coverage": prepared.source_metadata.get("lod_coverage", {}),
-        "mask_semantics": (
-            "feature_valid == 1 iff inside Berlin AOI, S2 flag == 0, and all 28 "
-            "channels finite and in-range; availability is per channel (only "
-            "unavailable bands are NaN), all channels are NaN only outside the AOI"
-        ),
+        "mask_semantics": mask_semantics,
     }
+    if schema.version != FEATURE_SCHEMA_VERSION:
+        provenance["canopy_cover_threshold_m"] = schema.canopy_cover_threshold_m
+        provenance["era5_representation"] = prepared.era5_representation
     atomic_write(provenance_uri, json.dumps(provenance, indent=2), overwrite=True)
 
     # ── 3b. provenance read-back (immutability hardening) ─────────────
@@ -278,12 +308,13 @@ def _validate_mask_pair(
     prepared: PreparedFeatureProduct,
     mask_uri: str,
     cog_uri: str,
+    schema: FeatureSchema,
 ) -> None:
     """Verify mask semantics on the written COGs before any sidecar.
 
     Checks that the mask COG holds uint8 values in {0, 1}, matches the
     composed in-memory mask, and that, pixelwise, ``mask == 1`` implies
-    all 28 bands are finite and within their declared ranges. The
+    every schema band is finite and within its declared range. The
     converse is *not* required: availability is per channel, so
     ``mask == 0`` may legitimately hold finite values in any channel
     (only the unavailable bands are NaN). An all-zero mask is valid.
@@ -291,7 +322,7 @@ def _validate_mask_pair(
     the completion marker.
 
     Scanned blockwise (1024 px tiles) so the peak memory stays bounded
-    inside the per-scene subprocess — a full 28-band read would re-introduce
+    inside the per-scene subprocess — a full-stack read would re-introduce
     the large in-memory footprint the per-scene isolation exists to avoid.
 
     Callers must wrap remote reads in
@@ -301,7 +332,7 @@ def _validate_mask_pair(
     from rasterio.windows import Window
 
     _TILE = 1024
-    n_expected = len(FEATURE_CHANNELS)
+    n_expected = schema.n_channels
     with rasterio.open(cog_uri) as src:
         if src.count != n_expected:
             raise ValueError(f"pair validation: expected {n_expected} data bands, got {src.count}")
@@ -323,13 +354,13 @@ def _validate_mask_pair(
             for c0 in range(0, w, _TILE):
                 c1 = min(c0 + _TILE, w)
                 win = Window(c0, r0, c1 - c0, r1 - r0)  # type: ignore[call-arg]
-                data = cog.read(window=win)  # (28, bh, bw)
+                data = cog.read(window=win)  # (n_channels, bh, bw)
                 mask = msk.read(1, window=win)
                 seen_values.update(np.unique(mask).tolist())
                 claim = mask == 1
                 finite = np.isfinite(data)
                 complete = np.all(finite, axis=0)
-                for i, spec in enumerate(FEATURE_CHANNELS):
+                for i, spec in enumerate(schema.channels):
                     if spec.valid_range is None:
                         continue
                     lo, hi = spec.valid_range
@@ -361,14 +392,15 @@ def _build_feature_stac_item(
     mask_uri: str,
     provenance_uri: str,
 ) -> dict:
-    """Build the STAC 1.0.0 Item with data + mask assets and 28 raster bands."""
+    """Build the STAC 1.0.0 Item with data + mask assets and one raster band per channel."""
     height, width = grid.shape.y, grid.shape.x
     transform = grid.transform
     bounds_native = array_bounds(height, width, transform)
     bbox_4326 = transform_bounds(str(grid.crs), "EPSG:4326", *bounds_native)
 
     raster_bands = []
-    for spec in FEATURE_CHANNELS:
+    schema = _schema_for(prepared)
+    for spec in schema.channels:
         band_entry: dict = {
             "data_type": "float32",
             "nodata": "nan",
@@ -402,13 +434,17 @@ def _build_feature_stac_item(
             "proj:shape": [height, width],
             "proj:transform": list(transform),
             "features:config_hash": prepared.config_hash,
-            "features:channel_order": [ch.name for ch in FEATURE_CHANNELS],
+            "features:channel_order": list(schema.names),
         },
         "assets": {
             "data": {
                 "href": cog_uri,
                 "type": "image/tiff; application=geotiff; profile=cloud-optimized",
-                "title": "28-band scene feature stack",
+                "title": (
+                    "28-band scene feature stack"
+                    if schema.version == FEATURE_SCHEMA_VERSION
+                    else f"{schema.n_channels}-band scene feature stack"
+                ),
                 "roles": ["data"],
                 "raster:bands": raster_bands,
             },

@@ -18,7 +18,7 @@ from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m, canon_grid_100m
 from berlin_lst_downscaling.data.eda.rules import GAP_CLASSES, KELVIN_OFFSET
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import schema_matching_count
 from berlin_lst_downscaling.data.qa.inventory import ResolvedScene
 from berlin_lst_downscaling.data.qa.stage1_raw import _tile_windows, _window_offset
 from berlin_lst_downscaling.data.stadtstruktur.sources import BLOCK_CELLS
@@ -101,14 +101,16 @@ def _feature_means(
     local_col: np.ndarray,
 ) -> np.ndarray:
     """Mean of the 100 valid 10 m pixels in each eligible cell."""
-    means = np.full((local_row.size, len(FEATURE_CHANNEL_NAMES)), np.nan, dtype=np.float64)
+    with rasterio.open(uri) as src:
+        schema = schema_matching_count(src.count)
+    means = np.full((local_row.size, schema.n_channels), np.nan, dtype=np.float64)
     if local_row.size == 0:
         return means
     pairs = zip(local_row, local_col, strict=True)
     index = {(int(row), int(col)): position for position, (row, col) in enumerate(pairs)}
     with rasterio.open(uri) as src:
-        if src.count != len(FEATURE_CHANNEL_NAMES):
-            raise ValueError(f"{uri} has {src.count} bands, expected {len(FEATURE_CHANNEL_NAMES)}")
+        if src.count != schema.n_channels:
+            raise ValueError(f"{uri} has {src.count} bands, expected {schema.n_channels}")
         column_off, row_off = _window_offset(src, analysis_10, 10.0)
         for (r0, c0, r1, c1), _window in _tile_windows(analysis_10, _TILE):
             block_row0, block_col0 = r0 // 10, c0 // 10
@@ -256,7 +258,7 @@ def _read_scene(
         "lst_c": lst - KELVIN_OFFSET,
         "lst_anomaly_k": lst - center,
     }
-    for band, name in enumerate(FEATURE_CHANNEL_NAMES):
+    for band, name in enumerate(schema_matching_count(means.shape[1]).names):
         frame[name] = means[:, band]
     observations = pd.DataFrame(frame)
     return SceneScan(

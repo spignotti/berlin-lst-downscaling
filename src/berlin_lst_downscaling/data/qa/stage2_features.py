@@ -1,6 +1,6 @@
 """Stage-2 feature-stack QA core — blockwise verification of published stacks.
 
-Verifies every published 28-band feature stack of the training universe
+Verifies every published feature stack of the training universe
 against the feature-stack contract and computes a **diagnostic** feature
 support statistic at 100 m (valid Landsat target cell plus its
 ``feature_valid`` 10 m subpixels). No validity mask, no selection
@@ -15,10 +15,10 @@ comment at import). Range semantics derive from the feature-stack contract
 Performance design:
 
 - Pixel scans use 2560x2560 10 m tiles — an exact multiple of both the
-  COG 512 px block size and the 10x10 aggregation factor. The 28-band
-  float32 feature COG is read per tile (~730 MB peak for one tile).
+  COG 512 px block size and the 10x10 aggregation factor. The float32
+  feature COG is read per tile (about 730 MB peak for one published v5 tile).
 - The ``feature_valid`` mask is independently reconstructed per tile as
-  ``AOI ∧ S2-flag-clear ∧ all 28 channels finite ∧ in-range`` and compared
+  ``AOI ∧ S2-flag-clear ∧ every schema channel finite ∧ in-range`` and compared
   with the published mask. Availability is per channel: where the S2 flag
   is non-clear the six S2 bands and four derived indices must be NaN;
   static/dynamic channels may keep their values.
@@ -45,9 +45,8 @@ from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.features.contracts import (
-    FEATURE_CHANNEL_NAMES,
-    FEATURE_CHANNELS,
     FeatureChannel,
+    schema_from_provenance,
 )
 from berlin_lst_downscaling.data.features.paths import (
     feature_cog,
@@ -166,6 +165,7 @@ def _check_sidecars(
     """Verify complete/provenance/STAC sidecars; return (errors, coverage)."""
     errors: list[str] = []
     coverage: dict = {}
+    expected = schema_from_provenance({})
     try:
         comp = json.loads(read_bytes(comp_uri))
         if not comp.get("published_at"):
@@ -175,7 +175,8 @@ def _check_sidecars(
 
     try:
         prov = json.loads(read_bytes(prov_uri))
-        if tuple(prov.get("channel_order", ())) != FEATURE_CHANNEL_NAMES:
+        expected = schema_from_provenance(prov)
+        if tuple(prov.get("channel_order", ())) != expected.names:
             errors.append(f"{scene_id}: provenance channel_order mismatch")
         for key in ("config_hash", "coverage", "mask_semantics", "vegetation_height_policy"):
             if key not in prov:
@@ -197,10 +198,10 @@ def _check_sidecars(
             errors.append(f"{scene_id}: STAC missing data/feature_valid assets")
         else:
             raster_bands = assets["data"].get("raster:bands", [])
-            if len(raster_bands) != len(FEATURE_CHANNELS):
+            if len(raster_bands) != expected.n_channels:
                 errors.append(
                     f"{scene_id}: STAC data raster:bands {len(raster_bands)}, "
-                    f"expected {len(FEATURE_CHANNELS)}"
+                    f"expected {expected.n_channels}"
                 )
             fv_bands = assets["feature_valid"].get("raster:bands", [])
             if not fv_bands or fv_bands[0].get("data_type") != "uint8":
@@ -322,18 +323,20 @@ def _scan_stack(
 
     scene_id = scene.scene_id
     cog_uri = feature_cog(features_root, scene_id)
+    prov_uri = feature_provenance(features_root, scene_id)
+    try:
+        channels = schema_from_provenance(json.loads(read_bytes(prov_uri))).channels
+    except Exception:  # noqa: BLE001 — sidecar check reports the read failure
+        channels = schema_from_provenance({}).channels
     mask_uri = feature_mask_cog(features_root, scene_id)
     stac_uri = feature_stac(features_root, scene_id)
-    prov_uri = feature_provenance(features_root, scene_id)
     comp_uri = feature_completion(features_root, scene_id)
 
     # ── metadata + sidecar checks (analysis grid, no pixel reads) ───────
     # The stacks sit on the canonical 10 m lattice and must fully contain
     # the analysis window (full-grid stacks are read through subset
     # windows; subset smoke stacks equal the analysis grid).
-    errors += _check_stack_metadata(
-        cog_uri, analysis_10, n_bands=len(FEATURE_CHANNELS), dtype="float32"
-    )
+    errors += _check_stack_metadata(cog_uri, analysis_10, n_bands=len(channels), dtype="float32")
     errors += _check_stack_metadata(mask_uri, analysis_10, n_bands=1, dtype="uint8")
     sidecar_errors, coverage = _check_sidecars(scene_id, cog_uri, stac_uri, prov_uri, comp_uri)
     errors += sidecar_errors
@@ -384,7 +387,7 @@ def _scan_stack(
             for (r0, c0, r1, c1), _ in _tile_windows(analysis_10):
                 bh, bw = r1 - r0, c1 - c0
                 w_cog = Window(c0 + cog_off[0], r0 + cog_off[1], bw, bh)  # type: ignore[call-arg]
-                bands = cog.read(window=w_cog)  # (28, bh, bw) float32
+                bands = cog.read(window=w_cog)  # (n_channels, bh, bw) float32
                 w_msk = Window(c0 + mask_off[0], r0 + mask_off[1], bw, bh)  # type: ignore[call-arg]
                 mask = msk.read(1, window=w_msk)
                 w_flag = Window.from_slices(
@@ -403,7 +406,7 @@ def _scan_stack(
                 # expected = AOI ∧ S2-flag-clear ∧ all finite ∧ in-range
                 finite_all = np.all(np.isfinite(bands), axis=0)
                 in_range = np.ones((bh, bw), dtype=bool)
-                for i, spec in enumerate(FEATURE_CHANNELS):
+                for i, spec in enumerate(channels):
                     if spec.valid_range is None:
                         continue
                     lo, hi = spec.valid_range
@@ -435,7 +438,7 @@ def _scan_stack(
                 feature_valid_px += int(np.sum(valid))
 
                 # ── channel profiles over valid pixels ─────────────────
-                for i, spec in enumerate(FEATURE_CHANNELS):
+                for i, spec in enumerate(channels):
                     acc = agg.setdefault(
                         i, {"count": 0, "sum": 0.0, "sum2": 0.0, "mn": None, "mx": None, "hist": {}}
                     )
@@ -473,7 +476,7 @@ def _scan_stack(
 
     # ── finalise channel profiles ──────────────────────────────────────
     profiles: list[ChannelProfile] = []
-    for i, spec in enumerate(FEATURE_CHANNELS):
+    for i, spec in enumerate(channels):
         acc = agg.get(i)
         if acc is None or acc["count"] == 0:
             profiles.append(

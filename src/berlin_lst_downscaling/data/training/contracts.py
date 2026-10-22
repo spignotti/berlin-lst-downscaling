@@ -30,6 +30,8 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNEL_NAMES,
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
+    FeatureSchema,
+    feature_schema,
 )
 
 # ── schema version ────────────────────────────────────────────────────
@@ -116,6 +118,34 @@ PRECIP_CHANNELS: tuple[str, ...] = ("tp_0_24h", "tp_24_48h", "tp_48_72h")
 SHADOW_CHANNELS: tuple[str, ...] = ("shadow_building", "shadow_vegetation")
 
 
+def precip_channels_for(schema: FeatureSchema) -> tuple[str, ...]:
+    """Precipitation channels for a feature roster.
+
+    features/v5 keeps the three windows. features/v6 has the single
+    ``tp_0_72h`` sum, still ``log1p`` then z-score.
+    """
+    if schema.version == FEATURE_SCHEMA_VERSION:
+        return PRECIP_CHANNELS
+    return tuple(name for name in schema.names if name == "tp_0_72h" or name.startswith("tp_"))
+
+
+def shadow_channels_for(schema: FeatureSchema) -> tuple[str, ...]:
+    """Shadow channels of a roster. v5 returns the published constant."""
+    if schema.version == FEATURE_SCHEMA_VERSION:
+        return SHADOW_CHANNELS
+    return tuple(name for name in schema.names if name.startswith("shadow_"))
+
+
+def scaler_transform_for(channel_name: str, schema: FeatureSchema | None = None) -> str:
+    """Return ``zscore``, ``log1p_zscore``, or ``identity`` for one channel."""
+    resolved = schema or feature_schema(FEATURE_SCHEMA_VERSION)
+    if channel_name in precip_channels_for(resolved):
+        return "log1p_zscore"
+    if channel_name in shadow_channels_for(resolved):
+        return "identity"
+    return "zscore"
+
+
 # ── policy hash ───────────────────────────────────────────────────────
 
 
@@ -127,10 +157,17 @@ def split_for_year(year: int) -> str:
     return split
 
 
+# Published training/v2 recorded feature schema version 3. The code
+# default FEATURE_SCHEMA_VERSION is 4 after the data-correctness bump
+# and must not move this hash.
+_PUBLISHED_TRAINING_FEATURE_SCHEMA_VERSION = 3
+
+
 def training_policy_hash(
     *,
     v3_config_hash: str = EXPECTED_V3_CONFIG_HASH,
-    feature_schema_version: int = FEATURE_SCHEMA_VERSION,
+    feature_schema_version: int = _PUBLISHED_TRAINING_FEATURE_SCHEMA_VERSION,
+    schema: FeatureSchema | None = None,
 ) -> str:
     """Return a stable SHA-256 fingerprint of the training-data policy.
 
@@ -140,7 +177,16 @@ def training_policy_hash(
     schema version, the pinned V3 config hash, and the implausible-LST
     scene denylist. Any change invalidates the published artifacts via
     the ledger's ``config_changed`` reconcile.
+
+    The default arguments reproduce the published training/v2 hash. A v6
+    ``schema`` records that roster and its precipitation transform.
     """
+    if schema is not None and schema.version != FEATURE_SCHEMA_VERSION:
+        return _training_policy_hash_v6(
+            schema,
+            v3_config_hash=v3_config_hash,
+            feature_schema_version=schema.version,
+        )
     channel_schema = [
         {
             "name": ch.name,
@@ -175,6 +221,47 @@ def training_policy_hash(
     return sha256(payload.encode()).hexdigest()[:16]
 
 
+def _training_policy_hash_v6(
+    schema: FeatureSchema,
+    *,
+    v3_config_hash: str,
+    feature_schema_version: int,
+) -> str:
+    """Policy fingerprint for a non-v5 roster. Not the published v2 hash."""
+    channel_schema = [
+        {
+            "name": channel.name,
+            "valid_range": list(channel.valid_range) if channel.valid_range else None,
+        }
+        for channel in schema.channels
+    ]
+    payload = json.dumps(
+        {
+            "training_schema_version": TRAINING_SCHEMA_VERSION,
+            "v3_config_hash": v3_config_hash,
+            "feature_schema_version": feature_schema_version,
+            "channel_order": list(schema.names),
+            "channel_schema": channel_schema,
+            "splits_by_year": {str(year): split for year, split in SPLIT_BY_YEAR.items()},
+            "support_pixels": SUPPORT_PIXELS,
+            "excluded_scenes": {
+                IMPLAUSIBLE_LST_REASON: sorted(IMPLAUSIBLE_LST_SCENE_IDS),
+            },
+            "cell_id_formula": (
+                "E{origin_x + col*100}N{origin_y - row*100} on canonical EPSG:25833"
+            ),
+            "scaler_policy": {
+                "zscore": "all channels except precip and shadows",
+                "log1p_then_zscore": list(precip_channels_for(schema)),
+                "identity": list(shadow_channels_for(schema)),
+                "variance": "population (ddof=0)",
+            },
+        },
+        sort_keys=True,
+    )
+    return sha256(payload.encode()).hexdigest()[:16]
+
+
 __all__ = [
     "CANON_GRID_ORIGIN_X",
     "CANON_GRID_ORIGIN_Y",
@@ -186,6 +273,9 @@ __all__ = [
     "NO_ELIGIBLE_CELLS_REASON",
     "PRECIP_CHANNELS",
     "SHADOW_CHANNELS",
+    "precip_channels_for",
+    "scaler_transform_for",
+    "shadow_channels_for",
     "SPLIT_BY_YEAR",
     "SUPPORT_PIXELS",
     "TRAINING_SCHEMA_VERSION",

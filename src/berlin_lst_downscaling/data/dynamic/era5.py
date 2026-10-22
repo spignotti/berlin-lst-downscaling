@@ -44,6 +44,11 @@ import xarray as xr
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
 from berlin_lst_downscaling.data.dynamic.paths import era5_cache_path
+from berlin_lst_downscaling.data.features.contracts import (
+    ERA5_REPRESENTATIONS,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.io.storage import exists
 from berlin_lst_downscaling.data.secondary.product import (
@@ -127,8 +132,16 @@ def _vpd_from_t_d2m(t_k: float, d2m_k: float) -> float:
 # ── contract ───────────────────────────────────────────────────────────
 
 
-def contract_for_era5_scene() -> Contract:
-    """Return the output Contract for ERA5 scene COGs (8 bands)."""
+def contract_for_era5_scene(channel_set: str = "v5") -> Contract:
+    """Return the output Contract for ERA5 scene COGs.
+
+    ``v5`` is the published 8-band contract. ``v6`` is t2m, ssrd, wind
+    speed, and the 0–72 h precipitation sum.
+    """
+    if channel_set == "v6":
+        return _contract_for_era5_v6()
+    if channel_set != "v5":
+        raise ValueError(f"era5 channel_set must be 'v5' or 'v6', got {channel_set!r}")
     return Contract(
         source="era5_land",
         target_crs="EPSG:25833",
@@ -223,6 +236,99 @@ def contract_for_era5_scene() -> Contract:
         schema_version=1,
         flag_mode="none",
     )
+
+
+def _contract_for_era5_v6() -> Contract:
+    """Four-band ERA5 contract. Names and ranges come from the v6 roster."""
+    schema = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+    bands = tuple(
+        BandSpec(
+            name=channel.name,
+            dtype="float32",
+            nodata=float("nan"),
+            description=channel.description,
+            unit=channel.unit,
+            valid_range=channel.valid_range,
+        )
+        for channel in schema.channels
+        if channel.family == "era5"
+    )
+    return Contract(
+        source="era5_land",
+        target_crs="EPSG:25833",
+        output_bands=bands,
+        tiling=TilingSpec(),
+        schema_version=2,
+        flag_mode="none",
+    )
+
+
+_TP_WINDOWS: tuple[str, ...] = ("tp_0_24h", "tp_24_48h", "tp_48_72h")
+
+
+def reduce_era5_channels(
+    bands: dict[str, np.ndarray],
+    *,
+    target_names: tuple[str, ...] | list[str],
+) -> dict[str, np.ndarray]:
+    """Select ``target_names`` from derived ERA5 fields.
+
+    ``tp_0_72h`` is the sum of the three published precipitation windows
+    when it is not already present. Names that are not in ``target_names``
+    (VPD, the 72 h SSRD mean, and the separate precipitation windows) are
+    omitted. The result follows ``target_names`` order.
+    """
+    available = {name: np.asarray(values) for name, values in bands.items()}
+    if "tp_0_72h" in target_names and "tp_0_72h" not in available:
+        missing = [name for name in _TP_WINDOWS if name not in available]
+        if missing:
+            raise KeyError(f"tp_0_72h requires {list(_TP_WINDOWS)}, missing {missing}")
+        stacked = np.stack([available[name] for name in _TP_WINDOWS], axis=0)
+        available["tp_0_72h"] = np.sum(stacked, axis=0).astype(np.float32)
+    absent = [name for name in target_names if name not in available]
+    if absent:
+        raise KeyError(f"ERA5 bands missing for target roster: {absent}")
+    return {name: available[name] for name in target_names}
+
+
+def apply_era5_representation(
+    bands: dict[str, np.ndarray],
+    representation: str | None,
+    *,
+    valid_mask: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
+    """Apply the v6 ERA5 loader switch.
+
+    ``scene_value`` replaces each bilinear field with its mean over
+    ``valid_mask`` (the exact Berlin AOI in both the product writer and
+    the feature loader) broadcast to the same shape. A field that is
+    already constant is unchanged. ``bilinear`` returns a float32 copy
+    of the spatial field. ``None`` selects ``scene_value``, the v6 default.
+    """
+    from berlin_lst_downscaling.data.features.contracts import resolve_era5_representation
+
+    mode = resolve_era5_representation(representation)
+    if mode == "bilinear":
+        return {
+            name: np.array(values, dtype=np.float32, copy=True) for name, values in bands.items()
+        }
+    if mode != "scene_value":
+        raise ValueError(f"unsupported ERA5 representation {mode!r}")
+    out: dict[str, np.ndarray] = {}
+    for name, values in bands.items():
+        array = np.asarray(values)
+        if valid_mask is None:
+            sample = array
+        else:
+            if valid_mask.shape != array.shape:
+                raise ValueError(
+                    f"valid_mask shape {valid_mask.shape} != field shape {array.shape}"
+                )
+            sample = array[np.asarray(valid_mask, dtype=bool)]
+        with np.errstate(all="ignore"):
+            scalar = float(np.nanmean(sample)) if sample.size else float("nan")
+        out[name] = np.full(array.shape, scalar, dtype=np.float32)
+    return out
 
 
 # ── ERA5 cache management ─────────────────────────────────────────────
@@ -624,14 +730,33 @@ def prepare_era5_scene(
     *,
     grid=None,
     local_dir: Path,
+    channel_set: str = "v5",
+    representation: str = "bilinear",
+    aoi_mask: np.ndarray | None = None,
 ) -> PreparedSecondaryProduct:
     """Prepare ERA5-Land scene channels for a Landsat anchor.
 
-    Produces 8 bands on the canonical 10m grid after native-grid derivation
-    and bilinear reprojection.
+    The default is the published 8-band bilinear product. ``channel_set``
+    ``"v6"`` keeps t2m, ssrd, wind speed, and the 0–72 h precipitation
+    sum. ``representation="scene_value"`` bilinear-reprojects onto the
+    analysis grid and broadcasts the mean inside ``aoi_mask``. That is
+    the same scalar the feature loader computes from an 8-band COG.
+    ``"bilinear"`` keeps the interpolated field.
     """
+    if channel_set not in {"v5", "v6"}:
+        raise ValueError(f"era5 channel_set must be 'v5' or 'v6', got {channel_set!r}")
+    if representation not in ERA5_REPRESENTATIONS:
+        raise ValueError(
+            f"era5 representation must be one of {ERA5_REPRESENTATIONS}, got {representation!r}"
+        )
+    if channel_set == "v5" and representation != "bilinear":
+        raise ValueError("the published ERA5 v5 product is bilinear only")
     grid = grid or canon_grid_10m()
-    c_hash = sha256(f"era5_land:{scene_id}".encode()).hexdigest()[:12]
+    if channel_set == "v5" and representation == "bilinear":
+        hash_raw = f"era5_land:{scene_id}"
+    else:
+        hash_raw = f"era5_land:{scene_id}:channels={channel_set}:rep={representation}"
+    c_hash = sha256(hash_raw.encode()).hexdigest()[:12]
 
     # ── 1. ensure relevant months are cached ──────────────────────────
     acq_year = acquisition_dt.year
@@ -710,8 +835,11 @@ def prepare_era5_scene(
                 expected=72,
             )
 
-        # ── 3. derive all 8 fields at native resolution ──────────────
+        # ── 3. derive fields at native resolution ───────────────────
         native_fields = _derive_native_fields(primary_ds, acq_np)
+        if channel_set == "v6":
+            target_names = feature_schema(FEATURE_SCHEMA_VERSION_V6).names_in_family("era5")
+            native_fields = reduce_era5_channels(native_fields, target_names=target_names)
 
         # Build 2D native Dataset for reprojection
         lat_dim = "latitude" if "latitude" in primary_ds.dims else "lat"
@@ -719,17 +847,27 @@ def prepare_era5_scene(
         lat_vals = primary_ds[lat_dim].values
         lon_vals = primary_ds[lon_dim].values
 
+        primary_ds.close()
+        primary_ds = None
+
+        # ── 4. bilinear field, then the shared scene scalar ─────────
+        # scene_value is the AOI mean of this bilinear field, not a mean
+        # of native cells inside the rectangular Berlin bbox.
         native_2d = xr.Dataset(
             {k: ((lat_dim, lon_dim), v) for k, v in native_fields.items()},
             coords={lat_dim: lat_vals, lon_dim: lon_vals},
         )
-
-        primary_ds.close()
-        primary_ds = None
-
-        # ── 4. reproject to canonical grid ────────────────────────────
         reprojected = _reproject_to_canonical(native_2d, grid)
         del native_2d
+        if representation == "scene_value":
+            if aoi_mask is None:
+                raise ValueError(
+                    "ERA5 scene_value requires the Berlin AOI mask so the "
+                    "product scalar matches the feature loader"
+                )
+            reprojected = apply_era5_representation(
+                reprojected, "scene_value", valid_mask=np.asarray(aoi_mask)
+            )
 
     finally:
         if primary_ds is not None:
@@ -765,26 +903,69 @@ def prepare_era5_scene(
 
     retrieved_at = datetime.now(UTC).isoformat()
     doy = acquisition_dt.timetuple().tm_yday
+    spatial_method = (
+        "aoi_mean_of_bilinear" if representation == "scene_value" else "native_grid_bilinear"
+    )
+    source_metadata = {
+        "era5_variables": _CDS_VARIABLES,
+        "era5_months_used": [f"{y:04d}-{m:02d}" for y, m in nc_paths],
+        "acquisition_time_utc": acquisition_dt.isoformat(),
+        "scene_year": acquisition_dt.year,
+        "day_of_year": doy,
+        "spatial_method": spatial_method,
+        "era5_grid_resolution_deg": _ERA5_GRID_DEG,
+        "era5_halo_deg": _HALO_DEG,
+        "retrieved_at": retrieved_at,
+    }
+    stac_properties = {
+        "era5:temporal_mode": "scene_timestamp",
+        "era5:t2m_unit": "K",
+        "era5:ssrd_unit": "W/m²",
+        "era5:vpd_unit": "kPa",
+        "era5:wind_speed_unit": "m/s",
+        "era5:tp_unit": "mm",
+        "era5:antecedent_hours": _ANTECEDENT_HOURS,
+        "era5:spatial_method": spatial_method,
+        "acquisition:datetime": acquisition_dt.isoformat(),
+        "acquisition:doy": doy,
+        "acquisition:year": acquisition_dt.year,
+    }
+    if channel_set != "v5":
+        source_metadata["channel_set"] = channel_set
+        stac_properties["era5:channel_set"] = channel_set
 
     return PreparedSecondaryProduct(
         source="era5_land",
         item_key=scene_id,
         category="dynamic",
         dataset=t2m_ds,
-        contract=contract_for_era5_scene(),
+        contract=contract_for_era5_scene(channel_set),
         nominal_interval=vintage_interval(acquisition_dt.year),
-        source_metadata={
-            "era5_variables": _CDS_VARIABLES,
-            "era5_months_used": [f"{y:04d}-{m:02d}" for y, m in nc_paths],
-            "acquisition_time_utc": acquisition_dt.isoformat(),
-            "scene_year": acquisition_dt.year,
-            "day_of_year": doy,
-            "spatial_method": "native_grid_bilinear",
-            "era5_grid_resolution_deg": _ERA5_GRID_DEG,
-            "era5_halo_deg": _HALO_DEG,
-            "retrieved_at": retrieved_at,
-        },
-        qa_stats={
+        source_metadata=source_metadata,
+        qa_stats=_era5_qa_stats(reprojected, cy, cx, shape, channel_set=channel_set),
+        config_hash=c_hash,
+        acquisition_datetime=acquisition_dt,
+        stac_properties=stac_properties,
+    )
+
+    # Free intermediate arrays before returning to keep per-scene RSS bounded.
+    del reprojected
+    import gc
+
+    gc.collect()
+
+
+def _era5_qa_stats(
+    reprojected: dict[str, np.ndarray],
+    cy: int,
+    cx: int,
+    shape: tuple[int, int],
+    *,
+    channel_set: str,
+) -> dict:
+    """Centre-pixel QA. The v5 key set stays stable for the published product."""
+    if channel_set == "v5":
+        return {
             "t2m_scene": round(float(reprojected["t2m_scene"][cy, cx]), 2),
             "ssrd_scene": round(float(reprojected["ssrd_scene"][cy, cx]), 2),
             "ssrd_antecedent_72h_mean": round(
@@ -796,33 +977,18 @@ def prepare_era5_scene(
             "tp_24_48h": round(float(reprojected["tp_24_48h"][cy, cx]), 2),
             "tp_48_72h": round(float(reprojected["tp_48_72h"][cy, cx]), 2),
             "shape": list(shape),
-        },
-        config_hash=c_hash,
-        acquisition_datetime=acquisition_dt,
-        stac_properties={
-            "era5:temporal_mode": "scene_timestamp",
-            "era5:t2m_unit": "K",
-            "era5:ssrd_unit": "W/m²",
-            "era5:vpd_unit": "kPa",
-            "era5:wind_speed_unit": "m/s",
-            "era5:tp_unit": "mm",
-            "era5:antecedent_hours": _ANTECEDENT_HOURS,
-            "era5:spatial_method": "native_grid_bilinear",
-            "acquisition:datetime": acquisition_dt.isoformat(),
-            "acquisition:doy": doy,
-            "acquisition:year": acquisition_dt.year,
-        },
-    )
-
-    # Free intermediate arrays before returning to keep per-scene RSS bounded.
-    del reprojected
-    import gc
-
-    gc.collect()
+        }
+    stats: dict = {"shape": list(shape)}
+    for name, values in reprojected.items():
+        digits = 4 if name == "vpd_scene" else 2
+        stats[name] = round(float(values[cy, cx]), digits)
+    return stats
 
 
 __all__ = [
+    "apply_era5_representation",
     "contract_for_era5_scene",
     "normalize_acquisition_hour",
     "prepare_era5_scene",
+    "reduce_era5_channels",
 ]

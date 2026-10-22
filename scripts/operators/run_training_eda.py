@@ -39,6 +39,7 @@ from berlin_lst_downscaling.data.eda.frames import (
     coverage_table,
     exclusion_table,
     feature_distribution_table,
+    feature_names_in,
     feature_scale_table,
     hot_cold_table,
     inventory_table,
@@ -74,7 +75,6 @@ from berlin_lst_downscaling.data.eda.rules import (
     season_of_month,
 )
 from berlin_lst_downscaling.data.eda.scan import scan_scene
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
 from berlin_lst_downscaling.data.io import (
     RunLogSession,
     atomic_upload,
@@ -142,6 +142,14 @@ def _observation_paths(output_dir: Path) -> list[Path]:
     if not directory.exists():
         return []
     return sorted(directory.glob("*.parquet"))
+
+
+def _channel_names(paths: list[Path]) -> list[str]:
+    """Feature roster stored in the observation parquet, v5 or v6."""
+    import pyarrow.parquet as pq
+
+    columns = list(pq.ParquetFile(paths[0]).schema_arrow.names)
+    return feature_names_in(pd.DataFrame(columns=columns))
 
 
 def _read_observations(paths: list[Path], columns: list[str]) -> pd.DataFrame:
@@ -320,7 +328,8 @@ def _assemble(output_dir: Path, shares: pd.DataFrame, manifest: pd.DataFrame) ->
     scale_frames: list[pd.DataFrame] = []
     profile_frames: list[pd.DataFrame] = []
     key_columns = ["scene_id", "year", "month", "season", "split", "row", "col"]
-    for name in FEATURE_CHANNEL_NAMES:
+    channel_names = _channel_names(paths)
+    for name in channel_names:
         column = _read_observations(paths, [*key_columns, name])
         feature_frames.append(feature_distribution_table(column))
         scale_frames.append(feature_scale_table(column))
@@ -332,7 +341,7 @@ def _assemble(output_dir: Path, shares: pd.DataFrame, manifest: pd.DataFrame) ->
     profiles = pd.concat(profile_frames, ignore_index=True)
     _save(profiles, tables, "stadtstruktur_feature_profile.parquet")
 
-    wide_columns = ["scene_id", "lst_k", *FEATURE_CHANNEL_NAMES]
+    wide_columns = ["scene_id", "lst_k", *channel_names]
     wide = _read_observations(paths, wide_columns)
     _write_frame(correlation_table(wide), tables / "correlation.parquet")
     nan_lst = int(narrow["lst_k"].isna().sum())

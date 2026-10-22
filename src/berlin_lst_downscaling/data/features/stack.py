@@ -1,16 +1,20 @@
-"""Feature-stack composer — 28-band stack + feature_valid mask.
+"""Feature-stack composer — schema-width stack + feature_valid mask.
 
 Reads the resolved per-scene inputs (S2 ARD + flag, morphology source COGs,
 ERA5-Land, shadows) plus the exact Berlin AOI mask and produces one
-canonical-grid dataset of 28 float32 channels plus the uint8
-``feature_valid`` mask.
+canonical-grid dataset of float32 channels plus the uint8
+``feature_valid`` mask. The channel count and order come from the feature
+schema. Published features/v5 is ``feature_schema(FEATURE_SCHEMA_VERSION)``
+(the 28-channel roster). features/v6 is
+``feature_schema(FEATURE_SCHEMA_VERSION_V6)`` and its width is
+``schema.n_channels``.
 
 Mask semantics (data/features/contracts.py): a pixel is valid only when
-it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and all
-28 channels are finite and within their declared ranges. Availability is
+it lies inside the AOI, the S2 ARD flag is clear (``flag == 0``), and every
+schema channel is finite and within its declared range. Availability is
 per channel: an unavailable channel is NaN in that band only — known
 values of the other channels are preserved. ``feature_valid`` is the
-aggregate "complete 28-channel vector" availability, never a
+aggregate "complete channel vector" availability, never a
 training-selection mask. All channels are NaN only outside the AOI.
 The Landsat target and ECOSTRESS never enter this stack.
 
@@ -32,9 +36,16 @@ import xarray as xr
 from odc.geo.geobox import GeoBox
 from rasterio.windows import Window
 
+from berlin_lst_downscaling.data.dynamic.era5 import (
+    apply_era5_representation,
+    reduce_era5_channels,
+)
 from berlin_lst_downscaling.data.features.contracts import (
     ALBEDO_WEIGHTS,
-    FEATURE_CHANNELS,
+    FEATURE_SCHEMA_VERSION,
+    FeatureSchema,
+    era5_representation_for_schema,
+    feature_schema,
 )
 from berlin_lst_downscaling.data.io import log_event
 
@@ -109,6 +120,41 @@ def _read_band(uri: str, band: int, grid: GeoBox, dtype: str = "float32") -> np.
         return src.read(band, window=window).astype(dtype)
 
 
+def assemble_named_channels(
+    by_name: dict[str, np.ndarray],
+    schema: FeatureSchema,
+) -> list[np.ndarray]:
+    """Return arrays in roster order. The roster is the only channel list."""
+    missing = [spec.name for spec in schema.channels if spec.name not in by_name]
+    if missing:
+        raise KeyError(f"feature stack missing channels {missing}")
+    return [by_name[spec.name] for spec in schema.channels]
+
+
+def _read_era5(uri: str, grid: GeoBox, schema: FeatureSchema) -> dict[str, np.ndarray]:
+    """Read an ERA5 COG as a name → array map.
+
+    An 8-band COG is the published v5 order. A 4-band COG is the v6 order.
+    Descriptions, when present, must match that order.
+    """
+    v5_names = feature_schema(FEATURE_SCHEMA_VERSION).names_in_family("era5")
+    v6_names = feature_schema(schema.version).names_in_family("era5")
+    with rasterio.open(uri) as src:
+        descriptions = tuple(src.descriptions or ())
+        if src.count == len(v6_names) and schema.version != FEATURE_SCHEMA_VERSION:
+            expected = v6_names
+        elif src.count == len(v5_names):
+            expected = v5_names
+        else:
+            raise ValueError(
+                f"{uri}: ERA5 band count {src.count} is not {len(v5_names)} or {len(v6_names)}"
+            )
+        named = tuple(desc for desc in descriptions if desc)
+        if named and named != expected:
+            raise ValueError(f"{uri}: ERA5 descriptions {named} != {expected}")
+        return {name: _read_band(uri, index, grid) for index, name in enumerate(expected, start=1)}
+
+
 def _read_shadow(uri: str, grid: GeoBox) -> np.ndarray:
     """Read a uint8 shadow COG and cast to float32 with 255 → NaN."""
     arr = _read_band(uri, 1, grid, dtype="uint8").astype(np.float32)
@@ -121,9 +167,9 @@ def _read_shadow(uri: str, grid: GeoBox) -> np.ndarray:
 
 @dataclass
 class ComposedFeatureStack:
-    """The 28-band dataset plus the validity mask and coverage metrics."""
+    """The schema-width dataset plus the validity mask and coverage metrics."""
 
-    dataset: xr.Dataset  # 28 float32 bands on the analysis grid
+    dataset: xr.Dataset  # schema.n_channels float32 bands on the analysis grid
     mask: np.ndarray  # uint8 (grid.shape), 1 = valid
     coverage: dict  # total/inside/outside/feature-valid pixel counts
 
@@ -132,12 +178,18 @@ def compose_feature_stack(
     inputs: FeatureInputs,
     aoi: np.ndarray,
     grid: GeoBox,
+    *,
+    schema: FeatureSchema | None = None,
+    era5_representation: str | None = None,
 ) -> ComposedFeatureStack:
-    """Compose the 28-band feature stack for one scene.
+    """Compose one scene feature stack.
 
     *aoi* must already be a bool mask on *grid* (see
-    :func:`load_aoi_mask_on_grid`).
+    :func:`load_aoi_mask_on_grid`). ``schema`` defaults to features/v5.
+    features/v6 drops building-height std/max, replaces vegetation max
+    with canopy cover, and reduces ERA5 before the representation switch.
     """
+    schema = schema or feature_schema(FEATURE_SCHEMA_VERSION)
     # ── S2 spectral bands + flag ───────────────────────────────────────
     # Reflectance is already harmonized in S2 ARD schema 9
     # (BOA_ADD_OFFSET applied before the [0, 1] clip). Do not subtract
@@ -200,40 +252,37 @@ def compose_feature_stack(
     for arr in lod:
         arr[covered_no_building] = 0.0
 
-    # ── ERA5-Land (8 bands) + shadows ─────────────────────────────────
-    era5 = [_read_band(inputs.era5_cog, i, grid) for i in range(1, 9)]
+    # ── ERA5-Land + shadows ───────────────────────────────────────────
+    era5 = _read_era5(inputs.era5_cog, grid, schema)
+    representation = era5_representation_for_schema(schema, era5_representation)
+    if representation is not None:
+        era5 = reduce_era5_channels(era5, target_names=schema.names_in_family("era5"))
+        era5 = apply_era5_representation(era5, representation, valid_mask=aoi)
     shadows = {name: _read_shadow(uri, grid) for name, uri in sorted(inputs.shadows.items())}
 
-    # ── fixed channel order ───────────────────────────────────────────
-    channels: list[np.ndarray] = [
-        b02,
-        b03,
-        b04,
-        b08,
-        b11,
-        b12,
-        ndvi,
-        ndwi,
-        ndbi,
-        albedo,
-        morphology["building_height_mean"],
-        morphology["building_height_std"],
-        morphology["building_coverage_ratio"],
-        morphology["building_height_max"],
-        morphology["vegetation_height_mean"],
-        morphology["vegetation_height_max"],
-        morphology["imperviousness"],
-        morphology["svf"],
-        *era5,
-        shadows["shadow_building"],
-        shadows["shadow_vegetation"],
-    ]
-    if len(channels) != 28:  # pragma: no cover — contract guard
-        raise AssertionError(f"composed {len(channels)} channels, expected 28")
+    # ── roster order (one registry) ───────────────────────────────────
+    by_name: dict[str, np.ndarray] = {
+        "B02": b02,
+        "B03": b03,
+        "B04": b04,
+        "B08": b08,
+        "B11": b11,
+        "B12": b12,
+        "ndvi": ndvi,
+        "ndwi_mcfeeters": ndwi,
+        "ndbi": ndbi,
+        "s2_broadband_albedo": albedo,
+        **morphology,
+        **era5,
+        **shadows,
+    }
+    channels = assemble_named_channels(by_name, schema)
+    if len(channels) != schema.n_channels:  # pragma: no cover — contract guard
+        raise AssertionError(f"composed {len(channels)} channels, expected {schema.n_channels}")
 
     # ── validity: AOI ∩ S2-clear ∩ finite ∩ in-range ──────────────────
     valid = aoi & s2_clear
-    for arr, spec in zip(channels, FEATURE_CHANNELS, strict=True):
+    for arr, spec in zip(channels, schema.channels, strict=True):
         finite = np.isfinite(arr)
         if spec.valid_range is None:
             valid &= finite
@@ -251,7 +300,7 @@ def compose_feature_stack(
     # ── dataset (canonical coords + transform) ────────────────────────
     xs = grid.transform.xoff + 5.0 + np.arange(grid.shape.x) * 10.0
     ys = grid.transform.yoff - 5.0 - np.arange(grid.shape.y) * 10.0
-    data_vars = {ch.name: (("y", "x"), stack[i]) for i, ch in enumerate(FEATURE_CHANNELS)}
+    data_vars = {ch.name: (("y", "x"), stack[i]) for i, ch in enumerate(schema.channels)}
     ds = xr.Dataset(data_vars, coords={"x": xs, "y": ys})
     ds = ds.rio.write_crs(str(grid.crs))
     ds = ds.rio.write_transform(grid.transform)
@@ -291,6 +340,7 @@ def compose_feature_stack(
 __all__ = [
     "ComposedFeatureStack",
     "FeatureInputs",
+    "assemble_named_channels",
     "compose_feature_stack",
     "load_aoi_mask_on_grid",
 ]

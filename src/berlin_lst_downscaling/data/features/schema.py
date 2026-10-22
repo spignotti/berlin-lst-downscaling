@@ -17,6 +17,8 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNEL_NAMES,
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
+    FeatureSchema,
+    feature_schema,
 )
 
 
@@ -32,6 +34,8 @@ def config_hash_for_features(
     vegetation_carry_forward_geometry_id: str,
     lod_coverage_fingerprints: dict[str, str],
     lod_cog_fingerprints: dict[str, str],
+    schema: FeatureSchema | None = None,
+    era5_representation: str | None = None,
 ) -> str:
     """Return a stable SHA-256 fingerprint of the feature-stack config.
 
@@ -44,33 +48,48 @@ def config_hash_for_features(
     geometry id so changing the carry-forward vintage reprocesses every
     scene.
     """
+    resolved = schema or feature_schema(FEATURE_SCHEMA_VERSION)
+    # features/v5 serialises the module roster. A v6 schema adds the loader
+    # switch and the canopy threshold so a threshold change reprocesses.
+    if resolved.version == FEATURE_SCHEMA_VERSION:
+        channels = FEATURE_CHANNELS
+        channel_order = list(FEATURE_CHANNEL_NAMES)
+        schema_version = FEATURE_SCHEMA_VERSION
+    else:
+        channels = resolved.channels
+        channel_order = list(resolved.names)
+        schema_version = resolved.version
     channel_schema = [
         {
             "name": ch.name,
             "description": ch.description,
             "valid_range": list(ch.valid_range) if ch.valid_range else None,
         }
-        for ch in FEATURE_CHANNELS
+        for ch in channels
     ]
+    body = {
+        "channel_order": channel_order,
+        "schema_version": schema_version,
+        "albedo_weights": list(ALBEDO_WEIGHTS),
+        "channel_schema": channel_schema,
+        "manifest_hash": manifest_hash,
+        "geometry_mapping_hash": geometry_mapping_hash,
+        "ard_ledger_hash": ard_ledger_hash,
+        "static_sources_ledger_hash": static_sources_ledger_hash,
+        "static_derived_ledger_hash": static_derived_ledger_hash,
+        "dynamic_ledger_hash": dynamic_ledger_hash,
+        "aoi_fingerprint": aoi_fingerprint,
+        "vegetation_carry_forward_geometry_id": vegetation_carry_forward_geometry_id,
+        "lod_coverage_fingerprints": lod_coverage_fingerprints,
+        "lod_cog_fingerprints": lod_cog_fingerprints,
+    }
+    body["s2_boa_offset_policy"] = "per_scene_metadata_before_clip_ard_v9"
+    body["lod2_coverage_policy"] = "area_exact_building_part_v2"
+    if resolved.version != FEATURE_SCHEMA_VERSION:
+        body["era5_representation"] = era5_representation
+        body["canopy_cover_threshold_m"] = resolved.canopy_cover_threshold_m
     payload = json.dumps(
-        {
-            "channel_order": list(FEATURE_CHANNEL_NAMES),
-            "schema_version": FEATURE_SCHEMA_VERSION,
-            "s2_boa_offset_policy": "per_scene_metadata_before_clip_ard_v9",
-            "lod2_coverage_policy": "area_exact_building_part_v2",
-            "albedo_weights": list(ALBEDO_WEIGHTS),
-            "channel_schema": channel_schema,
-            "manifest_hash": manifest_hash,
-            "geometry_mapping_hash": geometry_mapping_hash,
-            "ard_ledger_hash": ard_ledger_hash,
-            "static_sources_ledger_hash": static_sources_ledger_hash,
-            "static_derived_ledger_hash": static_derived_ledger_hash,
-            "dynamic_ledger_hash": dynamic_ledger_hash,
-            "aoi_fingerprint": aoi_fingerprint,
-            "vegetation_carry_forward_geometry_id": vegetation_carry_forward_geometry_id,
-            "lod_coverage_fingerprints": lod_coverage_fingerprints,
-            "lod_cog_fingerprints": lod_cog_fingerprints,
-        },
+        body,
         sort_keys=True,
     )
     return sha256(payload.encode()).hexdigest()[:16]

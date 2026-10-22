@@ -21,6 +21,7 @@ from uuid import uuid4
 from omegaconf import DictConfig
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
+from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.dynamic.geometry import (
     load_geometry_mapping,
     resolve_scene_geometry,
@@ -32,7 +33,7 @@ from berlin_lst_downscaling.data.dynamic.schema import (
     config_hash_for_era5,
     config_hash_for_shadow_vegetation,
 )
-from berlin_lst_downscaling.data.io import log_event
+from berlin_lst_downscaling.data.io import log_event, read_bytes
 from berlin_lst_downscaling.data.secondary.idempotency import reconcile
 from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger, SecondaryLedgerRow
 from berlin_lst_downscaling.data.secondary.product import finalize_secondary_product
@@ -131,10 +132,23 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     # ── 2. config hashes ─────────────────────────────────────────────
+    era5_channel_set = str(cfg.get("era5_channel_set", "v5"))
+    # Absent on the published dynamic configs: keep bilinear. The features/v6
+    # loader defaults to scene_value when it composes the stack.
+    era5_representation = str(cfg.get("era5_representation", "bilinear"))
+    aoi_uri = cfg.get("aoi_mask_uri")
+    aoi_fingerprint = None
+    if era5_representation == "scene_value":
+        if not aoi_uri:
+            raise ValueError("era5 representation scene_value requires aoi_mask_uri")
+        aoi_fingerprint = sha256_bytes(read_bytes(str(aoi_uri)))[:16]
     era5_hash = config_hash_for_era5(
         manifest_report.manifest_hash,
         mapping.content_hash,
         output_root,
+        channel_set=era5_channel_set,
+        representation=era5_representation,
+        aoi_fingerprint=aoi_fingerprint,
     )
     # Building shadows keep the legacy dynamic fingerprint; vegetation
     # shadows additionally track the finalised vegetation horizon's hash
@@ -152,6 +166,11 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     grid = canon_grid_10m()
+    aoi_mask = None
+    if era5_representation == "scene_value":
+        from berlin_lst_downscaling.data.features.stack import load_aoi_mask_on_grid
+
+        aoi_mask = load_aoi_mask_on_grid(str(aoi_uri), grid)
     led = SecondaryLedger.open(ledger_path(output_root))
     failed = 0
     processed = 0
@@ -216,6 +235,9 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                             run_id,
                             grid=grid,
                             local_dir=local_dir,
+                            channel_set=era5_channel_set,
+                            representation=era5_representation,
+                            aoi_mask=aoi_mask,
                         )
                         prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
                         artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)
