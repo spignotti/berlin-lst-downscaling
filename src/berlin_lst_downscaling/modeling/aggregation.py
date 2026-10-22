@@ -100,11 +100,18 @@ def pool_10m_to_100m(
 ) -> Tensor:
     """Exact nested 10×10 reduction on the canonical 100 m grid.
 
-    ``method='arithmetic'`` is the block mean. ``method='t4'`` applies the fourth-
-    root-of-mean-fourth-powers reduction on physical Kelvin inputs. When
-    ``mask_100m`` is supplied, the positive-finite Kelvin contract applies only
-    to 10 m pixels inside blocks whose 100 m supervision cell is valid; excluded
-    blocks are sanitized before ``pow`` so they cannot disturb gradients.
+    ``method='arithmetic'`` is the block mean. A block that contains any NaN
+    pools to NaN: the NaN is not dropped and is not replaced by zero, and it
+    does not change a neighboring finite block. ``method='t4'`` applies the
+    fourth-root-of-mean-fourth-powers reduction on physical Kelvin inputs and
+    rejects a non-finite contributing pixel. When ``mask_100m`` is supplied, the positive-finite
+    Kelvin contract applies only to 10 m pixels inside blocks whose 100 m
+    supervision cell is valid; excluded blocks are sanitized before ``pow`` so
+    they cannot disturb gradients.
+
+    Extents that are not divisible by ``POOL_FACTOR`` raise. An incomplete edge
+    (the leftover rows or columns past the last full 10×10 block) is never
+    reduced as a smaller block and never enters the pooled map.
     """
     method = validate_aggregation_method(method)
     b, c, h, w = prediction_10m.shape

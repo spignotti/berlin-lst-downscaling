@@ -11,6 +11,7 @@ import torch
 from rasterio.transform import from_origin
 
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
+from berlin_lst_downscaling.modeling.aggregation import AggregationContractError
 from berlin_lst_downscaling.modeling.metrics import pool_10m_to_100m
 from berlin_lst_downscaling.modeling.patches import _build_scene_prior
 
@@ -104,3 +105,42 @@ def test_pool_10m_to_100m_is_the_exact_nested_block_mean() -> None:
 
     with pytest.raises(ValueError, match="not divisible"):
         pool_10m_to_100m(torch.zeros(1, 1, 10, 11))
+
+
+def test_pool_nan_propagates_inside_its_block_only() -> None:
+    """One NaN makes that 10×10 arithmetic block NaN and leaves the next block finite.
+
+    Arithmetic ``mean`` propagates NaN. The NaN is not dropped from the block
+    and is not replaced by zero, so the finite block beside it stays its mean.
+    T4 refuses a non-finite contributing pixel instead of emitting a NaN block.
+    """
+    finite = torch.full((1, 1, 10, 10), 300.0)
+    dirty = finite.clone()
+    dirty[0, 0, 0, 0] = float("nan")
+    image = torch.cat([dirty, finite], dim=-1)
+    pooled = pool_10m_to_100m(image, "arithmetic")
+    assert tuple(pooled.shape) == (1, 1, 1, 2)
+    assert torch.isnan(pooled[0, 0, 0, 0])
+    assert float(pooled[0, 0, 0, 1]) == pytest.approx(300.0)
+    assert not torch.isnan(pooled[0, 0, 0, 1])
+
+    with pytest.raises(AggregationContractError, match="finite"):
+        pool_10m_to_100m(image, "t4")
+
+
+def test_pool_excludes_incomplete_edge_blocks() -> None:
+    """Leftover rows or columns past the last full 10×10 block are not pooled.
+
+    A 10×20 map yields two complete blocks. A 10×19 or 19×10 map raises, so
+    the incomplete edge is excluded instead of reduced as a partial block.
+    """
+    complete = torch.arange(200, dtype=torch.float32).reshape(1, 1, 10, 20)
+    pooled = pool_10m_to_100m(complete)
+    assert tuple(pooled.shape) == (1, 1, 1, 2)
+    assert float(pooled[0, 0, 0, 0]) == pytest.approx(float(complete[0, 0, :, :10].mean()))
+    assert float(pooled[0, 0, 0, 1]) == pytest.approx(float(complete[0, 0, :, 10:].mean()))
+
+    with pytest.raises(ValueError, match="not divisible"):
+        pool_10m_to_100m(torch.zeros(1, 1, 10, 19))
+    with pytest.raises(ValueError, match="not divisible"):
+        pool_10m_to_100m(torch.zeros(1, 1, 19, 10))

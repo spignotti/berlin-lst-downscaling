@@ -11,6 +11,7 @@ import rasterio
 import torch
 from rasterio.transform import from_origin
 
+from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
 from berlin_lst_downscaling.data.training.patch_index import (
     MIN_ELIGIBLE_CELLS,
     N_CELLS,
@@ -20,9 +21,11 @@ from berlin_lst_downscaling.modeling.aggregation import (
     pool_10m_to_100m,
     pool_block_means_from_accumulators,
 )
+from berlin_lst_downscaling.modeling.contracts import RealBatch, RealSampleMeta
 from berlin_lst_downscaling.modeling.metrics import (
     THERMAL_AWARE_GRAD_WEIGHT,
     THERMAL_AWARE_SSIM_WEIGHT,
+    MaskedSSIM,
     SupportWeightedSum,
     _gradient_candidate_pair_count,
     _ssim_candidate_window_count,
@@ -30,6 +33,7 @@ from berlin_lst_downscaling.modeling.metrics import (
     masked_gradient_stats,
     masked_l1_loss,
     masked_ssim_stats,
+    prediction_outside_lst_range_counts,
     thermal_objective_batch,
 )
 from berlin_lst_downscaling.modeling.patch_cache import PatchCache, _json_digest
@@ -181,6 +185,119 @@ def test_ssim_zero_support_is_unavailable_not_free_penalty() -> None:
     assert float(batch.ssim_supported) == 0.0
     assert float(batch.ssim_penalty_unweighted) == 0.0
     assert float(batch.loss) == pytest.approx(float(batch.l1_unweighted))
+
+
+def _unsupported_mask() -> torch.Tensor:
+    mask = torch.zeros((1, 1, 16, 16), dtype=torch.bool)
+    mask[0, 0, 0, 0] = True
+    mask[0, 0, 15, 15] = True
+    return mask
+
+
+def test_unsupported_patch_is_excluded_from_ssim_batch_mean() -> None:
+    """A patch with no valid SSIM window does not contribute 0 to the batch mean.
+
+    L1 still includes that patch. An all-unsupported batch keeps ssim_supported
+    at 0 and leaves the SSIM mean unavailable.
+    """
+    pred = torch.full((1, 1, 16, 16), 300.0)
+    target = torch.full((1, 1, 16, 16), 301.0)
+    mask_ok = torch.ones((1, 1, 16, 16), dtype=torch.bool)
+    alone = thermal_objective_batch(pred, target, mask_ok)
+
+    mixed_pred = torch.cat([pred, pred + 40.0], dim=0)
+    mixed_target = torch.cat([target, target + 5.0], dim=0)
+    mixed_mask = torch.cat([mask_ok, _unsupported_mask()], dim=0)
+    mixed = thermal_objective_batch(mixed_pred, mixed_target, mixed_mask)
+    assert float(mixed.ssim_supported) == float(alone.ssim_supported)
+    assert float(mixed.ssim_sum / mixed.ssim_supported) == pytest.approx(
+        float(alone.ssim_sum / alone.ssim_supported)
+    )
+    assert float(mixed.l1_count) > float(alone.l1_count)
+    assert float(mixed.l1_unweighted) != pytest.approx(float(alone.l1_unweighted))
+
+    empty = thermal_objective_batch(pred, target, _unsupported_mask())
+    assert float(empty.ssim_supported) == 0.0
+    assert float(empty.loss) == pytest.approx(float(empty.l1_unweighted))
+    metric = MaskedSSIM()
+    if float(empty.ssim_supported) > 0.0:
+        metric.update(empty.ssim_sum, empty.ssim_supported)
+    assert float(metric.window_count) == 0.0
+    metric.update(alone.ssim_sum, alone.ssim_supported)
+    assert float(metric.compute()) == pytest.approx(float(alone.ssim_sum / alone.ssim_supported))
+
+    task = RealLSTTask(loss_name="thermal_aware", n_active_channels=1, depth=1, base_width=4)
+    logged: dict[str, object] = {}
+
+    def _log(name: str, value: object, **_kwargs: object) -> None:
+        logged[name] = value
+
+    task.log = _log  # type: ignore[method-assign]
+    task._accumulate_thermal_audit(empty, train=True)
+    assert "train/ssim_supported" in logged
+    assert float(logged["train/ssim_supported"]) == 0.0  # type: ignore[arg-type]
+    assert float(task.train_thermal_ssim.denominator) == 0.0
+
+
+def test_eval_ssim_is_unclamped_and_logs_outside_range_share() -> None:
+    """Validation SSIM uses raw predictions. The training objective still clamps."""
+    pred = torch.full((1, 1, 16, 16), 500.0)
+    target = torch.full((1, 1, 16, 16), 300.0)
+    mask = torch.ones((1, 1, 16, 16), dtype=torch.bool)
+    raw, raw_count = masked_ssim_stats(pred, target, mask, clamp_predictions=False)
+    clamped, clamped_count = masked_ssim_stats(pred, target, mask, clamp_predictions=True)
+    assert int(raw_count) == int(clamped_count) > 0
+    assert float(raw) != pytest.approx(float(clamped))
+
+    capped = torch.full_like(pred, LST_RANGE_K[1])
+    capped_sum, _ = masked_ssim_stats(capped, target, mask, clamp_predictions=False)
+    trained = thermal_objective_batch(pred, target, mask)
+    assert float(trained.ssim_sum) == pytest.approx(float(capped_sum))
+
+    outside, total = prediction_outside_lst_range_counts(pred)
+    assert float(outside / total) == pytest.approx(1.0)
+    half = pred.clone()
+    half[:, :, :, :8] = 300.0
+    outside_half, total_half = prediction_outside_lst_range_counts(half)
+    assert float(outside_half / total_half) == pytest.approx(0.5)
+
+    task = RealLSTTask(loss_name="masked_l1", n_active_channels=1, depth=1, base_width=4)
+
+    def _predict(_batch: RealBatch) -> torch.Tensor:
+        return torch.full((1, 1, 160, 160), 500.0)
+
+    task.forward = _predict  # type: ignore[method-assign]
+    logged: set[str] = set()
+
+    def _log(name: str, _value: object, **_kwargs: object) -> None:
+        logged.add(name)
+
+    task.log = _log  # type: ignore[method-assign]
+    meta = RealSampleMeta(
+        patch_id="s:E0N0",
+        scene_id="s",
+        split="validation",
+        year=2024,
+        row=0,
+        col=0,
+        filled_feature_pixels=0,
+    )
+    batch = RealBatch(
+        features=torch.zeros(1, 1, 160, 160),
+        lst_prior=torch.zeros(1, 1, 160, 160),
+        target_100m=torch.full((1, 1, 16, 16), 300.0),
+        mask_100m=torch.ones(1, 1, 16, 16, dtype=torch.bool),
+        metadata=[meta],
+    )
+    task.validation_step(batch, 0)
+    assert "validation/ssim_supported" in logged
+    assert "validation/pred_outside_lst_range_frac" in logged
+    assert float(task.val_pred_outside_lst_range.compute()) == pytest.approx(1.0)
+    pooled = torch.full((1, 1, 16, 16), 500.0)
+    expected, _ = masked_ssim_stats(
+        pooled, batch.target_100m, batch.mask_100m, clamp_predictions=False
+    )
+    assert float(task.val_ssim.compute()) == pytest.approx(float(expected / raw_count))
 
 
 def test_gradient_support_16x16_all_valid() -> None:

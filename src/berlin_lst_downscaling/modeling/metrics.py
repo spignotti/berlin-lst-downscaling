@@ -160,7 +160,11 @@ def thermal_objective_batch(
     l1_sum, l1_count = masked_abs_error_sums(prediction_100m, target_100m, mask_100m)
     l1_unweighted = l1_sum / l1_count
 
-    ssim_sum, ssim_supported = masked_ssim_stats(prediction_100m, target_100m, mask_100m)
+    # Training SSIM stays clamped. Patches with ssim_supported == 0 stay in L1
+    # and are omitted from this mean (they are not scored as SSIM 0).
+    ssim_sum, ssim_supported = masked_ssim_stats(
+        prediction_100m, target_100m, mask_100m, clamp_predictions=True
+    )
     ssim_candidate = prediction_100m.new_tensor(
         float(_ssim_candidate_window_count(prediction_100m))
     )
@@ -221,12 +225,21 @@ def thermal_aware_loss(
     ).loss
 
 
-def _uniform_ssim_map(prediction_100m: Tensor, target_100m: Tensor) -> Tensor:
+def _uniform_ssim_map(
+    prediction_100m: Tensor,
+    target_100m: Tensor,
+    *,
+    clamp_predictions: bool,
+) -> Tensor:
     low, high = SSIM_DATA_RANGE
     data_range = high - low
     c1 = (SSIM_K1 * data_range) ** 2
     c2 = (SSIM_K2 * data_range) ** 2
-    preds = torch.clamp(prediction_100m, min=low, max=high)
+    # Training loss clamps predictions into the Kelvin data range. Evaluation
+    # passes the pooled prediction through unclamped.
+    preds = (
+        torch.clamp(prediction_100m, min=low, max=high) if clamp_predictions else prediction_100m
+    )
     target = torch.clamp(target_100m, min=low, max=high)
     channel = int(preds.shape[1])
     kernel = torch.ones(
@@ -250,9 +263,18 @@ def _uniform_ssim_map(prediction_100m: Tensor, target_100m: Tensor) -> Tensor:
 
 
 def masked_ssim_stats(
-    prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
+    prediction_100m: Tensor,
+    target_100m: Tensor,
+    mask_100m: Tensor,
+    *,
+    clamp_predictions: bool = True,
 ) -> tuple[Tensor, Tensor]:
-    """Return ``(sum of supported local SSIM values, supported-window count)``."""
+    """Return ``(sum of supported local SSIM values, supported-window count)``.
+
+    A patch with no fully valid SSIM window is left out of both the sum and the
+    count. It does not enter the batch mean as a zero. ``clamp_predictions``
+    is the training-loss default; evaluation sets it false.
+    """
     valid = mask_100m.bool()
     if prediction_100m.shape[1] != 1 or valid.shape != prediction_100m.shape:
         raise ValueError("SSIM expects a single-channel prediction and a matching mask")
@@ -265,14 +287,32 @@ def masked_ssim_stats(
     with torch.autocast(device_type=device.type, enabled=False):
         safe_pred = torch.where(valid, prediction_100m, torch.zeros_like(prediction_100m)).float()
         safe_target = torch.where(valid, target_100m, torch.zeros_like(target_100m)).float()
-        ssim_map = _uniform_ssim_map(safe_pred, safe_target)
+        ssim_map = _uniform_ssim_map(safe_pred, safe_target, clamp_predictions=clamp_predictions)
     supported = F.avg_pool2d(valid.to(ssim_map.dtype), kernel_size=SSIM_WINDOW, stride=1) == 1.0
-    values = ssim_map[supported]
-    if values.numel() == 0:
+    per_count = supported.flatten(1).sum(dim=1)
+    active = per_count > 0
+    if not bool(active.any()):
         return torch.zeros((), dtype=ssim_map.dtype, device=device), torch.zeros((), device=device)
+    values = ssim_map[supported]
     if not bool(torch.isfinite(values).all()):
         raise ValueError("a supported SSIM window carries a non-finite value")
-    return values.sum(), torch.tensor(float(values.numel()), dtype=ssim_map.dtype, device=device)
+    per_sum = (ssim_map * supported.to(dtype=ssim_map.dtype)).flatten(1).sum(dim=1)
+    total = per_sum[active].sum()
+    count = per_count[active].sum().to(dtype=ssim_map.dtype)
+    return total, count
+
+
+def prediction_outside_lst_range_counts(prediction: Tensor) -> tuple[Tensor, Tensor]:
+    """Return ``(count outside LST_RANGE_K, pixel count)`` for a prediction map.
+
+    Non-finite pixels count as outside the physical range. The share is the
+    ratio of the two counts.
+    """
+    low, high = LST_RANGE_K
+    outside = (~torch.isfinite(prediction)) | (prediction < low) | (prediction > high)
+    total = prediction.new_tensor(float(prediction.numel()))
+    count = outside.sum().to(dtype=prediction.dtype)
+    return count, total
 
 
 def masked_ssim_support(
@@ -424,6 +464,7 @@ __all__ = [
     "masked_ssim_stats",
     "masked_ssim_support",
     "pool_10m_to_100m",
+    "prediction_outside_lst_range_counts",
     "thermal_aware_loss",
     "thermal_objective_batch",
 ]

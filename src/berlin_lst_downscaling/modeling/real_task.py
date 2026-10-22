@@ -66,6 +66,7 @@ from berlin_lst_downscaling.modeling.metrics import (
     masked_l1_loss,
     masked_ssim_stats,
     pool_10m_to_100m,
+    prediction_outside_lst_range_counts,
     thermal_objective_batch,
 )
 from berlin_lst_downscaling.modeling.patch_cache import PatchCache, build_patch_cache
@@ -680,6 +681,7 @@ class RealLSTTask(LightningModule):
         self.val_grad_candidate = SupportCounter()
         self.val_ssim_coverage = SupportRatio()
         self.val_grad_coverage = SupportRatio()
+        self.val_pred_outside_lst_range = SupportRatio()
         # Reconstructible model/loss configuration for load_from_checkpoint.
         self.save_hyperparameters()
 
@@ -701,10 +703,20 @@ class RealLSTTask(LightningModule):
         grad_w = self.train_thermal_grad_weighted if train else self.val_thermal_grad_weighted
         l1_metric.update(batch_stats.l1_sum, batch_stats.l1_count)
         l1_w.update(batch_stats.l1_sum, batch_stats.l1_count)
+        # A batch whose every patch lacks a valid SSIM window is omitted from
+        # the support-weighted mean. Its zero penalty is not inserted as a score.
         if float(batch_stats.ssim_supported) > 0.0:
             penalty_sum = batch_stats.ssim_supported - batch_stats.ssim_sum
             ssim_metric.update(penalty_sum, batch_stats.ssim_supported)
             ssim_w.update(penalty_sum, batch_stats.ssim_supported)
+        if train:
+            self.log(
+                "train/ssim_supported",
+                batch_stats.ssim_supported,
+                on_step=False,
+                on_epoch=True,
+                reduce_fx="sum",
+            )
         if float(batch_stats.grad_supported) > 0.0:
             grad_metric.update(batch_stats.grad_sum, batch_stats.grad_supported)
             grad_w.update(batch_stats.grad_sum, batch_stats.grad_supported)
@@ -783,16 +795,36 @@ class RealLSTTask(LightningModule):
                 )
                 self._accumulate_thermal_audit(objective, train=False)
                 self._log_thermal_batch_metrics(train=False)
+            # Diagnostic SSIM sees the unclamped pooled prediction. The training
+            # objective above still clamps inside thermal_objective_batch.
             ssim_sum, ssim_count = masked_ssim_stats(
-                prediction_100m, batch.target_100m, batch.mask_100m
+                prediction_100m,
+                batch.target_100m,
+                batch.mask_100m,
+                clamp_predictions=False,
             )
             self.val_ssim.update(ssim_sum, ssim_count)
             self.val_ssim_windows.update(ssim_count)
+            outside_count, pixel_count = prediction_outside_lst_range_counts(prediction_100m)
+            self.val_pred_outside_lst_range.update(outside_count, pixel_count)
             self.val_valid_cells.update(batch.mask_100m)
         # Masked MAE is the selection metric; SSIM is logged only.
         self.log("validation/mae_100m", self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         self.log("validation/ssim_100m", self.val_ssim, on_step=False, on_epoch=True)
         self.log("validation/ssim_windows", self.val_ssim_windows, on_step=False, on_epoch=True)
+        self.log(
+            "validation/ssim_supported",
+            ssim_count,
+            on_step=False,
+            on_epoch=True,
+            reduce_fx="sum",
+        )
+        self.log(
+            "validation/pred_outside_lst_range_frac",
+            self.val_pred_outside_lst_range,
+            on_step=False,
+            on_epoch=True,
+        )
         if self.record_probe_metrics:
             self.log("validation/valid_cells", self.val_valid_cells, on_step=False, on_epoch=True)
 
