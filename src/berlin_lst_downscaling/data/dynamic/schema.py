@@ -89,6 +89,8 @@ def config_hash_for_era5(
             )
         body["channel_set"] = channel_set
         body["representation"] = representation
+        if representation == "scene_value":
+            body["scene_value_domain"] = "aoi_mean_of_bilinear"
     payload = json.dumps(body, sort_keys=True)
     return sha256(payload.encode()).hexdigest()[:16]
 

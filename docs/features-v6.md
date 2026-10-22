@@ -46,8 +46,13 @@ provisional (`canopy_cover_threshold_m` in `configs/features/v6.yaml` and
 
 ERA5 representation is a loader switch: `scene_value` (one value per
 scene, broadcast; v6 default) or `bilinear` (the published interpolated
-field). The published dynamic product stays 8-band bilinear unless
-`configs/dynamic/v6.yaml` is used.
+field). `scene_value` is the mean of the bilinear 10 m field inside the
+exact Berlin AOI. The dynamic/v6 writer bilinear-reprojects and then
+takes that mean. Composing from the published 8-band COG uses the same
+mean, so the two paths agree. A scene-value COG is already constant, and
+applying the mean again leaves the scalar unchanged. The published
+dynamic product stays 8-band bilinear unless `configs/dynamic/v6.yaml`
+is used.
 
 SVF `svf_max_radius` stays 3 cells (30 m) in `configs/static_derived/v6.yaml`.
 `scripts/validators/diagnose_svf_radius.py` compares 30/50/100/200 m on a
@@ -61,7 +66,7 @@ fixes land, needs:
 | Artifact | Why |
 |----------|-----|
 | `static/sources/v6` vegetation height | third band `canopy_cover_fraction`; mean and max stay |
-| `dynamic/v6` ERA5 (optional) | four bands and `scene_value`. Compose can instead reduce the published 8-band COG |
+| `dynamic/v6` ERA5 (optional) | four bands whose `scene_value` is the AOI mean of the bilinear field. Compose applies that same mean to the published 8-band COG |
 | `static/derived` SVF | only if the radius changes after the diagnostic. The default 30 m does not |
 | `features/v6` | new roster, canopy band, ERA5 reduction and representation |
 | `training/v3` | eligibility, train-only scaler (`tp_0_72h` is `log1p` then z-score), patch index |

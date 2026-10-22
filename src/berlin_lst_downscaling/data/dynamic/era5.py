@@ -299,10 +299,11 @@ def apply_era5_representation(
 ) -> dict[str, np.ndarray]:
     """Apply the v6 ERA5 loader switch.
 
-    ``scene_value`` replaces each field with its mean over ``valid_mask``
-    (or over the whole array) broadcast to the same shape. ``bilinear``
-    returns a float32 copy of the spatial field. ``None`` selects
-    ``scene_value``, the v6 default.
+    ``scene_value`` replaces each bilinear field with its mean over
+    ``valid_mask`` (the exact Berlin AOI in both the product writer and
+    the feature loader) broadcast to the same shape. A field that is
+    already constant is unchanged. ``bilinear`` returns a float32 copy
+    of the spatial field. ``None`` selects ``scene_value``, the v6 default.
     """
     from berlin_lst_downscaling.data.features.contracts import resolve_era5_representation
 
@@ -327,35 +328,6 @@ def apply_era5_representation(
         with np.errstate(all="ignore"):
             scalar = float(np.nanmean(sample)) if sample.size else float("nan")
         out[name] = np.full(array.shape, scalar, dtype=np.float32)
-    return out
-
-
-def broadcast_native_scene_values(
-    fields: dict[str, np.ndarray],
-    lat: np.ndarray,
-    lon: np.ndarray,
-    shape: tuple[int, int],
-) -> dict[str, np.ndarray]:
-    """Broadcast the Berlin-bbox mean of each native field onto ``shape``.
-
-    The mean uses native cells whose centres lie inside the Berlin bbox,
-    excluding the interpolation halo.
-    """
-    lat_vals = np.asarray(lat)
-    lon_vals = np.asarray(lon)
-    lat_ok = (lat_vals >= _BERLIN_BBOX[0]) & (lat_vals <= _BERLIN_BBOX[2])
-    lon_ok = (lon_vals >= _BERLIN_BBOX[1]) & (lon_vals <= _BERLIN_BBOX[3])
-    mask = lat_ok[:, None] & lon_ok[None, :]
-    out: dict[str, np.ndarray] = {}
-    for name, values in fields.items():
-        array = np.asarray(values)
-        if array.shape == mask.shape and np.any(mask):
-            sample = array[mask]
-        else:
-            sample = array
-        with np.errstate(all="ignore"):
-            scalar = float(np.nanmean(sample)) if np.size(sample) else float("nan")
-        out[name] = np.full(shape, scalar, dtype=np.float32)
     return out
 
 
@@ -760,13 +732,16 @@ def prepare_era5_scene(
     local_dir: Path,
     channel_set: str = "v5",
     representation: str = "bilinear",
+    aoi_mask: np.ndarray | None = None,
 ) -> PreparedSecondaryProduct:
     """Prepare ERA5-Land scene channels for a Landsat anchor.
 
     The default is the published 8-band bilinear product. ``channel_set``
     ``"v6"`` keeps t2m, ssrd, wind speed, and the 0–72 h precipitation
-    sum. ``representation="scene_value"`` broadcasts one Berlin-bbox mean
-    per channel; ``"bilinear"`` keeps the interpolated field.
+    sum. ``representation="scene_value"`` bilinear-reprojects onto the
+    analysis grid and broadcasts the mean inside ``aoi_mask``. That is
+    the same scalar the feature loader computes from an 8-band COG.
+    ``"bilinear"`` keeps the interpolated field.
     """
     if channel_set not in {"v5", "v6"}:
         raise ValueError(f"era5 channel_set must be 'v5' or 'v6', got {channel_set!r}")
@@ -875,18 +850,24 @@ def prepare_era5_scene(
         primary_ds.close()
         primary_ds = None
 
-        # ── 4. reproject or broadcast onto the canonical grid ────────
+        # ── 4. bilinear field, then the shared scene scalar ─────────
+        # scene_value is the AOI mean of this bilinear field, not a mean
+        # of native cells inside the rectangular Berlin bbox.
+        native_2d = xr.Dataset(
+            {k: ((lat_dim, lon_dim), v) for k, v in native_fields.items()},
+            coords={lat_dim: lat_vals, lon_dim: lon_vals},
+        )
+        reprojected = _reproject_to_canonical(native_2d, grid)
+        del native_2d
         if representation == "scene_value":
-            reprojected = broadcast_native_scene_values(
-                native_fields, lat_vals, lon_vals, (grid.shape.y, grid.shape.x)
+            if aoi_mask is None:
+                raise ValueError(
+                    "ERA5 scene_value requires the Berlin AOI mask so the "
+                    "product scalar matches the feature loader"
+                )
+            reprojected = apply_era5_representation(
+                reprojected, "scene_value", valid_mask=np.asarray(aoi_mask)
             )
-        else:
-            native_2d = xr.Dataset(
-                {k: ((lat_dim, lon_dim), v) for k, v in native_fields.items()},
-                coords={lat_dim: lat_vals, lon_dim: lon_vals},
-            )
-            reprojected = _reproject_to_canonical(native_2d, grid)
-            del native_2d
 
     finally:
         if primary_ds is not None:
@@ -923,7 +904,7 @@ def prepare_era5_scene(
     retrieved_at = datetime.now(UTC).isoformat()
     doy = acquisition_dt.timetuple().tm_yday
     spatial_method = (
-        "scene_scalar_broadcast" if representation == "scene_value" else "native_grid_bilinear"
+        "aoi_mean_of_bilinear" if representation == "scene_value" else "native_grid_bilinear"
     )
     source_metadata = {
         "era5_variables": _CDS_VARIABLES,
@@ -1006,7 +987,6 @@ def _era5_qa_stats(
 
 __all__ = [
     "apply_era5_representation",
-    "broadcast_native_scene_values",
     "contract_for_era5_scene",
     "normalize_acquisition_hour",
     "prepare_era5_scene",

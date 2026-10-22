@@ -158,6 +158,14 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     grid = canon_grid_10m()
+    aoi_mask = None
+    if era5_representation == "scene_value":
+        aoi_uri = cfg.get("aoi_mask_uri")
+        if not aoi_uri:
+            raise ValueError("era5 representation scene_value requires aoi_mask_uri")
+        from berlin_lst_downscaling.data.features.stack import load_aoi_mask_on_grid
+
+        aoi_mask = load_aoi_mask_on_grid(str(aoi_uri), grid)
     led = SecondaryLedger.open(ledger_path(output_root))
     failed = 0
     processed = 0
@@ -224,6 +232,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                             local_dir=local_dir,
                             channel_set=era5_channel_set,
                             representation=era5_representation,
+                            aoi_mask=aoi_mask,
                         )
                         prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
                         artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)

@@ -29,14 +29,38 @@ from berlin_lst_downscaling.data.eda.stats import (
     within_scene_correlations,
 )
 from berlin_lst_downscaling.data.features.contracts import (
-    FEATURE_CHANNEL_NAMES,
-    FEATURE_CHANNELS,
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
 )
 from berlin_lst_downscaling.data.stadtstruktur.sources import BLOCK_CELLS
 from berlin_lst_downscaling.data.training.contracts import NO_ELIGIBLE_CELLS_REASON
 
-CHANNEL_FAMILY: dict[str, str] = {channel.name: channel.family for channel in FEATURE_CHANNELS}
-CHANNEL_UNIT: dict[str, str] = {channel.name: channel.unit for channel in FEATURE_CHANNELS}
+CHANNEL_FAMILY: dict[str, str] = {}
+CHANNEL_UNIT: dict[str, str] = {}
+for _schema_version in (FEATURE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION_V6):
+    for _channel in feature_schema(_schema_version).channels:
+        CHANNEL_FAMILY[_channel.name] = _channel.family
+        CHANNEL_UNIT[_channel.name] = _channel.unit
+
+
+def feature_names_in(observations: pd.DataFrame) -> list[str]:
+    """Roster order of the feature columns actually present.
+
+    A complete v5 or v6 table keeps that roster. A one-channel slice,
+    as the EDA operator reads, keeps the names that belong to a roster.
+    """
+    columns = {str(name) for name in observations.columns}
+    best: list[str] = []
+    for version in (FEATURE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION_V6):
+        names = list(feature_schema(version).names)
+        if set(names) <= columns:
+            return names
+        present = [name for name in names if name in columns]
+        if len(present) > len(best):
+            best = present
+    return best
+
 
 _INVENTORY_GRAINS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("split_year_season", ("split", "year", "season")),
@@ -517,7 +541,7 @@ def block_table(observations: pd.DataFrame) -> pd.DataFrame:
 def feature_distribution_table(observations: pd.DataFrame) -> pd.DataFrame:
     """Distribute each channel at the same grains as the thermal target."""
     frames: list[pd.DataFrame] = []
-    names = [name for name in FEATURE_CHANNEL_NAMES if name in observations.columns]
+    names = feature_names_in(observations)
     for name in names:
         table = lst_distribution_table(observations, name)
         table.insert(0, "channel", name)
@@ -532,7 +556,7 @@ def feature_distribution_table(observations: pd.DataFrame) -> pd.DataFrame:
 def feature_scale_table(observations: pd.DataFrame) -> pd.DataFrame:
     """Within-scene and between-scene spread for every channel."""
     rows: list[dict[str, object]] = []
-    names = [name for name in FEATURE_CHANNEL_NAMES if name in observations.columns]
+    names = feature_names_in(observations)
     for name in names:
         stats = within_between(observations["scene_id"].to_numpy(), observations[name].to_numpy())
         rows.append(
@@ -553,7 +577,7 @@ def correlation_table(observations: pd.DataFrame) -> pd.DataFrame:
     are dropped for that pair. Within-scene values are the median of
     per-scene correlations and do not weight a scene by its cell count.
     """
-    names = ["lst_k", *FEATURE_CHANNEL_NAMES]
+    names = ["lst_k", *feature_names_in(observations)]
     rows: list[dict[str, object]] = []
     for index, left in enumerate(names):
         for right in names[index + 1 :]:
@@ -846,7 +870,7 @@ def stadtstruktur_feature_table(observations: pd.DataFrame, shares: pd.DataFrame
     """Area-weighted channel means on the same class join as the LST table."""
     areas = group_areas(shares)
     lookup = _class_lookup(shares)
-    names = [name for name in FEATURE_CHANNEL_NAMES if name in observations.columns]
+    names = feature_names_in(observations)
     observed = _with_vintage(observations.loc[:, ["year", "row", "col", *names]])
     if observed.empty or areas.empty or not names:
         return pd.DataFrame()

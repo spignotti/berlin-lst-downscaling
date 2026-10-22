@@ -28,7 +28,11 @@ from berlin_lst_downscaling.data.eda.rules import (
     proposal_b_fingerprint,
 )
 from berlin_lst_downscaling.data.eda.stats import quantiles_monotone, self_check
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.stadtstruktur.class_review import PROPOSAL_B_GROUPS
 from berlin_lst_downscaling.data.training.contracts import (
     EXPECTED_V3_CONFIG_HASH,
@@ -146,8 +150,12 @@ def validate(eda_dir: Path, manifest_uri: str) -> list[str]:
 
     features = pd.read_parquet(eda_dir / "tables" / "feature_distribution.parquet")
     found = set(features["channel"].astype(str))
-    if found != set(FEATURE_CHANNEL_NAMES):
-        failures.append("feature distribution does not cover the 28 channels")
+    rosters = [
+        set(feature_schema(version).names)
+        for version in (FEATURE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION_V6)
+    ]
+    if found not in rosters:
+        failures.append("feature distribution does not cover one feature roster")
 
     gap = pd.read_parquet(eda_dir / "tables" / "eligibility_gap.parquet")
     if (gap["target_valid_support_100"] != gap["provenance_eligible"]).any():

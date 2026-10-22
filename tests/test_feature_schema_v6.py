@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import rasterio
 from affine import Affine
@@ -22,6 +23,7 @@ from berlin_lst_downscaling.data.dynamic.era5 import (
     reduce_era5_channels,
 )
 from berlin_lst_downscaling.data.dynamic.schema import config_hash_for_era5
+from berlin_lst_downscaling.data.eda.frames import feature_names_in, feature_scale_table
 from berlin_lst_downscaling.data.features.contracts import (
     CANOPY_COVER_THRESHOLD_M_DEFAULT,
     FEATURE_CHANNEL_NAMES,
@@ -261,3 +263,38 @@ def test_svf_diagnostic_cli_is_read_only(
     assert "30" in captured
     assert "estimated_full_s" in captured
     assert set(tmp_path.iterdir()) == before
+
+
+def test_scene_value_is_the_aoi_mean_of_the_bilinear_field() -> None:
+    field = np.array([[10.0, 30.0], [1000.0, 1000.0]], dtype=np.float32)
+    aoi = np.array([[True, True], [False, False]])
+    written = apply_era5_representation({"t2m_scene": field}, "scene_value", valid_mask=aoi)
+    assert float(written["t2m_scene"][1, 1]) == pytest.approx(20.0)
+    again = apply_era5_representation(written, "scene_value", valid_mask=aoi)
+    assert np.all(again["t2m_scene"] == pytest.approx(20.0))
+    v6_hash = config_hash_for_era5("m", "g", "root", channel_set="v6", representation="scene_value")
+    bilinear_hash = config_hash_for_era5(
+        "m", "g", "root", channel_set="v6", representation="bilinear"
+    )
+    assert v6_hash != bilinear_hash
+    assert config_hash_for_era5("m", "g", "root") == "f381861cc6b460da"
+
+
+def test_eda_tables_follow_the_roster_in_the_frame() -> None:
+    v6_names = list(feature_schema(FEATURE_SCHEMA_VERSION_V6).names)
+    assert feature_names_in(pd.DataFrame(columns=["scene_id", "lst_k", *v6_names])) == v6_names
+    assert feature_names_in(pd.DataFrame(columns=["scene_id", *FEATURE_CHANNEL_NAMES])) == list(
+        FEATURE_CHANNEL_NAMES
+    )
+    frame = pd.DataFrame(
+        {
+            "scene_id": ["a", "a", "b"],
+            "canopy_cover_fraction": [0.0, 1.0, 0.5],
+            "tp_0_72h": [0.0, 1.0, 2.0],
+            "building_height_std": [9.0, 9.0, 9.0],
+        }
+    )
+    names = feature_names_in(frame)
+    assert names == ["canopy_cover_fraction", "tp_0_72h"]
+    table = feature_scale_table(frame)
+    assert set(table["channel"]) == {"canopy_cover_fraction", "tp_0_72h"}
