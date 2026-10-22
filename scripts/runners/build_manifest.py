@@ -29,9 +29,7 @@ def main(cfg: DictConfig) -> int:
     """Dispatch to the selection library."""
     output_root = cfg.get("output_root")
     if not output_root:
-        raise SystemExit(
-            "output_root is required (immutable bundle root, override per run)"
-        )
+        raise SystemExit("output_root is required (immutable bundle root, override per run)")
     run_id = uuid4().hex[:8]
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
     with RunLogSession(str(output_root), pipeline="selection", run_id=run_id, level=level):
@@ -39,6 +37,7 @@ def main(cfg: DictConfig) -> int:
 
 
 if __name__ == "__main__":
+
     @hydra.main(
         config_path="../../configs/selection",
         config_name="full_2017_2026",

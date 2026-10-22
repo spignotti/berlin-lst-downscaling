@@ -271,8 +271,7 @@ def _check_manifest(
         elif str(cols["status"][i]) == "excluded":
             if reason != NO_ELIGIBLE_CELLS_REASON:
                 errors.append(
-                    f"{sid}: excluded reason {reason!r}, "
-                    f"expected {NO_ELIGIBLE_CELLS_REASON!r}"
+                    f"{sid}: excluded reason {reason!r}, expected {NO_ELIGIBLE_CELLS_REASON!r}"
                 )
             if int(cols["eligible_cells"][i]) != 0:
                 errors.append(f"{sid}: excluded with {cols['eligible_cells'][i]} cells")
@@ -280,10 +279,7 @@ def _check_manifest(
     if expected_scenes is not None:
         missing_denied = IMPLAUSIBLE_LST_SCENE_IDS - set(manifest)
         if missing_denied:
-            errors.append(
-                "full release missing implausible LST scenes: "
-                f"{sorted(missing_denied)}"
-            )
+            errors.append(f"full release missing implausible LST scenes: {sorted(missing_denied)}")
 
     # CSV consistency.
     try:

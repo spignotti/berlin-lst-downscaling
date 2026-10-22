@@ -120,9 +120,7 @@ def _validate_cog_bands(cog_uri: str) -> list[str]:
                 errors.append(f"dtype: expected float32, got {src.dtypes[0]}")
             descriptions = list(src.descriptions)
             if descriptions != _ERA5_BAND_NAMES:
-                errors.append(
-                    f"band names: expected {_ERA5_BAND_NAMES}, got {descriptions}"
-                )
+                errors.append(f"band names: expected {_ERA5_BAND_NAMES}, got {descriptions}")
     except Exception as exc:
         errors.append(f"cannot open COG: {exc}")
     return errors
@@ -138,8 +136,7 @@ def _validate_era5_provenance(prov_uri: str) -> list[str]:
         variables = prov.get("source_metadata", {}).get("era5_variables", [])
         if variables != _ERA5_INPUT_VARIABLES:
             errors.append(
-                "provenance era5_variables: "
-                f"expected {_ERA5_INPUT_VARIABLES}, got {variables}"
+                f"provenance era5_variables: expected {_ERA5_INPUT_VARIABLES}, got {variables}"
             )
     except Exception as exc:
         errors.append(f"cannot read provenance: {exc}")

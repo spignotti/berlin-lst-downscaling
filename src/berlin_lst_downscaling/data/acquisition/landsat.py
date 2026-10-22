@@ -28,6 +28,7 @@ _LANDSAT_BANDS = [
     "qa_pixel",
 ]
 
+
 def load_landsat_scene(
     date: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,

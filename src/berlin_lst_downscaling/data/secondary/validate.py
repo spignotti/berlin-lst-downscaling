@@ -32,6 +32,7 @@ def validate_secondary_cog(
     _check_all_band_ranges(uri, contract, result)
     return result
 
+
 def _check_all_band_ranges(
     uri: str,
     contract: Contract,
@@ -75,6 +76,7 @@ def _check_all_band_ranges(
                     )
     except Exception as exc:
         result.fail(f"Per-band range check failed: {exc}")
+
 
 __all__ = [
     "validate_secondary_cog",

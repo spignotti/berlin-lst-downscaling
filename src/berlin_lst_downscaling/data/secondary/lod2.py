@@ -81,6 +81,7 @@ _LOD2_RE = re.compile(r"LoD2_(\d{3})_(\d{4})\.zip$", re.IGNORECASE)
 
 _CONFIG_HASH_PREFIX = "lod2_morphology:v1:"
 
+
 def contract_for_lod2_morphology() -> Contract:
     """Return the output Contract for LoD2 morphology COGs (4 bands)."""
     return Contract(
@@ -125,16 +126,19 @@ def contract_for_lod2_morphology() -> Contract:
         flag_mode="none",
     )
 
+
 def config_hash_for_vintage(vintage: int) -> str:
     """Return a stable config hash for a given vintage."""
     raw = f"{_CONFIG_HASH_PREFIX}{vintage}"
     return sha256(raw.encode()).hexdigest()[:12]
+
 
 # ── CityGML parsing ──────────────────────────────────────────────────
 #
 # Heavy lifting lives in :mod:`berlin_lst_downscaling.data.secondary.citygml`
 # and is shared with the historical-vintage runner.  This adapter keeps
 # only the streaming ZIP iteration + rasterisation glue.
+
 
 def _parse_buildings_from_tile(
     zip_path: Path,
@@ -155,7 +159,9 @@ def _parse_buildings_from_tile(
 
     return buildings
 
+
 # ── rasterization ─────────────────────────────────────────────────────
+
 
 def _accumulate_buildings(
     buildings: list[ParsedBuilding],
@@ -212,7 +218,9 @@ def _accumulate_buildings(
 
     return len(buildings)
 
+
 # ── prepare ───────────────────────────────────────────────────────────
+
 
 def prepare_lod2_morphology(
     vintage: int,
@@ -362,6 +370,7 @@ def prepare_lod2_morphology(
         config_hash=c_hash,
     )
 
+
 def _process_lod2_tile(
     asset: AtomAsset,
     grid: GeoBox,
@@ -404,11 +413,13 @@ def _process_lod2_tile(
 
     return receipt
 
+
 def _local_cache_path(output_root: str, filename: str) -> str:
     """Return a writable local cache path for a LoD2 tile."""
     if output_root.startswith("gs://"):
         return f"{tempfile.gettempdir()}/berlin_lst/lod2/{filename}"
     return f"{output_root}/_raw/secondary/lod2_morphology/{filename}"
+
 
 __all__ = [
     "config_hash_for_vintage",

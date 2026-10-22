@@ -582,9 +582,7 @@ def filter_lod2_against_lod1(
         return [], stats
 
     lod1_array = np.array(lod1_geoms, dtype=object)
-    lod2_array = np.array(
-        [b.footprint for b in valid_lod2], dtype=object
-    )
+    lod2_array = np.array([b.footprint for b in valid_lod2], dtype=object)
 
     tree = STRtree(lod1_array)
     pair_indices = tree.query(lod2_array, predicate="intersects")
@@ -600,9 +598,7 @@ def filter_lod2_against_lod1(
     lod2_geoms_for_pairs = lod2_array[lod2_pair_idx]
     lod1_geoms_for_pairs = lod1_array[lod1_pair_idx]
 
-    inter_geoms = shapely_intersection(
-        lod2_geoms_for_pairs, lod1_geoms_for_pairs
-    )
+    inter_geoms = shapely_intersection(lod2_geoms_for_pairs, lod1_geoms_for_pairs)
     inter_areas = shapely_area(inter_geoms)
     areas = np.asarray(inter_areas, dtype=np.float64)
     np.nan_to_num(areas, copy=False, nan=0.0)
@@ -611,10 +607,7 @@ def filter_lod2_against_lod1(
     np.add.at(accum, lod2_pair_idx, areas)
 
     lod2_areas = np.asarray(
-        [
-            float(b.footprint.area) if b.footprint is not None else 0.0
-            for b in valid_lod2
-        ],
+        [float(b.footprint.area) if b.footprint is not None else 0.0 for b in valid_lod2],
         dtype=np.float64,
     )
     np.divide(accum, lod2_areas, out=accum, where=lod2_areas > 0)
@@ -681,15 +674,9 @@ class _Accumulator:
         row_off = int(window.row_off)
         col_off = int(window.col_off)
         sum_slice = self.sum[row_off : row_off + local_h, col_off : col_off + local_w]
-        sumsq_slice = self.sumsq[
-            row_off : row_off + local_h, col_off : col_off + local_w
-        ]
-        count_slice = self.count[
-            row_off : row_off + local_h, col_off : col_off + local_w
-        ]
-        area_slice = self.area[
-            row_off : row_off + local_h, col_off : col_off + local_w
-        ]
+        sumsq_slice = self.sumsq[row_off : row_off + local_h, col_off : col_off + local_w]
+        count_slice = self.count[row_off : row_off + local_h, col_off : col_off + local_w]
+        area_slice = self.area[row_off : row_off + local_h, col_off : col_off + local_w]
         max_slice = self.max[row_off : row_off + local_h, col_off : col_off + local_w]
 
         for bldg in buildings:
@@ -731,9 +718,9 @@ class _Accumulator:
             (self.sumsq - (self.sum * self.sum) / count_f) / (count_f - 1),
             0.0,
         )
-        std_arr = np.where(
-            count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan
-        ).astype(np.float32)
+        std_arr = np.where(count_f > 0, np.sqrt(np.maximum(variance, 0.0)), np.nan).astype(
+            np.float32
+        )
         bcr_arr = np.where(count_f > 0, self.area / 100.0, np.nan).astype(np.float32)
         bcr_arr = np.clip(bcr_arr, 0.0, 1.0)
         max_arr = np.where(count_f > 0, self.max, np.nan).astype(np.float32)
@@ -754,14 +741,10 @@ class _Accumulator:
             },
             coords={"x": xs, "y": ys},
         )
-        return ds.rio.write_crs(str(self.grid.crs)).rio.write_transform(
-            self.grid.transform
-        )
+        return ds.rio.write_crs(str(self.grid.crs)).rio.write_transform(self.grid.transform)
 
 
-def _local_window_for_buildings(
-    buildings: list[Building], grid: GeoBox
-) -> Window | None:
+def _local_window_for_buildings(buildings: list[Building], grid: GeoBox) -> Window | None:
     """Compute a minimal canonical-grid window covering *buildings*.
 
     Returns ``None`` when the buildings do not intersect the grid.
@@ -953,14 +936,14 @@ def prepare_vintage_morphology(
     )
 
     ds = accumulator.to_dataset()
-    valid_frac = float(
-        np.count_nonzero(~np.isnan(ds["building_height_mean"].values))
-    ) / ds["building_height_mean"].size
+    valid_frac = (
+        float(np.count_nonzero(~np.isnan(ds["building_height_mean"].values)))
+        / ds["building_height_mean"].size
+    )
 
     archive_uri = archive_uri_for(raw_root, lod2_mat.spec)
     raw_manifest_uri = (
-        f"{manifest_root.rstrip('/')}/ard/static/sources/lod_vintages/"
-        f"raw_manifest_{vintage}.json"
+        f"{manifest_root.rstrip('/')}/ard/static/sources/lod_vintages/raw_manifest_{vintage}.json"
     )
 
     source_metadata = {
@@ -1112,9 +1095,7 @@ def publish_geometry_mapping(
         )
 
     legacy_uri = source_product_cog(legacy_source_root, "lod2_morphology", "2024")
-    legacy_src_dir = (
-        f"{legacy_source_root.rstrip('/')}/ard/static/sources/lod2_morphology/2024"
-    )
+    legacy_src_dir = f"{legacy_source_root.rstrip('/')}/ard/static/sources/lod2_morphology/2024"
 
     merged_vintage_artifacts = dict(vintage_artifacts)
     merged_vintage_artifacts[2024] = {
@@ -1274,13 +1255,8 @@ def derive_vintage_products(
         },
     )
     if not upstream_report.ok:
-        raise ValueError(
-            "Upstream source products missing: "
-            + "; ".join(upstream_report.errors)
-        )
-    upstream_map = {
-        f"{r.source}/{r.revision}": r for r in upstream_report.resolved
-    }
+        raise ValueError("Upstream source products missing: " + "; ".join(upstream_report.errors))
+    upstream_map = {f"{r.source}/{r.revision}": r for r in upstream_report.resolved}
     terrain = upstream_map.get("terrain_height/2021")
     vh = upstream_map.get("vegetation_height/2020")
     if terrain is None or vh is None:
@@ -1380,9 +1356,7 @@ def derive_vintage_products(
             upstream_hashes=upstream_hashes,
             grid=grid,
         )
-        combined_artifacts = finalize_secondary_product(
-            combined_dsm, grid, combined_dir, run_id
-        )
+        combined_artifacts = finalize_secondary_product(combined_dsm, grid, combined_dir, run_id)
         combined_cog_uri = combined_artifacts.cog_uri
         combined_hash = combined_dsm.config_hash
         artefacts["combined_dsm"] = combined_cog_uri
@@ -1428,9 +1402,7 @@ def derive_vintage_products(
             max_radius_m=max_radius_m,
             grid=grid,
         )
-        horizon_artifacts = finalize_secondary_product(
-            horizon_bldg, grid, horizon_dir, run_id
-        )
+        horizon_artifacts = finalize_secondary_product(horizon_bldg, grid, horizon_dir, run_id)
         artefacts["horizon_building"] = horizon_artifacts.cog_uri
         ledger_rows.append(
             _ledger_row(

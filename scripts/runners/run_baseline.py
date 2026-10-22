@@ -91,9 +91,7 @@ def main(cfg: DictConfig) -> int:
         )
         reader = RealPatchReader(source)
         requested = Counter(ref.split for ref in refs)
-        records, summaries = evaluate_baseline(
-            reader, refs, requested_per_split=dict(requested)
-        )
+        records, summaries = evaluate_baseline(reader, refs, requested_per_split=dict(requested))
 
         report = build_report(
             cfg=source,
@@ -102,9 +100,7 @@ def main(cfg: DictConfig) -> int:
             exclusions=dict(reader.exclusions),
             git_revision=git_revision_for(output_root, run_id),
         )
-        uri = write_report(
-            report, f"{output_root.rstrip('/')}/baseline_report.json"
-        )
+        uri = write_report(report, f"{output_root.rstrip('/')}/baseline_report.json")
 
         print(f"Baseline — run {run_id} ({report.method})")
         for split in sorted(summaries):

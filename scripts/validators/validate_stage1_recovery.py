@@ -57,9 +57,7 @@ EVIDENCE_PROFILE = "probe-residual"
 # The only learning rates the two recovery trials may have been run at.
 ALLOWED_TRIAL_LR = (1.0e-3, 3.0e-3)
 
-DEFAULT_BASELINE = (
-    "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
-)
+DEFAULT_BASELINE = "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
 
 _CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs" / "modeling")
 
@@ -71,6 +69,7 @@ def _guard_self_check() -> int:
     submission, plus deliberately invalid/valid screen evidence for the
     threshold logic.
     """
+
     def compose_cfg(config_name: str, overrides: list[str]):
         with initialize_config_dir(config_dir=_CONFIG_DIR, version_base=None):
             return compose(config_name=config_name, overrides=overrides)
@@ -209,15 +208,11 @@ def _screen_evidence(
             f"{VAL_NAIVE_FACTOR_CAP * cohort_naive:.4f}, {VAL_ABS_CAP_K})"
         )
     if last_val > VAL_REGRESSION_CAP * best_val:
-        failures.append(
-            f"final val MAE {last_val:.4f} > {VAL_REGRESSION_CAP}x best {best_val:.4f}"
-        )
+        failures.append(f"final val MAE {last_val:.4f} > {VAL_REGRESSION_CAP}x best {best_val:.4f}")
     if residual_prior is not True:
         failures.append("summary does not report the residual representation")
     if not _finite(identity_k) or float(identity_k) > IDENTITY_TOLERANCE_K:
-        failures.append(
-            f"residual identity MAE {identity_k!r} exceeds {IDENTITY_TOLERANCE_K} K"
-        )
+        failures.append(f"residual identity MAE {identity_k!r} exceeds {IDENTITY_TOLERANCE_K} K")
     floor = CORRECTION_MIN_FRACTION * cohort_naive
     if not _finite(correction_k) or float(correction_k) < floor:
         failures.append(
@@ -399,9 +394,7 @@ def validate(
         ids = [str(p) for p in patch_ids.get(split, [])]
         n_admitted = int(admitted.get(split, 0))
         if n_admitted != len(ids):
-            failures.append(
-                f"{split}: admitted count {n_admitted} != patch_ids length {len(ids)}"
-            )
+            failures.append(f"{split}: admitted count {n_admitted} != patch_ids length {len(ids)}")
         need = int(expected_admitted.get(split, 0))
         if n_admitted < need:
             failures.append(f"{split}: admitted {n_admitted} < required {need}")
@@ -475,8 +468,7 @@ def validate(
     )
     if matched != int(admitted.get("validation", 0)):
         failures.append(
-            f"cohort naive matched {matched} patches != admitted "
-            f"{admitted.get('validation')}"
+            f"cohort naive matched {matched} patches != admitted {admitted.get('validation')}"
         )
     best_val = min(val_maes)
     best_epoch = val_maes.index(best_val) + 1

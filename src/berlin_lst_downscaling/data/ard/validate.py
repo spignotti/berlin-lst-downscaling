@@ -23,6 +23,7 @@ from berlin_lst_downscaling.data.ard.contract import Contract
 # Minimum valid-pixel fraction to pass the "not all-NaN" check
 _MIN_VALID_FRAC = 0.01
 
+
 @dataclass
 class ValidationResult:
     """Result of a single COG validation."""
@@ -35,6 +36,7 @@ class ValidationResult:
     def fail(self, msg: str) -> None:
         self.ok = False
         self.errors.append(msg)
+
 
 def validate_cog(
     uri: str,
@@ -104,6 +106,7 @@ def validate_cog(
 
     return result
 
+
 def validate_flag_cog(
     uri: str,
     expected_grid: GeoBox,
@@ -156,7 +159,9 @@ def validate_flag_cog(
 
     return result
 
+
 # ── internal helpers ──────────────────────────────────────────────────
+
 
 def _check_nan(
     src: rasterio.DatasetReader,
@@ -187,6 +192,7 @@ def _check_nan(
             )
     except Exception as exc:
         result.fail(f"NaN check failed for band 1: {exc}")
+
 
 __all__ = [
     "ValidationResult",

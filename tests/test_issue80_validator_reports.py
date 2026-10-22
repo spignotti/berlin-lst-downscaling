@@ -165,9 +165,7 @@ def test_sample30_gt_30_strata_uses_seeded_draw_and_includes_later_years() -> No
     for index in range(36):
         year = 2000 + index // 12
         month = (index % 12) + 1
-        scenes.append(
-            SceneMeta(f"S{year}{month:02d}", "train", year, date(year, month, 15))
-        )
+        scenes.append(SceneMeta(f"S{year}{month:02d}", "train", year, date(year, month, 15)))
     ids_a, policy_a = select_train_scenes(scenes, scope="sample30", seed=0)
     ids_b, policy_b = select_train_scenes(scenes, scope="sample30", seed=0)
     assert ids_a == ids_b

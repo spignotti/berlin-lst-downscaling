@@ -88,11 +88,15 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"written": paths, "incomplete": result.incomplete}, indent=2))
         return 0
 
-    missing = [name for name, value in (
-        ("training-root", args.training_root),
-        ("patch-index-root", args.patch_index_root),
-        ("ard-root", args.ard_root),
-    ) if not value]
+    missing = [
+        name
+        for name, value in (
+            ("training-root", args.training_root),
+            ("patch-index-root", args.patch_index_root),
+            ("ard-root", args.ard_root),
+        )
+        if not value
+    ]
     if missing:
         raise SystemExit(f"real-data analysis requires: {', '.join(missing)} (or pass --synthetic)")
 

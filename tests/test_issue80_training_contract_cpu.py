@@ -110,14 +110,10 @@ def test_t4_backward_is_finite_and_deterministic() -> None:
 
 def test_residual_pool_prior_plus_residual_not_residual_plus_prior() -> None:
     prior = torch.full((1, 1, 10, 10), 280.0)
-    residual = torch.cat(
-        [torch.full((50,), 0.0), torch.full((50,), 40.0)]
-    ).reshape(1, 1, 10, 10)
+    residual = torch.cat([torch.full((50,), 0.0), torch.full((50,), 40.0)]).reshape(1, 1, 10, 10)
     combined = prior + residual
     correct = float(pool_10m_to_100m(combined, "t4"))
-    wrong = float(pool_10m_to_100m(prior, "t4")) + float(
-        pool_10m_to_100m(residual, "arithmetic")
-    )
+    wrong = float(pool_10m_to_100m(prior, "t4")) + float(pool_10m_to_100m(residual, "arithmetic"))
     assert correct == pytest.approx(_T4_REF, rel=_T4_F32_TOL)
     assert wrong == pytest.approx(300.0)
     assert correct != pytest.approx(wrong, rel=1e-4)

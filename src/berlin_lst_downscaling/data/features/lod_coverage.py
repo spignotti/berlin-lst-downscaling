@@ -130,8 +130,7 @@ def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCov
         members = _manifest_members(uri)
         if len(members) != _EXPECTED_MEMBERS[vintage]:
             raise ValueError(
-                f"raw manifest {uri}: {len(members)} members, "
-                f"expected {_EXPECTED_MEMBERS[vintage]}"
+                f"raw manifest {uri}: {len(members)} members, expected {_EXPECTED_MEMBERS[vintage]}"
             )
         keys = tuple(sorted({_tile_key(m, lod1=False) for m in members}))
         if len(keys) != _EXPECTED_MEMBERS[vintage]:
@@ -185,8 +184,7 @@ def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCov
     keys_2024 = tuple(sorted(set(keys_2024)))
     if len(keys_2024) != _EXPECTED_TILES_2024:
         raise ValueError(
-            f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, "
-            f"expected {_EXPECTED_TILES_2024}"
+            f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, expected {_EXPECTED_TILES_2024}"
         )
     cog_2024 = _cog_uri(root, 2024)
     out[2024] = LoDCoverageArtifact(

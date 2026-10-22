@@ -33,6 +33,7 @@ class LoadedBundle:
     pairings_table: pa.Table
     report: dict
 
+
 def load_bundle(
     manifest_uri: str,
     *,
@@ -90,6 +91,7 @@ def load_bundle(
 
     return LoadedBundle(bundle_dir, manifest_table, pairings_table, report), result
 
+
 @dataclass
 class ValidationResult:
     """Result of manifest/pairings validation."""
@@ -100,6 +102,7 @@ class ValidationResult:
     @property
     def ok(self) -> bool:
         return len(self.errors) == 0
+
 
 def validate_manifest_table(
     table: pa.Table,
@@ -203,6 +206,7 @@ def validate_manifest_table(
 
     return result
 
+
 def validate_pairings_table(
     table: pa.Table,
     manifest_table: pa.Table,
@@ -304,6 +308,7 @@ def validate_pairings_table(
 
     return result
 
+
 def validate_report_json(report: dict, manifest_hash: str, pairings_hash: str) -> ValidationResult:
     """Validate manifest_report.json structure and hashes."""
     result = ValidationResult()
@@ -333,6 +338,7 @@ def validate_report_json(report: dict, manifest_hash: str, pairings_hash: str) -
         result.errors.append("Report pairings_hash mismatch")
 
     return result
+
 
 __all__ = [
     "ValidationResult",

@@ -274,9 +274,7 @@ def _mask_grid_errors(src: rasterio.DatasetReader) -> list[str]:
     if src.count != 1 or src.dtypes[0] != "uint8":
         errors.append(f"band count/dtype {src.count}/{src.dtypes[0]}, expected 1/uint8")
     if src.transform.a != CELL_SIZE_M or src.transform.e != -CELL_SIZE_M:
-        errors.append(
-            f"transform not north-up 100 m (a={src.transform.a}, e={src.transform.e})"
-        )
+        errors.append(f"transform not north-up 100 m (a={src.transform.a}, e={src.transform.e})")
     if src.transform.b != 0.0 or src.transform.d != 0.0:
         errors.append("rotated/skewed transform")
     if (
@@ -580,9 +578,7 @@ def publish_patch_index(
     idempotent no-op. The completion marker is create-only and written last,
     after the publisher-side readback.
     """
-    _assert_outside_source(
-        str(build.qa.get("source", {}).get("release_root") or ""), output_root
-    )
+    _assert_outside_source(str(build.qa.get("source", {}).get("release_root") or ""), output_root)
     completion_uri = patch_index_completion(output_root)
     if exists(completion_uri):
         marker = json.loads(read_bytes(completion_uri))
@@ -710,9 +706,7 @@ def _readback_patch_index(
         table = pq.read_table(io.BytesIO(read_bytes(parquet_uri)))
         artifacts[parquet_uri] = True
         if table.num_rows != len(build.rows):
-            errors.append(
-                f"patch_index row count {table.num_rows} != expected {len(build.rows)}"
-            )
+            errors.append(f"patch_index row count {table.num_rows} != expected {len(build.rows)}")
         missing = [name for name in PATCH_INDEX_FIELDNAMES if name not in table.column_names]
         if missing:
             errors.append(f"patch_index missing columns: {missing}")

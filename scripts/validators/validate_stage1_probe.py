@@ -46,9 +46,7 @@ VAL_REGRESSION_CAP = 1.25  # final val MAE at most 1.25x the best val MAE
 NAIVE_FACTOR_CAP = 10.0  # best val MAE at most 10x the same-cohort naive MAE
 RECHECK_TOLERANCE = 1e-3
 
-DEFAULT_BASELINE = (
-    "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
-)
+DEFAULT_BASELINE = "docs/results/baseline-full-20260929T084243Z-29A5F946/baseline_report.json"
 
 _CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "configs" / "modeling")
 
@@ -60,6 +58,7 @@ def _guard_self_check() -> int:
     submission. This is the "positive and deliberately invalid config probe"
     the plan requires before paid work; it is separate from evidence validation.
     """
+
     def compose_probe(overrides: list[str]):
         with initialize_config_dir(config_dir=_CONFIG_DIR, version_base=None):
             return compose(config_name="stage1_probe", overrides=overrides)
@@ -248,9 +247,7 @@ def validate(
         failures.append(f"admitted splits {sorted(patch_ids)} are not train/validation only")
 
     resolved = summary.get("resolved_config")
-    probe_cfg = (
-        resolved.get("data", {}).get("probe") if isinstance(resolved, dict) else None
-    )
+    probe_cfg = resolved.get("data", {}).get("probe") if isinstance(resolved, dict) else None
     if not isinstance(probe_cfg, dict):
         return False, ["summary.resolved_config has no data.probe block"], notes
     expected_admitted = probe_cfg.get("min_admitted_per_split", {})
@@ -262,9 +259,7 @@ def validate(
         ids = [str(p) for p in patch_ids.get(split, [])]
         n_admitted = int(admitted.get(split, 0))
         if n_admitted != len(ids):
-            failures.append(
-                f"{split}: admitted count {n_admitted} != patch_ids length {len(ids)}"
-            )
+            failures.append(f"{split}: admitted count {n_admitted} != patch_ids length {len(ids)}")
         need = int(expected_admitted.get(split, 0))
         if n_admitted < need:
             failures.append(f"{split}: admitted {n_admitted} < required {need}")
@@ -283,13 +278,12 @@ def validate(
             )
 
     train_years = {
-        y for y in (_scene_year(_scene_id(str(p))) for p in patch_ids.get("train", []))
+        y
+        for y in (_scene_year(_scene_id(str(p))) for p in patch_ids.get("train", []))
         if y is not None
     }
     if len(train_years) < expected_years:
-        failures.append(
-            f"train covers {len(train_years)} years < required {expected_years}"
-        )
+        failures.append(f"train covers {len(train_years)} years < required {expected_years}")
 
     # ── independent reconciliation against the published index ────────
     baseline_index = _baseline_index(baseline)
@@ -328,8 +322,7 @@ def validate(
 
     notes.append(f"train MAE: {first_train:.4f} -> {last_train:.4f}")
     notes.append(
-        f"val MAE:   {first_val:.4f} -> {last_val:.4f} "
-        f"(best {best_val:.4f} @ epoch {best_epoch})"
+        f"val MAE:   {first_val:.4f} -> {last_val:.4f} (best {best_val:.4f} @ epoch {best_epoch})"
     )
 
     if last_train > (1.0 - TRAIN_IMPROVEMENT) * first_train:
@@ -343,21 +336,17 @@ def validate(
             f"({first_val:.4f} -> {best_val:.4f})"
         )
     if last_val > VAL_REGRESSION_CAP * best_val:
-        failures.append(
-            f"final val MAE {last_val:.4f} > {VAL_REGRESSION_CAP}x best {best_val:.4f}"
-        )
+        failures.append(f"final val MAE {last_val:.4f} > {VAL_REGRESSION_CAP}x best {best_val:.4f}")
 
     cohort_naive, matched = _cohort_naive_mae(
         baseline_index, [str(p) for p in patch_ids["validation"]], "validation"
     )
     notes.append(
-        f"same-cohort naive validation MAE: {cohort_naive:.4f} "
-        f"({matched} matched patches)"
+        f"same-cohort naive validation MAE: {cohort_naive:.4f} ({matched} matched patches)"
     )
     if matched != int(admitted.get("validation", 0)):
         failures.append(
-            f"cohort naive matched {matched} patches != admitted "
-            f"{admitted.get('validation')}"
+            f"cohort naive matched {matched} patches != admitted {admitted.get('validation')}"
         )
     if best_val > NAIVE_FACTOR_CAP * cohort_naive:
         failures.append(
@@ -375,9 +364,7 @@ def validate(
     if not _finite(recomputed):
         failures.append("summary reload_recomputed is missing or non-finite")
     elif _finite(best_metric) and abs(float(recomputed) - float(best_metric)) > RECHECK_TOLERANCE:
-        failures.append(
-            f"reload recheck {recomputed!r} != selected {best_metric!r}"
-        )
+        failures.append(f"reload recheck {recomputed!r} != selected {best_metric!r}")
 
     return True, failures, notes
 

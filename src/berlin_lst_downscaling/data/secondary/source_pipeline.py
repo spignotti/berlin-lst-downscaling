@@ -90,9 +90,11 @@ def run_sources(cfg: DictConfig, run_id: str | None = None) -> int:
     log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
     return 0 if failed == 0 else 1
 
+
 _logger = logging.getLogger(__name__)
 
 # ── runners ──────────────────────────────────────────────────────────
+
 
 def _run_imperviousness(
     led: SecondaryLedger,
@@ -148,9 +150,7 @@ def _run_imperviousness(
                 vintage=vintage,
                 reason=reason,
             )
-            prepared = prepare_imperviousness(
-                vintage, source_root, run_id, grid=grid, aux=aux
-            )
+            prepared = prepare_imperviousness(vintage, source_root, run_id, grid=grid, aux=aux)
             prod_dir = source_product_dir(source_root, "imperviousness", str(vintage))
             artifacts = finalize_secondary_product(
                 prepared,
@@ -204,6 +204,7 @@ def _run_imperviousness(
         )
 
     return failed
+
 
 def _run_vegetation_height(
     led: SecondaryLedger,
@@ -307,6 +308,7 @@ def _run_vegetation_height(
         )
 
     return failed
+
 
 def _run_terrain_height(
     led: SecondaryLedger,
@@ -418,6 +420,7 @@ def _run_terrain_height(
 
     return failed
 
+
 def _run_lod2_morphology(
     led: SecondaryLedger,
     cfg: DictConfig,
@@ -528,7 +531,9 @@ def _run_lod2_morphology(
 
     return failed
 
+
 # ── grid resolution ──────────────────────────────────────────────────
+
 
 def _resolve_grid(cfg: DictConfig):
     """Return the output grid for this run.
@@ -541,7 +546,9 @@ def _resolve_grid(cfg: DictConfig):
         return smoke_grid(tuple(bbox))
     return canon_grid_10m()
 
+
 # ── banner ───────────────────────────────────────────────────────────
+
 
 def _banner(cfg: DictConfig, run_id: str, source_root: str) -> None:
     log_event(

@@ -34,6 +34,7 @@ _FLAG_OV_RESAMPLING = "NEAREST"
 
 # ── COG write (main band file, float32) ──────────────────────────────
 
+
 def write_cog_atomic(
     ds: xr.Dataset,
     dst: str,
@@ -149,7 +150,9 @@ def write_cog_atomic(
 
     return dst
 
+
 # ── COG write (flag band, uint8) ─────────────────────────────────────
+
 
 def write_flag_cog_atomic(
     flag_da: xr.DataArray,
@@ -225,7 +228,9 @@ def write_flag_cog_atomic(
 
     return dst
 
+
 # ── STAC item ────────────────────────────────────────────────────────
+
 
 def write_stac_atomic(
     stac_item: dict[str, Any],
@@ -257,7 +262,9 @@ def write_stac_atomic(
 
     return dst
 
+
 # ── helpers ──────────────────────────────────────────────────────────
+
 
 def _build_staging_profile(
     common_dtype: str,
@@ -289,6 +296,7 @@ def _build_staging_profile(
         profile["nodata"] = nodata
     return profile
 
+
 def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
     """Return a single dtype string that all bands can be cast to."""
     dt_set = set(str(d) for d in dtypes)
@@ -299,6 +307,7 @@ def _common_dtype(dtypes: Sequence[np.dtype]) -> str:
     sizes = [int(d[-2:]) for d in dt_set if d[-2:].isdigit()]
     max_bits = max(sizes) if sizes else 8
     return f"uint{max_bits}"
+
 
 __all__ = [
     "write_cog_atomic",

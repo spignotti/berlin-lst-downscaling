@@ -27,6 +27,7 @@ from berlin_lst_downscaling.data.selection._time import (
 
 _logger = logging.getLogger(__name__)
 
+
 def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     """Return S2 L2A candidates within ±window_days of anchor's acquisition.
 
@@ -88,6 +89,7 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
 
     candidates.sort(key=lambda c: c["dt_days"])
     return candidates
+
 
 def match_s2_candidates_with_clear_frac(
     anchor: dict,
@@ -177,6 +179,7 @@ def match_s2_candidates_with_clear_frac(
 
     return candidates
 
+
 def _cf_diagnostic_entry(candidate: dict, clear_frac: float | None, counts: dict | None) -> dict:
     entry = {
         "s2_id": candidate["scene_id"],
@@ -194,6 +197,7 @@ def _cf_diagnostic_entry(candidate: dict, clear_frac: float | None, counts: dict
             }
         )
     return entry
+
 
 def _resolve_s2_items(
     datetimes: list,

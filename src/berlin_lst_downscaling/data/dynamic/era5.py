@@ -89,6 +89,7 @@ _BERLIN_LON = 13.42
 
 # ── helpers ────────────────────────────────────────────────────────────
 
+
 def normalize_acquisition_hour(acquisition_dt: datetime) -> datetime:
     """Round a tz-aware acquisition datetime to the nearest UTC hour.
 
@@ -124,6 +125,7 @@ def _vpd_from_t_d2m(t_k: float, d2m_k: float) -> float:
 
 
 # ── contract ───────────────────────────────────────────────────────────
+
 
 def contract_for_era5_scene() -> Contract:
     """Return the output Contract for ERA5 scene COGs (8 bands)."""
@@ -181,8 +183,7 @@ def contract_for_era5_scene() -> Contract:
                 dtype="float32",
                 nodata=float("nan"),
                 description=(
-                    "10m wind speed at Landsat acquisition time. "
-                    "Magnitude of u10/v10 components."
+                    "10m wind speed at Landsat acquisition time. Magnitude of u10/v10 components."
                 ),
                 unit="m/s",
                 valid_range=(0.0, 50.0),
@@ -192,8 +193,7 @@ def contract_for_era5_scene() -> Contract:
                 dtype="float32",
                 nodata=float("nan"),
                 description=(
-                    "Total precipitation (mm) in the 24 hours ending at "
-                    "the acquisition hour."
+                    "Total precipitation (mm) in the 24 hours ending at the acquisition hour."
                 ),
                 unit="mm",
                 valid_range=(0.0, 500.0),
@@ -203,8 +203,7 @@ def contract_for_era5_scene() -> Contract:
                 dtype="float32",
                 nodata=float("nan"),
                 description=(
-                    "Total precipitation (mm) from 24 to 48 hours "
-                    "before the acquisition hour."
+                    "Total precipitation (mm) from 24 to 48 hours before the acquisition hour."
                 ),
                 unit="mm",
                 valid_range=(0.0, 500.0),
@@ -214,8 +213,7 @@ def contract_for_era5_scene() -> Contract:
                 dtype="float32",
                 nodata=float("nan"),
                 description=(
-                    "Total precipitation (mm) from 48 to 72 hours "
-                    "before the acquisition hour."
+                    "Total precipitation (mm) from 48 to 72 hours before the acquisition hour."
                 ),
                 unit="mm",
                 valid_range=(0.0, 500.0),
@@ -226,10 +224,13 @@ def contract_for_era5_scene() -> Contract:
         flag_mode="none",
     )
 
+
 # ── ERA5 cache management ─────────────────────────────────────────────
+
 
 def _cache_nc_path(output_root: str, year: int, month: int) -> str:
     return era5_cache_path(output_root, year, month)
+
 
 def _ensure_month_cached(
     output_root: str,
@@ -287,6 +288,7 @@ def _ensure_month_cached(
         )
         return None
 
+
 def _download_gcs_to_local(gcs_uri: str, local_path: Path) -> None:
     """Stream-download a GCS object to a local path (no full-file RAM load)."""
     from google.cloud import storage
@@ -295,6 +297,7 @@ def _download_gcs_to_local(gcs_uri: str, local_path: Path) -> None:
     client = storage.Client()
     blob = client.bucket(bucket_name).blob(key)
     blob.download_to_filename(str(local_path))
+
 
 def _download_era5_month(year: int, month: int, target: Path) -> None:
     """Retrieve a single month of ERA5-Land for Berlin AOI via CDS API.
@@ -338,9 +341,11 @@ def _download_era5_month(year: int, month: int, target: Path) -> None:
         target.write_bytes(zf.read(nc_names[0]))
     zip_path.unlink(missing_ok=True)
 
+
 # ── ERA5 decode and validation ─────────────────────────────────────────
 
 _REQUIRED_ERA5_VARS = {"t2m", "d2m", "u10", "v10", "ssrd", "tp"}
+
 
 def _decode_and_validate_monthly_era5(
     nc_path: str | Path,
@@ -403,7 +408,9 @@ def _decode_and_validate_monthly_era5(
 
     return ds
 
+
 # ── native-grid derivation ─────────────────────────────────────────────
+
 
 def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
     """Convert cumulative SSRD (J/m²) to hourly irradiance (W/m²).
@@ -438,6 +445,7 @@ def _ssrd_to_hourly(ssrd: xr.DataArray) -> xr.DataArray:
         attrs=ssrd.attrs,
     )
 
+
 def _tp_to_hourly(tp: xr.DataArray) -> xr.DataArray:
     """Convert cumulative total precipitation (m) to hourly amounts (m).
 
@@ -452,9 +460,9 @@ def _tp_to_hourly(tp: xr.DataArray) -> xr.DataArray:
         if h == 1:
             hourly[t] = tp.data[t].astype(np.float32)
         else:
-            hourly[t] = (
-                tp.data[t].astype(np.float64) - tp.data[t - 1].astype(np.float64)
-            ).astype(np.float32)
+            hourly[t] = (tp.data[t].astype(np.float64) - tp.data[t - 1].astype(np.float64)).astype(
+                np.float32
+            )
 
     return xr.DataArray(
         hourly,
@@ -462,6 +470,7 @@ def _tp_to_hourly(tp: xr.DataArray) -> xr.DataArray:
         dims=tp.dims,
         attrs=tp.attrs,
     )
+
 
 def _derive_native_fields(
     ds: xr.Dataset,
@@ -498,13 +507,11 @@ def _derive_native_fields(
     vpd_2d = np.maximum(es - ea, 0.0)
 
     # Wind speed: magnitude elementwise
-    wind_2d = np.sqrt(u10_2d ** 2 + v10_2d ** 2)
+    wind_2d = np.sqrt(u10_2d**2 + v10_2d**2)
 
     # ── ssrd: convert to hourly, extract 72h mean and scene value ─────
     # Work on full native grid
-    ssrd_hourly_3d = np.empty(
-        (len(time_vals), t2m_2d.shape[0], t2m_2d.shape[1]), dtype=np.float32
-    )
+    ssrd_hourly_3d = np.empty((len(time_vals), t2m_2d.shape[0], t2m_2d.shape[1]), dtype=np.float32)
     ssrd_raw = ds["ssrd"].values
     for t in range(len(time_vals)):
         h = int(time_vals[t].astype("datetime64[h]").astype(int) % 24)
@@ -563,7 +570,9 @@ def _derive_native_fields(
         "tp_48_72h": tp_48_72_2d,
     }
 
+
 # ── spatial reprojection ───────────────────────────────────────────────
+
 
 def _reproject_to_canonical(
     ds: xr.Dataset,
@@ -603,7 +612,9 @@ def _reproject_to_canonical(
     del ds_wgs84
     return results
 
+
 # ── public API ─────────────────────────────────────────────────────────
+
 
 def prepare_era5_scene(
     scene_id: str,
@@ -780,9 +791,7 @@ def prepare_era5_scene(
                 float(reprojected["ssrd_antecedent_72h_mean"][cy, cx]), 2
             ),
             "vpd_scene": round(float(reprojected["vpd_scene"][cy, cx]), 4),
-            "wind_speed_10m_scene": round(
-                float(reprojected["wind_speed_10m_scene"][cy, cx]), 2
-            ),
+            "wind_speed_10m_scene": round(float(reprojected["wind_speed_10m_scene"][cy, cx]), 2),
             "tp_0_24h": round(float(reprojected["tp_0_24h"][cy, cx]), 2),
             "tp_24_48h": round(float(reprojected["tp_24_48h"][cy, cx]), 2),
             "tp_48_72h": round(float(reprojected["tp_48_72h"][cy, cx]), 2),
@@ -808,6 +817,7 @@ def prepare_era5_scene(
     # Free intermediate arrays before returning to keep per-scene RSS bounded.
     del reprojected
     import gc
+
     gc.collect()
 
 

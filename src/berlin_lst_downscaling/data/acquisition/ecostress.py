@@ -63,6 +63,7 @@ RE_GRANULE = re.compile(
     r"_(?P<rev>\d+)$",
 )
 
+
 def parse_granule_datetime(granule_id: str) -> datetime | None:
     """Extract UTC acquisition datetime from a granule ID, or None if unparseable."""
     m = RE_GRANULE.match(granule_id)
@@ -73,7 +74,9 @@ def parse_granule_datetime(granule_id: str) -> datetime | None:
     except ValueError:
         return None
 
+
 # ── public API ───────────────────────────────────────────────────────
+
 
 def load_ecostress_scene(
     granule_id: str,
@@ -187,7 +190,9 @@ def load_ecostress_scene(
 
     return ds_out, [granule_id]
 
+
 # ── internal helpers ──────────────────────────────────────────────────
+
 
 def _resolve_granule_uri(raw_dir: str, granule_id: str, layer: str) -> str:
     """Return the URI string for a granule layer TIF.
@@ -212,6 +217,7 @@ def _resolve_granule_uri(raw_dir: str, granule_id: str, layer: str) -> str:
         # Local POSIX
         return f"{raw_str}/{granule_id}/{granule_leaf}"
 
+
 def _assert_granule_layer_exists(uri: str) -> None:
     """Raise FileNotFoundError if the URI cannot be opened by rasterio."""
     try:
@@ -219,6 +225,7 @@ def _assert_granule_layer_exists(uri: str) -> None:
             pass
     except Exception as exc:  # rasterio raises RasterioIOError on 404 / ENOENT on missing
         raise FileNotFoundError(f"ECOSTRESS L2T layer not found or not readable: {uri}") from exc
+
 
 def download_and_stage_granule(
     granule_id: str,
@@ -289,6 +296,7 @@ def download_and_stage_granule(
 
     return str(stage.uri.uri)
 
+
 def _download_to_tmp(
     granule: dict,
     tmp_dir: Path,
@@ -315,12 +323,14 @@ def _download_to_tmp(
         f"Download failed after 3 attempts for {granule['meta']['native-id']}: {last_exc}"
     ) from last_exc
 
+
 def parse_granule_mgrs(granule_id: str) -> str | None:
     """Extract MGRS tile from a granule ID (e.g. 33UUU)."""
     parts = granule_id.split("_")
     if len(parts) >= 6:
         return parts[5]
     return None
+
 
 __all__ = [
     "load_ecostress_scene",

@@ -61,10 +61,7 @@ def _ledger_scene_ids(root: str) -> list[str]:
     cols = table.to_pydict()
     ids: list[str] = []
     for i in range(table.num_rows):
-        if (
-            str(cols["source"][i]) == "feature_stack"
-            and str(cols["status"][i]) == "done"
-        ):
+        if str(cols["source"][i]) == "feature_stack" and str(cols["status"][i]) == "done":
             ids.append(str(cols["period_or_vintage"][i]))
     return sorted(set(ids))
 
@@ -142,13 +139,9 @@ def compare_scene(
                 n_bad_growth += int(np.sum(growth & ~lod_zero))
 
         if n_value_mismatch:
-            errors.append(
-                f"{scene_id}: {n_value_mismatch} V2-valid px differ between releases"
-            )
+            errors.append(f"{scene_id}: {n_value_mismatch} V2-valid px differ between releases")
         if n_bad_growth:
-            errors.append(
-                f"{scene_id}: {n_bad_growth} newly valid px without zero LoD bands"
-            )
+            errors.append(f"{scene_id}: {n_bad_growth} newly valid px without zero LoD bands")
     return stats
 
 

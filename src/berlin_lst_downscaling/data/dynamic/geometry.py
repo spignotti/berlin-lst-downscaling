@@ -18,6 +18,7 @@ _logger = logging.getLogger(__name__)
 
 # ── geometry mapping ────────────────────────────────────────────────────
 
+
 @dataclass
 class GeometryMapping:
     """Parsed and validated geometry_mapping.json."""
@@ -32,6 +33,7 @@ class GeometryMapping:
     vegetation_horizon_uri: str  # fixed VH-2020 horizon
     vegetation_horizon_hash: str  # config hash of the finalised VH horizon
 
+
 @dataclass
 class SceneGeometry:
     """Resolved geometry for one scene."""
@@ -42,6 +44,7 @@ class SceneGeometry:
     building_horizon_uri: str
     vegetation_horizon_uri: str
     vegetation_horizon_hash: str
+
 
 @dataclass
 class GeometryMappingReport:
@@ -202,9 +205,7 @@ def resolve_scene_geometry(
     building_horizon = mapping.building_horizons.get(vintage, "")
 
     if not building_horizon:
-        raise ValueError(
-            f"No building horizon for vintage {vintage} (scene year {scene_year})"
-        )
+        raise ValueError(f"No building horizon for vintage {vintage} (scene year {scene_year})")
 
     return SceneGeometry(
         scene_year=scene_year,
@@ -214,6 +215,7 @@ def resolve_scene_geometry(
         vegetation_horizon_uri=mapping.vegetation_horizon_uri,
         vegetation_horizon_hash=mapping.vegetation_horizon_hash,
     )
+
 
 __all__ = [
     "GeometryMapping",

@@ -1087,9 +1087,7 @@ def main() -> int:
                 if artifact is None:
                     errors.append(f"{pid} stage {stage_id}: no report record for the probe")
                     continue
-                prediction = _prediction_100m(
-                    probe["prior_100m"][k], stored, method=aggregation
-                )
+                prediction = _prediction_100m(probe["prior_100m"][k], stored, method=aggregation)
                 _, total = _error_sum(prediction, rebuilt["target"], rebuilt["mask"])
                 if not np.isclose(
                     total, float(artifact["abs_error_sum"]), rtol=_SUM_RTOL, atol=_SUM_ATOL

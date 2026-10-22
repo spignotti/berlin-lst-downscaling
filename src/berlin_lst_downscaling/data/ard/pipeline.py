@@ -73,6 +73,7 @@ def _schema_hash(source: str, contract: Contract, cfg: DictConfig) -> str:
 
 # ── per-source runner registry ───────────────────────────────────────
 
+
 def _run_landsat_scene(
     scene_id: str,
     source: str,
@@ -130,6 +131,7 @@ def _run_landsat_scene(
         )
     return mask_landsat(ds, cfg)
 
+
 def _run_sentinel2_scene(
     scene_id: str,
     source: str,
@@ -172,6 +174,7 @@ def _run_sentinel2_scene(
     masked = mask_s2(ds_10m, ds_20m, cfg, az, el)
     return masked
 
+
 def _run_ecostress_scene(
     scene_id: str,
     source: str,
@@ -209,6 +212,7 @@ def _run_ecostress_scene(
     masked = mask_ecostress(ds, cfg)
     return masked
 
+
 # Registry maps source key → per-source runner function.
 # Each runner returns a masked xr.Dataset ready for COG writing.
 _RUNNERS: dict[str, Callable[..., Any]] = {
@@ -218,6 +222,7 @@ _RUNNERS: dict[str, Callable[..., Any]] = {
 }
 
 # ── main entry ───────────────────────────────────────────────────────
+
 
 def run(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the ARD pipeline — manifest-driven (mode=full).
@@ -246,6 +251,7 @@ def run(cfg: DictConfig, run_id: str | None = None) -> int:
 
     return 0 if failed_count == 0 else 1
 
+
 def _process_manifest(
     source: str,
     contract: Contract,
@@ -271,10 +277,7 @@ def _process_manifest(
 
     bundle, validation = load_bundle(manifest_uri, require_item_href=True)
     if not validation.ok:
-        raise RuntimeError(
-            "manifest bundle validation failed: "
-            + "; ".join(validation.errors)
-        )
+        raise RuntimeError("manifest bundle validation failed: " + "; ".join(validation.errors))
     tbl = bundle.manifest_table
     if tbl.num_rows == 0:
         return
@@ -340,6 +343,7 @@ def _process_manifest(
                 scene_date=meta.get("acquisition_datetime"),
             )
 
+
 def _resolve_manifest_items(
     scene_id: str,
     source: str,
@@ -387,6 +391,7 @@ def _resolve_manifest_items(
             error=str(exc),
         )
         return None
+
 
 def _process_ecostress_todo(
     todo: list[tuple[str, str, int, str]],
@@ -437,7 +442,9 @@ def _process_ecostress_todo(
             )
         # Stage cleaned up automatically on StageSession.__exit__
 
+
 # ── per-scene processing ─────────────────────────────────────────────
+
 
 def _run_scene(
     scene_id: str,
@@ -676,7 +683,9 @@ def _run_scene(
         )
         # do not re-raise — outer loop continues
 
+
 # ── solar position ───────────────────────────────────────────────────
+
 
 def _solar_for_scene(
     ds: xr.Dataset,
@@ -710,6 +719,7 @@ def _int_or_none(val) -> int | None:
         return None
     return int(val)
 
+
 def _float_or_none(val) -> float | None:
     """Convert value to float, returning None for None or NaN."""
     if val is None:
@@ -717,6 +727,7 @@ def _float_or_none(val) -> float | None:
     if isinstance(val, float) and val != val:  # NaN
         return None
     return float(val)
+
 
 __all__ = [
     "run",

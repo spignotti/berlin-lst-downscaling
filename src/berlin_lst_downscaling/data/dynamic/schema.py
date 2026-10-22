@@ -50,6 +50,7 @@ def config_hash_for_dynamic(
     )
     return sha256(payload.encode()).hexdigest()[:16]
 
+
 def config_hash_for_era5(
     manifest_hash: str,
     geometry_mapping_hash: str,
@@ -73,6 +74,7 @@ def config_hash_for_era5(
         sort_keys=True,
     )
     return sha256(payload.encode()).hexdigest()[:16]
+
 
 def config_hash_for_shadow_vegetation(
     manifest_hash: str,
@@ -100,6 +102,7 @@ def config_hash_for_shadow_vegetation(
         sort_keys=True,
     )
     return sha256(payload.encode()).hexdigest()[:16]
+
 
 __all__ = [
     "ERA5_CHANNELS",

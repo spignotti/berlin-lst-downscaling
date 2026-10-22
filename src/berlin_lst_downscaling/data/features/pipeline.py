@@ -134,8 +134,7 @@ def _resolve_vegetation_carry_forward(
             if uri:
                 return str(uri)
     raise RuntimeError(
-        f"vegetation_dsm not done for carry-forward geometry {geometry_id!r} "
-        f"(ledger {ledger_uri})"
+        f"vegetation_dsm not done for carry-forward geometry {geometry_id!r} (ledger {ledger_uri})"
     )
 
 
@@ -189,9 +188,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     mapping = mapping_report.mapping
 
     if carry_forward_vintage not in mapping.vintages:
-        raise RuntimeError(
-            f"carry-forward vintage {carry_forward_vintage} not in geometry mapping"
-        )
+        raise RuntimeError(f"carry-forward vintage {carry_forward_vintage} not in geometry mapping")
     veg_geometry_id = str(mapping.vintages[carry_forward_vintage].get("geometry_id", ""))
     if not veg_geometry_id:
         raise RuntimeError(f"vintage {carry_forward_vintage} has no geometry_id")
@@ -204,9 +201,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     # ── 1. vegetation carry-forward + AOI ────────────────────────────
     veg_dsm_uri = _resolve_vegetation_carry_forward(static_derived_root, veg_geometry_id)
     aoi_fingerprint = sha256_bytes(read_bytes(aoi_uri))[:16]
-    vegetation_policy = (
-        f"carry_forward_vintage_{carry_forward_vintage}_geometry_{veg_geometry_id}"
-    )
+    vegetation_policy = f"carry_forward_vintage_{carry_forward_vintage}_geometry_{veg_geometry_id}"
     log_event(
         _logger,
         logging.INFO,
@@ -245,9 +240,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         }
         for v, a in lod_artifacts.items()
     }
-    coverage_masks = {
-        v: rasterize_lod_coverage(a, grid) for v, a in lod_artifacts.items()
-    }
+    coverage_masks = {v: rasterize_lod_coverage(a, grid) for v, a in lod_artifacts.items()}
 
     # ── 4. config hash ───────────────────────────────────────────────
     config_hash = config_hash_for_features(
@@ -314,9 +307,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     exclusion_reasons: dict[str, int] = {}
     for r in results:
         if r.status == "excluded" and r.exclusion_reason:
-            exclusion_reasons[r.exclusion_reason] = exclusion_reasons.get(
-                r.exclusion_reason, 0
-            ) + 1
+            exclusion_reasons[r.exclusion_reason] = exclusion_reasons.get(r.exclusion_reason, 0) + 1
 
     report = FeatureRunReport(
         run_id=run_id,
@@ -547,9 +538,7 @@ def _existing_coverage(
     """
     row = led.get(item_id, source, scene_id)
     if row is None or not row.provenance_uri:
-        raise RuntimeError(
-            f"scene {scene_id}: provenance URI missing for completed stack"
-        )
+        raise RuntimeError(f"scene {scene_id}: provenance URI missing for completed stack")
     try:
         import json
 

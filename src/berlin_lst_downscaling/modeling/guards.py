@@ -82,10 +82,7 @@ def contract_invariants(cfg: DictConfig) -> None:
         )
     if not bool(cfg.get("ablation_lock", False)) and loss != "masked_l1":
         raise ValueError("thermal_aware loss is only admitted on ablation_lock configs")
-    if (
-        not bool(cfg.get("ablation_lock", False))
-        and feature_order != "v3_first_c"
-    ):
+    if not bool(cfg.get("ablation_lock", False)) and feature_order != "v3_first_c":
         raise ValueError("v3_named_subset is only admitted on ablation_lock configs")
     if split_for_year(2024) != "validation" or split_for_year(2025) != "test":
         raise RuntimeError("temporal split contract no longer maps 2024/2025 as frozen")
@@ -128,21 +125,14 @@ def _check_ablation_channels(
     selection = selection_from_config(cfg)
     if list(selection.names) != expected_names:
         problems.append(
-            f"active channels for {label} must be {expected_names}; "
-            f"got {list(selection.names)}"
+            f"active channels for {label} must be {expected_names}; got {list(selection.names)}"
         )
     actual_loss = OmegaConf.select(cfg, "contract.loss")
     if actual_loss != expected_loss:
-        problems.append(
-            f"contract.loss={actual_loss!r} (expected {expected_loss!r} for {label})"
-        )
+        problems.append(f"contract.loss={actual_loss!r} (expected {expected_loss!r} for {label})")
     cache_bytes = OmegaConf.select(cfg, "data.cache_max_bytes")
     min_cache = int(_STAGE1_CACHE_BYTES * (selection.n_active / _STAGE1_CACHE_CHANNELS))
-    if (
-        isinstance(cache_bytes, bool)
-        or not isinstance(cache_bytes, int)
-        or cache_bytes < min_cache
-    ):
+    if isinstance(cache_bytes, bool) or not isinstance(cache_bytes, int) or cache_bytes < min_cache:
         problems.append(
             f"data.cache_max_bytes={cache_bytes!r} "
             f"(expected an int >= {min_cache} for C={selection.n_active})"
@@ -156,9 +146,7 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
         problems.append("ablation_lock marker is not true")
     stage = cfg.get("ablation_stage")
     isolation = cfg.get("ablation_isolation")
-    stage_ok = (
-        not isinstance(stage, bool) and isinstance(stage, int) and stage in (2, 3, 4, 5)
-    )
+    stage_ok = not isinstance(stage, bool) and isinstance(stage, int) and stage in (2, 3, 4, 5)
     isolation_ok = isinstance(isolation, str) and isolation in ABLATION_ISOLATION_CHANNELS
     if stage_ok and isolation_ok:
         problems.append("ablation_stage and ablation_isolation are mutually exclusive")
@@ -169,9 +157,7 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
             )
     elif isolation_ok:
         if stage is not None:
-            problems.append(
-                f"ablation_stage={stage!r} (expected null on an isolation run)"
-            )
+            problems.append(f"ablation_stage={stage!r} (expected null on an isolation run)")
     else:
         problems.append(
             f"ablation_stage={stage!r} ablation_isolation={isolation!r} "
@@ -212,21 +198,16 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
     # worker refuse a drifted ablation submit without a separate marker.
     if str(OmegaConf.select(cfg, "trainer.accelerator")) != "gpu":
         problems.append(
-            f"trainer.accelerator={OmegaConf.select(cfg, 'trainer.accelerator')!r} "
-            "(expected 'gpu')"
+            f"trainer.accelerator={OmegaConf.select(cfg, 'trainer.accelerator')!r} (expected 'gpu')"
         )
     devices = OmegaConf.select(cfg, "trainer.devices")
     if isinstance(devices, bool) or not isinstance(devices, int) or devices != 1:
         problems.append(f"trainer.devices={devices!r} (expected 1)")
     if str(OmegaConf.select(cfg, "wandb.mode")) != "online":
-        problems.append(
-            f"wandb.mode={OmegaConf.select(cfg, 'wandb.mode')!r} (expected 'online')"
-        )
+        problems.append(f"wandb.mode={OmegaConf.select(cfg, 'wandb.mode')!r} (expected 'online')")
     output_root = str(cfg.get("output_root", ""))
     if not output_root or output_root.startswith("gs://") or "/runs/" not in output_root:
-        problems.append(
-            f"output_root={output_root!r} (expected a job-local path under data/runs/)"
-        )
+        problems.append(f"output_root={output_root!r} (expected a job-local path under data/runs/)")
     if problems:
         raise ValueError("ablation lock is off-contract: " + "; ".join(problems))
 
@@ -804,8 +785,7 @@ def assert_aggregation_arithmetic_for_locked(cfg: DictConfig, config_name: str |
     method = resolve_aggregation_method(cfg.get("aggregation"))
     if method != AGGREGATION_ARITHMETIC:
         raise ValueError(
-            f"config {config_name!r} is locked to aggregation='arithmetic'; "
-            f"got {method!r}"
+            f"config {config_name!r} is locked to aggregation='arithmetic'; got {method!r}"
         )
 
 

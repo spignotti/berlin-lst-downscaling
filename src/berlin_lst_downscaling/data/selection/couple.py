@@ -27,6 +27,7 @@ def couple_all(
 
     return coupled, dropped
 
+
 def couple_one_anchor(
     anchor: dict,
     s2_candidates: list[dict],

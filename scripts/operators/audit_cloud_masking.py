@@ -148,9 +148,7 @@ def _load_ard_flags(ledger_uri: str) -> dict[str, str]:
     flags: dict[str, str] = {}
     for i in range(table.num_rows):
         if cols["status"][i] == "done" and cols["path_flag"][i]:
-            flags[str(cols["scene_id"][i])] = resolve_canonical_uri(
-                str(cols["path_flag"][i])
-            )
+            flags[str(cols["scene_id"][i])] = resolve_canonical_uri(str(cols["path_flag"][i]))
     return flags
 
 
@@ -369,8 +367,10 @@ def _risk_score(diag: PairDiagnostics) -> float:
     def _fin(value: float | None) -> float:
         return float(value) if value is not None and np.isfinite(value) else 0.0
 
-    return _fin(diag.s2_ard_missed_frac) + _fin(diag.s2_extra_candidate_frac) + _fin(
-        diag.ls_extra_candidate_frac
+    return (
+        _fin(diag.s2_ard_missed_frac)
+        + _fin(diag.s2_extra_candidate_frac)
+        + _fin(diag.ls_extra_candidate_frac)
     )
 
 
@@ -544,7 +544,9 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, help="v3 manifest.parquet URI")
     parser.add_argument("--pairings", required=True, help="v3 pairings.parquet URI")
     parser.add_argument("--ledger", required=True, help="ARD ledger.parquet URI")
-    parser.add_argument("--output-root", required=True, help="run-scoped evidence root (local or gs://)")
+    parser.add_argument(
+        "--output-root", required=True, help="run-scoped evidence root (local or gs://)"
+    )
     parser.add_argument("--seed", type=int, default=42, help="RNG seed for the sample")
     parser.add_argument("--n-pairs", type=int, default=24, help="target sample size")
     parser.add_argument("--save-limit", type=int, default=12, help="max PNG figures to save")
@@ -670,9 +672,7 @@ def main() -> int:
     print("Quantiles across sampled pairs (fraction of grid pixels):")
     print(_quantile_line("Landsat native clear", [d.ls_native_clear_frac for d in diagnostics]))
     print(
-        _quantile_line(
-            "Landsat extra candidates", [d.ls_extra_candidate_frac for d in diagnostics]
-        )
+        _quantile_line("Landsat extra candidates", [d.ls_extra_candidate_frac for d in diagnostics])
     )
     print(_quantile_line("S2 native clear", [d.s2_native_clear_frac for d in diagnostics]))
     print(

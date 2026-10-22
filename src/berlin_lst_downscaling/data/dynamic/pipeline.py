@@ -39,6 +39,7 @@ from berlin_lst_downscaling.data.secondary.product import finalize_secondary_pro
 
 _logger = logging.getLogger(__name__)
 
+
 def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the dynamic scene pipeline.
 
@@ -217,9 +218,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
                             local_dir=local_dir,
                         )
                         prod_dir = scene_product_dir(output_root, era5_source, scene.scene_id)
-                        artifacts = finalize_secondary_product(
-                            prepared, grid, prod_dir, run_id
-                        )
+                        artifacts = finalize_secondary_product(prepared, grid, prod_dir, run_id)
                         led.upsert(
                             SecondaryLedgerRow(
                                 item_id=era5_item_id,
@@ -268,9 +267,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
 
                 # ── 3b. Shadow masks (building + vegetation) ─────────
                 # Circuit breaker: skip shadows if ERA5 failed for this scene
-                era5_failed = led.get(
-                    era5_item_id, era5_source, scene.scene_id
-                )
+                era5_failed = led.get(era5_item_id, era5_source, scene.scene_id)
                 era5_is_failed = era5_failed is not None and era5_failed.status == "failed"
 
                 if era5_todo and era5_is_failed:
@@ -399,6 +396,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
         log_event(_logger, logging.INFO, "month_group_done", year=ym_year, month=ym_month)
 
     import gc
+
     gc.collect()
 
     # ── 4. final report ──────────────────────────────────────────────
@@ -429,6 +427,7 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     return 0 if failed == 0 else 1
+
 
 def _banner(
     cfg: DictConfig,

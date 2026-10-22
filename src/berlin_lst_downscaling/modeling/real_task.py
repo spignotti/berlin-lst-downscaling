@@ -568,9 +568,7 @@ class RealPatchDataModule(LightningDataModule):
         if dataset is None or len(dataset) == 0:
             raise RuntimeError(f"real path has no {split} batch to train on")
         if self.cache_root is not None and not isinstance(dataset, CachedRealPatchDataset):
-            raise RuntimeError(
-                "job-local cache setup failed; refusing a silent streaming fallback"
-            )
+            raise RuntimeError("job-local cache setup failed; refusing a silent streaming fallback")
         if isinstance(dataset, _BatchDataset):
             return DataLoader(dataset, batch_size=None, shuffle=False)
         shuffle = self.shuffle_train and split == "train"
@@ -647,9 +645,7 @@ class RealLSTTask(LightningModule):
     ) -> None:
         super().__init__()
         if loss_name not in ("masked_l1", "thermal_aware"):
-            raise ValueError(
-                f"loss_name must be 'masked_l1' or 'thermal_aware', got {loss_name!r}"
-            )
+            raise ValueError(f"loss_name must be 'masked_l1' or 'thermal_aware', got {loss_name!r}")
         self.model = UNet(in_channels=n_active_channels + 1, base_width=base_width, depth=depth)
         self.n_active_channels = n_active_channels
         self.learning_rate = learning_rate
@@ -757,13 +753,9 @@ class RealLSTTask(LightningModule):
         return reconstruct_prior_kelvin(batch.lst_prior).float() + delta.float()
 
     def training_step(self, batch: RealBatch, batch_idx: int) -> Tensor:
-        prediction_100m = pool_10m_to_100m(
-            self(batch), self.aggregation, batch.mask_100m
-        )
+        prediction_100m = pool_10m_to_100m(self(batch), self.aggregation, batch.mask_100m)
         if self.loss_name == "thermal_aware":
-            objective = thermal_objective_batch(
-                prediction_100m, batch.target_100m, batch.mask_100m
-            )
+            objective = thermal_objective_batch(prediction_100m, batch.target_100m, batch.mask_100m)
             loss = objective.loss
             self._accumulate_thermal_audit(objective, train=True)
             self._log_thermal_batch_metrics(train=True)

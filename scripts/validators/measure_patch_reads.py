@@ -341,9 +341,7 @@ def main() -> int:
     warm_target_mask_per_ref = [
         p["target_mask_s"] / max(int(p["read_refs"]), 1) for p in warm_reads
     ]
-    warm_total_per_ref = [
-        p["total_s"] / max(int(p["read_refs"]), 1) for p in warm_reads
-    ]
+    warm_total_per_ref = [p["total_s"] / max(int(p["read_refs"]), 1) for p in warm_reads]
 
     loader_runs = [
         _time_loader_passes(
@@ -366,9 +364,7 @@ def main() -> int:
     duplicate_per_ref_cold = first_read["target_mask_s"] / max(first_read_n, 1)
     duplicate_per_ref_warm = _median(warm_target_mask_per_ref) if warm_reads else None
     data_phase_cold = admission["total_s"] + first_read["total_s"]
-    data_phase_warm = (
-        admission["total_s"] + warm_total["median_total_s"] if warm_total else None
-    )
+    data_phase_warm = admission["total_s"] + warm_total["median_total_s"] if warm_total else None
 
     report: dict[str, Any] = {
         "sha": args.sha,

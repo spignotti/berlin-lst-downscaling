@@ -53,6 +53,7 @@ _SCHEMA = pa.schema(
 
 # ── row type ─────────────────────────────────────────────────────────
 
+
 @dataclass
 class SecondaryLedgerRow:
     """A single row in the secondary-data processing ledger."""
@@ -79,7 +80,9 @@ class SecondaryLedgerRow:
         if self.status not in _STATUSES:
             raise ValueError(f"Invalid status: {self.status!r}")
 
+
 # ── ledger ───────────────────────────────────────────────────────────
+
 
 class SecondaryLedger:
     """Read-write Parquet ledger for secondary-data item status tracking.
@@ -205,7 +208,9 @@ class SecondaryLedger:
     def path(self) -> str:
         return self._path
 
+
 # ── helpers ──────────────────────────────────────────────────────────
+
 
 def _row_to_dict(row: SecondaryLedgerRow) -> dict:
     return {
@@ -225,6 +230,7 @@ def _row_to_dict(row: SecondaryLedgerRow) -> dict:
         "updated_at": row.updated_at,
         "role": row.role,
     }
+
 
 def _rows_from_table(tbl: pa.Table) -> list[SecondaryLedgerRow]:
     rows: list[SecondaryLedgerRow] = []
@@ -251,9 +257,11 @@ def _rows_from_table(tbl: pa.Table) -> list[SecondaryLedgerRow]:
         )
     return rows
 
+
 def _opt_str(d: dict, key: str) -> str | None:
     val = d.get(key, [None])[0]
     return None if val is None else str(val)
+
 
 def _opt_dt(d: dict, key: str) -> datetime | None:
     val = d.get(key, [None])[0]
@@ -262,6 +270,7 @@ def _opt_dt(d: dict, key: str) -> datetime | None:
     if hasattr(val, "as_py"):
         val = val.as_py()
     return val  # type: ignore[return-value]
+
 
 __all__ = [
     "SecondaryLedger",

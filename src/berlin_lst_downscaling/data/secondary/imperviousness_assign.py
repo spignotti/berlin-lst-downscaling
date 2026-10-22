@@ -35,9 +35,7 @@ from rasterio.enums import MergeAlg
 from rasterio.features import rasterize
 
 # Codes whose own percent is a donor for block means. 110 contributes 100.
-DONOR_CODES: frozenset[int] = frozenset(
-    {0, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 100, 102, 110}
-)
+DONOR_CODES: frozenset[int] = frozenset({0, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 100, 102, 110})
 DEGREE_CODES: frozenset[int] = frozenset(range(5, 100, 10))
 ALLOWED_CODES: frozenset[int] = DONOR_CODES | {101, 103, 255}
 WATER_TYP: int = 100

@@ -198,15 +198,11 @@ def _check_metadata(
     return errors
 
 
-def _check_metadata_10m(
-    uri: str, *, n_bands: int | None, dtype: str
-) -> list[str]:
+def _check_metadata_10m(uri: str, *, n_bands: int | None, dtype: str) -> list[str]:
     return _check_metadata(uri, canon_grid_10m(), n_bands=n_bands, dtype=dtype)
 
 
-def _check_metadata_100m(
-    uri: str, *, n_bands: int | None, dtype: str
-) -> list[str]:
+def _check_metadata_100m(uri: str, *, n_bands: int | None, dtype: str) -> list[str]:
     return _check_metadata(uri, canon_grid_100m(), n_bands=n_bands, dtype=dtype)
 
 
@@ -523,8 +519,9 @@ def write_report(report: Stage1Report, output_root: str) -> dict[str, str]:
     uris: dict[str, str] = {}
 
     summary_uri = f"{prefix}/summary.json"
-    atomic_write(summary_uri, json_dumps(_summary_dict(report)), overwrite=True,
-                 if_generation_match=0)
+    atomic_write(
+        summary_uri, json_dumps(_summary_dict(report)), overwrite=True, if_generation_match=0
+    )
     uris["summary"] = summary_uri
 
     rows = [
@@ -548,8 +545,7 @@ def write_report(report: Stage1Report, output_root: str) -> dict[str, str]:
     parquet_uri = f"{prefix}/scenes.parquet"
     buf = pa.BufferOutputStream()
     pq.write_table(table, buf)
-    atomic_write(parquet_uri, buf.getvalue().to_pybytes(), overwrite=True,
-                 if_generation_match=0)
+    atomic_write(parquet_uri, buf.getvalue().to_pybytes(), overwrite=True, if_generation_match=0)
     uris["scenes_parquet"] = parquet_uri
 
     csv_uri = f"{prefix}/scenes.csv"
@@ -575,8 +571,7 @@ def write_report(report: Stage1Report, output_root: str) -> dict[str, str]:
     writer = _csv.DictWriter(csv_buf, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
-    atomic_write(csv_uri, csv_buf.getvalue().encode("utf-8"), overwrite=True,
-                 if_generation_match=0)
+    atomic_write(csv_uri, csv_buf.getvalue().encode("utf-8"), overwrite=True, if_generation_match=0)
     uris["scenes_csv"] = csv_uri
     return uris
 

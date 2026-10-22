@@ -115,9 +115,7 @@ def _load_landsat(ard_root: str) -> dict[str, tuple[str, str]]:
 # ── independent selection / exclusion audit ───────────────────────────
 
 
-def _ordered_subsequence_gaps(
-    requested_ids: list[str], scored_ids: list[str]
-) -> list[str] | None:
+def _ordered_subsequence_gaps(requested_ids: list[str], scored_ids: list[str]) -> list[str] | None:
     """Return the requested IDs missing from ``scored_ids``, or ``None``.
 
     ``scored_ids`` must be a *unique, in-order* subsequence of
@@ -201,9 +199,7 @@ def _prove_prior_gap(
         if _canon_offset(fsrc.transform, _CELL_100) != (col0, row0):
             return None
         b_r0, b_r1, b_c0, b_c1 = _scene_block_bounds(src, col0, row0)
-        outside = [
-            b for b in required if not (b_r0 <= b[0] <= b_r1 and b_c0 <= b[1] <= b_c1)
-        ]
+        outside = [b for b in required if not (b_r0 <= b[0] <= b_r1 and b_c0 <= b[1] <= b_c1)]
         if outside:
             return "prior_window_outside_scene", f"blocks outside the scene grid: {outside[:3]}"
         empty: list[tuple[int, int]] = []
@@ -284,19 +280,12 @@ def _pooled_prior_100m(grid: dict, row: int, col: int) -> np.ndarray | None:
     ri = (row * 10 + np.arange(_PATCH_PX)) // _BLOCK_PX - grid["brow0"]
     ci = (col * 10 + np.arange(_PATCH_PX)) // _BLOCK_PX - grid["bcol0"]
     means = grid["means"]
-    if (
-        ri.min() < 0
-        or ci.min() < 0
-        or ri.max() >= means.shape[0]
-        or ci.max() >= means.shape[1]
-    ):
+    if ri.min() < 0 or ci.min() < 0 or ri.max() >= means.shape[0] or ci.max() >= means.shape[1]:
         return None
     values = means[np.ix_(ri, ci)]
     if not np.isfinite(values).all():
         return None
-    return values.reshape(_PATCH_CELLS, _BLOCK_CELLS, _PATCH_CELLS, _BLOCK_CELLS).mean(
-        axis=(1, 3)
-    )
+    return values.reshape(_PATCH_CELLS, _BLOCK_CELLS, _PATCH_CELLS, _BLOCK_CELLS).mean(axis=(1, 3))
 
 
 def _support_count(mask_100: np.ndarray) -> int:
@@ -374,9 +363,7 @@ def main() -> int:
         errors.append(str(exc))
         aggregation = "arithmetic"
     source = report["source"]
-    index_root = resolve_canonical_uri(
-        args.patch_index_root or str(source["patch_index_root"])
-    )
+    index_root = resolve_canonical_uri(args.patch_index_root or str(source["patch_index_root"]))
     print(f"Validating baseline report: {args.report}")
 
     index_rows, index_by_id = _load_index(index_root)
@@ -525,13 +512,9 @@ def main() -> int:
         if cells != int(summary["valid_cells"]):
             errors.append(f"{split}: cells {cells} != aggregate {summary['valid_cells']}")
         if not np.isclose(total, float(summary["abs_error_sum"]), rtol=_SUM_RTOL, atol=_SUM_ATOL):
-            errors.append(
-                f"{split}: error sum {total:.6f} != aggregate {summary['abs_error_sum']}"
-            )
+            errors.append(f"{split}: error sum {total:.6f} != aggregate {summary['abs_error_sum']}")
         if windows != int(summary["ssim_windows"]):
-            errors.append(
-                f"{split}: ssim windows {windows} != aggregate {summary['ssim_windows']}"
-            )
+            errors.append(f"{split}: ssim windows {windows} != aggregate {summary['ssim_windows']}")
         if summary["mae"] is not None and cells > 0:
             if not np.isclose(float(summary["mae"]), total / cells, rtol=1e-9, atol=1e-12):
                 errors.append(f"{split}: mae {summary['mae']} != error_sum/cells {total / cells}")
