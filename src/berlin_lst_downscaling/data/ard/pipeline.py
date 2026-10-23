@@ -25,9 +25,14 @@ from uuid import uuid4
 import xarray as xr
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.common.config import BERLIN_BBOX
 from berlin_lst_downscaling.common.grid import canon_grid_for_resolution
 from berlin_lst_downscaling.data.acquisition.ecostress import load_ecostress_scene
 from berlin_lst_downscaling.data.acquisition.landsat import load_landsat_scene
+from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import (
+    s2_mosaic_enabled as _s2_mosaic_enabled,
+)
+from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import s2_mosaic_group
 from berlin_lst_downscaling.data.acquisition.sentinel2 import (
     S2_SWIR_BANDS,
     load_s2_scene,
@@ -53,7 +58,21 @@ from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path, stac_path
 from berlin_lst_downscaling.data.ard.product import finalize_ard_product
 from berlin_lst_downscaling.data.ard.publish_guard import assert_sentinel2_output_root
 from berlin_lst_downscaling.data.ard.reports import qa_report
-from berlin_lst_downscaling.data.ard.s2_reflectance import reflectance_scale_from_items
+from berlin_lst_downscaling.data.ard.s2_mosaic import (
+    aoi_mask_uri,
+    coverage_metrics,
+    load_aoi_on_grid,
+    mosaic_s2_items,
+    recorded_s2_members,
+    s2_aoi_identity,
+    s2_input_contract,
+    s2_input_contract_hash,
+    validate_missing_fraction,
+)
+from berlin_lst_downscaling.data.ard.s2_reflectance import (
+    reflectance_scale_from_item,
+    reflectance_scale_from_items,
+)
 from berlin_lst_downscaling.data.ard.solar_position import solar_position
 from berlin_lst_downscaling.data.ard.validate import validate_cog, validate_flag_cog
 from berlin_lst_downscaling.data.ard.writer import (
@@ -63,6 +82,31 @@ from berlin_lst_downscaling.data.ard.writer import (
 from berlin_lst_downscaling.data.io import log_event
 
 _logger = logging.getLogger(__name__)
+
+
+def _load_s2_mosaic_aoi(target: xr.DataArray, cfg: DictConfig):
+    return load_aoi_on_grid(aoi_mask_uri(cfg), target)
+
+
+def _assert_s2_resume_contract(ledger: Ledger, scene_id: str, expected_hash: str) -> None:
+    """Fail before reconciliation or ledger mutation when v10 inputs have drifted."""
+    row = ledger.get(scene_id, "sentinel-2-l2a")
+    if row is not None and (row.schema_version == 10 or row.status == "done"):
+        if row.schema_version != 10 or row.schema_hash != expected_hash:
+            log_event(
+                _logger,
+                logging.ERROR,
+                "s2_input_contract_mismatch",
+                scene_id=scene_id,
+                status=row.status,
+                stored_hash=row.schema_hash,
+                expected_hash=expected_hash,
+            )
+            raise RuntimeError(
+                f"scene {scene_id}: Sentinel-2 input contract is missing or changed "
+                f"(stored={row.schema_hash!r}, expected={expected_hash!r}). "
+                "Use a new output_root; existing products and ledger are preserved."
+            )
 
 
 def _schema_hash(source: str, contract: Contract, cfg: DictConfig) -> str:
@@ -152,6 +196,8 @@ def _run_sentinel2_scene(
             f"scene {scene_id}: Sentinel-2 reflectance needs the STAC item "
             "so BOA_ADD_OFFSET can be chosen from metadata"
         )
+    if _s2_mosaic_enabled(cfg):
+        return _run_sentinel2_mosaic(scene_id, cfg, items, scene_date)
     reflectance = reflectance_scale_from_items(items)
     effective_date = scene_date or cfg.scene_date
     bbox = tuple(cfg.bbox)
@@ -181,6 +227,87 @@ def _run_sentinel2_scene(
     az, el = _solar_for_scene(ds_10m, cfg)
     masked = mask_s2(ds_10m, ds_20m, cfg, az, el, reflectance=reflectance)
     return masked
+
+
+def _run_sentinel2_mosaic(
+    scene_id: str, cfg: DictConfig, items: list[Any], scene_date: str | None
+) -> xr.Dataset:
+    """Mask and harmonize each exact member before any mosaic or COG write."""
+    import numpy as np
+
+    threshold = validate_missing_fraction(
+        cfg.sentinel2.mosaic.get("max_missing_aoi_fraction", 0.005)
+    )
+    if int(cfg.target_resolution_high) != 10:
+        raise ValueError("Sentinel-2 schema-10 mosaics require the canonical 10m grid")
+    item_ids = [item.id for item in items]
+    if len(set(item_ids)) != len(item_ids) or scene_id not in item_ids:
+        raise ValueError(f"Invalid Sentinel-2 mosaic members for scene {scene_id}")
+    group = s2_mosaic_group(items[0], bbox=cfg.bbox)
+    if any(s2_mosaic_group(item, bbox=cfg.bbox) != group for item in items):
+        raise ValueError(f"Sentinel-2 mosaic members have inconsistent groups for scene {scene_id}")
+    members = []
+    for item in sorted(items, key=lambda item: item.id):
+        reflectance = reflectance_scale_from_item(item)
+        ds_10m, ids_10m = load_s2_scene(
+            date=scene_date or cfg.scene_date,
+            bbox=tuple(cfg.bbox),
+            resolution=10,
+            bands=["B02", "B03", "B04", "B08", "SCL"],
+            items=[item],
+        )
+        ds_20m, ids_20m = load_s2_scene(
+            date=scene_date or cfg.scene_date,
+            bbox=tuple(cfg.bbox),
+            resolution=20,
+            bands=list(S2_SWIR_BANDS),
+            items=[item],
+        )
+        if ids_10m != [item.id] or ids_20m != [item.id]:
+            raise RuntimeError(f"Sentinel-2 mosaic member {item.id} did not load exactly")
+        scl = ds_10m["SCL"]
+        if "time" in scl.dims:
+            if scl.sizes["time"] != 1:
+                raise ValueError(f"Sentinel-2 mosaic member {item.id} has multiple times")
+            scl = scl.isel(time=0)
+        scl_values = scl.transpose("y", "x").values
+        footprint = np.isfinite(scl_values) & (scl_values != 0)
+        az, el = _solar_for_scene(ds_10m, cfg)
+        masked = mask_s2(ds_10m, ds_20m, cfg, az, el, reflectance=reflectance)
+        members.append((item.id, masked, footprint))
+    mosaic, footprint = mosaic_s2_items(members)
+    provenance = mosaic.attrs["s2_reflectance"]
+    provenance["s2_mosaic_group"] = group
+    try:
+        aoi = _load_s2_mosaic_aoi(mosaic["flag"], cfg)
+        coverage = coverage_metrics(footprint, aoi, threshold)
+    except Exception as exc:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "s2_mosaic_prewrite",
+            scene_id=scene_id,
+            provenance=provenance,
+            coverage_passed=False,
+            error=str(exc),
+        )
+        raise
+    provenance["coverage"] = coverage
+    log_event(
+        _logger,
+        logging.INFO if coverage["coverage_passed"] else logging.ERROR,
+        "s2_mosaic_prewrite",
+        scene_id=scene_id,
+        provenance=provenance,
+        **coverage,
+    )
+    if not coverage["coverage_passed"]:
+        raise ValueError(
+            f"Sentinel-2 mosaic AOI coverage failed: missing {coverage['aoi_missing_px']}/"
+            f"{coverage['aoi_total_px']} pixels ({coverage['missing_aoi_fraction']:.8f}) "
+            f"> max_missing_aoi_fraction={threshold}; item_ids={provenance['item_ids']}"
+        )
+    return mosaic
 
 
 def _run_ecostress_scene(
@@ -244,14 +371,32 @@ def run(cfg: DictConfig, run_id: str | None = None) -> int:
         run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     sources = list(cfg.sources)
+    contracts = {}
+    for source in sources:
+        version = (
+            cfg.get("sentinel2", {}).get("schema_version") if source == "sentinel-2-l2a" else None
+        )
+        contract = contract_for_source(source, schema_version=version)
+        if source == "sentinel-2-l2a":
+            if _s2_mosaic_enabled(cfg) != (contract.schema_version == 10):
+                raise ValueError(
+                    "Sentinel-2 mosaic.enabled and schema_version=10 must be set together"
+                )
+            if _s2_mosaic_enabled(cfg):
+                validate_missing_fraction(
+                    cfg.sentinel2.mosaic.get("max_missing_aoi_fraction", 0.005)
+                )
+        contracts[source] = contract
     if "sentinel-2-l2a" in sources:
-        assert_sentinel2_output_root(output_root)
+        assert_sentinel2_output_root(
+            output_root, schema_version=contracts["sentinel-2-l2a"].schema_version
+        )
 
     led = Ledger.open(f"{output_root}/ledger.parquet")
     log_event(_logger, logging.INFO, "start", mode=cfg.mode, sources=list(cfg.sources))
 
     for source in sources:
-        contract = contract_for_source(source)
+        contract = contracts[source]
         _process_manifest(source, contract, cfg, led, run_id)
 
     report = qa_report(led, cfg, run_id)
@@ -270,7 +415,7 @@ def _process_manifest(
 ) -> None:
     """Process scenes listed in a manifest Parquet (mode=full).
 
-    Loads the canonical v3 bundle, validates it once, and resolves
+    Loads the canonical v3/v4 bundle, validates it once, and resolves
     exact STAC items from item_href before passing them to loaders.
     """
     import pyarrow.compute as pc  # type: ignore[attr-defined]
@@ -296,6 +441,20 @@ def _process_manifest(
     if rows.num_rows == 0:
         return
 
+    if source == "sentinel-2-l2a":
+        manifest_version = (tbl.schema.metadata or {}).get(
+            b"schema_version", b"4" if "s2_items" in tbl.column_names else b"3"
+        )
+        has_v4 = manifest_version == b"4" or any(
+            column in tbl.column_names for column in ("s2_items", "s2_mosaic_group")
+        )
+        if has_v4 and (contract.schema_version != 10 or not _s2_mosaic_enabled(cfg)):
+            raise ValueError("Sentinel-2 v4 membership requires schema-10 with mosaic.enabled=true")
+        if contract.schema_version == 10 and (not has_v4 or not _s2_mosaic_enabled(cfg)):
+            raise ValueError(
+                "Sentinel-2 schema-10 requires recorded v4 membership and mosaic.enabled=true"
+            )
+
     # Collect manifest rows — carry scene_id, year, item_href, acq time
     scenes: list[tuple[str, str, int]] = []
     scene_meta: dict[str, dict] = {}
@@ -312,7 +471,19 @@ def _process_manifest(
             "item_href": href,
             "acquisition_datetime": acq_dt,
             "year": yr,
+            "s2_items": r.get("s2_items", [None])[0],
+            "s2_mosaic_group": r.get("s2_mosaic_group", [None])[0],
         }
+
+    s2_contracts: dict[str, dict] = {}
+    if source == "sentinel-2-l2a" and contract.schema_version == 10:
+        # Validate every row before AOI reads, reconcile, resolution, or writes.
+        for sid, meta in scene_meta.items():
+            recorded_s2_members(sid, meta)
+        aoi_identity = s2_aoi_identity(cfg)
+        for sid, meta in scene_meta.items():
+            s2_contracts[sid] = s2_input_contract(sid, meta["year"], meta, cfg, aoi_identity)
+            _assert_s2_resume_contract(ledger, sid, s2_input_contract_hash(s2_contracts[sid]))
 
     max_attempts = int(cfg.max_scene_attempts)
     todo = reconcile(scenes, ledger, contract, max_attempts=max_attempts)
@@ -338,8 +509,6 @@ def _process_manifest(
     else:
         for scene_id, _source, year, _reason in todo:
             meta = scene_meta.get(scene_id, {})
-            # Resolve exact STAC item from manifest HREF
-            items = _resolve_manifest_items(scene_id, source, meta)
             _run_scene(
                 scene_id,
                 source,
@@ -348,8 +517,9 @@ def _process_manifest(
                 cfg,
                 ledger,
                 run_id,
-                items=items,
+                manifest_meta=meta,
                 scene_date=meta.get("acquisition_datetime"),
+                s2_scene_contract=s2_contracts.get(scene_id),
             )
 
 
@@ -357,10 +527,14 @@ def _resolve_manifest_items(
     scene_id: str,
     source: str,
     meta: dict,
+    *,
+    require_s2_members: bool = False,
+    bbox: tuple[float, float, float, float] | None = None,
 ) -> list[Any] | None:
     """Resolve exact STAC items from manifest metadata.
 
-    For PC STAC sources (Landsat/Sentinel-2), tries to resolve directly
+    Recorded S2 members are resolved exactly, sorted by ID, with no fallback.
+    The opt-in mosaic path requires this set. For legacy rows, tries directly
     from item_href first (faster, avoids catalog search). Falls back to
     ID-based search if item_href is missing.
     Returns None when resolution fails; ECOSTRESS callers skip this path.
@@ -369,6 +543,24 @@ def _resolve_manifest_items(
         resolve_exact_item,
         resolve_item_from_href,
     )
+
+    recorded = meta.get("s2_items") if source == "sentinel-2-l2a" else None
+    if require_s2_members or recorded is not None:
+        recorded = recorded_s2_members(scene_id, meta)
+        group = meta.get("s2_mosaic_group")
+        resolved = []
+        for member in sorted(recorded, key=lambda member: member["item_id"]):
+            item = resolve_item_from_href(member["item_href"], expected_id=member["item_id"])
+            if item.id != member["item_id"]:
+                raise ValueError(
+                    f"scene {scene_id}: recorded member ID mismatch for {member['item_id']}"
+                )
+            if s2_mosaic_group(item, bbox=bbox or BERLIN_BBOX) != group:
+                raise ValueError(
+                    f"scene {scene_id}: recorded member {item.id} s2_mosaic_group mismatch"
+                )
+            resolved.append(item)
+        return resolved
 
     item_href = meta.get("item_href")
 
@@ -466,6 +658,8 @@ def _run_scene(
     items: list[Any] | None = None,
     scene_date: str | None = None,
     ecostress_raw_dir: str | None = None,
+    manifest_meta: dict | None = None,
+    s2_scene_contract: dict | None = None,
 ) -> None:
     """Process one scene: load → mask → write COG+STAC → update ledger.
 
@@ -480,6 +674,12 @@ def _run_scene(
         Per-scene override for ECOSTRESS raw_dir. Used by the
         manifest-driven ECOSTRESS pipeline where each granule is
         downloaded and staged on demand.
+    manifest_meta :
+        Exact item references and optional v4 mosaic group/membership.
+        Resolution occurs inside the attempt so failure updates the ledger.
+    s2_scene_contract :
+        Optional v10 contract prepared by the manifest's read-only preflight.
+        Its hash is persisted for exporting, failed, and completed attempts.
     """
     effective_date = scene_date or cfg.scene_date
     log_event(
@@ -492,16 +692,54 @@ def _run_scene(
     )
     t0 = time.perf_counter()
 
-    _attempts = ledger.begin_attempt(
-        LedgerRow(
-            scene_id=scene_id,
-            source=source,
-            year=year,
-            run_id=run_id,
-        )
-    )
+    is_mosaic = source == "sentinel-2-l2a" and contract.schema_version == 10
+    scene_hash: str | None = None
+    attempt_started = False
+    # Also protect private/direct callers before begin_attempt replaces a row.
+    existing = ledger.get(scene_id, source) if is_mosaic else None
+    if existing is not None and (existing.schema_version == 10 or existing.status == "done"):
+        if s2_scene_contract is None:
+            s2_scene_contract = s2_input_contract(
+                scene_id, year, manifest_meta or {}, cfg, s2_aoi_identity(cfg)
+            )
+        _assert_s2_resume_contract(ledger, scene_id, s2_input_contract_hash(s2_scene_contract))
 
     try:
+        if is_mosaic:
+            if not _s2_mosaic_enabled(cfg):
+                raise ValueError("Sentinel-2 schema-10 requires mosaic.enabled=true")
+            recorded_s2_members(scene_id, manifest_meta or {})
+            if s2_scene_contract is None:
+                s2_scene_contract = s2_input_contract(
+                    scene_id, year, manifest_meta or {}, cfg, s2_aoi_identity(cfg)
+                )
+            scene_hash = s2_input_contract_hash(s2_scene_contract)
+            log_event(
+                _logger,
+                logging.INFO,
+                "s2_mosaic_input_contract",
+                scene_id=scene_id,
+                input_contract_hash=scene_hash,
+                input_contract=s2_scene_contract,
+            )
+        _attempts = ledger.begin_attempt(
+            LedgerRow(
+                scene_id=scene_id,
+                source=source,
+                year=year,
+                run_id=run_id,
+                **({"schema_hash": scene_hash, "schema_version": 10} if is_mosaic else {}),
+            )
+        )
+        attempt_started = True
+        if manifest_meta is not None:
+            items = _resolve_manifest_items(
+                scene_id,
+                source,
+                manifest_meta,
+                require_s2_members=source == "sentinel-2-l2a" and _s2_mosaic_enabled(cfg),
+                bbox=tuple(cfg.bbox),
+            )
         runner = _RUNNERS.get(source)
         if runner is None:
             raise ValueError(f"Unknown source: {source}")
@@ -518,6 +756,10 @@ def _run_scene(
             scene_date=scene_date,
             ecostress_raw_dir=ecostress_raw_dir,
         )
+
+        if is_mosaic:
+            masked.attrs["s2_reflectance"]["input_contract"] = s2_scene_contract
+            masked.attrs["s2_reflectance"]["input_contract_hash"] = scene_hash
 
         log_event(_logger, logging.INFO, "scene_writing", scene_id=scene_id, source=source)
         root = str(cfg.output_root)
@@ -643,7 +885,7 @@ def _run_scene(
                 path_flag=flag_dst if contract.flag_mode == "separate" else None,
                 path_stac=stac_dst,
                 status="done",
-                schema_hash=_schema_hash(source, contract, cfg),
+                schema_hash=scene_hash if is_mosaic else _schema_hash(source, contract, cfg),
                 schema_version=contract.schema_version,
                 run_id=run_id,
                 updated_at=datetime.now(UTC),
@@ -670,6 +912,16 @@ def _run_scene(
         )
 
     except Exception as exc:
+        if not attempt_started:
+            ledger.begin_attempt(
+                LedgerRow(
+                    scene_id=scene_id,
+                    source=source,
+                    year=year,
+                    run_id=run_id,
+                    **({"schema_hash": scene_hash, "schema_version": 10} if is_mosaic else {}),
+                )
+            )
         elapsed = time.perf_counter() - t0
         _attempts = row.attempts if (row := ledger.get(scene_id, source)) else 0
         log_event(
@@ -692,6 +944,7 @@ def _run_scene(
                 last_error=str(exc),
                 run_id=run_id,
                 updated_at=datetime.now(UTC),
+                **({"schema_hash": scene_hash, "schema_version": 10} if is_mosaic else {}),
             )
         )
         # do not re-raise — outer loop continues

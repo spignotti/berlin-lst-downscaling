@@ -20,6 +20,7 @@ from berlin_lst_downscaling.data.selection.schema import (
     ALLOWED_SOURCES,
     ECOSTRESS_VALIDATION_IDS,
     MANIFEST_SCHEMA,
+    MANIFEST_SCHEMA_V4,
     PAIRINGS_SCHEMA,
 )
 
@@ -40,7 +41,7 @@ def load_bundle(
     require_item_href: bool = True,
     restrict_to_roles: list[str] | None = None,
 ) -> tuple[LoadedBundle, ValidationResult]:
-    """Load every artifact of the canonical v3 bundle from a single root.
+    """Load every artifact of a v3/v4 manifest bundle from a single root.
 
     Derives ``<root>/pairings.parquet`` and ``<root>/manifest_report.json``
     from ``manifest_uri``. Re-orders the manifest to anchor rows when
@@ -83,6 +84,9 @@ def load_bundle(
     mf_hash = sha256_bytes(manifest_bytes)
     pf_hash = sha256_bytes(pairings_bytes)
     result.errors.extend(validate_report_json(report, mf_hash, pf_hash).errors)
+    metadata_version = (manifest_table.schema.metadata or {}).get(b"schema_version", b"3")
+    if str(report.get("schema_version")) != metadata_version.decode():
+        result.errors.append("Report/manifest schema_version mismatch")
 
     if restrict_to_roles:
         roles = manifest_table.column("role").to_pylist()
@@ -122,10 +126,20 @@ def validate_manifest_table(
     """
     result = ValidationResult()
 
-    # Schema check
+    # v3 remains valid, but v4 must never be cast down and lose membership.
+    metadata = table.schema.metadata or {}
+    inferred_version = b"4" if "s2_items" in table.column_names else b"3"
+    version = metadata.get(b"schema_version", inferred_version)
+    if version not in (b"3", b"4"):
+        result.errors.append(f"Unsupported manifest schema_version {version!r}")
+        return result
+    if version == b"3" and any(c in table.column_names for c in ("s2_items", "s2_mosaic_group")):
+        result.errors.append("v3 metadata cannot contain v4 S2 membership columns")
+        return result
+    schema = MANIFEST_SCHEMA_V4 if version == b"4" else MANIFEST_SCHEMA
     try:
-        table.cast(MANIFEST_SCHEMA, safe=False)
-    except pa.ArrowInvalid as exc:
+        table.cast(schema, safe=False)
+    except (pa.ArrowInvalid, pa.ArrowTypeError, ValueError) as exc:
         result.errors.append(f"Schema mismatch: {exc}")
         return result
 
@@ -139,6 +153,8 @@ def validate_manifest_table(
     platforms = table.column("platform").to_pylist()
     clear_fracs = table.column("aoi_clear_frac").to_pylist()
     item_hrefs = table.column("item_href").to_pylist()
+    rows = table.to_pylist() if version == b"4" else []
+    groups: dict[tuple[str, str], str] = {}
 
     # Duplicate check
     keys = list(zip(sources, scene_ids, strict=True))
@@ -157,6 +173,8 @@ def validate_manifest_table(
         plat = platforms[i]
         cf = clear_fracs[i]
         href = item_hrefs[i]
+        if version == b"4":
+            _validate_s2_membership(rows[i], i, groups, result)
 
         # Source
         if src not in ALLOWED_SOURCES:
@@ -207,6 +225,54 @@ def validate_manifest_table(
     return result
 
 
+def _validate_s2_membership(row: dict, i: int, groups: dict, result: ValidationResult) -> None:
+    """Structural offline contract; ARD checks each fetched ID/group upstream."""
+    from datetime import date
+
+    refs = row.get("s2_items")
+    group = row.get("s2_mosaic_group")
+    if row["source"] != "sentinel-2-l2a":
+        if refs is not None or group is not None:
+            result.errors.append(f"Row {i}: non-S2 row has S2 membership")
+        return
+    if not refs:
+        result.errors.append(f"Row {i}: S2 s2_items membership must be nonempty")
+        return
+    ids: list[str] = []
+    for ref in refs:
+        sid = ref.get("item_id") if ref else None
+        if not isinstance(sid, str) or not sid.strip():
+            result.errors.append(f"Row {i}: s2_items has missing item_id")
+            return
+        ids.append(sid)
+    if ids != sorted(set(ids)):
+        result.errors.append(f"Row {i}: s2_items must be unique and sorted by item_id")
+    if ids[0] != row["scene_id"] or refs[0].get("item_href") != row["item_href"]:
+        result.errors.append(f"Row {i}: s2_items representative must match scene_id/item_href")
+    if any(
+        not isinstance(ref.get("item_href"), str) or not ref["item_href"].strip() for ref in refs
+    ):
+        result.errors.append(f"Row {i}: s2_items has missing item_href")
+    if not isinstance(group, dict):
+        result.errors.append(f"Row {i}: missing s2_mosaic_group datatake identity")
+        return
+    datatake = group.get("datatake_id")
+    if not isinstance(datatake, str) or not datatake.strip():
+        result.errors.append(f"Row {i}: missing s2_mosaic_group datatake identity")
+        return
+    try:
+        day = date.fromisoformat(group.get("solar_day", ""))
+        if day.isoformat() != group["solar_day"]:
+            raise ValueError("noncanonical day")
+    except (ValueError, TypeError):
+        result.errors.append(f"Row {i}: invalid s2_mosaic_group solar_day")
+        return
+    key = (group["solar_day"], group["datatake_id"])
+    if key in groups:
+        result.errors.append(f"Row {i}: duplicate s2_mosaic_group represented by {groups[key]!r}")
+    groups[key] = row["scene_id"]
+
+
 def validate_pairings_table(
     table: pa.Table,
     manifest_table: pa.Table,
@@ -225,7 +291,7 @@ def validate_pairings_table(
     # Schema check
     try:
         table.cast(PAIRINGS_SCHEMA, safe=False)
-    except pa.ArrowInvalid as exc:
+    except (pa.ArrowInvalid, pa.ArrowTypeError, ValueError) as exc:
         result.errors.append(f"Schema mismatch: {exc}")
         return result
 
@@ -331,6 +397,8 @@ def validate_report_json(report: dict, manifest_hash: str, pairings_hash: str) -
 
     if report["unresolved_errors"] > 0:
         result.errors.append(f"Report has {report['unresolved_errors']} unresolved errors")
+    if report["schema_version"] not in (3, 4):
+        result.errors.append(f"Unsupported report schema_version {report['schema_version']!r}")
 
     if report.get("manifest_hash") != manifest_hash:
         result.errors.append("Report manifest_hash mismatch")

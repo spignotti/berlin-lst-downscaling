@@ -6,6 +6,10 @@ scene, then writes Parquet tables, ``summary.json``, and per-scene
 observations. A completed scene is skipped when its gap record is already
 in ``--output-dir``. 2026 is inventory only.
 
+``eligibility_rates.parquet`` is the primary eligibility/exclusion report:
+target-valid ∩ AOI, weighted by 100 m fractions from ``--aoi-mask``.
+Full-rectangle fields and raw support cross-tabs are secondary QA.
+
 No figure, map, dashboard, or PDF is written.
 
 Usage
@@ -32,11 +36,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from berlin_lst_downscaling.common.grid import canon_grid_10m
+from berlin_lst_downscaling.data.diagnostics.feature_correctness import (
+    DEFAULT_AOI_MASK,
+    aoi_fraction_on_grid,
+    target_valid_edge_pairs,
+)
 from berlin_lst_downscaling.data.eda.frames import (
     between_within_table,
     block_table,
     correlation_table,
     coverage_table,
+    eligibility_rate_table,
+    eligibility_summary,
     exclusion_table,
     feature_distribution_table,
     feature_names_in,
@@ -185,8 +197,10 @@ def _scan_one(
     observation = output_dir / "observations" / f"{scene_id}.parquet"
     arrays = output_dir / "gaps" / f"{scene_id}.npz"
     if marker.exists() and arrays.exists() and (observation.exists() or _marker_is_empty(marker)):
-        log_event(_LOGGER, logging.INFO, f"scene_skip {scene_id}")
-        return
+        with np.load(arrays) as cached:
+            if "target_valid_edge" in cached:
+                log_event(_LOGGER, logging.INFO, f"scene_skip {scene_id}")
+                return
     provenance = read_json(eligibility_provenance(training_root, scene_id))
     inputs = provenance.get("inputs")
     if not isinstance(inputs, dict):
@@ -218,6 +232,11 @@ def _scan_one(
         raise RuntimeError(
             f"{scene_id}: scanned eligible {eligible} != manifest {int(row['eligible_cells'])}"
         )
+    edge_pairs = target_valid_edge_pairs(
+        resolve_canonical_uri(str(inputs["landsat_cog"])),
+        resolve_canonical_uri(str(inputs["landsat_flag"])),
+        canon_grid_10m(),
+    )
     if eligible:
         _write_frame(scanned.observations, observation)
     elif observation.exists():
@@ -226,6 +245,7 @@ def _scan_one(
     np.savez_compressed(
         arrays,
         **{name: scanned.gap_cells[name] for name in GAP_CLASSES},
+        target_valid_edge=edge_pairs,
     )
     _write_json(
         marker,
@@ -253,6 +273,49 @@ def _load_gap_markers(output_dir: Path) -> list[dict[str, object]]:
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted((output_dir / "gaps").glob("*.json"))
     ]
+
+
+def _eligibility_rates(
+    output_dir: Path,
+    markers: list[dict[str, object]],
+    aoi_fraction: np.ndarray,
+) -> pd.DataFrame:
+    """Apply reporting weights to retained support pairs, never training masks.
+
+    Complete-cell classes and explicit target-valid edge records together
+    cover the ceiling-sized 100 m grid. Edge records enter the denominator
+    and exclusions, never eligibility. Raw cross-tabs remain rectangle QA.
+    """
+    rows = []
+    for marker in markers:
+        target = np.zeros(aoi_fraction.shape, dtype=bool)
+        eligible = np.zeros(aoi_fraction.shape, dtype=bool)
+        path = output_dir / "gaps" / f"{marker['scene_id']}.npz"
+        with np.load(path) as payload:
+            if "target_valid_edge" not in payload:
+                raise ValueError(f"{path}: missing target_valid_edge; rerun scene scans")
+            for name in (
+                "target_valid_support_100",
+                "target_valid_support_lt_100",
+                "target_valid_edge",
+            ):
+                pairs = payload[name]
+                target[pairs[:, 0], pairs[:, 1]] = True
+                if name == "target_valid_support_100":
+                    eligible[pairs[:, 0], pairs[:, 1]] = True
+        expected = marker.get("provenance_target_valid")
+        if expected is not None:
+            if not isinstance(expected, (int, str)):
+                raise ValueError(f"{path}: invalid provenance target-valid count")
+            if int(target.sum()) != int(expected):
+                raise ValueError(f"{path}: reporting target-valid count disagrees with provenance")
+        rows.append(
+            {
+                **{name: marker[name] for name in ("scene_id", "year", "season", "split")},
+                **eligibility_summary(target, eligible, aoi_fraction),
+            }
+        )
+    return eligibility_rate_table(pd.DataFrame(rows))
 
 
 def _unique_gap_table(output_dir: Path, markers: list[dict[str, object]]) -> pd.DataFrame:
@@ -453,6 +516,9 @@ def _table_pass(
         "2026 is an inference reserve. It has no thermal or feature row.",
         "Scaler z-scores and log1p precipitation are not the physical EDA units.",
         "2025 is described here, so this pass is not untouched holdout evidence.",
+        "coverage_cells is spatial lattice coverage, not a target-valid eligibility rate. "
+        "eligibility_rates uses target-valid ∩ AOI fractions; raw eligibility_gap counts "
+        "are secondary full-rectangle QA.",
     ]
     if gaps:
         data_gaps.append(f"Scenes without an acquisition month: {', '.join(gaps)}")
@@ -500,6 +566,10 @@ def run(args: argparse.Namespace) -> None:
         tables = output_dir / "tables"
         _save(pd.DataFrame(markers), tables, "eligibility_gap.parquet")
         _save(_unique_gap_table(output_dir, markers), tables, "eligibility_gap_cells.parquet")
+        fraction = aoi_fraction_on_grid(args.aoi_mask, canon_grid_10m())
+        _save(
+            _eligibility_rates(output_dir, markers, fraction), tables, "eligibility_rates.parquet"
+        )
         outside = coverage_table(cells, inside)
         outside_all = outside.loc[outside["grain"] == "all"].iloc[0]
         n_outside = int(outside_all["n_unique_eligible_outside"])
@@ -527,6 +597,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--v3-manifest", default=V3_MANIFEST_URI)
     parser.add_argument("--stadtstruktur-root", default=STADTSTRUKTUR_ROOT)
     parser.add_argument("--patch-index-root", default=PATCH_INDEX_ROOT)
+    parser.add_argument("--aoi-mask", default=DEFAULT_AOI_MASK)
     parser.add_argument("--tables-only", action="store_true")
     parser.add_argument("--upload-uri", default="")
     parser.add_argument("--upload-only", action="store_true")

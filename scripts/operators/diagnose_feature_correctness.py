@@ -7,6 +7,11 @@ and exits without writing. ``--metadata-only`` runs the Sentinel-2
 processing-baseline check from STAC properties and a single local LoD2
 tile. It refuses the eligibility-gap raster scan.
 
+Eligibility-gap rates use target-valid ∩ AOI, weighted by 100 m AOI
+fractions from ``--aoi-mask`` (default ``data/boundaries/aoi_10m.tif``).
+The full-rectangle counts and rates are secondary fields. Training's
+strict 100/100 support mask is unchanged.
+
 This process never starts a virtual machine or a cloud training job, and
 it never writes a feature, ARD, or training release. Uploads are accepted
 only under ``gs://berlin-lst-training-data/evaluation/diagnostics/<run-id>/``.

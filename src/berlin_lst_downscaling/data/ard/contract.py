@@ -80,18 +80,22 @@ _SCHEMA_VERSIONS: dict[str, int] = {
 }
 
 
-def contract_for_source(source: str) -> Contract:
+def contract_for_source(source: str, schema_version: int | None = None) -> Contract:
     """Return the :class:`Contract` for a given sensor source key.
 
-    The source key must match the Hydra ``sources`` list entries.
+    The source key must match the Hydra ``sources`` list entries. Schema 10
+    is an explicit Sentinel-2 mosaic opt-in; the default stays schema 9.
     """
     _bands = _CONTRACTS[source]
+    version = _SCHEMA_VERSIONS[source] if schema_version is None else schema_version
+    if version != _SCHEMA_VERSIONS[source] and not (source == "sentinel-2-l2a" and version == 10):
+        raise ValueError(f"Unsupported ARD schema {version} for {source}")
     return Contract(
         source=source,
         target_crs="EPSG:25833",
         output_bands=_bands,  # flag band is separate (own uint8 COG)
         tiling=TilingSpec(),
-        schema_version=_SCHEMA_VERSIONS[source],
+        schema_version=version,
         flag_mode="separate",
     )
 

@@ -1,0 +1,19 @@
+# @package _global_
+# Additive v4 selection policy with exact Sentinel-2 mosaic membership.
+defaults:
+  - full_2017_2026
+  - _self_
+
+landsat:
+  anchor:
+    # Valid (QA_PIXEL non-fill) footprint intersect AOI / total AOI area.
+    # Independent of cloudiness; evaluate each exact scene, not a daily mosaic.
+    min_aoi_overlap_frac: 0.05
+
+sentinel2:
+  mosaic:
+    enabled: true
+
+# Isolate outputs and checkpoints from the legacy v3 selection policy.
+output_root: "data/manifest_build/v4/2017-2026-cutoff-20260717T235959Z"
+checkpoint_dir: "${output_root}/checkpoints"

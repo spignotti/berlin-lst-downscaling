@@ -1,7 +1,7 @@
 """Selection-pipeline orchestration.
 
 Owns the multi-anchor pipeline that turns a Hydra config into the
-canonical v3 manifest bundle. The thin Hydra adapter in
+canonical manifest bundle (legacy v3 or opt-in v4). The thin Hydra adapter in
 ``scripts/runners/build_manifest.py`` is the entry point; this module holds
 the work so the heavy lifting lives alongside the selection stages.
 """
@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import s2_mosaic_enabled
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.selection.anchors import build_anchors
 from berlin_lst_downscaling.data.selection.couple import couple_all
@@ -22,6 +23,7 @@ from berlin_lst_downscaling.data.selection.manifest import write_bundle
 from berlin_lst_downscaling.data.selection.s2_search import (
     match_s2_candidates_with_clear_frac,
 )
+from berlin_lst_downscaling.data.selection.schema import policy_fingerprint
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -30,7 +32,7 @@ _logger = logging.getLogger(__name__)
 
 
 def run_couple(cfg: DictConfig) -> int:
-    """Build the canonical v3 manifest bundle from the configured selection policy.
+    """Build the manifest bundle from the configured selection policy.
 
     Pipeline:
       1. Landsat anchors via PC STAC search + pixel-wise QA_PIXEL gate
@@ -69,6 +71,8 @@ def run_couple(cfg: DictConfig) -> int:
     s2_by_anchor: dict[str, list] = {}
     ckpt_dir = cfg.get("checkpoint_dir") or f"{cfg.output_root}/checkpoints"
     ckpt_path = Path(ckpt_dir) / "couple_checkpoint.pkl"
+    if s2_mosaic_enabled(cfg):
+        ckpt_path = Path(ckpt_dir) / f"couple_checkpoint_{policy_fingerprint(cfg)}.pkl"
     if ckpt_path.exists():
         try:
             with open(ckpt_path, "rb") as f:
@@ -150,7 +154,7 @@ def run_couple(cfg: DictConfig) -> int:
 
     result = write_bundle(
         coupled,
-        dropped,
+        anchor_stats.get("dropped", []) + dropped,
         eco_granules,
         manifest_path=manifest_out,
         pairings_path=pairings_out,
