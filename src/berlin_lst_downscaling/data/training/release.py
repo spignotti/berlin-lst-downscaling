@@ -243,6 +243,7 @@ def publish_release(
                 output_root=output_root,
                 policy_hash=policy_hash,
                 marker_expected=True,
+                **({"schema": schema} if schema is not None else {}),
             )
             return {"complete": completion_uri}
         raise RuntimeError(
@@ -269,6 +270,7 @@ def publish_release(
                         output_root=output_root,
                         policy_hash=policy_hash,
                         marker_expected=True,
+                        **({"schema": schema} if schema is not None else {}),
                     )
                     return {"complete": completion_uri}
                 raise RuntimeError(
@@ -300,6 +302,7 @@ def publish_release(
                 output_root=output_root,
                 policy_hash=policy_hash,
                 marker_expected=False,
+                **({"schema": schema} if schema is not None else {}),
             )
             if not report.readback.get("ok"):
                 raise RuntimeError(
@@ -329,6 +332,7 @@ def publish_release(
                 output_root=output_root,
                 policy_hash=policy_hash,
                 marker_expected=True,
+                **({"schema": schema} if schema is not None else {}),
             )
             if not report.readback.get("ok"):
                 raise RuntimeError(
@@ -422,6 +426,7 @@ def _readback_release(
     output_root: str,
     policy_hash: str,
     marker_expected: bool,
+    schema=None,
 ) -> dict:
     """Verify the published release by re-reading every artifact.
 
@@ -432,6 +437,9 @@ def _readback_release(
     must parse. When ``marker_expected`` (idempotent re-run or post-write
     verification) the release completion marker must carry the policy
     hash. Returns a ``{ok, artifacts, scenes, errors}`` evidence dict.
+
+    The default path expects the 28-channel v5 scaler; a v6 ``schema``
+    expects the schema's own channel count instead.
     """
     import rasterio
 
@@ -494,7 +502,8 @@ def _readback_release(
         scaler = _json.loads(read_bytes(scaler_json(output_root)))
         if scaler.get("policy_hash") != policy_hash:
             errors.append("scaler.json policy_hash mismatch")
-        if len(scaler.get("channels", [])) != len(FEATURE_CHANNEL_NAMES):
+        expected_channels = schema.n_channels if schema is not None else len(FEATURE_CHANNEL_NAMES)
+        if len(scaler.get("channels", [])) != expected_channels:
             errors.append("scaler.json channel count mismatch")
     except Exception as exc:  # noqa: BLE001
         errors.append(f"scaler.json unreadable: {exc}")

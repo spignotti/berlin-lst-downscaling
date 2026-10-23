@@ -95,14 +95,39 @@ def validate(eda_dir: Path, manifest_uri: str) -> list[str]:
     if not summary_path.exists():
         return [*failures, "summary.json is missing"]
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    if summary.get("release_id") != RELEASE_ID:
-        failures.append(f"release_id is {summary.get('release_id')}")
-    if summary.get("training_policy_hash") != training_policy_hash():
-        failures.append("training policy hash does not match the code")
+    v3_hash = summary.get("v3_config_hash")
+    if not v3_hash:
+        failures.append("v3_config_hash is missing")
+    elif v3_hash == EXPECTED_V3_CONFIG_HASH:
+        if summary.get("release_id") != RELEASE_ID:
+            failures.append(f"release_id is {summary.get('release_id')}")
+        if summary.get("training_policy_hash") != training_policy_hash():
+            failures.append("training policy hash does not match the code")
+        if summary.get("expected_v3_config_hash") != EXPECTED_V3_CONFIG_HASH:
+            failures.append("expected V3 config hash does not match the pinned hash")
+    else:
+        # EDA v3 over training/v3: the summary carries the shared v6
+        # feature hash (pinned by the training gate, not by EDA), so the
+        # validator recomputes the v6 policy from it instead of comparing
+        # against the published v2 hashes.
+        from berlin_lst_downscaling.data.training.release import V3_TRAINING_ROOT
+
+        v6_schema = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+        expected_policy = training_policy_hash(
+            v3_config_hash=v3_hash,
+            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
+            schema=v6_schema,
+        )
+        if summary.get("release_id") != "eda-v3":
+            failures.append(f"release_id is {summary.get('release_id')}")
+        if summary.get("training_root", "").rstrip("/") != V3_TRAINING_ROOT:
+            failures.append(f"training_root is {summary.get('training_root')}")
+        if summary.get("training_policy_hash") != expected_policy:
+            failures.append("training policy hash does not match the v6 policy")
+        if summary.get("expected_v3_config_hash") is not None:
+            failures.append("expected V3 config hash must be null for EDA v3")
     if summary.get("proposal_b_fingerprint") != proposal_b_fingerprint():
         failures.append("proposal B fingerprint does not match the code")
-    if summary.get("v3_config_hash") != EXPECTED_V3_CONFIG_HASH:
-        failures.append("V3 config hash does not match the pinned hash")
     if summary.get("scaler_policy_hash") != summary.get("training_policy_hash"):
         failures.append("scaler policy hash differs from the training policy hash")
     if int(summary.get("population", {}).get("n_observations", 0)) <= 0:

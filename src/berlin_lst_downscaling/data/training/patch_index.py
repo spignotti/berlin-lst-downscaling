@@ -29,6 +29,7 @@ import pyarrow.parquet as pq
 import rasterio
 
 from berlin_lst_downscaling.common.util import sha256_bytes
+from berlin_lst_downscaling.data.ard.publish_guard import assert_patch_index_output_root
 from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_SCHEMA_VERSION_V6,
     feature_schema,
@@ -606,6 +607,7 @@ def publish_patch_index(
     idempotent no-op. The completion marker is create-only and written last,
     after the publisher-side readback.
     """
+    assert_patch_index_output_root(output_root)
     _assert_outside_source(str(build.qa.get("source", {}).get("release_root") or ""), output_root)
     completion_uri = patch_index_completion(output_root)
     if exists(completion_uri):

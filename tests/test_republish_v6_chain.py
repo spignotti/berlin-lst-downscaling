@@ -334,3 +334,249 @@ def test_svf_radius_is_in_the_derived_config_hash() -> None:
     assert int(derived["svf_n_directions"]) == 16
     text = (_REPO / "configs/static_derived/v6.yaml").read_text()
     assert text.count("svf_max_radius") == 1
+
+
+# ── 5. Bugbot round-trip regressions ──────────────────────────────────
+
+
+def _small_grid():
+    from affine import Affine
+    from odc.geo.geobox import GeoBox
+    from rasterio.crs import CRS
+
+    return GeoBox((4, 4), Affine(100, 0, 369190, 0, -100, 5838410), CRS.from_epsg(25833))
+
+
+def _eligibility_result():
+    import numpy as np
+
+    from berlin_lst_downscaling.data.training.eligibility import EligibilityResult
+
+    return EligibilityResult(
+        scene_id="S",
+        year=2024,
+        s2_scene_id="S2",
+        eligible=np.ones((4, 4), dtype=bool),
+        target_valid=np.ones((4, 4), dtype=bool),
+        support=np.full((4, 4), 100, dtype=np.int32),
+        present=np.full((4, 4), 100, dtype=np.int32),
+        target_valid_cells=16,
+        eligible_cells=16,
+    )
+
+
+def test_publish_eligibility_v6_provenance_gate(tmp_path, monkeypatch) -> None:
+    """A v6 feature provenance publishes only with the v6 schema (Bugbot).
+
+    The default path still demands the pinned v5 hash + 28-channel order.
+    """
+    from berlin_lst_downscaling.data.features.contracts import (
+        FEATURE_CHANNEL_NAMES,
+        FEATURE_SCHEMA_VERSION_V6,
+        feature_schema,
+    )
+    from berlin_lst_downscaling.data.training import product as training_product
+
+    schema = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+    v6_hash = "shared-v6-hash"
+    v6_prov = {"config_hash": v6_hash, "channel_order": list(schema.names)}
+    real_read = training_product.read_bytes
+
+    def fake_read(uri):
+        if str(uri) == "prov":
+            return json.dumps(v6_prov).encode()
+        return real_read(uri)
+
+    monkeypatch.setattr(training_product, "read_bytes", fake_read)
+    out = training_product.publish_eligibility(
+        result=_eligibility_result(),
+        grid_100m=_small_grid(),
+        output_root=str(tmp_path),
+        run_id="r",
+        policy_hash="p",
+        v3_config_hash=v6_hash,
+        feature_valid_uri="f",
+        feature_provenance_uri="prov",
+        landsat_cog_uri="l",
+        landsat_flag_uri="lf",
+        geometry_id="g",
+        schema=schema,
+    )
+    assert Path(out.completion_uri).exists()
+
+    with pytest.raises(ValueError, match="Feature Release V3"):
+        training_product.publish_eligibility(
+            result=_eligibility_result(),
+            grid_100m=_small_grid(),
+            output_root=str(tmp_path / "v3"),
+            run_id="r",
+            policy_hash="p",
+            v3_config_hash=v6_hash,
+            feature_valid_uri="f",
+            feature_provenance_uri="prov",
+            landsat_cog_uri="l",
+            landsat_flag_uri="lf",
+            geometry_id="g",
+        )
+
+    v5_prov = {"config_hash": "pinned-v5", "channel_order": list(FEATURE_CHANNEL_NAMES)}
+
+    def fake_read_v5(uri):
+        if str(uri) == "prov":
+            return json.dumps(v5_prov).encode()
+        return real_read(uri)
+
+    monkeypatch.setattr(training_product, "read_bytes", fake_read_v5)
+    with pytest.raises(ValueError, match="Feature Release v6"):
+        training_product.publish_eligibility(
+            result=_eligibility_result(),
+            grid_100m=_small_grid(),
+            output_root=str(tmp_path / "mixed"),
+            run_id="r",
+            policy_hash="p",
+            v3_config_hash=v6_hash,
+            feature_valid_uri="f",
+            feature_provenance_uri="prov",
+            landsat_cog_uri="l",
+            landsat_flag_uri="lf",
+            geometry_id="g",
+            schema=schema,
+        )
+
+
+def test_readback_accepts_the_v6_channel_count(tmp_path, monkeypatch) -> None:
+    """The publisher readback expects 22 channels on the v6 path (Bugbot)."""
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from berlin_lst_downscaling.data.features.contracts import (
+        FEATURE_SCHEMA_VERSION_V6,
+        feature_schema,
+    )
+    from berlin_lst_downscaling.data.training import release as training_release
+    from berlin_lst_downscaling.data.training.paths import (
+        cells_parquet,
+        manifest_parquet,
+        scaler_json,
+    )
+    from berlin_lst_downscaling.data.training.report import TrainingRunReport
+
+    schema = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+    root = str(tmp_path)
+    blob = pa.BufferOutputStream()
+    pq.write_table(pa.table({"a": [1]}), blob)
+    parquet_bytes = blob.getvalue().to_pybytes()
+    scaler = {"policy_hash": "p", "channels": [{"name": n} for n in schema.names]}
+    payloads = {
+        manifest_parquet(root): parquet_bytes,
+        cells_parquet(root): parquet_bytes,
+        scaler_json(root): json.dumps(scaler).encode(),
+    }
+    import berlin_lst_downscaling.data.io as io_module
+
+    monkeypatch.setattr(io_module, "exists", lambda uri: True)
+    monkeypatch.setattr(training_release, "exists", lambda uri: True)
+    monkeypatch.setattr(training_release, "read_bytes", lambda uri: payloads[str(uri)])
+    report = TrainingRunReport(
+        run_id="r",
+        timestamp="t",
+        inputs={},
+        fingerprints={},
+        grid={},
+        policy_hash="p",
+        v3_config_hash="h",
+        total_pairings=0,
+        assessed=0,
+        processed=0,
+        failed=0,
+        excluded=0,
+        exclusion_reasons={},
+        aggregate={},
+        scenes=[],
+    )
+    ok_v6 = training_release._readback_release(
+        report=report, output_root=root, policy_hash="p", marker_expected=False, schema=schema
+    )
+    assert ok_v6["ok"], ok_v6["errors"]
+    stale = training_release._readback_release(
+        report=report, output_root=root, policy_hash="p", marker_expected=False
+    )
+    assert not stale["ok"]
+    assert any("channel count" in e for e in stale["errors"])
+
+
+def test_writers_refuse_published_roots_before_any_work() -> None:
+    """Guards run inside the writers, not just in tests (Bugbot)."""
+    from berlin_lst_downscaling.data.ard.publish_guard import FrozenPrefixError
+    from berlin_lst_downscaling.data.selection import pipeline as selection_pipeline
+    from berlin_lst_downscaling.data.training import patch_index as patch_module
+    from berlin_lst_downscaling.data.training import pipeline as training_pipeline
+
+    with pytest.raises(FrozenPrefixError):
+        selection_pipeline.run_couple(
+            OmegaConf.create({"output_root": "gs://berlin-lst-training-data/manifests/v3/x/"})
+        )
+    with pytest.raises(FrozenPrefixError):
+        training_pipeline.run_training_data(
+            OmegaConf.create(
+                {
+                    "features_root": "gs://berlin-lst-training-data/features/v5",
+                    "output_root": "gs://berlin-lst-training-data/training/v1",
+                }
+            )
+        )
+    with pytest.raises(FrozenPrefixError):
+        patch_module.publish_patch_index(
+            patch_module.PatchIndexBuild(
+                rows=[], qa={}, source_policy_hash="", index_policy_hash=""
+            ),
+            output_root="gs://berlin-lst-training-data/training/patch-index/v2",
+            run_id="r",
+        )
+
+
+def test_eda_v3_records_its_own_roots_and_policy(monkeypatch) -> None:
+    """EDA v3 names features/v6 and verifies the v6 policy (Bugbot)."""
+    import importlib.util
+    import sys
+
+    from berlin_lst_downscaling.data.eda.rules import FEATURES_ROOT, RELEASE_ID
+    from berlin_lst_downscaling.data.features.contracts import (
+        FEATURE_SCHEMA_VERSION_V6,
+        feature_schema,
+    )
+    from berlin_lst_downscaling.data.training.contracts import training_policy_hash
+
+    path = _REPO / "scripts/operators/run_training_eda.py"
+    spec = importlib.util.spec_from_file_location("run_training_eda", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(sys, "argv", ["run_training_eda.py", "--output-dir", "x"])
+    assert module.parse_args().features_root == FEATURES_ROOT
+    assert module.parse_args().release_id == RELEASE_ID
+    assert "--features-root" in open(path).read()
+    assert "--release-id" in open(path).read()
+
+    v6_hash = "shared-v6-hash"
+    v6_policy = training_policy_hash(
+        v3_config_hash=v6_hash,
+        feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
+        schema=feature_schema(FEATURE_SCHEMA_VERSION_V6),
+    )
+    scaler = {"policy_hash": v6_policy, "v3_config_hash": v6_hash}
+    assert module._expected_policy_for(TRAINING_V3, scaler) == v6_policy
+    assert module._expected_feature_hash_for(TRAINING_V3) is None
+    assert (
+        module._expected_policy_for("gs://berlin-lst-training-data/training/v2", {})
+        == training_policy_hash()
+    )
+
+    launcher = (
+        _REPO / ".opencode/skills/google-access/scripts/run-training-eda-v3-vm.sh"
+    ).read_text()
+    assert "--features-root" in launcher
+    assert "features/v6" in launcher
+    assert "--release-id eda-v3" in launcher

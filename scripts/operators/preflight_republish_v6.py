@@ -33,23 +33,43 @@ from omegaconf import OmegaConf
 
 _REPO = Path(__file__).resolve().parents[2]
 
+# Canonical chain roots, single-sourced from publish_guard so the guards
+# and the preflight can never disagree about the release roots.
+from berlin_lst_downscaling.data.ard.publish_guard import (  # noqa: E402
+    EDA_V3_ROOT,
+    FEATURES_V6_ROOT,
+    MANIFESTS_V4_ROOT,
+    PATCH_INDEX_V3_ROOT,
+    SENTINEL2_V10_ROOT,
+    STATIC_V6_ROOTS,
+    TRAINING_V3_ROOT,
+)
+
 # ── canonical chain roots ─────────────────────────────────────────────
 
-MANIFEST_V4_ROOT = "gs://berlin-lst-training-data/manifests/v4/2017-2026-cutoff-20260717T235959Z"
+MANIFEST_V4_ROOT = MANIFESTS_V4_ROOT
 MANIFEST_V4_URI = f"{MANIFEST_V4_ROOT}/manifest.parquet"
 PAIRINGS_V4_URI = f"{MANIFEST_V4_ROOT}/pairings.parquet"
 REPORT_V4_URI = f"{MANIFEST_V4_ROOT}/manifest_report.json"
 
-ARD_V10_ROOT = "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
+ARD_V10_ROOT = SENTINEL2_V10_ROOT
 ARD_LANDSAT_REUSE_ROOT = "gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019"
 
-STATIC_SOURCES_V6 = "gs://berlin-lst-training-data/static/sources/lod2-area-exact-v2"
-STATIC_DERIVED_V6 = "gs://berlin-lst-training-data/static/derived/lod2-area-exact-v2"
-DYNAMIC_V6 = "gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2"
-FEATURES_V6 = "gs://berlin-lst-training-data/features/v6"
-TRAINING_V3 = "gs://berlin-lst-training-data/training/v3"
-PATCH_INDEX_V3 = "gs://berlin-lst-training-data/training/patch-index/v3"
-EDA_V3 = "gs://berlin-lst-training-data/evaluation/eda/v3"
+
+def _static_root(kind: str) -> str:
+    matches = [root for root in STATIC_V6_ROOTS if f"/{kind}/" in root]
+    if len(matches) != 1:
+        raise RuntimeError(f"expected one static {kind} root, found {matches}")
+    return matches[0]
+
+
+STATIC_SOURCES_V6 = _static_root("static/sources")
+STATIC_DERIVED_V6 = _static_root("static/derived")
+DYNAMIC_V6 = _static_root("dynamic")
+FEATURES_V6 = FEATURES_V6_ROOT
+TRAINING_V3 = TRAINING_V3_ROOT
+PATCH_INDEX_V3 = PATCH_INDEX_V3_ROOT
+EDA_V3 = EDA_V3_ROOT
 GEOMETRY_MAPPING = "gs://berlin-lst-training-data/static/geometry_vintages/v1/geometry_mapping.json"
 
 STEPS = (

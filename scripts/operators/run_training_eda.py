@@ -87,6 +87,10 @@ from berlin_lst_downscaling.data.eda.rules import (
     season_of_month,
 )
 from berlin_lst_downscaling.data.eda.scan import scan_scene
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.io import (
     RunLogSession,
     atomic_upload,
@@ -426,21 +430,27 @@ def _summary(
     scaler: dict[str, object],
     data_gaps: list[str],
     n_scenes_scanned: int,
+    training_root: str = TRAINING_ROOT,
+    features_root: str = FEATURES_ROOT,
+    stadtstruktur_root: str = STADTSTRUKTUR_ROOT,
+    patch_index_root: str = PATCH_INDEX_ROOT,
+    v3_manifest: str = V3_MANIFEST_URI,
+    release_id: str = RELEASE_ID,
 ) -> None:
-    policy = training_policy_hash()
+    policy = _expected_policy_for(training_root, scaler)
     payload = {
-        "release_id": RELEASE_ID,
+        "release_id": release_id,
         "git_commit": _git_commit(),
-        "training_root": TRAINING_ROOT,
-        "features_root": FEATURES_ROOT,
-        "stadtstruktur_root": STADTSTRUKTUR_ROOT,
+        "training_root": training_root,
+        "features_root": features_root,
+        "stadtstruktur_root": stadtstruktur_root,
         "stadtstruktur_release_id": STADTSTRUKTUR_RELEASE_ID,
-        "patch_index_root": PATCH_INDEX_ROOT,
-        "v3_manifest": V3_MANIFEST_URI,
+        "patch_index_root": patch_index_root,
+        "v3_manifest": v3_manifest,
         "training_policy_hash": policy,
         "scaler_policy_hash": scaler.get("policy_hash"),
         "v3_config_hash": scaler.get("v3_config_hash"),
-        "expected_v3_config_hash": EXPECTED_V3_CONFIG_HASH,
+        "expected_v3_config_hash": _expected_feature_hash_for(training_root),
         "proposal_b_fingerprint": proposal_b_fingerprint(),
         "scaler_transform_policy": scaler.get("transform_policy"),
         "rules": {
@@ -525,6 +535,41 @@ def _table_pass(
     return data_gaps
 
 
+def _expected_policy_for(training_root: str, scaler: dict) -> str:
+    """Return the training policy hash the scaler must carry.
+
+    The default path reproduces the published v2 check. A training/v3
+    root carries the v6 policy recorded in its own scaler payload, which
+    is recomputed from the stored v6 config hash so a stale release fails
+    closed.
+    """
+    from berlin_lst_downscaling.data.training.release import V3_TRAINING_ROOT
+
+    if training_root.rstrip("/") == V3_TRAINING_ROOT:
+        v6_hash = scaler.get("v3_config_hash")
+        if not v6_hash:
+            raise RuntimeError("training/v3 scaler carries no v3_config_hash")
+        return training_policy_hash(
+            v3_config_hash=str(v6_hash),
+            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
+            schema=feature_schema(FEATURE_SCHEMA_VERSION_V6),
+        )
+    return training_policy_hash()
+
+
+def _expected_feature_hash_for(training_root: str) -> str | None:
+    """Return the pinned feature hash, or None when the label varies.
+
+    training/v2 must carry the pinned v5 hash; training/v3 carries its
+    own shared v6 hash, which the training gate (not EDA) pins down.
+    """
+    from berlin_lst_downscaling.data.training.release import V3_TRAINING_ROOT
+
+    if training_root.rstrip("/") == V3_TRAINING_ROOT:
+        return None
+    return EXPECTED_V3_CONFIG_HASH
+
+
 def run(args: argparse.Namespace) -> None:
     output_dir = Path(args.output_dir)
     if args.upload_only:
@@ -543,10 +588,14 @@ def run(args: argparse.Namespace) -> None:
         shares = stadtstruktur_shares(args.stadtstruktur_root)
         patches = patch_index(args.patch_index_root)
         scaler = scaler_payload(args.training_root)
-        policy = training_policy_hash()
+        policy = _expected_policy_for(args.training_root, scaler)
         if scaler.get("policy_hash") != policy:
             raise RuntimeError("published scaler policy hash does not match training_policy_hash()")
-        if scaler.get("v3_config_hash") != EXPECTED_V3_CONFIG_HASH:
+        expected_feature_hash = _expected_feature_hash_for(args.training_root)
+        if (
+            expected_feature_hash is not None
+            and scaler.get("v3_config_hash") != expected_feature_hash
+        ):
             raise RuntimeError("published scaler V3 config hash does not match the pinned hash")
         data_gaps = _table_pass(output_dir, manifest, cells, calendar, inside, patches)
         if args.tables_only:
@@ -556,6 +605,12 @@ def run(args: argparse.Namespace) -> None:
                 scaler=scaler,
                 data_gaps=[*data_gaps, "Raster scan was not run."],
                 n_scenes_scanned=0,
+                training_root=args.training_root,
+                features_root=args.features_root,
+                stadtstruktur_root=args.stadtstruktur_root,
+                patch_index_root=args.patch_index_root,
+                v3_manifest=args.v3_manifest,
+                release_id=args.release_id,
             )
             print(f"tables only: {output_dir}")
             return
@@ -582,6 +637,12 @@ def run(args: argparse.Namespace) -> None:
             scaler=scaler,
             data_gaps=data_gaps,
             n_scenes_scanned=len(markers),
+            training_root=args.training_root,
+            features_root=args.features_root,
+            stadtstruktur_root=args.stadtstruktur_root,
+            patch_index_root=args.patch_index_root,
+            v3_manifest=args.v3_manifest,
+            release_id=args.release_id,
         )
         log_event(_LOGGER, logging.INFO, f"eda_done observations={population['n_observations']}")
     if args.upload_uri:
@@ -594,6 +655,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only EDA tables for the training release.")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--training-root", default=TRAINING_ROOT)
+    parser.add_argument("--features-root", default=FEATURES_ROOT)
+    parser.add_argument("--release-id", default=RELEASE_ID)
     parser.add_argument("--v3-manifest", default=V3_MANIFEST_URI)
     parser.add_argument("--stadtstruktur-root", default=STADTSTRUKTUR_ROOT)
     parser.add_argument("--patch-index-root", default=PATCH_INDEX_ROOT)
