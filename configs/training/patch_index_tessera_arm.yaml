@@ -1,0 +1,13 @@
+# @package _global_
+# TESSERA-arm patch index view (code only, not run here).
+# Same 160x160 px windows as the main-arm patch index, admitted on the
+# common cell set (main-arm eligible AND TESSERA-valid). Both arms point at
+# the identical cell/patch set. 2026 is excluded for this arm.
+defaults:
+  - _base
+  - _self_
+
+source_root: "data/training-tessera-arm"
+output_root: "data/training-tessera-arm/patch-index"
+tessera_embeddings_root: "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
+tessera_quality_threshold: 0.0

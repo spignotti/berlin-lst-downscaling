@@ -1,0 +1,38 @@
+# @package _global_
+# TESSERA embedding ablation arm (code only, not run here).
+# Same U-Net as the v6 main arm; the 6 morphology + 2 shadow channels are
+# replaced by the 128-channel annual TESSERA embedding through a learnable
+# 1x1 adapter. All other v6 channels stay identical to the main arm.
+# Train 2017-2023, validation 2024, test 2025 (same split as the main
+# model); 2026 is excluded for this arm (no 2026 embedding, never used for
+# 2026 inference). Main-arm configs and features/v6 are untouched.
+defaults:
+  - _base
+  - _self_
+
+contract:
+  feature_order: v6_registry
+
+data:
+  feature_schema_version: 5
+  n_active_channels: null
+  active_channel_names: null
+  # TESSERA-arm input switch. The loader keeps the 14 non-morphology,
+  # non-shadow v6 channels and reads the per-scene-year embedding from
+  # tessera_embeddings_root through the shared 1x1 adapter.
+  tessera_enabled: true
+  tessera_embeddings_root: "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
+  tessera_quality_threshold: 0.0
+  splits: ["train", "validation"]
+
+data_release_id: "training/v3"
+features_root: "gs://berlin-lst-training-data/features/v6"
+
+model:
+  tessera_adapter_width: 8
+  tessera_n_channels: 128
+
+output_root: "data/runs/modeling-tessera-arm"
+
+wandb:
+  mode: "offline"
