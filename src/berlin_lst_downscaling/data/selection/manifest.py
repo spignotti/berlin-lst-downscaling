@@ -16,8 +16,9 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from berlin_lst_downscaling.common.util import ensure_utc, sha256_file
+from berlin_lst_downscaling.common.util import ensure_utc, sha256_bytes
 from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import s2_mosaic_enabled
+from berlin_lst_downscaling.data.io.storage import atomic_write
 from berlin_lst_downscaling.data.selection.schema import (
     MANIFEST_SCHEMA,
     MANIFEST_SCHEMA_V4,
@@ -196,16 +197,22 @@ def write_bundle(
         raise ValueError("Pairings validation failed:\n" + "\n".join(pr.errors))
 
     # ── Write bundle ───────────────────────────────────────────────────
+    # Serialize first and hash the upload bytes: re-reading the written file
+    # via local open() fails for gs:// URIs, while hashing the uploaded bytes
+    # guarantees the report matches the stored object on every backend.
+    manifest_bytes = _table_bytes(manifest_table)
+    pairings_bytes = _table_bytes(pairings_table)
+
+    # Compute full SHA-256 hashes from the upload bytes (authoritative in report only)
+    manifest_hash = sha256_bytes(manifest_bytes)
+    pairings_hash = sha256_bytes(pairings_bytes)
+
     _ensure_dir(manifest_path)
     _ensure_dir(pairings_path)
     _ensure_dir(report_path)
 
-    pq.write_table(manifest_table, manifest_path)
-    pq.write_table(pairings_table, pairings_path)
-
-    # Compute full SHA-256 hashes from written files (authoritative in report only)
-    manifest_hash = sha256_file(manifest_path)
-    pairings_hash = sha256_file(pairings_path)
+    atomic_write(manifest_path, manifest_bytes)
+    atomic_write(pairings_path, pairings_bytes)
 
     # ── Build report ───────────────────────────────────────────────────
     n_coupled = len(coupled)
@@ -254,8 +261,7 @@ def write_bundle(
             for entry in sorted(dropped, key=lambda entry: entry["anchor"]["scene_id"])
         ]
 
-    with open(report_path, "w") as f:
-        json.dump(report, f, indent=2)
+    atomic_write(report_path, json.dumps(report, indent=2).encode("utf-8"))
 
     return BundleResult(
         manifest_path=manifest_path,
@@ -283,7 +289,16 @@ def _extract_platform(scene_id: str) -> str:
     return "unknown"
 
 
+def _table_bytes(table: pa.Table) -> bytes:
+    """Serialize a table to parquet bytes for hashing and upload."""
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    return sink.getvalue().to_pybytes()
+
+
 def _ensure_dir(path: str) -> None:
+    if path.startswith("gs://"):
+        return  # object stores have no directories to create
     d = os.path.dirname(path)
     if d:
         os.makedirs(d, exist_ok=True)

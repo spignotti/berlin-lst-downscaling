@@ -45,6 +45,18 @@ defaults to `analysis/eda-v1` like its v2 template). Every launcher runs
 `scripts/operators/preflight_republish_v6.py --step <step>` locally
 before touching the VM and refuses to launch on any finding.
 
+### Rerunning step 1 after a partial write
+
+The v4 bundle root is immutable once `manifest.parquet` exists: the
+selection preflight refuses to launch while the bundle URI exists, even
+for a partial prefix (parquets present, `manifest_report.json` missing —
+as after the failed run `selection-20261023T160311Z-36246C2F`, which
+crashed hashing the GCS parquets with local `open()` before the report
+was written). Before a rerun the operator deletes the partial prefix
+(e.g. `gcloud storage rm -r
+gs://berlin-lst-training-data/manifests/v4/2017-2026-cutoff-20260717T235959Z/*`).
+The launcher never auto-deletes GCS data.
+
 ## Rough runtimes
 
 No previous run of this exact chain exists, so there are no measured
@@ -70,8 +82,13 @@ after each run.
    - steps 1–2: `manifest.parquet` + `pairings.parquet` +
      `manifest_report.json` (step 1), `ledger.parquet` with `status=done`
      rows (step 2, `validate_ard.py --ledger … --manifest …`);
-   - steps 3–5: `ledger.parquet` under the release root
-     (`_state/...` for derived/dynamic), all rows `done`;
+    - steps 3–4: `ledger.parquet` under the release root
+      (`_state/...` for derived), all rows `done`;
+    - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
+      `validate_dynamic.py --output-root … --expected-role anchor
+      --expected-scenes-from-manifest <v4 manifest>` (derived from the v4
+      bundle, never hard-coded, so the AOI-overlap gate passes without
+      manual edits);
    - step 6: `ledger.parquet` all `done` plus
      `validate_feature_stacks.py --root … --expected-scenes-from-manifest
      <v4 manifest>` (derived from the v4 bundle, never hard-coded);

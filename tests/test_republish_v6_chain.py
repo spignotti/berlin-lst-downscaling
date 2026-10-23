@@ -909,9 +909,13 @@ def test_validators_derive_counts_without_hard_coding(monkeypatch) -> None:
         raise DerivationUsed(uri)
 
     monkeypatch.setattr(counts_module, "expected_counts_for_bundle", fake_derive)
-    for script, flag in (
-        ("validate_feature_stacks.py", "--root"),
-        ("validate_training_data.py", "--release-root"),
+    for script, argv in (
+        ("validate_feature_stacks.py", ["--root", "somewhere"]),
+        ("validate_training_data.py", ["--release-root", "somewhere"]),
+        (
+            "validate_dynamic.py",
+            ["--output-root", "somewhere", "--expected-role", "anchor"],
+        ),
     ):
         import importlib.util
 
@@ -925,46 +929,199 @@ def test_validators_derive_counts_without_hard_coding(monkeypatch) -> None:
             "argv",
             [
                 "prog",
-                flag,
-                "somewhere",
+                *argv,
                 "--expected-scenes-from-manifest",
                 "bundle/manifest.parquet",
             ],
         )
         with pytest.raises(DerivationUsed):
             module.main()
-    assert seen == ["bundle/manifest.parquet", "bundle/manifest.parquet"]
+    assert seen == [
+        "bundle/manifest.parquet",
+        "bundle/manifest.parquet",
+        "bundle/manifest.parquet",
+    ]
 
     # The two flags are mutually exclusive.
     import importlib.util
 
-    path = _REPO / "scripts/validators/validate_feature_stacks.py"
-    spec = importlib.util.spec_from_file_location("validate_feature_stacks", path)
+    for script, argv in (
+        ("validate_feature_stacks.py", ["--root", "x"]),
+        ("validate_training_data.py", ["--release-root", "x"]),
+        (
+            "validate_dynamic.py",
+            ["--output-root", "x", "--expected-role", "anchor"],
+        ),
+    ):
+        path = _REPO / "scripts/validators" / script
+        spec = importlib.util.spec_from_file_location(script.replace(".py", ""), path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                *argv,
+                "--expected-scenes",
+                "5",
+                "--expected-scenes-from-manifest",
+                "y",
+            ],
+        )
+        with pytest.raises(SystemExit) as exc:
+            module.main()
+        assert exc.value.code == 2
+
+
+def test_dynamic_validator_uses_assessable_anchor_count(monkeypatch) -> None:
+    """The dynamic step validates the anchor role, so the manifest-derived
+    count must be the assessable 2017-2025 universe (as for features/v6),
+    not the every-anchor total that training/v3 uses."""
+    import importlib.util
+    import sys
+
+    import berlin_lst_downscaling.data.selection.bundle_counts as counts_module
+
+    monkeypatch.setattr(counts_module, "expected_counts_for_bundle", lambda uri: (7, 11))
+    path = _REPO / "scripts/validators/validate_dynamic.py"
+    spec = importlib.util.spec_from_file_location("validate_dynamic", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    counts = {(src, "done"): 7 for src in ("era5_land", "shadow_building", "shadow_vegetation")}
+    ledger = {
+        "total_rows": 21,
+        "counts": counts,
+        "non_done": [],
+        "role_counts": {"anchor": 21},
+        "missing_role": 0,
+    }
+    monkeypatch.setattr(module, "_read_ledger", lambda root: ledger)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "prog",
-            "--root",
-            "x",
-            "--expected-scenes",
-            "5",
+            "--output-root",
+            "somewhere",
+            "--expected-role",
+            "anchor",
             "--expected-scenes-from-manifest",
-            "y",
+            "bundle/manifest.parquet",
         ],
     )
-    with pytest.raises(SystemExit) as exc:
-        module.main()
-    assert exc.value.code == 2
+    # Exit 0 proves the assessable count (7) was used: the total (11)
+    # would fail every per-source check.
+    assert module.main() == 0
+
+
+def _compose_dynamic(name: str):
+    """Replicate the Hydra composition ``_base <- full <- <name>``."""
+    parts = []
+    for fname in ("_base.yaml", "full.yaml", f"{name}.yaml"):
+        cfg = OmegaConf.load(_REPO / "configs/dynamic" / fname)
+        if "defaults" in cfg:
+            del cfg["defaults"]
+        parts.append(cfg)
+    return OmegaConf.merge(*parts)
+
+
+def test_dynamic_v6_config_uses_manifest_as_universe() -> None:
+    """v6 nulls the inherited 324 count; legacy configs keep their gates."""
+    v6 = _compose_dynamic("v6")
+    assert v6.get("expected_scene_count") is None
+    full = _compose_dynamic("full")
+    assert int(full["expected_scene_count"]) == 324
+    inference = OmegaConf.load(_REPO / "configs/dynamic/inference_2026.yaml")
+    assert int(inference["expected_scene_count"]) == 21
+
+
+def test_dynamic_gate_manifest_universe_and_legacy_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A v6 run processes fewer-than-324 anchors; legacy 324 still fails.
+
+    The manifest loader is faked with 7 anchor scenes and the geometry
+    mapping loader raises past the gate, so reaching it proves the gate
+    passed (legacy configs must return 1 before it).
+    """
+    from types import SimpleNamespace
+
+    from berlin_lst_downscaling.data.dynamic import pipeline as dynamic_pipeline
+
+    class _PastGate(Exception):
+        pass
+
+    def _fake_anchors(*args, **kwargs):
+        return SimpleNamespace(
+            ok=True,
+            scenes=[f"S{i}" for i in range(7)],
+            errors=[],
+            total_rows=7,
+            manifest_hash="fakehash",
+        )
+
+    def _raise_past_gate(*args, **kwargs):
+        raise _PastGate()
+
+    monkeypatch.setattr(dynamic_pipeline, "load_landsat_anchors", _fake_anchors)
+    monkeypatch.setattr(dynamic_pipeline, "load_geometry_mapping", _raise_past_gate)
+
+    with pytest.raises(_PastGate):
+        dynamic_pipeline.run_dynamic(_compose_dynamic("v6"), run_id="testv6")
+
+    legacy = _compose_dynamic("full")
+    assert legacy.get("expected_scene_count") == 324
+    assert dynamic_pipeline.run_dynamic(legacy, run_id="testlegacy") == 1
+
+    matching = _compose_dynamic("full")
+    monkeypatch.setattr(
+        dynamic_pipeline,
+        "load_landsat_anchors",
+        lambda *args, **kwargs: SimpleNamespace(
+            ok=True,
+            scenes=[f"S{i}" for i in range(324)],
+            errors=[],
+            total_rows=324,
+            manifest_hash="fakehash",
+        ),
+    )
+    with pytest.raises(_PastGate):
+        dynamic_pipeline.run_dynamic(matching, run_id="testmatch")
 
 
 def test_v6_launchers_derive_counts_from_the_v4_bundle() -> None:
-    features = (_REPO / ".opencode/skills/google-access/scripts/run-features-v6-vm.sh").read_text()
+    scripts = _REPO / ".opencode/skills/google-access/scripts"
+    features = (scripts / "run-features-v6-vm.sh").read_text()
     assert "--expected-scenes-from-manifest" in features
     assert "--expected-scenes 324" not in features
-    training = (_REPO / ".opencode/skills/google-access/scripts/run-training-v3-vm.sh").read_text()
+    training = (scripts / "run-training-v3-vm.sh").read_text()
     assert "--expected-scenes-from-manifest" in training
     assert "manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet" in training
+    dynamic = (scripts / "run-dynamic-v6-vm.sh").read_text()
+    assert '--expected-scenes-from-manifest "$MANIFEST_URI"' in dynamic
+    assert "--expected-scenes 324" not in dynamic
+    assert "manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet" in dynamic
+
+    # No v6/v4 launcher hard-codes a scene count (legacy v5 launchers
+    # run-dynamic-vm.sh, run-training-data-vm.sh, run-features-vm.sh stay
+    # untouched and are excluded here).
+    import re
+
+    for name in (
+        "run-selection-v4-vm.sh",
+        "run-ard-v10-vm.sh",
+        "run-static-sources-v6-vm.sh",
+        "run-static-derived-v6-vm.sh",
+        "run-dynamic-v6-vm.sh",
+        "run-features-v6-vm.sh",
+        "run-training-v3-vm.sh",
+        "run-patch-index-v3-vm.sh",
+        "run-training-eda-v3-vm.sh",
+    ):
+        text = (scripts / name).read_text()
+        assert re.search(r"--expected-scenes(?!-from-manifest)\b", text) is None, (
+            f"{name} hard-codes a scene count"
+        )
