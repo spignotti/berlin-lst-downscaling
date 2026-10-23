@@ -180,6 +180,10 @@ def collate_tessera_batch(samples, embeddings_root, *, kept_indices=None):
     it, and stacks ``(kept (B, 14, H, W), embedding (B, 128, H, W))`` for
     :class:`TesseraRealLSTTask`. Morphology + shadow channels are dropped
     here, never passed to the model.
+
+    Window-read failures propagate (fail closed). There is deliberately
+    no full-raster fallback: a 2.3 GB whole-product read inside the
+    per-sample loop would violate the no-full-raster-loads rule.
     """
     import torch
 
@@ -197,17 +201,9 @@ def collate_tessera_batch(samples, embeddings_root, *, kept_indices=None):
         meta = sample.meta
         row = int(getattr(meta, "row", 0))
         col = int(getattr(meta, "col", 0))
-        try:
-            embedding, _ = load_patch_embedding(
-                str(embeddings_root), int(meta.year), row_100m=row, col_100m=col
-            )
-        except Exception as exc:  # noqa: BLE001 — small/test products are patch-sized
-            embedding, _ = load_scene_year_embedding(str(embeddings_root), int(meta.year))
-            h, w = features.shape[1], features.shape[2]
-            if embedding.shape[:2] != (h, w):
-                raise ValueError(
-                    f"embedding extent {tuple(embedding.shape[:2])} != patch {(h, w)}"
-                ) from exc
+        embedding, _ = load_patch_embedding(
+            str(embeddings_root), int(meta.year), row_100m=row, col_100m=col
+        )
         emb_list.append(np.moveaxis(embedding, 2, 0))
     kept_batch = torch.from_numpy(np.stack(kept_list).astype("float32"))
     emb_batch = torch.from_numpy(np.stack(emb_list).astype("float32"))

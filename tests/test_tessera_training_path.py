@@ -10,6 +10,7 @@ from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.data.embeddings.loader import (
     build_tessera_model_inputs,
+    collate_tessera_batch,
     load_scene_year_embedding,
     select_kept_features,
 )
@@ -152,6 +153,53 @@ def test_load_patch_embedding_reads_window(tmp_path) -> None:
     assert embedding.shape == (160, 160, 128)
     assert valid.shape == (160, 160)
     assert bool(np.all(valid))
+
+
+def test_collate_reads_windows_never_full_raster(tmp_path, monkeypatch) -> None:
+    """Collate must serve every sample from a COG window, never a full read."""
+    import types
+
+    from affine import Affine
+
+    import berlin_lst_downscaling.data.embeddings.loader as loader_mod
+    from berlin_lst_downscaling.data.embeddings.product import write_tessera_year_product
+
+    def _forbid_full_read(*args: object, **kwargs: object) -> None:
+        raise AssertionError("collate must not fall back to a full-raster read")
+
+    monkeypatch.setattr(loader_mod, "load_scene_year_embedding", _forbid_full_read)
+
+    rng = np.random.default_rng(11)
+    quantized = rng.integers(-20, 20, size=(160, 320, 128)).astype(np.int8)
+    scale = np.full((160, 320), 0.5, dtype=np.float32)
+    transform = Affine(10.0, 0.0, 0.0, 0.0, -10.0, 1600.0)
+    write_tessera_year_product(
+        quantized=quantized,
+        scale=scale,
+        valid=np.isfinite(scale),
+        transform=transform,
+        crs="EPSG:25833",
+        output_dir=str(tmp_path / "2024"),
+        year=2024,
+        provenance={"dataset_version": "v1.1-dclimate", "year": 2024},
+    )
+    samples = []
+    for col in (0, 16):
+        samples.append(
+            types.SimpleNamespace(
+                features=rng.standard_normal((22, 160, 160)).astype(np.float32),
+                meta=types.SimpleNamespace(year=2024, row=0, col=col),
+            )
+        )
+    kept_batch, emb_batch = collate_tessera_batch(samples, str(tmp_path))
+    assert tuple(kept_batch.shape) == (2, 14, 160, 160)
+    assert tuple(emb_batch.shape) == (2, 128, 160, 160)
+    assert bool(torch.isfinite(emb_batch).all())
+    # Kept channels are exactly the loader-selected v6 subset.
+    assert torch.equal(
+        kept_batch[1],
+        torch.from_numpy(select_kept_features(np.asarray(samples[1].features))),
+    )
 
 
 def test_tessera_task_checkpoint_roundtrip(tmp_path) -> None:
