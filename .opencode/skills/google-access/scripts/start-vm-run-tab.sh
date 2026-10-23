@@ -34,6 +34,9 @@ if [[ -z "$LAUNCHER" ]]; then
   echo "  run-modeling-smoke-vm.sh run-patch-read-timing-vm.sh" >&2
   echo "  run-baseline-vm.sh run-baseline-validation-vm.sh" >&2
   echo "  run-feature-diagnostics-vm.sh" >&2
+  echo "  run-selection-v4-vm.sh run-ard-v10-vm.sh run-static-sources-v6-vm.sh" >&2
+  echo "  run-static-derived-v6-vm.sh run-dynamic-v6-vm.sh run-features-v6-vm.sh" >&2
+  echo "  run-training-v3-vm.sh run-patch-index-v3-vm.sh run-training-eda-v3-vm.sh" >&2
   exit 1
 fi
 shift
@@ -50,14 +53,17 @@ fi
 BASENAME="$(basename -- "$LAUNCHER")"
 APPROVED="$SCRIPTS_DIR/$BASENAME"
 case "$BASENAME" in
-  run-dynamic-vm.sh|run-features-vm.sh|run-training-data-vm.sh|run-qa-stage1-vm.sh|run-qa-stage2-vm.sh|run-modeling-smoke-vm.sh|run-patch-read-timing-vm.sh|run-baseline-vm.sh|run-baseline-validation-vm.sh|run-feature-diagnostics-vm.sh)
+  run-dynamic-vm.sh|run-features-vm.sh|run-training-data-vm.sh|run-qa-stage1-vm.sh|run-qa-stage2-vm.sh|run-modeling-smoke-vm.sh|run-patch-read-timing-vm.sh|run-baseline-vm.sh|run-baseline-validation-vm.sh|run-feature-diagnostics-vm.sh|run-selection-v4-vm.sh|run-ard-v10-vm.sh|run-static-sources-v6-vm.sh|run-static-derived-v6-vm.sh|run-dynamic-v6-vm.sh|run-features-v6-vm.sh|run-training-v3-vm.sh|run-patch-index-v3-vm.sh|run-training-eda-v3-vm.sh)
     ;;
   *)
     echo "ERROR: not an approved launcher: $BASENAME" >&2
     echo "Approved: run-dynamic-vm.sh, run-features-vm.sh, run-training-data-vm.sh," >&2
     echo "  run-qa-stage1-vm.sh, run-qa-stage2-vm.sh, run-modeling-smoke-vm.sh," >&2
     echo "  run-patch-read-timing-vm.sh, run-baseline-vm.sh," >&2
-    echo "  run-baseline-validation-vm.sh, run-feature-diagnostics-vm.sh" >&2
+    echo "  run-baseline-validation-vm.sh, run-feature-diagnostics-vm.sh," >&2
+    echo "  run-selection-v4-vm.sh, run-ard-v10-vm.sh, run-static-sources-v6-vm.sh," >&2
+    echo "  run-static-derived-v6-vm.sh, run-dynamic-v6-vm.sh, run-features-v6-vm.sh," >&2
+    echo "  run-training-v3-vm.sh, run-patch-index-v3-vm.sh, run-training-eda-v3-vm.sh" >&2
     exit 1
     ;;
 esac

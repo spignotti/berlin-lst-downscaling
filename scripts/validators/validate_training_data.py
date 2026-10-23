@@ -515,7 +515,26 @@ def main() -> int:
         help="exact manifest row count for the full release (e.g. 345); "
         "enforces full year coverage 2017-2026",
     )
+    parser.add_argument(
+        "--expected-scenes-from-manifest",
+        default=None,
+        metavar="MANIFEST_PARQUET",
+        help="Derive the expected manifest row count from a selection "
+        "manifest bundle (every anchor including 2026); mutually "
+        "exclusive with --expected-scenes",
+    )
     args = parser.parse_args()
+
+    if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
+        parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
+    if args.expected_scenes_from_manifest is not None:
+        from berlin_lst_downscaling.data.selection.bundle_counts import (
+            expected_counts_for_bundle,
+        )
+
+        _, total = expected_counts_for_bundle(args.expected_scenes_from_manifest)
+        print(f"  Expected scenes from manifest bundle: {total}")
+        args.expected_scenes = total
 
     root = args.release_root.rstrip("/")
     errors: list[str] = []
