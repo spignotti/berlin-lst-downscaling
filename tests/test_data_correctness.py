@@ -362,7 +362,7 @@ def test_exclusion_reason_counts_name_the_invalid_channel() -> None:
     stack[0, 10, 0] = np.nan
     target = np.ones((2, 2), dtype=bool)
     target[0, 1] = False
-    counted = exclusion_reason_counts(target, stack)
+    counted = exclusion_reason_counts(target, stack, aoi_fraction=np.ones(target.shape))
     assert counted["excluded_cells"] == 1
     assert counted["eligible_cells"] == 2
     assert counted["per_channel"]["B02"] == 1
@@ -397,8 +397,12 @@ def test_scan_and_lod2_report_and_operator_flags(tmp_path: Path) -> None:
     landsat = tmp_path / "lst.tif"
     flag = tmp_path / "flag.tif"
     _write_tif(feature, stack, Affine(10, 0, 0, 0, -10, 200))
-    _write_tif(landsat, np.full((2, 2), 300.0, dtype=np.float32), Affine(100, 0, 0, 0, -100, 200))
-    _write_tif(flag, np.zeros((2, 2), dtype=np.uint8), Affine(100, 0, 0, 0, -100, 200))
+    _write_tif(landsat, np.full((2, 3), 300.0, dtype=np.float32), Affine(100, 0, 0, 0, -100, 200))
+    flags = np.zeros((2, 3), dtype=np.uint8)
+    flags[:, 2] = 1  # Ceiling-grid edge targets are invalid in this fixture.
+    _write_tif(flag, flags, Affine(100, 0, 0, 0, -100, 200))
+    aoi = tmp_path / "aoi_10m.tif"
+    _write_tif(aoi, np.ones((20, 23), dtype=np.uint8), Affine(10, 0, 0, 0, -10, 200))
     tile = tmp_path / "one.gml"
     tile.write_bytes(_part_only_tile())
     scenes = tmp_path / "scenes.json"
@@ -431,6 +435,8 @@ def test_scan_and_lod2_report_and_operator_flags(tmp_path: Path) -> None:
                 "eligibility-gaps",
                 "--scope",
                 "lod2-parser",
+                "--aoi-mask",
+                str(aoi),
                 "--scenes-json",
                 str(scenes),
                 "--lod2-tile",
@@ -450,7 +456,8 @@ def test_scan_and_lod2_report_and_operator_flags(tmp_path: Path) -> None:
     assert summary["eligibility_gaps"]["excluded_cells"] == 1
     assert summary["eligibility_gaps"]["per_channel"]["B08"] == 1
     assert summary["eligibility_gaps"]["by_year"]["2022"]["excluded_cells"] == 1
-    assert summary["eligibility_gaps"]["scenes"][0]["dropped_edge_cols"] == 3
+    assert summary["eligibility_gaps"]["scenes"][0]["dropped_edge_cols"] == 0
+    assert summary["eligibility_gaps"]["scenes"][0]["padded_edge_cols"] == 7
     lod2 = summary["lod2_parser"][0]
     assert lod2["height_locations"]["buildingpart_only_measured_height"] == 1
     assert lod2["height_locations"]["missing_measured_height"] == 1

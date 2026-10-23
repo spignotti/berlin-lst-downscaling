@@ -37,6 +37,8 @@ def compute_clear_frac_with_counts(
     aoi_mask_path: str = "data/boundaries/aoi_10m.tif",
     resolution: int = 10,
     anchor_dt: datetime | None = None,
+    *,
+    s2_mosaic: bool = False,
 ) -> tuple[float, dict]:
     """Same as compute_clear_frac but also returns intermediate pixel counts.
 
@@ -62,17 +64,24 @@ def compute_clear_frac_with_counts(
         groupby="solar_day",
     )
 
-    s2_ds = stac_load(
-        items=s2_items,
-        bands=["SCL"],
-        geobox=gbox,
-        chunks={"x": 2048, "y": 2048},
-        groupby="solar_day",
-    )
-
     # ── build boolean clear masks ───────────────────────────────────────────
-    l8_clear = _landsat_is_clear(l8_ds, anchor_dt)
-    s2_clear = _s2_is_clear(s2_ds, anchor_dt)
+    if s2_mosaic:
+        l8_slice = select_time_slice(l8_ds, anchor_dt) if anchor_dt is not None else l8_ds
+        l8_clear = landsat_qa_to_clear_bits(_band_plane(l8_slice["qa_pixel"]).astype(np.uint16))
+        # Each item's SCL is loaded independently: no implicit ODC fusion,
+        # no selection by the Landsat date, no cloud-preferred donors.
+        scl = _mosaic_scl(s2_items, gbox)
+        s2_clear = ~np.isin(scl, list(_S2_CLOUD_CLASSES))
+    else:
+        l8_clear = _landsat_is_clear(l8_ds, anchor_dt)
+        s2_ds = stac_load(
+            items=s2_items,
+            bands=["SCL"],
+            geobox=gbox,
+            chunks={"x": 2048, "y": 2048},
+            groupby="solar_day",
+        )
+        s2_clear = _s2_is_clear(s2_ds, anchor_dt)
 
     # ── AOI mask (reproject to the scene grid) ──────────────────────────────
     aoi = load_aoi_mask(aoi_mask_path, l8_ds)
@@ -158,3 +167,40 @@ def _s2_is_clear(
         ds = select_time_slice(ds, anchor_dt)
     scl = ds["SCL"].values[0].astype(np.uint8)
     return ~np.isin(scl, list(_S2_CLOUD_CLASSES))
+
+
+def _band_plane(band: xr.DataArray) -> np.ndarray:
+    """Extract a spatial plane whether time was selected/dropped or retained."""
+    if "time" in band.dims:
+        if band.sizes["time"] != 1:
+            raise ValueError("Expected one time slice for an exact item")
+        band = band.isel(time=0, drop=True)
+    return band.transpose("y", "x").values
+
+
+def _mosaic_scl(items: list, geobox) -> np.ndarray:
+    """First footprint-valid SCL in sorted item-ID order, including cloud."""
+    mosaic = None
+    for item in sorted(items, key=lambda item: item.id):
+        ds = stac_load(
+            items=[item],
+            bands=["SCL"],
+            geobox=geobox,
+            chunks={"x": 2048, "y": 2048},
+            groupby="solar_day",
+            resampling="nearest",
+            dtype="uint8",
+            nodata=0,
+        )
+        raw = _band_plane(ds["SCL"])
+        valid = np.isfinite(raw) & (raw != 0)
+        nodata = ds["SCL"].rio.nodata
+        if nodata is not None:
+            valid &= raw != nodata
+        if mosaic is None:
+            mosaic = np.zeros(raw.shape, dtype=np.uint8)
+        donor = (mosaic == 0) & valid
+        mosaic[donor] = raw[donor].astype(np.uint8)
+    if mosaic is None:
+        raise ValueError("Cannot mosaic empty S2 membership")
+    return mosaic

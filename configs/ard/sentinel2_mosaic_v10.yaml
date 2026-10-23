@@ -1,0 +1,19 @@
+# @package _global_
+# Recorded-member S2 mosaics: per-item BOA offsets and whole-pixel donors.
+# Requires the v4 selection bundle; never rediscover members from a legacy row.
+# Resume pins each scene's membership, group, processing policy, and AOI bytes
+# in ledger.schema_hash. Changed or missing input contracts require a new root.
+defaults:
+  - _base
+  - _self_
+
+sources: ["sentinel-2-l2a"]
+mode: full
+manifest_uri: null
+output_root: "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
+
+sentinel2:
+  schema_version: 10
+  mosaic:
+    enabled: true
+    max_missing_aoi_fraction: 0.005

@@ -1,4 +1,4 @@
-"""Write the canonical v3 manifest bundle.
+"""Write legacy v3 or exact-membership v4 manifest bundles.
 
 The bundle consists of three artifacts:
   1. ``manifest.parquet`` — one unique executable scene per row.
@@ -17,8 +17,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.common.util import ensure_utc, sha256_file
+from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import s2_mosaic_enabled
 from berlin_lst_downscaling.data.selection.schema import (
     MANIFEST_SCHEMA,
+    MANIFEST_SCHEMA_V4,
     PAIRINGS_SCHEMA,
     bundle_metadata,
     policy_fingerprint,
@@ -59,16 +61,24 @@ def write_bundle(
         Hydra config for policy fingerprinting.
     """
     p_hash = policy_fingerprint(cfg)
+    mosaic = s2_mosaic_enabled(cfg)
+    manifest_version = 4 if mosaic else 3
     now = datetime.now(UTC)
 
     # ── Build manifest rows ────────────────────────────────────────────
     manifest_rows: list[dict] = []
     # Track referenced S2 IDs — each S2 scene appears only once in manifest
     seen_s2: set[str] = set()
+    s2_contracts: dict[str, tuple] = {}
 
     for pair in coupled:
         anchor = pair["anchor"]
         s2 = pair["s2"]
+        if mosaic:
+            contract = (s2.get("s2_items"), s2.get("s2_mosaic_group"), s2.get("item_href"))
+            if s2["scene_id"] in s2_contracts and s2_contracts[s2["scene_id"]] != contract:
+                raise ValueError(f"Conflicting S2 membership for {s2['scene_id']!r}")
+            s2_contracts[s2["scene_id"]] = contract
 
         # Anchor row (unique per Landsat scene)
         manifest_rows.append(
@@ -107,6 +117,14 @@ def write_bundle(
                     "cloud_cover": s2.get("cloud_cover"),
                     "solar_azimuth": None,
                     "solar_elevation": None,
+                    **(
+                        {
+                            "s2_items": s2.get("s2_items"),
+                            "s2_mosaic_group": s2.get("s2_mosaic_group"),
+                        }
+                        if mosaic
+                        else {}
+                    ),
                 }
             )
 
@@ -153,11 +171,13 @@ def write_bundle(
     manifest_rows.sort(key=lambda r: (r["role"] != "anchor", r["scene_id"]))
     pairing_rows.sort(key=lambda r: r["landsat_scene_id"])
 
-    manifest_table = pa.Table.from_pylist(manifest_rows, schema=MANIFEST_SCHEMA)
+    manifest_table = pa.Table.from_pylist(
+        manifest_rows, schema=MANIFEST_SCHEMA_V4 if mosaic else MANIFEST_SCHEMA
+    )
     pairings_table = pa.Table.from_pylist(pairing_rows, schema=PAIRINGS_SCHEMA)
 
     # Attach metadata (no self-referential file hashes — those go in the report only)
-    meta = bundle_metadata(p_hash, cutoff_utc)
+    meta = bundle_metadata(p_hash, cutoff_utc, manifest_version=manifest_version)
     manifest_table = manifest_table.replace_schema_metadata(table_metadata(meta))
     pairings_table = pairings_table.replace_schema_metadata(table_metadata(meta))
 
@@ -198,7 +218,7 @@ def write_bundle(
         "generated_at": now.isoformat(),
         "cutoff_utc": cutoff_utc,
         "policy_hash": p_hash,
-        "schema_version": 3,
+        "schema_version": manifest_version,
         "manifest_hash": manifest_hash,
         "pairings_hash": pairings_hash,
         "counts": {
@@ -220,6 +240,19 @@ def write_bundle(
         "warnings": pr.warnings + vr.warnings,
         "unresolved_errors": len(vr.errors) + len(pr.errors),
     }
+    if mosaic or cfg.get("landsat", {}).get("anchor", {}).get("min_aoi_overlap_frac") is not None:
+        report["dropped_anchors"] = [
+            {
+                "scene_id": entry["anchor"]["scene_id"],
+                "reason": entry.get("reason", "unknown"),
+                **{
+                    key: entry["anchor"][key]
+                    for key in ("aoi_total_px", "aoi_valid_px", "aoi_overlap_frac")
+                    if key in entry["anchor"]
+                },
+            }
+            for entry in sorted(dropped, key=lambda entry: entry["anchor"]["scene_id"])
+        ]
 
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)

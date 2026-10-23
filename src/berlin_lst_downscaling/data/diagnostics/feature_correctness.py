@@ -24,13 +24,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import rasterio
+from odc.geo.geobox import GeoBox
 from rasterio.errors import RasterioIOError
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.data.ard.paths import cog_path, flag_path
 from berlin_lst_downscaling.data.ard.s2_reflectance import resolve_s2_reflectance_scale
+from berlin_lst_downscaling.data.eda.frames import eligibility_summary
 from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNELS
 from berlin_lst_downscaling.data.features.paths import feature_cog
+from berlin_lst_downscaling.data.features.stack import load_aoi_mask_on_grid
 from berlin_lst_downscaling.data.io.storage import atomic_upload
 from berlin_lst_downscaling.data.io.storage import exists as storage_exists
 from berlin_lst_downscaling.data.qa.contracts import LST_RANGE_K
@@ -51,6 +54,7 @@ _RESULTS_NAME = "results.jsonl"
 _WINDOW = 640  # 10 m pixels; divisible by the 10x10 aggregation
 _LANDSAT_SOURCE = "landsat-c2-l2"
 _S2_SOURCE = "sentinel-2-l2a"
+DEFAULT_AOI_MASK = "data/boundaries/aoi_10m.tif"
 
 # One STAC document per scene, one feature COG of about 1 GiB, one CityGML tile.
 _STAC_SECONDS = 0.5
@@ -218,61 +222,146 @@ def _channel_invalid(values: np.ndarray, index: int) -> np.ndarray:
 def exclusion_reason_counts(
     target_valid: np.ndarray,
     bands: np.ndarray,
+    *,
+    aoi_fraction: np.ndarray,
 ) -> dict[str, Any]:
     """Count why target-valid 100 m cells fail the strict 100/100 feature support.
 
     ``bands`` is ``(channel, y10, x10)`` in ``FEATURE_CHANNELS`` order.
-    Leftover rows and columns that do not fill a 10 m block are dropped,
-    matching ``GeoBox.zoom_out(10)``. A channel counts once per excluded
-    cell when any of that cell's subpixels is invalid. Eligible cells are
-    target-valid cells whose 100 subpixels are valid on every channel.
+    Partial boundary blocks are padded with missing feature support and
+    remain in the target-valid AOI denominator. They can never be eligible.
+    A channel counts once per excluded cell with an invalid present subpixel;
+    absent edge subpixels are reported separately as geometric truncation.
 
     Parameters
     ----------
     target_valid :
-        Boolean Landsat target mask on the floored 100 m grid.
+        Boolean Landsat target mask on the ceiling-sized 100 m grid.
     bands :
         Feature stack window or scene, already in memory. Production
         scans call :func:`scan_feature_stack` so a full scene is not
         loaded at once.
+    aoi_fraction :
+        Reporting-only AOI fractions on the 100 m grid. Required so an
+        absent AOI cannot silently yield full-rectangle primary rates.
     """
     stack = np.asarray(bands)
     if stack.ndim != 3 or stack.shape[0] != len(FEATURE_CHANNELS):
         raise ValueError(f"bands must be ({len(FEATURE_CHANNELS)}, H, W), got {stack.shape}")
     height10, width10 = int(stack.shape[1]), int(stack.shape[2])
-    height100, width100 = height10 // 10, width10 // 10
+    height100, width100 = (height10 + 9) // 10, (width10 + 9) // 10
     target = np.asarray(target_valid, dtype=bool)
     if target.shape != (height100, width100):
         raise ValueError(
-            f"target_valid shape {target.shape} != floored 100 m grid {(height100, width100)}"
+            f"target_valid shape {target.shape} != ceiling 100 m grid {(height100, width100)}"
         )
-    used = stack[:, : height100 * 10, : width100 * 10]
     any_invalid = np.zeros((len(FEATURE_CHANNELS), height100, width100), dtype=bool)
-    sub_bad = np.zeros((height100 * 10, width100 * 10), dtype=bool)
+    sub_bad = np.ones((height100 * 10, width100 * 10), dtype=bool)
+    sub_bad[:height10, :width10] = False
     for index in range(len(FEATURE_CHANNELS)):
-        bad = _channel_invalid(used[index], index)
+        bad = np.zeros(sub_bad.shape, dtype=bool)
+        bad[:height10, :width10] = _channel_invalid(stack[index], index)
         sub_bad |= bad
         any_invalid[index] = bad.reshape(height100, 10, width100, 10).any(axis=(1, 3))
     support = (~sub_bad).reshape(height100, 10, width100, 10).sum(axis=(1, 3))
-    eligible = target & (support == 100)
+    counted = _exclusion_summary(
+        target, support, any_invalid, aoi_fraction, _present_subpixels(height10, width10)
+    )
+    return {
+        **counted,
+        "dropped_edge_rows": 0,
+        "dropped_edge_cols": 0,
+        "padded_edge_rows": int(height100 * 10 - height10),
+        "padded_edge_cols": int(width100 * 10 - width10),
+    }
+
+
+def aoi_fraction_on_grid(aoi_mask: str, grid_10: GeoBox) -> np.ndarray:
+    """Mean binary AOI support per nested 100 m cell, including partial edges.
+
+    Reuse the feature AOI's nearest-neighbor projection onto the 10 m grid
+    before exact 10×10 averaging. Exterior zeroes remain in the denominator
+    (including beyond the AOI raster extent); zero is never dropped as nodata
+    by an average resampler. Partial bottom/right blocks are padded with
+    exterior zeroes, preserving all AOI subpixels with a fixed denominator
+    of 100. No feature-valid or training mask is changed.
+    """
+    mask = load_aoi_mask_on_grid(aoi_mask, grid_10)
+    height, width = (mask.shape[0] + 9) // 10, (mask.shape[1] + 9) // 10
+    padded = np.zeros((height * 10, width * 10), dtype=bool)
+    padded[: mask.shape[0], : mask.shape[1]] = mask
+    return padded.reshape(height, 10, width, 10).mean(axis=(1, 3))
+
+
+def _present_subpixels(height10: int, width10: int) -> np.ndarray:
+    """Number of present 10 m subpixels per ceiling-sized 100 m block."""
+    rows = np.arange((height10 + 9) // 10)[:, None]
+    cols = np.arange((width10 + 9) // 10)[None, :]
+    return np.minimum(10, height10 - 10 * rows) * np.minimum(10, width10 - 10 * cols)
+
+
+def target_valid_edge_pairs(
+    landsat_cog: str,
+    landsat_flag: str,
+    grid_10: GeoBox,
+) -> np.ndarray:
+    """Reporting-only (row, col) pairs for target-valid partial boundary cells.
+
+    EDA's existing edge cross-tab records geometry without target validity.
+    Read the small Landsat grid to distinguish valid from invalid edge
+    targets without changing training or inventing validity from geometry.
+    Coordinates are relative to ``grid_10`` (canonical for the EDA operator).
+    """
+    present = _present_subpixels(grid_10.shape.y, grid_10.shape.x)
+    if not np.any(present < 100):
+        return np.empty((0, 2), dtype=np.int32)
+    target = _target_valid_from_landsat(
+        landsat_cog,
+        landsat_flag,
+        height100=present.shape[0],
+        width100=present.shape[1],
+        feature=grid_10,
+    )
+    return np.argwhere(target & (present < 100)).astype(np.int32)
+
+
+def _exclusion_summary(
+    target: np.ndarray,
+    support: np.ndarray,
+    any_invalid: np.ndarray,
+    aoi_fraction: np.ndarray,
+    present: np.ndarray,
+) -> dict[str, Any]:
+    fraction = np.asarray(aoi_fraction)
+    eligible = target & (support == 100) & (present == 100)
+    counted = eligibility_summary(target, eligible, fraction)
     excluded = target & ~eligible
-    per_channel = {
+    inside = fraction > 0
+    counted["edge_truncated_cells"] = int((excluded & inside & (present < 100)).sum())
+    counted["incomplete_support_cells"] = int((excluded & inside & (present == 100)).sum())
+    counted["per_channel"] = {
+        channel.name: int((excluded & inside & any_invalid[index]).sum())
+        for index, channel in enumerate(FEATURE_CHANNELS)
+    }
+    counted["per_channel_aoi_effective_cells"] = {
+        channel.name: float(fraction[excluded & any_invalid[index]].sum())
+        for index, channel in enumerate(FEATURE_CHANNELS)
+    }
+    rectangle = counted["full_rectangle"]
+    if not isinstance(rectangle, dict):
+        raise TypeError("full_rectangle must be a dict")
+    rectangle["per_channel"] = {
         channel.name: int((excluded & any_invalid[index]).sum())
         for index, channel in enumerate(FEATURE_CHANNELS)
     }
-    return {
-        "target_valid_cells": int(target.sum()),
-        "eligible_cells": int(eligible.sum()),
-        "excluded_cells": int(excluded.sum()),
-        "incomplete_support_cells": int(excluded.sum()),
-        "edge_truncated_cells": 0,
-        "dropped_edge_rows": int(height10 - height100 * 10),
-        "dropped_edge_cols": int(width10 - width100 * 10),
-        "per_channel": per_channel,
-    }
+    rectangle["edge_truncated_cells"] = int((excluded & (present < 100)).sum())
+    rectangle["incomplete_support_cells"] = int((excluded & (present == 100)).sum())
+    return counted
 
 
-def _assert_aligned(feature: rasterio.DatasetReader, landsat: rasterio.DatasetReader) -> None:
+def _assert_aligned(
+    feature: rasterio.DatasetReader | GeoBox, landsat: rasterio.DatasetReader
+) -> None:
     """Require the Landsat grid to be the 100 m parent of the feature grid."""
     left = feature.transform
     right = landsat.transform
@@ -290,7 +379,7 @@ def _target_valid_from_landsat(
     *,
     height100: int,
     width100: int,
-    feature: rasterio.DatasetReader,
+    feature: rasterio.DatasetReader | GeoBox,
 ) -> np.ndarray:
     """Read the Landsat target. The 100 m grid is small relative to the 10 m stack."""
     with rasterio.open(st_path) as st_src, rasterio.open(flag_path_uri) as flag_src:
@@ -299,7 +388,7 @@ def _target_valid_from_landsat(
         if st_src.height < height100 or st_src.width < width100:
             raise DiagnosticsRefused(
                 f"Landsat grid {st_src.height}x{st_src.width} is smaller than "
-                f"the floored feature grid {height100}x{width100}"
+                f"the ceiling feature grid {height100}x{width100}"
             )
         window = Window(0, 0, width100, height100)  # type: ignore[call-arg]
         st = st_src.read(1, window=window).astype(np.float32)
@@ -311,20 +400,23 @@ def scan_feature_stack(
     feature_stack: str,
     landsat_cog: str,
     landsat_flag: str,
+    *,
+    aoi_mask: str = DEFAULT_AOI_MASK,
 ) -> dict[str, Any]:
     """Window the feature COG band by band and count exclusion reasons.
 
     Each window is ``640`` 10 m pixels on a side. One band is read at a
-    time. The 28-band scene array is not materialized.
+    time. The 28-band scene array is not materialized. Primary rates are
+    weighted by target-valid AOI fractions; full-rectangle rates are secondary.
     """
     if _WINDOW % 10 != 0:
         raise RuntimeError("diagnostic window must be a multiple of 10")
     try:
-        return _scan_feature_stack_open(feature_stack, landsat_cog, landsat_flag)
+        return _scan_feature_stack_open(feature_stack, landsat_cog, landsat_flag, aoi_mask)
     except RasterioIOError as exc:
         raise DiagnosticsRefused(
             f"cannot open raster {feature_stack} "
-            f"(landsat_cog={landsat_cog}, landsat_flag={landsat_flag}): {exc}"
+            f"(landsat_cog={landsat_cog}, landsat_flag={landsat_flag}, aoi_mask={aoi_mask}): {exc}"
         ) from exc
 
 
@@ -332,6 +424,7 @@ def _scan_feature_stack_open(
     feature_stack: str,
     landsat_cog: str,
     landsat_flag: str,
+    aoi_mask: str,
 ) -> dict[str, Any]:
     """Read one feature stack. Raster open failures propagate to the caller."""
     with rasterio.open(feature_stack) as src:
@@ -339,9 +432,7 @@ def _scan_feature_stack_open(
             raise DiagnosticsRefused(
                 f"{feature_stack} has {src.count} bands, expected {len(FEATURE_CHANNELS)}"
             )
-        height100, width100 = src.height // 10, src.width // 10
-        dropped_rows = int(src.height % 10)
-        dropped_cols = int(src.width % 10)
+        height100, width100 = (src.height + 9) // 10, (src.width + 9) // 10
         target = _target_valid_from_landsat(
             landsat_cog,
             landsat_flag,
@@ -349,19 +440,23 @@ def _scan_feature_stack_open(
             width100=width100,
             feature=src,
         )
+        fraction = aoi_fraction_on_grid(aoi_mask, GeoBox(src.shape, src.transform, src.crs))
         any_invalid = np.zeros((len(FEATURE_CHANNELS), height100, width100), dtype=bool)
         support = np.zeros((height100, width100), dtype=np.int32)
-        for row0 in range(0, height100 * 10, _WINDOW):
-            for col0 in range(0, width100 * 10, _WINDOW):
-                row1 = min(row0 + _WINDOW, height100 * 10)
-                col1 = min(col0 + _WINDOW, width100 * 10)
+        for row0 in range(0, src.height, _WINDOW):
+            for col0 in range(0, src.width, _WINDOW):
+                row1 = min(row0 + _WINDOW, src.height)
+                col1 = min(col0 + _WINDOW, src.width)
                 window = Window(col0, row0, col1 - col0, row1 - row0)  # type: ignore[call-arg]
-                sub_bad = np.zeros((row1 - row0, col1 - col0), dtype=bool)
                 cell_r0, cell_c0 = row0 // 10, col0 // 10
-                cell_r1, cell_c1 = row1 // 10, col1 // 10
+                cell_r1, cell_c1 = (row1 + 9) // 10, (col1 + 9) // 10
+                padded_shape = ((cell_r1 - cell_r0) * 10, (cell_c1 - cell_c0) * 10)
+                sub_bad = np.ones(padded_shape, dtype=bool)
+                sub_bad[: row1 - row0, : col1 - col0] = False
                 for index in range(src.count):
                     values = src.read(index + 1, window=window)
-                    bad = _channel_invalid(values, index)
+                    bad = np.zeros(padded_shape, dtype=bool)
+                    bad[: values.shape[0], : values.shape[1]] = _channel_invalid(values, index)
                     sub_bad |= bad
                     cell_bad = bad.reshape(cell_r1 - cell_r0, 10, cell_c1 - cell_c0, 10).any(
                         axis=(1, 3)
@@ -369,38 +464,77 @@ def _scan_feature_stack_open(
                     any_invalid[index, cell_r0:cell_r1, cell_c0:cell_c1] |= cell_bad
                 good = (~sub_bad).reshape(cell_r1 - cell_r0, 10, cell_c1 - cell_c0, 10)
                 support[cell_r0:cell_r1, cell_c0:cell_c1] += good.sum(axis=(1, 3))
-        eligible = target & (support == 100)
-        excluded = target & ~eligible
-        per_channel = {
-            channel.name: int((excluded & any_invalid[index]).sum())
-            for index, channel in enumerate(FEATURE_CHANNELS)
-        }
+        counted = _exclusion_summary(
+            target, support, any_invalid, fraction, _present_subpixels(src.height, src.width)
+        )
         return {
-            "target_valid_cells": int(target.sum()),
-            "eligible_cells": int(eligible.sum()),
-            "excluded_cells": int(excluded.sum()),
-            "incomplete_support_cells": int(excluded.sum()),
-            "edge_truncated_cells": 0,
-            "dropped_edge_rows": dropped_rows,
-            "dropped_edge_cols": dropped_cols,
-            "per_channel": per_channel,
+            **counted,
+            "aoi_mask": aoi_mask,
+            "dropped_edge_rows": 0,
+            "dropped_edge_cols": 0,
+            "padded_edge_rows": int(height100 * 10 - src.height),
+            "padded_edge_cols": int(width100 * 10 - src.width),
         }
 
 
 def rollup_exclusions(per_scene: list[dict[str, Any]]) -> dict[str, Any]:
-    """Sum exclusion counts by calendar year and across every scene."""
+    """Sum scene×cell counts/areas, then derive rates from pooled denominators."""
     by_year: dict[str, dict[str, Any]] = {}
-    total_channel: dict[str, int] = {}
-    excluded = 0
+    total: dict[str, Any] = {}
+
+    def _add(bucket: dict[str, Any], row: dict[str, Any]) -> None:
+        bucket["denominator"] = row["denominator"]
+        for name in (
+            "target_valid_cells",
+            "eligible_cells",
+            "excluded_cells",
+            "target_valid_aoi_effective_cells",
+            "eligible_aoi_effective_cells",
+            "excluded_aoi_effective_cells",
+        ):
+            bucket[name] = bucket.get(name, 0) + row[name]
+        for name in ("edge_truncated_cells", "incomplete_support_cells"):
+            bucket[name] = bucket.get(name, 0) + row.get(name, 0)
+        for name in ("per_channel", "per_channel_aoi_effective_cells"):
+            channels = bucket.setdefault(name, {})
+            for channel, count in row[name].items():
+                channels[channel] = channels.get(channel, 0) + count
+        rectangle = bucket.setdefault("full_rectangle", {"per_channel": {}})
+        source = row["full_rectangle"]
+        for name in ("target_valid_cells", "eligible_cells", "excluded_cells"):
+            rectangle[name] = rectangle.get(name, 0) + source[name]
+        for name in ("edge_truncated_cells", "incomplete_support_cells"):
+            rectangle[name] = rectangle.get(name, 0) + source.get(name, 0)
+        for channel, count in source["per_channel"].items():
+            channels = rectangle["per_channel"]
+            channels[channel] = channels.get(channel, 0) + count
+
+    def _rates(bucket: dict[str, Any]) -> None:
+        denominator = bucket.get("target_valid_aoi_effective_cells", 0)
+        for kind in ("eligible", "excluded"):
+            rate = "eligibility_rate" if kind == "eligible" else "exclusion_rate"
+            bucket[rate] = (
+                bucket[f"{kind}_aoi_effective_cells"] / denominator if denominator else None
+            )
+            rectangle = bucket["full_rectangle"]
+            target = rectangle["target_valid_cells"]
+            rectangle[rate] = rectangle[f"{kind}_cells"] / target if target else None
+
     for row in per_scene:
         year = str(row.get("year"))
-        bucket = by_year.setdefault(year, {"excluded_cells": 0, "per_channel": {}})
-        bucket["excluded_cells"] += int(row["excluded_cells"])
-        excluded += int(row["excluded_cells"])
-        for name, count in row["per_channel"].items():
-            bucket["per_channel"][name] = bucket["per_channel"].get(name, 0) + int(count)
-            total_channel[name] = total_channel.get(name, 0) + int(count)
-    return {"excluded_cells": excluded, "per_channel": total_channel, "by_year": by_year}
+        _add(by_year.setdefault(year, {}), row)
+        _add(total, row)
+    if not total:
+        total = _exclusion_summary(
+            np.zeros((0, 0), dtype=bool),
+            np.zeros((0, 0), dtype=int),
+            np.zeros((len(FEATURE_CHANNELS), 0, 0), dtype=bool),
+            np.zeros((0, 0)),
+            np.zeros((0, 0), dtype=int),
+        )
+    for bucket in [total, *by_year.values()]:
+        _rates(bucket)
+    return {**total, "by_year": by_year}
 
 
 def _height_distribution(heights: list[float]) -> dict[str, Any]:
@@ -693,7 +827,19 @@ def _render_markdown(summary: dict[str, Any]) -> str:
     if isinstance(gaps, dict):
         lines.append("## Eligibility gaps")
         lines.append("")
-        lines.append(f"Excluded target-valid cells: {gaps.get('excluded_cells')}")
+        lines.append(
+            "Primary denominator: target-valid ∩ AOI, weighted by the 100 m AOI fraction "
+            "from `aoi_10m.tif` (mean of 100 projected binary 10 m subpixels)."
+        )
+        lines.append("")
+        lines.append(
+            f"Target-valid AOI effective cells: {gaps.get('target_valid_aoi_effective_cells')}"
+        )
+        lines.append(f"Eligible AOI effective cells: {gaps.get('eligible_aoi_effective_cells')}")
+        lines.append(f"Excluded AOI effective cells: {gaps.get('excluded_aoi_effective_cells')}")
+        lines.append(f"Eligibility rate: {gaps.get('eligibility_rate')}")
+        lines.append(f"Exclusion rate: {gaps.get('exclusion_rate')}")
+        lines.append(f"Excluded target-valid intersecting cells: {gaps.get('excluded_cells')}")
         lines.append("")
         lines.append("| channel | excluded cells where the channel is invalid |")
         lines.append("| --- | ---: |")
@@ -703,7 +849,19 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         lines.append("### By year")
         lines.append("")
         for year, bucket in sorted(gaps.get("by_year", {}).items()):
-            lines.append(f"- {year}: {bucket.get('excluded_cells')} excluded cells")
+            lines.append(
+                f"- {year}: {bucket.get('excluded_cells')} excluded intersecting cells; "
+                f"exclusion rate {bucket.get('exclusion_rate')}"
+            )
+        lines.append("")
+        rectangle = gaps.get("full_rectangle", {})
+        lines.append("### Secondary: full rectangle")
+        lines.append("")
+        lines.append(f"Target-valid cells: {rectangle.get('target_valid_cells')}")
+        lines.append(f"Eligible cells: {rectangle.get('eligible_cells')}")
+        lines.append(f"Excluded cells: {rectangle.get('excluded_cells')}")
+        lines.append(f"Eligibility rate: {rectangle.get('eligibility_rate')}")
+        lines.append(f"Exclusion rate: {rectangle.get('exclusion_rate')}")
         lines.append("")
     tiles = summary.get("lod2_parser")
     if isinstance(tiles, list):
@@ -782,6 +940,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--training-manifest", default=None)
     parser.add_argument("--selection-manifest", default=None)
+    parser.add_argument(
+        "--aoi-mask",
+        default=DEFAULT_AOI_MASK,
+        help="Binary 10 m AOI mask for reporting fractions; does not change training eligibility.",
+    )
     parser.add_argument(
         "--features-root",
         default="gs://berlin-lst-training-data/features/v5",
@@ -888,6 +1051,7 @@ def main(argv: list[str] | None = None) -> int:
                     str(record["feature_stack"]),
                     str(record["landsat_cog"]),
                     str(record["landsat_flag"]),
+                    aoi_mask=args.aoi_mask,
                 )
                 counted["scene_id"] = record.get("scene_id")
                 counted["year"] = record.get("year")
@@ -932,6 +1096,7 @@ __all__ = [
     "SCOPES",
     "DiagnosticsRefused",
     "analyze_lod2_tile",
+    "aoi_fraction_on_grid",
     "assert_output_dir",
     "assert_upload_uri",
     "catalog_from_frames",
@@ -942,6 +1107,7 @@ __all__ = [
     "missing_record_assets",
     "rollup_exclusions",
     "scan_feature_stack",
+    "target_valid_edge_pairs",
     "scene_baseline_row",
     "validate_plan",
 ]

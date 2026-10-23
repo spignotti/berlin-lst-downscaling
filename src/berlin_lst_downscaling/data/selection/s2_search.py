@@ -16,7 +16,16 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+from shapely.geometry import box as _box
+from shapely.geometry import shape as _shape
+
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
+from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import (
+    discover_s2_mosaic_items,
+    s2_item_membership,
+    s2_mosaic_enabled,
+    s2_mosaic_group,
+)
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.selection._time import (
     parse_cutoff as _parse_cutoff,
@@ -34,6 +43,8 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     Lightweight metadata-only search — no pixel loads.
     Returns list of candidate dicts with keys: scene_id, source, year,
     datetime, date, dt_days, cloud_cover, clear_frac, item_href.
+    Mosaic opt-in adds exact ``s2_items`` / ``s2_mosaic_group`` and an
+    internal resolved-item cache consumed by the scoring entry point.
     """
     cat = get_catalog()
     window_days: int = cfg.sentinel2.window_days
@@ -58,6 +69,8 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
     )
 
     candidates: list[dict] = []
+    seen_groups: set[tuple[str, str]] = set()
+    aoi_box = _box(*tuple(cfg.bbox))
     for item in search.items():
         dt_utc = _parse_item_datetime(item)
         if dt_utc is None:
@@ -69,6 +82,52 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
         # Cutoff filter for S2 items
         if cutoff_dt is not None and dt_utc > cutoff_dt:
             continue
+
+        mosaic_fields = {}
+        if s2_mosaic_enabled(cfg):
+            # STAC bbox hits may be envelope-only: their geometry can miss
+            # the AOI entirely. Skip such seeds so one neighbor cannot abort
+            # the whole anchor search; a later intersecting member of the
+            # same group still discovers the full membership.
+            if not item.geometry or not _shape(item.geometry).intersects(aoi_box):
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "s2_seed_skipped_no_aoi_intersection",
+                    scene_id=item.id,
+                )
+                continue
+            identity = s2_mosaic_group(item, bbox=cfg.bbox)
+            key = (identity["solar_day"], identity["datatake_id"])
+            if key in seen_groups:
+                continue
+            members = discover_s2_mosaic_items(
+                item, bbox=cfg.bbox, collection=cfg.sentinel2.collection, catalog=cat
+            )
+            # Keep the stable sorted representative, independent of catalog order.
+            item = members[0]
+            dt_utc = _parse_item_datetime(item)
+            if dt_utc is None:
+                raise ValueError(f"S2 representative {item.id!r} missing datetime")
+            # A group may straddle the exact temporal boundary. Never trim its
+            # membership to pass a cutoff: reject the whole group instead.
+            member_dts = [_parse_item_datetime(member) for member in members]
+            for dt in member_dts:
+                if dt is None:
+                    raise ValueError("S2 mosaic member missing datetime")
+            if cutoff_dt is not None and any(
+                dt is not None and dt > cutoff_dt for dt in member_dts
+            ):
+                continue
+            dt_days = abs((dt_utc - anchor_dt).total_seconds()) / 86400.0
+            if dt_days > window_days + 1e-6:
+                continue
+            mosaic_fields = {
+                "s2_items": s2_item_membership(members),
+                "s2_mosaic_group": identity,
+                "_s2_resolved_items": members,
+            }
+            seen_groups.add(key)
 
         cloud_cover = item.properties.get("eo:cloud_cover")
         item_href = item.get_self_href() if hasattr(item, "get_self_href") else None
@@ -84,10 +143,14 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
                 "cloud_cover": cloud_cover,
                 "clear_frac": None,  # filled by _with_clear_frac variant
                 "item_href": item_href,
+                **mosaic_fields,
             }
         )
 
-    candidates.sort(key=lambda c: c["dt_days"])
+    if s2_mosaic_enabled(cfg):
+        candidates.sort(key=lambda c: (c["dt_days"], c["scene_id"]))
+    else:
+        candidates.sort(key=lambda c: c["dt_days"])
     return candidates
 
 
@@ -104,6 +167,9 @@ def match_s2_candidates_with_clear_frac(
     candidates = match_s2_candidates(anchor, cfg)
     if not candidates:
         return candidates
+
+    if s2_mosaic_enabled(cfg):
+        return _score_mosaic_candidates(anchor, l8_items, candidates, cfg)
 
     # Resolve S2 items for the candidates (search by date ± 1 day tolerance)
     s2_items_map = _resolve_s2_items([c["datetime"] for c in candidates], cfg)
@@ -177,6 +243,66 @@ def match_s2_candidates_with_clear_frac(
         candidates=candidate_diagnostics,
     )
 
+    return candidates
+
+
+def _score_mosaic_candidates(anchor: dict, l8_items: list, candidates: list[dict], cfg) -> list:
+    """Score only discovered/recorded members; never date-search during scoring."""
+    from berlin_lst_downscaling.data.acquisition.pc_client import resolve_item_from_href
+    from berlin_lst_downscaling.data.selection.clear_frac import compute_clear_frac_with_counts
+
+    for candidate in candidates:
+        try:
+            items = candidate.pop("_s2_resolved_items", None)
+            if items is None:
+                items = [
+                    resolve_item_from_href(ref["item_href"], expected_id=ref["item_id"])
+                    for ref in candidate["s2_items"]
+                ]
+            if s2_item_membership(items) != candidate["s2_items"]:
+                raise ValueError("Resolved S2 membership differs from recorded s2_items")
+            if any(
+                s2_mosaic_group(item, bbox=cfg.bbox) != candidate["s2_mosaic_group"]
+                for item in items
+            ):
+                raise ValueError("Resolved S2 items differ from recorded s2_mosaic_group")
+            cf, counts = compute_clear_frac_with_counts(
+                l8_items=l8_items,
+                s2_items=items,
+                anchor_bbox=tuple(cfg.bbox),
+                aoi_mask_path=f"{cfg.aoi.mask_base}/aoi_10m.tif",
+                anchor_dt=anchor["datetime"],
+                s2_mosaic=True,
+            )
+        except Exception as exc:
+            cf, counts = None, {}
+            log_event(
+                _logger,
+                logging.WARNING,
+                "clear_frac_failed",
+                scene_id=candidate["scene_id"],
+                error=str(exc),
+                exc_info=True,
+            )
+        candidate.update(
+            clear_frac=cf,
+            aoi_clear_px=counts.get("intersect_px"),
+            aoi_total_px=counts.get("aoi_px"),
+            aoi_clear_frac=cf,
+            landsat_clear_px=counts.get("l8_clear_px"),
+            joint_clear_px=counts.get("intersect_px"),
+        )
+        log_event(
+            _logger,
+            logging.INFO,
+            "s2_mosaic_clear_frac",
+            anchor_id=anchor.get("scene_id"),
+            scene_id=candidate["scene_id"],
+            s2_items=candidate["s2_items"],
+            s2_mosaic_group=candidate["s2_mosaic_group"],
+            clear_frac=cf,
+            counts=counts,
+        )
     return candidates
 
 

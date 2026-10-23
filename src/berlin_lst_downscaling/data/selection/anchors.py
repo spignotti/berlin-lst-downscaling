@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import numpy as np
 import rioxarray  # noqa: F401 — registers rio accessor on xr.Dataset
@@ -37,8 +38,17 @@ def build_anchors(cfg) -> tuple[list, dict]:
 
     Returns a tuple ``(anchors, stats)`` where ``anchors`` is a list of dicts
     and ``stats`` is a dict with keys ``n_total``, ``n_kept``, ``n_dropped``
-    (pixel-filter stats; ``n_dropped`` is 0 when ``min_clear_frac`` is 0).
+    (pixel-filter stats). With ``min_aoi_overlap_frac`` configured, stats
+    also contain ``dropped`` pairing-shaped records with explicit reasons.
+    Overlap is valid non-fill QA coverage inside AOI divided by all AOI
+    pixels, independent of cloudiness. Legacy configs keep their old gate.
     """
+    overlap_min = cfg.landsat.anchor.get("min_aoi_overlap_frac")
+    if overlap_min is not None:
+        overlap_min = float(overlap_min)
+        if not math.isfinite(overlap_min) or not 0 <= overlap_min <= 1:
+            raise ValueError("landsat.anchor.min_aoi_overlap_frac must be between 0 and 1")
+
     cat = get_catalog()
 
     allowed_platforms = set(cfg.get("platforms", ["landsat-8", "landsat-9"]))
@@ -63,6 +73,7 @@ def build_anchors(cfg) -> tuple[list, dict]:
     )
 
     anchors: list = []
+    items_by_id: dict = {}
     n_skipped_platform = 0
     for item in search.items():
         dt_utc = _parse_item_datetime(item)
@@ -109,6 +120,8 @@ def build_anchors(cfg) -> tuple[list, dict]:
                 "aoi_clear_frac": None,
             }
         )
+        if overlap_min is not None:
+            items_by_id[item.id] = item
 
     if n_skipped_platform > 0:
         log_event(_logger, logging.INFO, "platform_skipped", n_skipped=n_skipped_platform)
@@ -116,6 +129,11 @@ def build_anchors(cfg) -> tuple[list, dict]:
     # ── Pixel-wise anchor fitness gate ─────────────────────────────────────
     min_cf = getattr(cfg.landsat.anchor, "min_clear_frac", 0.0)
     n_before_filter = len(anchors)
+    overlap_dropped = []
+    if overlap_min is not None:
+        anchors, overlap_dropped = _filter_by_valid_footprint(
+            anchors, items_by_id, cfg, overlap_min
+        )
     if min_cf > 0:
         kept, dropped = _filter_by_pixel_clear_frac(anchors, cfg, min_cf)
         anchors = kept
@@ -125,12 +143,102 @@ def build_anchors(cfg) -> tuple[list, dict]:
     # Sort chronologically
     anchors.sort(key=lambda a: a["datetime"])
 
-    stats = {
+    stats: dict = {
         "n_total": n_before_filter,
         "n_kept": len(anchors),
-        "n_dropped": len(dropped),
+        "n_dropped": len(overlap_dropped) + len(dropped),
     }
+    if overlap_min is not None:
+        stats["dropped"] = overlap_dropped + [
+            {"anchor": anchor, "reason": "insufficient_clear_fraction"} for anchor in dropped
+        ]
     return anchors, stats
+
+
+def _filter_by_valid_footprint(
+    anchors: list[dict],
+    items_by_id: dict,
+    cfg,
+    min_overlap_frac: float,
+) -> tuple[list[dict], list[dict]]:
+    """Apply the additive Landsat policy using each exact item's QA mask.
+
+    Never fuse neighboring path/rows: a well-covered neighbor must not hide
+    a sliver. The existing clear-fraction gate runs separately, unchanged.
+    Legacy clear-filter checkpoints cannot supply footprint metrics.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def measure(anchor: dict) -> dict:
+        item = items_by_id[anchor["scene_id"]]
+        try:
+            ds = stac_load(
+                items=[item],
+                bands=["qa_pixel"],
+                geobox=canon_grid_10m(),
+                chunks={"x": 2048, "y": 2048},
+                groupby="solar_day",
+                resampling="nearest",
+                dtype="uint16",
+                nodata=1,  # QA fill bit, including pixels outside the data footprint
+            )
+            qa_band = ds["qa_pixel"]
+            if "time" in qa_band.dims:
+                if qa_band.sizes["time"] != 1:
+                    raise ValueError("Expected one QA time slice for an exact Landsat item")
+                qa_band = qa_band.isel(time=0, drop=True)
+            raw = qa_band.transpose("y", "x").values
+            valid = np.isfinite(raw)
+            nodata = qa_band.rio.nodata
+            if nodata is not None:
+                valid &= raw != nodata
+            qa = np.where(valid, raw, 1).astype(np.uint16)
+            valid &= (qa & 1) == 0
+            aoi = load_aoi_mask(f"{cfg.aoi.mask_base}/aoi_10m.tif", ds)
+            total_px = int(np.count_nonzero(aoi))
+            if total_px == 0:
+                raise ValueError("AOI mask has no pixels on the selection grid")
+            overlap_px = int(np.count_nonzero(aoi & valid))
+            anchor.update(
+                aoi_total_px=total_px,
+                aoi_valid_px=overlap_px,
+                aoi_overlap_frac=overlap_px / total_px,
+            )
+        except Exception as exc:
+            # Do not substitute a scene bbox for an unavailable data mask.
+            log_event(
+                _logger,
+                logging.WARNING,
+                "anchor_overlap_unavailable",
+                scene_id=anchor["scene_id"],
+                error=str(exc),
+            )
+            return {"anchor": anchor, "reason": "aoi_overlap_unavailable"}
+
+        if anchor["aoi_overlap_frac"] < min_overlap_frac:
+            reason = "insufficient_aoi_overlap"
+        else:
+            reason = None
+        return {"anchor": anchor, "reason": reason}
+
+    kept, dropped = [], []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for result in pool.map(measure, anchors):
+            anchor = result["anchor"]
+            if result["reason"] is None:
+                kept.append(anchor)
+            else:
+                dropped.append(result)
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "anchor_dropped",
+                    scene_id=anchor["scene_id"],
+                    reason=result["reason"],
+                    aoi_overlap_frac=anchor.get("aoi_overlap_frac"),
+                    min_aoi_overlap_frac=min_overlap_frac,
+                )
+    return kept, dropped
 
 
 def _filter_by_pixel_clear_frac(

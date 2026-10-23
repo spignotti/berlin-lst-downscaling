@@ -6,7 +6,7 @@ The manifest bundle consists of three artifacts:
   3. ``manifest_report.json`` — publication gate with hashes, counts, policy.
 
 Schemas:
-  - manifest schema 3 is the only accepted manifest contract.
+  - manifest schema 3 (legacy) and additive 4 (exact S2 membership).
   - pairings schema 1 is the only accepted pairings contract.
 """
 
@@ -20,6 +20,7 @@ import pyarrow as pa
 # ── schema versions ───────────────────────────────────────────────────
 
 SCHEMA_VERSION_MANIFEST = 3
+SCHEMA_VERSION_MANIFEST_V4 = 4
 SCHEMA_VERSION_PAIRINGS = 1
 SCHEMA_VERSION_REPORT = 1
 
@@ -64,6 +65,33 @@ MANIFEST_SCHEMA = pa.schema(
     ]
 )
 
+# Keep MANIFEST_SCHEMA and default writer metadata v3 for legacy callers.
+MANIFEST_SCHEMA_V4 = MANIFEST_SCHEMA.append(
+    pa.field(
+        "s2_items",
+        pa.list_(
+            pa.struct(
+                [
+                    pa.field("item_id", pa.string(), nullable=False),
+                    pa.field("item_href", pa.string(), nullable=False),
+                ]
+            )
+        ),
+        nullable=True,
+    )
+).append(
+    pa.field(
+        "s2_mosaic_group",
+        pa.struct(
+            [
+                pa.field("solar_day", pa.string(), nullable=False),
+                pa.field("datatake_id", pa.string(), nullable=False),
+            ]
+        ),
+        nullable=True,
+    )
+)
+
 # ── pairings.parquet schema v1 ────────────────────────────────────────
 
 PAIRINGS_SCHEMA = pa.schema(
@@ -90,31 +118,41 @@ def policy_fingerprint(cfg: Any) -> str:
     """
     import json
 
-    payload = json.dumps(
-        {
-            "platforms": sorted(cfg.get("platforms", ["landsat-8", "landsat-9"])),
-            "years": sorted(cfg.get("years", [])),
-            "months": sorted(cfg.get("months", [])),
-            "bbox": list(cfg.get("bbox", [])),
-            "landsat_collection": cfg.get("landsat", {}).get("collection", "landsat-c2-l2"),
-            "landsat_min_clear_frac": (
-                cfg.get("landsat", {}).get("anchor", {}).get("min_clear_frac", 0.05)
-            ),
-            "s2_collection": cfg.get("sentinel2", {}).get("collection", "sentinel-2-l2a"),
-            "s2_min_clear_frac": cfg.get("sentinel2", {}).get("min_clear_frac", 0.05),
-            "s2_window_days": cfg.get("sentinel2", {}).get("window_days", 3),
-            "s2_score_lambda": cfg.get("sentinel2", {}).get("score", {}).get("lambda", 0.1),
-            "cutoff_utc": cfg.get("cutoff_utc", ""),
-            "ecostress_ids": sorted(ECOSTRESS_VALIDATION_IDS),
-        },
-        sort_keys=True,
-    )
+    policy = {
+        "platforms": sorted(cfg.get("platforms", ["landsat-8", "landsat-9"])),
+        "years": sorted(cfg.get("years", [])),
+        "months": sorted(cfg.get("months", [])),
+        "bbox": list(cfg.get("bbox", [])),
+        "landsat_collection": cfg.get("landsat", {}).get("collection", "landsat-c2-l2"),
+        "landsat_min_clear_frac": (
+            cfg.get("landsat", {}).get("anchor", {}).get("min_clear_frac", 0.05)
+        ),
+        "s2_collection": cfg.get("sentinel2", {}).get("collection", "sentinel-2-l2a"),
+        "s2_min_clear_frac": cfg.get("sentinel2", {}).get("min_clear_frac", 0.05),
+        "s2_window_days": cfg.get("sentinel2", {}).get("window_days", 3),
+        "s2_score_lambda": cfg.get("sentinel2", {}).get("score", {}).get("lambda", 0.1),
+        "cutoff_utc": cfg.get("cutoff_utc", ""),
+        "ecostress_ids": sorted(ECOSTRESS_VALIDATION_IDS),
+    }
+    # Absent additive policy keys must not perturb historical fingerprints.
+    overlap = cfg.get("landsat", {}).get("anchor", {}).get("min_aoi_overlap_frac")
+    if overlap is not None:
+        policy["landsat_min_aoi_overlap_frac"] = float(overlap)
+    if cfg.get("sentinel2", {}).get("mosaic", {}).get("enabled", False):
+        policy["s2_mosaic"] = {
+            "enabled": True,
+            "membership": "solar_day_datatake_v1",
+            "donor_rule": "first_footprint_valid_sorted_item_id",
+        }
+    payload = json.dumps(policy, sort_keys=True)
     return sha256(payload.encode()).hexdigest()[:16]
 
 
 def bundle_metadata(
     policy_hash: str,
     cutoff_utc: str,
+    *,
+    manifest_version: int = SCHEMA_VERSION_MANIFEST,
 ) -> dict[str, str]:
     """Return Parquet metadata dict for manifest and pairings tables.
 
@@ -125,7 +163,7 @@ def bundle_metadata(
 
     return {
         "schema_name": "berlin-lst-manifest",
-        "schema_version": str(SCHEMA_VERSION_MANIFEST),
+        "schema_version": str(manifest_version),
         "policy_sha256": policy_hash,
         "cutoff_utc": cutoff_utc,
         "generated_at": datetime.now(UTC).isoformat(),
@@ -142,6 +180,7 @@ def table_metadata(meta: dict[str, str]) -> dict[str, str]:
 
 __all__ = [
     "SCHEMA_VERSION_MANIFEST",
+    "SCHEMA_VERSION_MANIFEST_V4",
     "SCHEMA_VERSION_PAIRINGS",
     "SCHEMA_VERSION_REPORT",
     "ALLOWED_LANDSAT_PLATFORMS",
@@ -149,6 +188,7 @@ __all__ = [
     "ALLOWED_ROLES",
     "ECOSTRESS_VALIDATION_IDS",
     "MANIFEST_SCHEMA",
+    "MANIFEST_SCHEMA_V4",
     "PAIRINGS_SCHEMA",
     "policy_fingerprint",
     "bundle_metadata",

@@ -289,7 +289,11 @@ def coverage_table(
     cells: pd.DataFrame,
     inside: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Compare eligible cells with the inside-AOI 100 m lattice."""
+    """Spatial lattice coverage only; not a target-valid eligibility rate.
+
+    Use :func:`eligibility_rate_table` for exclusion/eligibility rates. This
+    table's lattice denominator includes cells without a valid target.
+    """
     inside_keys = set(zip(inside["row"].astype(int), inside["col"].astype(int), strict=True))
     n_inside = len(inside_keys)
     rows: list[dict[str, object]] = []
@@ -310,6 +314,101 @@ def coverage_table(
     rows.append(_row("all", pd.NA, cells))
     for year, part in cells.groupby("year", dropna=False, sort=True):
         rows.append(_row("year", _scalar_int(year), part))
+    return pd.DataFrame(rows)
+
+
+def eligibility_summary(
+    target_valid: np.ndarray,
+    eligible: np.ndarray,
+    aoi_fraction: np.ndarray,
+) -> dict[str, object]:
+    """Area-weighted reporting only; never modifies the training masks.
+
+    A fraction is the mean of the 100 binary AOI subpixels on the nested
+    10 m grid. Primary counts include cells with positive AOI fraction;
+    rates weight each target-valid cell by that fraction. Thus a boundary
+    cell with 50 AOI subpixels contributes 0.5 effective 100 m cells, without
+    relaxing the training requirement for 100/100 feature support.
+    Partial grid-edge blocks retain their AOI fraction (exterior-zero
+    padding to 100 subpixels); their unchanged training eligibility is false.
+    """
+    target = np.asarray(target_valid, dtype=bool)
+    selected = np.asarray(eligible, dtype=bool)
+    fraction = np.asarray(aoi_fraction, dtype=np.float64)
+    if target.shape != selected.shape or target.shape != fraction.shape:
+        raise ValueError("target_valid, eligible, and aoi_fraction shapes must match")
+    if not np.all(np.isfinite(fraction) & (fraction >= 0) & (fraction <= 1)):
+        raise ValueError("aoi_fraction must be finite and in [0, 1]")
+    if np.any(selected & ~target):
+        raise ValueError("eligible cells must be target-valid")
+    inside = target & (fraction > 0)
+    excluded = target & ~selected
+    denominator = float(fraction[target].sum())
+    eligible_weight = float(fraction[selected].sum())
+    excluded_weight = float(fraction[excluded].sum())
+    rectangle_target = int(target.sum())
+    rectangle_eligible = int(selected.sum())
+    rectangle_excluded = int(excluded.sum())
+    return {
+        "denominator": "target_valid_intersect_aoi_fraction",
+        "target_valid_cells": int(inside.sum()),
+        "eligible_cells": int((inside & selected).sum()),
+        "excluded_cells": int((inside & excluded).sum()),
+        "target_valid_aoi_effective_cells": denominator,
+        "eligible_aoi_effective_cells": eligible_weight,
+        "excluded_aoi_effective_cells": excluded_weight,
+        "eligibility_rate": eligible_weight / denominator if denominator else None,
+        "exclusion_rate": excluded_weight / denominator if denominator else None,
+        "full_rectangle": {
+            "target_valid_cells": rectangle_target,
+            "eligible_cells": rectangle_eligible,
+            "excluded_cells": rectangle_excluded,
+            "eligibility_rate": (
+                rectangle_eligible / rectangle_target if rectangle_target else None
+            ),
+            "exclusion_rate": rectangle_excluded / rectangle_target if rectangle_target else None,
+        },
+    }
+
+
+def eligibility_rate_table(scenes: pd.DataFrame) -> pd.DataFrame:
+    """Report target-valid ∩ AOI rates at scene, year, split, and pooled grains.
+
+    Input rows are per-scene :func:`eligibility_summary` results plus scene
+    identity. Full-rectangle columns are secondary and explicitly prefixed.
+    Pooled rates are ratios of summed areas, not means of scene rates. This
+    avoids materializing a dataframe of every scene×cell in the release.
+    """
+    rows: list[dict[str, object]] = []
+    for grain, keys in _LST_GRAINS:
+        for key, part in _grouped(scenes, keys):
+            counted: dict[str, object] = {}
+            for kind in ("target_valid", "eligible", "excluded"):
+                counted[f"{kind}_cells"] = _column_sum_int(part, f"{kind}_cells")
+                counted[f"{kind}_aoi_effective_cells"] = _scalar_float(
+                    part[f"{kind}_aoi_effective_cells"].sum()
+                )
+            rectangle = {
+                f"{kind}_cells": sum(int(row[f"{kind}_cells"]) for row in part["full_rectangle"])
+                for kind in ("target_valid", "eligible", "excluded")
+            }
+            denominator = _scalar_float(counted["target_valid_aoi_effective_cells"])
+            for kind, rate in (("eligible", "eligibility_rate"), ("excluded", "exclusion_rate")):
+                weight = _scalar_float(counted[f"{kind}_aoi_effective_cells"])
+                counted[rate] = weight / denominator if denominator else None
+                rect_target = rectangle["target_valid_cells"]
+                counted[f"full_rectangle_{rate}"] = (
+                    rectangle[f"{kind}_cells"] / rect_target if rect_target else None
+                )
+            rows.append(
+                {
+                    "grain": grain,
+                    "denominator": "target_valid_intersect_aoi_fraction",
+                    **_identity(keys, key),
+                    **counted,
+                    **{f"full_rectangle_{name}": value for name, value in rectangle.items()},
+                }
+            )
     return pd.DataFrame(rows)
 
 
