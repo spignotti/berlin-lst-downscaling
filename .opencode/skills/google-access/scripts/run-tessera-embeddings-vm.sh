@@ -22,7 +22,12 @@ YEAR="${2:-2024}"
 PIPELINE_LABEL="TESSERA embeddings"
 MARKER_CONFIG="tessera_embeddings_v1"
 RELEASE_ROOT="gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
-REMOTE_CMD="uv run python scripts/operators/run_tessera_embeddings.py --year ${YEAR} --output-root ${RELEASE_ROOT} && uv run python scripts/validators/validate_tessera_embeddings.py --root ${RELEASE_ROOT} --year ${YEAR}"
+# The acquisition operator runs in an ISOLATED uv script env (PEP 723 block
+# at the top of run_tessera_embeddings.py: geotessera / icechunk / zarr>=3),
+# separate from the main training env (torch 2.2.2 / zarr<3) that the
+# validator below uses. PYTHONPATH=src exposes the repo package to the
+# isolated script env. The remote CWD is the repo checkout (APP_DIR).
+REMOTE_CMD="PYTHONPATH=src uv run --script scripts/operators/run_tessera_embeddings.py --year ${YEAR} --output-root ${RELEASE_ROOT} && uv run python scripts/validators/validate_tessera_embeddings.py --root ${RELEASE_ROOT} --year ${YEAR}"
 POLL_MAX_SECONDS=64800
 
 vm_init_run "tessera-embeddings"

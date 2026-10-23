@@ -18,12 +18,11 @@ from berlin_lst_downscaling.data.embeddings.guards import (
     assert_tessera_eval_year,
     assert_tessera_not_2026,
 )
-from berlin_lst_downscaling.data.embeddings.loader import (
-    build_tessera_model_inputs,
-    load_patch_embedding,
-    load_scene_year_embedding,
-    select_kept_features,
-)
+# NOTE: `loader` is intentionally NOT re-exported here. It pulls in
+# `modeling.tessera_adapter` (torch) for the training-side collate path.
+# The acquisition operator must import without torch (isolated PEP 723
+# script env), so import the submodule directly:
+# `from berlin_lst_downscaling.data.embeddings.loader import ...`.
 from berlin_lst_downscaling.data.embeddings.product import (
     TESSERA_PRODUCT_PREFIX,
     product_cog_uri,
@@ -61,11 +60,8 @@ __all__ = [
     "aggregate_tessera_valid_to_100m",
     "assert_tessera_eval_year",
     "assert_tessera_not_2026",
-    "build_tessera_model_inputs",
     "common_cell_set",
     "main_arm_cell_set",
-    "load_patch_embedding",
-    "load_scene_year_embedding",
     "dequantize_tessera",
     "intersect_eligibility",
     "product_completion_uri",
@@ -75,7 +71,6 @@ __all__ = [
     "reproject_to_canonical",
     "select_common_cell_ids",
     "tessera_arm_cell_set",
-    "select_kept_features",
     "tessera_invalid_mask",
     "validate_tessera_year",
 ]

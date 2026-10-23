@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     # Acquisition-only stack, isolated from the main training environment
+#     # (torch 2.2.2 / zarr<3 / numpy 1.x). Run ONLY via `uv run --script`
+#     # with PYTHONPATH=src (see the VM launcher); never via the project env.
+#     "geotessera>=0.11",
+#     "google-cloud-storage>=3.12.0",
+#     "icechunk>=2.0",
+#     "numcodecs[pcodec]>=0.16",
+#     "numpy",
+#     "odc-geo>=0.4.0",
+#     "rasterio>=1.4.3",
+# ]
+# ///
 """Operator: publish one annual TESSERA embedding year (VM/GCS only, not CI).
 
 Reads TESSERA v1.1-dclimate for the Berlin bbox and a single year
@@ -10,14 +25,15 @@ canonical product under::
 
 Code only in this PR: the operator is NOT executed here. The VM launcher
 ``.opencode/skills/google-access/scripts/run-tessera-embeddings-vm.sh``
-runs this script on the On-Demand VM. Never run against the canonical
-prefix from a workstation.
+runs this script on the On-Demand VM via ``uv run --script`` with
+``PYTHONPATH=src`` (isolated acquisition env, see the ``/// script``
+block above). Never run against the canonical prefix from a workstation.
 
 Usage (on the VM only)
 ----------------------
-    uv run python scripts/operators/run_tessera_embeddings.py \
+    PYTHONPATH=src uv run --script scripts/operators/run_tessera_embeddings.py \
         --year 2024 --output-root gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate
-    uv run python scripts/operators/run_tessera_embeddings.py \
+    PYTHONPATH=src uv run --script scripts/operators/run_tessera_embeddings.py \
         --year 2024 --output-root /workspace/tessera-out  # dry-run to local disk
 
 The local-disk form is the only offline-safe path; GCS writes require ADC
