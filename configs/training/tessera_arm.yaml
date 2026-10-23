@@ -1,0 +1,22 @@
+# @package _global_
+# TESSERA-arm training-data view (code only, not run here).
+# Same scenes, same main-arm eligibility, same temporal split as the v6
+# main arm (train 2017-2023, validation 2024, test 2025). The common cell
+# set for both arms is the intersection of the main-arm eligible cells and
+# the TESSERA-valid cells (strict 100/100 at 10 m); TESSERA gaps are not
+# filled. The per-scene-year embedding is read from tessera_embeddings_root.
+# This config does not publish; it points at the published main-arm release
+# and the canonical TESSERA product prefix.
+defaults:
+  - _base
+  - _self_
+
+features_root: "gs://berlin-lst-training-data/features/v6"
+output_root: "data/training-tessera-arm"
+
+# Canonical TESSERA annual product root (one directory per year).
+tessera_embeddings_root: "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
+tessera_quality_threshold: 0.0
+
+scene_ids: []
+bbox: null

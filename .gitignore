@@ -42,3 +42,6 @@ node_modules/
 outputs/
 package-lock.json
 wandb/
+
+# TESSERA task scratch (probes only, never committed)
+.scratch/
