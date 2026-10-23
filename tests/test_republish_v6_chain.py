@@ -623,8 +623,14 @@ def _load_seed_module():
     return module
 
 
-def _seed_fixture(tmp_path, monkeypatch, rows):
-    """Write COGs + source ledger under tmp_path; return (source_uri, scene_ids)."""
+def _seed_fixture(tmp_path, monkeypatch, rows, manifest_scenes):
+    """Write COGs + source ledger + manifest under tmp_path.
+
+    ``manifest_scenes`` lists the ``(scene_id, source)`` keys present in
+    the v4 bundle; rows outside it model v4-dropped scenes.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
     from berlin_lst_downscaling.data.ard.ledger import Ledger
 
@@ -636,7 +642,15 @@ def _seed_fixture(tmp_path, monkeypatch, rows):
     ledger = Ledger.open("source/ledger.parquet")
     for row in rows:
         ledger.upsert(row)
-    return "source/ledger.parquet", "dest"
+    Path("bundle").mkdir(parents=True, exist_ok=True)
+    manifest = pa.table(
+        {
+            "scene_id": [sid for sid, _ in manifest_scenes],
+            "source": [src for _, src in manifest_scenes],
+        }
+    )
+    pq.write_table(manifest, "bundle/manifest.parquet")
+    return "source/ledger.parquet", "bundle/manifest.parquet", "dest"
 
 
 def test_seed_copies_done_rows_and_is_idempotent(tmp_path, monkeypatch) -> None:
@@ -645,21 +659,24 @@ def test_seed_copies_done_rows_and_is_idempotent(tmp_path, monkeypatch) -> None:
     from berlin_lst_downscaling.data.ard.ledger import Ledger
 
     landsat_hash, eco_hash = _good_hashes()
-    source_uri, dest_root = _seed_fixture(
+    source_uri, manifest_uri, dest_root = _seed_fixture(
         tmp_path,
         monkeypatch,
         [
             _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash),
             _seed_row("ecostress", "E1", schema_hash=eco_hash),
             _seed_row("landsat-c2-l2", "L2", schema_hash=landsat_hash, status="failed"),
+            _seed_row("landsat-c2-l2", "LDROP", schema_hash=landsat_hash),
             _seed_row("sentinel-2-l2a", "S1", schema_hash="9", schema_version=9),
         ],
+        [("L1", "landsat-c2-l2"), ("E1", "ecostress"), ("L2", "landsat-c2-l2")],
     )
     module = _load_seed_module()
 
-    summary = module.seed(source_uri, dest_root)
+    summary = module.seed(source_uri, dest_root, manifest_uri)
     assert summary["staged"] == 2
     assert summary["skipped_not_done"] == 1
+    assert summary["skipped_not_in_manifest"] == 1
     dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
     assert {(r.scene_id, r.source) for r in dest.scenes_for_source("landsat-c2-l2")} == {
         ("L1", "landsat-c2-l2")
@@ -669,22 +686,24 @@ def test_seed_copies_done_rows_and_is_idempotent(tmp_path, monkeypatch) -> None:
     }
     assert dest.scenes_for_source("sentinel-2-l2a") == []
 
-    again = module.seed(source_uri, dest_root)
+    again = module.seed(source_uri, dest_root, manifest_uri)
     assert again["staged"] == 0
     assert again["skipped_identical"] == 2
+    assert again["skipped_not_in_manifest"] == 1
 
 
 def test_seed_dry_run_writes_nothing(tmp_path, monkeypatch) -> None:
     import os
 
     landsat_hash, _ = _good_hashes()
-    source_uri, dest_root = _seed_fixture(
+    source_uri, manifest_uri, dest_root = _seed_fixture(
         tmp_path,
         monkeypatch,
         [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
+        [("L1", "landsat-c2-l2")],
     )
     module = _load_seed_module()
-    summary = module.seed(source_uri, dest_root, dry_run=True)
+    summary = module.seed(source_uri, dest_root, manifest_uri, dry_run=True)
     assert summary["staged"] == 1
     assert summary["copied"] == 0
     assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
@@ -694,7 +713,7 @@ def test_seed_refuses_contract_mismatch(tmp_path, monkeypatch) -> None:
     import os
 
     landsat_hash, _ = _good_hashes()
-    source_uri, dest_root = _seed_fixture(
+    source_uri, manifest_uri, dest_root = _seed_fixture(
         tmp_path,
         monkeypatch,
         [
@@ -706,10 +725,11 @@ def test_seed_refuses_contract_mismatch(tmp_path, monkeypatch) -> None:
                 schema_version=6,
             ),
         ],
+        [("L1", "landsat-c2-l2"), ("LBAD", "landsat-c2-l2")],
     )
     module = _load_seed_module()
     with pytest.raises(RuntimeError, match="nothing written"):
-        module.seed(source_uri, dest_root)
+        module.seed(source_uri, dest_root, manifest_uri)
     assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
 
 
@@ -723,10 +743,31 @@ def test_seed_refuses_missing_cog(tmp_path, monkeypatch) -> None:
     Path("flag-L1").write_bytes(b"x")
     ledger = Ledger.open("source/ledger.parquet")
     ledger.upsert(_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash))
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    Path("bundle").mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table({"scene_id": ["L1"], "source": ["landsat-c2-l2"]}),
+        "bundle/manifest.parquet",
+    )
     module = _load_seed_module()
     with pytest.raises(RuntimeError, match="nothing written"):
-        module.seed("source/ledger.parquet", "dest")
+        module.seed("source/ledger.parquet", "dest", "bundle/manifest.parquet")
     assert not os.path.exists(os.path.join("dest", "ledger.parquet"))
+
+
+def test_seed_refuses_new_manifest_scene_without_reuse_row(tmp_path, monkeypatch) -> None:
+    landsat_hash, _ = _good_hashes()
+    source_uri, manifest_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
+        [("L1", "landsat-c2-l2"), ("LNEW", "landsat-c2-l2")],
+    )
+    module = _load_seed_module()
+    with pytest.raises(RuntimeError, match="without a done reuse row"):
+        module.seed(source_uri, dest_root, manifest_uri)
 
 
 def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> None:
@@ -735,13 +776,14 @@ def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> Non
     from berlin_lst_downscaling.data.ard.ledger import Ledger
 
     landsat_hash, _ = _good_hashes()
-    source_uri, dest_root = _seed_fixture(
+    source_uri, manifest_uri, dest_root = _seed_fixture(
         tmp_path,
         monkeypatch,
         [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
+        [("L1", "landsat-c2-l2")],
     )
     module = _load_seed_module()
-    assert module.seed(source_uri, dest_root)["staged"] == 1
+    assert module.seed(source_uri, dest_root, manifest_uri)["staged"] == 1
 
     dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
     row = dest.get("L1", "landsat-c2-l2")
@@ -749,11 +791,11 @@ def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> Non
     row.path_cog = "cog-elsewhere"
     dest.upsert(row)
     with pytest.raises(RuntimeError, match="refusing to overwrite"):
-        module.seed(source_uri, dest_root)
+        module.seed(source_uri, dest_root, manifest_uri)
     assert dest.get("L1", "landsat-c2-l2").path_cog == "cog-elsewhere"
 
     with pytest.raises(RuntimeError, match="source ledger missing"):
-        module.seed("nope/ledger.parquet", "dest2")
+        module.seed("nope/ledger.parquet", "dest2", manifest_uri)
 
 
 def test_ard_launcher_seeds_before_processing() -> None:
@@ -761,6 +803,7 @@ def test_ard_launcher_seeds_before_processing() -> None:
     seed_pos = text.index("seed_ard_v10_reuse.py")
     run_pos = text.index("scripts/runners/run_ard.py")
     assert seed_pos < run_pos
+    assert "--manifest-uri ${MANIFEST_URI}" in text
     assert "--dest-root ${OUTPUT_ROOT}" in text
     assert "${REUSE_ROOT}/ledger.parquet" in text
 

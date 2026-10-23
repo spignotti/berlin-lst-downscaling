@@ -27,7 +27,7 @@ CONFIG_DIR="configs/ard"
 MANIFEST_URI="gs://berlin-lst-training-data/manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet"
 REUSE_ROOT="gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019"
 OUTPUT_ROOT="gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
-REMOTE_CMD="uv run python scripts/operators/seed_ard_v10_reuse.py --source-ledger ${REUSE_ROOT}/ledger.parquet --dest-root ${OUTPUT_ROOT} && uv run python scripts/runners/run_ard.py --config-name ${CONFIG_NAME} manifest_uri=${MANIFEST_URI}"
+REMOTE_CMD="uv run python scripts/operators/seed_ard_v10_reuse.py --source-ledger ${REUSE_ROOT}/ledger.parquet --manifest-uri ${MANIFEST_URI} --dest-root ${OUTPUT_ROOT} && uv run python scripts/runners/run_ard.py --config-name ${CONFIG_NAME} manifest_uri=${MANIFEST_URI}"
 POLL_MAX_SECONDS=172800
 
 vm_init_run "ard-v10"

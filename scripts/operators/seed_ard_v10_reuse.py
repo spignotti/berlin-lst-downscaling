@@ -26,25 +26,31 @@ Usage
 
     uv run python scripts/operators/seed_ard_v10_reuse.py \\
         --source-ledger <reuse-root>/ledger.parquet \\
+        --manifest-uri <v4-bundle>/manifest.parquet \\
         --dest-root gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 from pathlib import Path
 
+import pyarrow.parquet as pq
 from omegaconf import OmegaConf
 
 from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.ard.landsat_target import landsat_schema_hash
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
-from berlin_lst_downscaling.data.io import exists
+from berlin_lst_downscaling.data.io import exists, read_bytes
 
 _REPO = Path(__file__).resolve().parents[2]
 
 REUSE_SOURCES = ("landsat-c2-l2", "ecostress")
 
+DEFAULT_MANIFEST_URI = (
+    "gs://berlin-lst-training-data/manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet"
+)
 DEFAULT_SOURCE_LEDGER = (
     "gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019/ledger.parquet"
 )
@@ -83,24 +89,61 @@ def _identity(row: LedgerRow) -> tuple:
     return tuple(getattr(row, field) for field in _IDENTITY_FIELDS)
 
 
-def seed(source_ledger_uri: str, dest_root: str, *, dry_run: bool = False) -> dict:
+def _manifest_reuse_keys(manifest_uri: str) -> set[tuple[str, str]]:
+    """Return the manifest's Landsat/ECOSTRESS ``(scene_id, source)`` keys."""
+    table = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
+    cols = table.to_pydict()
+    keys: set[tuple[str, str]] = set()
+    for i in range(table.num_rows):
+        source = str(cols["source"][i])
+        if source in REUSE_SOURCES:
+            keys.add((str(cols["scene_id"][i]), source))
+    return keys
+
+
+def seed(
+    source_ledger_uri: str,
+    dest_root: str,
+    manifest_uri: str,
+    *,
+    dry_run: bool = False,
+) -> dict:
     """Copy verified reuse rows into the destination ledger.
 
-    Returns a ``{"copied", "skipped_identical", "skipped_not_done"}``
-    summary. Raises ``RuntimeError`` before any write on any failure.
+    Only rows whose ``(scene_id, source)`` appears in the selection
+    bundle are copied: the v4 AOI-overlap gate drops edge anchors, and
+    the ARD validator requires exact manifest/ledger key equality, so
+    seeding dropped scenes would fail validation. Every manifest
+    Landsat/ECOSTRESS key must resolve to a done, contract-valid reuse
+    row (fail closed otherwise — a genuinely new scene needs
+    processing, not seeding).
+
+    Returns a ``{"copied", "staged", "skipped_identical",
+    "skipped_not_done", "skipped_not_in_manifest"}`` summary. Raises
+    ``RuntimeError`` before any write on any failure.
     """
     if not exists(source_ledger_uri):
         raise RuntimeError(f"source ledger missing: {source_ledger_uri}")
+    if not exists(manifest_uri):
+        raise RuntimeError(f"selection manifest missing: {manifest_uri}")
     st, qa = _current_policy()
+    manifest_keys = _manifest_reuse_keys(manifest_uri)
     source = Ledger.open(source_ledger_uri)
     dest = Ledger.open(f"{dest_root.rstrip('/')}/ledger.parquet")
 
     staged: list[LedgerRow] = []
     skipped_identical = 0
     skipped_not_done = 0
+    skipped_not_in_manifest = 0
+    seen_manifest_keys: set[tuple[str, str]] = set()
     errors: list[str] = []
     for reuse_source in REUSE_SOURCES:
         for row in source.scenes_for_source(reuse_source):
+            key = (row.scene_id, row.source)
+            if key not in manifest_keys:
+                skipped_not_in_manifest += 1
+                continue
+            seen_manifest_keys.add(key)
             if row.status != "done":
                 skipped_not_done += 1
                 continue
@@ -138,6 +181,14 @@ def seed(source_ledger_uri: str, dest_root: str, *, dry_run: bool = False) -> di
             else:
                 staged.append(row)
 
+    missing = sorted(manifest_keys - seen_manifest_keys)
+    if missing:
+        shown = ", ".join(f"{sid} [{src}]" for sid, src in missing[:10])
+        errors.append(
+            f"{len(missing)} manifest reuse key(s) without a done reuse row: "
+            f"{shown} — these scenes need processing, not seeding"
+        )
+
     if errors:
         raise RuntimeError(
             f"seeding refused with {len(errors)} finding(s), nothing written:\n"
@@ -151,6 +202,7 @@ def seed(source_ledger_uri: str, dest_root: str, *, dry_run: bool = False) -> di
         "staged": len(staged),
         "skipped_identical": skipped_identical,
         "skipped_not_done": skipped_not_done,
+        "skipped_not_in_manifest": skipped_not_in_manifest,
     }
 
 
@@ -158,11 +210,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source-ledger", default=DEFAULT_SOURCE_LEDGER)
     parser.add_argument("--dest-root", default=DEFAULT_DEST_ROOT)
+    parser.add_argument("--manifest-uri", default=DEFAULT_MANIFEST_URI)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        summary = seed(args.source_ledger, args.dest_root, dry_run=args.dry_run)
+        summary = seed(args.source_ledger, args.dest_root, args.manifest_uri, dry_run=args.dry_run)
     except RuntimeError as exc:
         print(f"FAIL: {exc}")
         return 1
@@ -170,7 +223,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"seed {mode}: staged={summary['staged']} copied={summary['copied']} "
         f"identical={summary['skipped_identical']} "
-        f"not_done={summary['skipped_not_done']}"
+        f"not_done={summary['skipped_not_done']} "
+        f"not_in_manifest={summary['skipped_not_in_manifest']}"
     )
     return 0
 

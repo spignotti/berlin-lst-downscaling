@@ -18,11 +18,13 @@ Step 2 automates the seeding: `run-ard-v10-vm.sh` first runs
 `scripts/operators/seed_ard_v10_reuse.py`, which copies the published
 `done` Landsat/ECOSTRESS ledger rows into the new v10 ledger (COGs stay
 referenced in place, no COG is copied), verifies each row against the
-current contracts and its referenced COGs, and refuses to overwrite a
-differing existing row or to write anything on failure (`--dry-run`
-previews). The S2-only `run_ard` keeps seeded rows and processes only
-S2. If either contract ever bumps, the seeded rows must instead be
-reprocessed into a new root.
+current contracts and its referenced COGs, copies only rows present in
+the v4 bundle (the ARD validator requires exact manifest/ledger key
+equality, so v4-dropped edge scenes are skipped), and refuses to
+overwrite a differing existing row or to write anything on failure
+(`--dry-run` previews). The S2-only `run_ard` keeps seeded rows and
+processes only S2. If either contract ever bumps, the seeded rows must
+instead be reprocessed into a new root.
 
 ## Run order and launcher commands
 
