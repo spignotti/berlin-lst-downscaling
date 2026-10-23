@@ -72,6 +72,20 @@ _FROZEN_FEATURE_ROOTS = frozenset(
 )
 
 
+# Canonical TESSERA embedding product prefix (new in the TESSERA arm).
+# Nothing is published there yet; the operator publishes each year once via
+# scripts/operators/run_tessera_embeddings.py. After a year is published,
+# add its directory URI to _FROZEN_TESSERA_ROOTS so republish paths fail
+# closed instead of overwriting the canonical product.
+TESSERA_PRODUCT_PREFIX = "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
+
+# Year directories already holding a published TESSERA product. Empty until
+# the operator run publishes; add
+# f"{TESSERA_PRODUCT_PREFIX}/<year>" here once that year's complete.json
+# is published.
+_FROZEN_TESSERA_ROOTS = frozenset[str]()
+
+
 class FrozenPrefixError(RuntimeError):
     """A pipeline tried to publish into a prefix that already has a release."""
 
@@ -166,6 +180,21 @@ def assert_manifests_output_root(output_root: str) -> None:
         )
 
 
+def assert_tessera_output_root(output_root: str) -> None:
+    """Block embedding writes into an already-published TESSERA year prefix.
+
+    The canonical prefix itself stays writable until the operator publishes;
+    once a year's ``complete.json`` is published, its directory URI belongs
+    in :data:`_FROZEN_TESSERA_ROOTS` and any further write there raises.
+    """
+    if _normalize(output_root) in _FROZEN_TESSERA_ROOTS:
+        raise FrozenPrefixError(
+            f"{output_root} is a published TESSERA embedding prefix. "
+            "Canonical TESSERA products are immutable; publish a new version "
+            "under a new prefix instead of overwriting."
+        )
+
+
 __all__ = [
     "EDA_V3_ROOT",
     "FEATURES_V6_ROOT",
@@ -173,11 +202,13 @@ __all__ = [
     "PATCH_INDEX_V3_ROOT",
     "SENTINEL2_V10_ROOT",
     "STATIC_V6_ROOTS",
+    "TESSERA_PRODUCT_PREFIX",
     "TRAINING_V3_ROOT",
     "FrozenPrefixError",
     "assert_feature_output_root",
     "assert_manifests_output_root",
     "assert_patch_index_output_root",
     "assert_sentinel2_output_root",
+    "assert_tessera_output_root",
     "assert_training_output_root",
 ]

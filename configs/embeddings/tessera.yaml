@@ -1,0 +1,20 @@
+# @package _global_
+# Canonical TESSERA annual embedding product (operator-written only).
+# One directory per year on the canonical 10 m grid:
+#   gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate/<year>/
+# Int8 COG (128 bands) + float32 scale COG + uint8 validity mask COG plus
+# provenance.json and complete.json (written last). Written once per year by
+# scripts/operators/run_tessera_embeddings.py via the VM launcher
+# .opencode/skills/google-access/scripts/run-tessera-embeddings-vm.sh.
+# Int8 + scale is ~2.3 GB per year on the Berlin bbox.
+defaults:
+  - _self_
+
+dataset_version: "v1.1-dclimate"
+store_uri: "s3://tessera-embeddings/v1.1/dclimate.icechunk/"
+zone: "33N"
+zone_crs: "EPSG:32633"
+bbox: [13.08, 52.34, 13.76, 52.68]
+years: [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+quality_threshold: 0.0
+output_root: "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"

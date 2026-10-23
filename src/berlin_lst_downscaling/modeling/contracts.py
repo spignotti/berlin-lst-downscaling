@@ -194,6 +194,10 @@ class RealBatch:
     target_100m: Tensor
     mask_100m: Tensor
     metadata: list[RealSampleMeta]
+    # TESSERA-arm only (None on the main arm): per-patch annual embedding
+    # ``(B, 128, H10, W10)`` aligned to ``features``. Additive and optional
+    # so the main-arm contract is byte-for-byte unchanged.
+    tessera_embedding: Tensor | None = None
 
     def pin_memory(self) -> RealBatch:
         """Pin tensor storage so DataLoader recognizes this custom batch type."""
@@ -201,6 +205,8 @@ class RealBatch:
         self.lst_prior = self.lst_prior.pin_memory()
         self.target_100m = self.target_100m.pin_memory()
         self.mask_100m = self.mask_100m.pin_memory()
+        if self.tessera_embedding is not None:
+            self.tessera_embedding = self.tessera_embedding.pin_memory()
         return self
 
     def to(self, device: torch.device | str, non_blocking: bool = False) -> RealBatch:
@@ -211,6 +217,11 @@ class RealBatch:
             target_100m=self.target_100m.to(device, non_blocking=non_blocking),
             mask_100m=self.mask_100m.to(device, non_blocking=non_blocking),
             metadata=self.metadata,
+            tessera_embedding=(
+                None
+                if self.tessera_embedding is None
+                else self.tessera_embedding.to(device, non_blocking=non_blocking)
+            ),
         )
 
 
