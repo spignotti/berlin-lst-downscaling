@@ -113,14 +113,15 @@ def seed(
     Only rows whose ``(scene_id, source)`` appears in the selection
     bundle are copied: the v4 AOI-overlap gate drops edge anchors, and
     the ARD validator requires exact manifest/ledger key equality, so
-    seeding dropped scenes would fail validation. Every manifest
-    Landsat/ECOSTRESS key must resolve to a done, contract-valid reuse
-    row (fail closed otherwise — a genuinely new scene needs
-    processing, not seeding).
+    seeding dropped scenes would fail validation. A manifest key counts
+    as covered only once a done, contract-valid reuse row is staged or
+    already seeded — a failed/pending reuse row (or any row failing
+    verification) leaves the key uncovered, so the run fails closed
+    here instead of after the S2 mosaic in ``validate_ard``.
 
     Returns a ``{"copied", "staged", "skipped_identical",
-    "skipped_not_done", "skipped_not_in_manifest"}`` summary. Raises
-    ``RuntimeError`` before any write on any failure.
+    "skipped_not_in_manifest"}`` summary. Raises ``RuntimeError``
+    before any write on any failure.
     """
     if not exists(source_ledger_uri):
         raise RuntimeError(f"source ledger missing: {source_ledger_uri}")
@@ -133,7 +134,6 @@ def seed(
 
     staged: list[LedgerRow] = []
     skipped_identical = 0
-    skipped_not_done = 0
     skipped_not_in_manifest = 0
     seen_manifest_keys: set[tuple[str, str]] = set()
     errors: list[str] = []
@@ -143,9 +143,8 @@ def seed(
             if key not in manifest_keys:
                 skipped_not_in_manifest += 1
                 continue
-            seen_manifest_keys.add(key)
             if row.status != "done":
-                skipped_not_done += 1
+                # Not covered: reported via the missing-key check below.
                 continue
             expected_version = contract_for_source(reuse_source).schema_version
             if row.schema_version != expected_version:
@@ -169,6 +168,7 @@ def seed(
                     errors.append(f"{row.scene_id} [{reuse_source}]: {label} missing: {uri}")
             if any(e.startswith(f"{row.scene_id} [{reuse_source}]") for e in errors):
                 continue
+            seen_manifest_keys.add(key)
             existing = dest.get(row.scene_id, row.source)
             if existing is not None:
                 if _identity(existing) == _identity(row):
@@ -201,7 +201,6 @@ def seed(
         "copied": len(staged) if not dry_run else 0,
         "staged": len(staged),
         "skipped_identical": skipped_identical,
-        "skipped_not_done": skipped_not_done,
         "skipped_not_in_manifest": skipped_not_in_manifest,
     }
 
@@ -223,7 +222,6 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"seed {mode}: staged={summary['staged']} copied={summary['copied']} "
         f"identical={summary['skipped_identical']} "
-        f"not_done={summary['skipped_not_done']} "
         f"not_in_manifest={summary['skipped_not_in_manifest']}"
     )
     return 0

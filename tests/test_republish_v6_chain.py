@@ -665,17 +665,15 @@ def test_seed_copies_done_rows_and_is_idempotent(tmp_path, monkeypatch) -> None:
         [
             _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash),
             _seed_row("ecostress", "E1", schema_hash=eco_hash),
-            _seed_row("landsat-c2-l2", "L2", schema_hash=landsat_hash, status="failed"),
             _seed_row("landsat-c2-l2", "LDROP", schema_hash=landsat_hash),
             _seed_row("sentinel-2-l2a", "S1", schema_hash="9", schema_version=9),
         ],
-        [("L1", "landsat-c2-l2"), ("E1", "ecostress"), ("L2", "landsat-c2-l2")],
+        [("L1", "landsat-c2-l2"), ("E1", "ecostress")],
     )
     module = _load_seed_module()
 
     summary = module.seed(source_uri, dest_root, manifest_uri)
     assert summary["staged"] == 2
-    assert summary["skipped_not_done"] == 1
     assert summary["skipped_not_in_manifest"] == 1
     dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
     assert {(r.scene_id, r.source) for r in dest.scenes_for_source("landsat-c2-l2")} == {
@@ -758,6 +756,8 @@ def test_seed_refuses_missing_cog(tmp_path, monkeypatch) -> None:
 
 
 def test_seed_refuses_new_manifest_scene_without_reuse_row(tmp_path, monkeypatch) -> None:
+    import os
+
     landsat_hash, _ = _good_hashes()
     source_uri, manifest_uri, dest_root = _seed_fixture(
         tmp_path,
@@ -768,6 +768,31 @@ def test_seed_refuses_new_manifest_scene_without_reuse_row(tmp_path, monkeypatch
     module = _load_seed_module()
     with pytest.raises(RuntimeError, match="without a done reuse row"):
         module.seed(source_uri, dest_root, manifest_uri)
+    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+
+
+def test_seed_refuses_not_done_manifest_row(tmp_path, monkeypatch) -> None:
+    """A failed reuse row must not count as covered (Bugbot).
+
+    The S2-only run_ard never writes that key, so accepting it here
+    would only surface later as a validate_ard key mismatch.
+    """
+    import os
+
+    landsat_hash, _ = _good_hashes()
+    source_uri, manifest_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [
+            _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash),
+            _seed_row("landsat-c2-l2", "L2", schema_hash=landsat_hash, status="failed"),
+        ],
+        [("L1", "landsat-c2-l2"), ("L2", "landsat-c2-l2")],
+    )
+    module = _load_seed_module()
+    with pytest.raises(RuntimeError, match="without a done reuse row"):
+        module.seed(source_uri, dest_root, manifest_uri)
+    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
 
 
 def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> None:
