@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320">
+<text x="320" y="24" text-anchor="middle" font-size="14">ΔLST (a)-(b) by NDVI bin, summer (static_uniform)</text>
+<line x1="60" y1="166.50392911069798" x2="580" y2="166.50392911069798" stroke="grey"/>
+<rect x="94.0" y="166.50392911069798" width="36" height="47.875836734989434" fill="steelblue"/>
+<line x1="112.0" y1="231.42857142857142" x2="112.0" y2="131.47768350161064" stroke="black" stroke-width="2"/>
+<text x="112.0" y="276" text-anchor="middle" font-size="10">NDVI≤0</text>
+<text x="112.0" y="290" text-anchor="middle" font-size="10">-0.89 K</text>
+<rect x="198.0" y="154.43243949695028" width="36" height="13.071489613747701" fill="steelblue"/>
+<line x1="216.0" y1="221.32695066076965" x2="216.0" y2="88.57142857142858" stroke="black" stroke-width="2"/>
+<text x="216.0" y="276" text-anchor="middle" font-size="10">0–0.2</text>
+<text x="216.0" y="290" text-anchor="middle" font-size="10">+0.23 K</text>
+<rect x="302.0" y="150.41264728703663" width="36" height="17.091281823661348" fill="steelblue"/>
+<line x1="320.0" y1="217.7915286117435" x2="320.0" y2="98.88106062083415" stroke="black" stroke-width="2"/>
+<text x="320.0" y="276" text-anchor="middle" font-size="10">0.2–0.4</text>
+<text x="320.0" y="290" text-anchor="middle" font-size="10">+0.31 K</text>
+<rect x="406.0" y="158.57563723644103" width="36" height="8.928291874256956" fill="steelblue"/>
+<line x1="424.0" y1="204.82003339090858" x2="424.0" y2="108.14778687778559" stroke="black" stroke-width="2"/>
+<text x="424.0" y="276" text-anchor="middle" font-size="10">0.4–0.6</text>
+<text x="424.0" y="290" text-anchor="middle" font-size="10">+0.15 K</text>
+<rect x="510.0" y="166.50392911069798" width="36" height="11.20483314155942" fill="steelblue"/>
+<line x1="528.0" y1="217.07762225294715" x2="528.0" y2="122.80738856052653" stroke="black" stroke-width="2"/>
+<text x="528.0" y="276" text-anchor="middle" font-size="10">>0.6</text>
+<text x="528.0" y="290" text-anchor="middle" font-size="10">-0.19 K</text>
+</svg>
