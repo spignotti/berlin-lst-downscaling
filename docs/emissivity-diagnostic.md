@@ -28,8 +28,12 @@ LST  = K2 / ln(K1 / B(T) + 1)
   `K1=799.0284, K2=1329.2405`. Every scene's MTL constants matched the
   documented values exactly.
 - Analysis mask: repo `landsat_qa_to_clear_bits` (fill/cloud/shadow/cirrus/snow
-  excluded, water stays clear) + TIRS-B10 saturation (`qa_radsat` bit 10, per
-  LSDS-1619 Table 6-4) + finite aux/EMIS. No clamps; invalid maps to NaN.
+  excluded, water stays clear) + thermal saturation (ST DN 65535; TIRS has no
+  QA_RADSAT bit — LSDS-1619 v6 Table 6-4 assigns bits 0–6 to OLI 1–7, bit 8 to
+  OLI 9, bit 11 to terrain occlusion, bits 7/9/10/12–15 unused — and §6.1.2
+  defines saturated thermal pixels by the uint16 maximum; verified bits 8–10
+  unset in all 9 scenes, max QA_RADSAT 0–127 from optical bits only) + finite
+  aux/EMIS. No clamps; invalid maps to NaN.
 - Experiments: **(a)** `eps` = product EMIS (sanity vs ST_B10); **(b)** static
   emissivity without scene-NDVI adjustment (see source note); **(c)** fixed
   `eps` 0.97 / 0.98. Landsat SR NDVI bins for stratification; same-season S2
@@ -127,6 +131,19 @@ warms dense vegetation (negative Δ = (a)−(b) means the static run is warmer �
 i.e. the adjustment cools dense canopies by ~0.2–0.3 K) and water/negative NDVI
 (~−0.9 K), while slightly warming sparse/low NDVI (~+0.2–0.3 K).
 
+## ΔLST (a)−(b) by surface: land vs water (static-uniform; QA_PIXEL bit 7)
+
+Water emissivity (~0.99) sits well above the scene-median static value, so the
+uniform run is warm-biased over water — the NDVI adjustment cools summer water
+pixels by ~0.9 K. Winter water samples are thin (corner-clipped scenes).
+
+| group | land mean, [p05, p95], n | water mean, [p05, p95], n |
+|---|---|---|
+| summer L8 | +0.00, [−0.84, +0.94], 2 497 129 | −0.90, [−1.17, −0.85], 94 580 |
+| summer L9 | +0.03, [−0.91, +1.08], 4 752 805 | −0.91, [−1.28, −0.86], 116 839 |
+| winter L8 | −0.03, [−1.04, +0.68], 884 367 | −0.54, [−1.06, +0.56], 63 624 |
+| winter L9 | +0.12, [−0.24, +1.17], 75 380 | −0.03, [−0.54, +1.18], 216 |
+
 ![Mean ΔLST by season](emissivity-diagnostic/fig_delta_groups.svg)
 ![ΔLST by NDVI bin, summer](emissivity-diagnostic/fig_delta_ndvi_summer.svg)
 ![ΔLST by NDVI bin, winter](emissivity-diagnostic/fig_delta_ndvi_winter.svg)
@@ -157,9 +174,12 @@ and not interpreted; the primary result is the full-sample Landsat-NDVI pair.
 
 ## Limitations (all read-only; nothing written to GCS, no training, no jobs)
 
-- No impervious/land-cover stratification: our static layers (imperviousness,
-  stadtstruktur) live in GCS and are unreadable from this box — stratification
-  is by Landsat SR NDVI bins only (plus S2 NDVI for the relation).
+- Impervious-class stratification is not implemented: the project's
+  imperviousness (Umweltatlas-derived) and stadtstruktur (WFS-derived) layers
+  exist only as GCS products / pipeline outputs, unreachable read-only from
+  this box (no GCS credentials; regenerating them would be a product-writing
+  pipeline run, out of scope). Land-cover stratification is by Landsat SR NDVI
+  bins plus the Fmask water/land split above.
 - No true static-AST GED branch (Earthdata credentials); fallback documented
   above, rerunnable via `--aster-ged-tif`.
 - Winter L9 samples are thin (28k/47k px, corner-clipped scenes); one winter

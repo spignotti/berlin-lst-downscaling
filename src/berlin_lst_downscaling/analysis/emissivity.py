@@ -35,6 +35,8 @@ USGS constants as fallback.
 from __future__ import annotations
 
 import numpy as np
+import rasterio
+from rasterio.warp import Resampling, reproject
 
 # ── Collection 2 Level-2 scaling (STAC raster:bands / LSDS-1619 Table 6-1) ──
 
@@ -60,10 +62,13 @@ K2_L8_B10 = 1321.0789
 K1_L9_B10 = 799.0284
 K2_L9_B10 = 1329.2405
 
-# QA_RADSAT bit for TIRS Band 10 saturation (LSDS-1619 Table 6-4: bits
-# 0-9 are OLI bands 1-9 — value 512(flags OLI band 9) — so bits 10 and
-# 11 are TIRS bands 10 and 11).
-QA_RADSAT_TIRS_B10_BIT = 10
+# TIRS saturation has NO QA_RADSAT bit (LSDS-1619 v6 Table 6-4: bits 0-6
+# are OLI bands 1-7, bit 7 unused, bit 8 is OLI band 9, bits 9-10 unused,
+# bit 11 terrain occlusion, bits 12-15 unused). Per §6.1.2, saturated
+# thermal pixels read the maximum uint16 value, so saturation is detected
+# on the ST DN itself. QA_PIXEL bit 7 marks water (Fmask).
+ST_SATURATED_DN = 65535
+QA_PIXEL_WATER_BIT = 7
 
 # NDVI reporting bins (diagnostic presentation only, not a product
 # threshold): water/negative, bare/urban-low, sparse, moderate, dense.
@@ -187,9 +192,18 @@ def ndvi(nir: np.ndarray, red: np.ndarray) -> np.ndarray:
     return out
 
 
-def tirs_b10_saturated(qa_radsat: np.ndarray) -> np.ndarray:
-    """Boolean mask of TIRS Band 10 radiometrically saturated pixels."""
-    return (qa_radsat.astype(np.uint16) >> QA_RADSAT_TIRS_B10_BIT) & 1 == 1
+def thermal_saturated(st_dn: np.ndarray) -> np.ndarray:
+    """Boolean mask of saturated thermal pixels (ST DN at the uint16 maximum).
+
+    TIRS saturation has no QA_RADSAT bit (LSDS-1619 v6 Table 6-4); per
+    §6.1.2 saturated thermal pixels read the maximum uint16 value.
+    """
+    return st_dn == ST_SATURATED_DN
+
+
+def qa_water(qa_pixel: np.ndarray) -> np.ndarray:
+    """Boolean water mask from QA_PIXEL bit 7 (Fmask water stays clear)."""
+    return ((qa_pixel.astype(np.uint16) >> QA_PIXEL_WATER_BIT) & 1) == 1
 
 
 def assign_ndvi_bins(values: np.ndarray) -> np.ndarray:
@@ -231,6 +245,35 @@ def aster_ged_b10_proxy(ged_band13: np.ndarray, ged_band14: np.ndarray) -> np.nd
     return 0.5 * (ged_band13.astype(np.float64) + ged_band14.astype(np.float64))
 
 
+def ged_b10_on_scene_grid(
+    src: np.ndarray,
+    src_transform: rasterio.Affine,
+    src_crs: object,
+    dst_shape: tuple[int, int],
+    dst_transform: rasterio.Affine,
+    dst_crs: object,
+) -> np.ndarray:
+    """Reproject a static emissivity raster onto the 30 m scene grid.
+
+    Bilinear resampling (explicit — never the library default), NaN as
+    nodata on both ends so missing GED cells propagate instead of
+    smearing. Used by the ``--aster-ged-tif`` path.
+    """
+    destination = np.full(dst_shape, np.nan, dtype=np.float64)
+    reproject(
+        np.ascontiguousarray(src.astype(np.float64)),
+        destination,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs=dst_crs,
+        resampling=Resampling.bilinear,
+        src_nodata=float("nan"),
+        dst_nodata=float("nan"),
+    )
+    return destination
+
+
 # ── summary statistics ───────────────────────────────────────────────────
 
 
@@ -266,6 +309,28 @@ def ndvi_lst_relation(ndvi_values: np.ndarray, lst_values: np.ndarray) -> dict[s
     return {"slope": float(slope), "intercept": float(intercept), "r": r, "n": n}
 
 
+def pool_overall_stats(stats_list: list[dict[str, float]]) -> dict[str, float]:
+    """Pool per-scene overall stats into one group summary.
+
+    Mean is n-weighted (pixel counts); p05/p95 are the min/max across
+    scenes so the whiskers span the observed scene range. Entries with
+    ``n == 0`` or non-finite means are skipped.
+    """
+    usable = [s for s in stats_list if int(s["n"]) > 0 and np.isfinite(float(s["mean"]))]
+    n_tot = sum(int(s["n"]) for s in usable)
+    if n_tot == 0:
+        return {"mean": float("nan"), "p05": float("nan"), "p95": float("nan"), "n": 0}
+    mean = sum(float(s["mean"]) * int(s["n"]) for s in usable) / n_tot
+    p05 = [float(s["p05"]) for s in usable if np.isfinite(float(s["p05"]))]
+    p95 = [float(s["p95"]) for s in usable if np.isfinite(float(s["p95"]))]
+    return {
+        "mean": float(mean),
+        "p05": float(min(p05)) if p05 else float("nan"),
+        "p95": float(max(p95)) if p95 else float("nan"),
+        "n": int(n_tot),
+    }
+
+
 __all__ = [
     "AUX_NODATA_DN",
     "ATRAN_SCALE",
@@ -278,9 +343,10 @@ __all__ = [
     "NDVI_BIN_LABELS",
     "OLI_SR_OFFSET",
     "OLI_SR_SCALE",
-    "QA_RADSAT_TIRS_B10_BIT",
+    "QA_PIXEL_WATER_BIT",
     "ST_FILL_DN",
     "ST_OFFSET",
+    "ST_SATURATED_DN",
     "ST_SCALE",
     "THERMAL_RADIANCE_SCALE",
     "assign_ndvi_bins",
@@ -288,15 +354,18 @@ __all__ = [
     "aux_dn_to_units",
     "binned_stats",
     "forward_trad",
+    "ged_b10_on_scene_grid",
     "lst_from_aux",
     "ndvi",
     "ndvi_lst_relation",
     "olisr_dn_to_reflectance",
     "planck_forward_radiance",
     "planck_invert_lst",
+    "pool_overall_stats",
+    "qa_water",
     "st_dn_to_kelvin",
     "surface_leaving_radiance",
     "thermal_constants_for_platform",
-    "tirs_b10_saturated",
+    "thermal_saturated",
     "uniform_static_emissivity",
 ]

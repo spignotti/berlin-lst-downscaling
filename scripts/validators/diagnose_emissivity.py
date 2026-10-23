@@ -20,7 +20,7 @@ Experiments per scene
     NDVI-adjustment pattern while keeping the scene mean). A
     caller-supplied static raster (``--aster-ged-tif``, already adjusted
     to the TIRS B10 bandpass, e.g. mean of ASTER GED bands 13+14) is
-    used when provided.
+    reprojected onto each 30 m scene grid (bilinear, explicit) when provided.
 (c) fixed-eps scenarios (0.97, 0.98).
 
 Scene selection rule (pinned IDs below for reproducibility): per season
@@ -64,13 +64,16 @@ from berlin_lst_downscaling.analysis.emissivity import (
     aux_dn_to_units,
     binned_stats,
     forward_trad,
+    ged_b10_on_scene_grid,
     lst_from_aux,
     ndvi,
     ndvi_lst_relation,
     olisr_dn_to_reflectance,
+    pool_overall_stats,
+    qa_water,
     st_dn_to_kelvin,
     thermal_constants_for_platform,
-    tirs_b10_saturated,
+    thermal_saturated,
     uniform_static_emissivity,
 )
 from berlin_lst_downscaling.data.acquisition.pc_client import pc_search, stac_load
@@ -247,6 +250,55 @@ def _load_s2_ndvi(s2_item, bbox, dst_shape, dst_transform):  # type: ignore[no-u
     return dst, s2_item.id
 
 
+# ── static-GED loader ────────────────────────────────────────────────────
+
+
+def _unitless(arr: np.ndarray, dtype: object, what: str) -> np.ndarray:
+    """Return a unitless emissivity array, applying the GED /1000 convention.
+
+    ASTER GED tiles store ``emis * 1000`` as integers; a float raster is
+    taken as unitless emissivity already. The choice is recorded in the
+    run metadata (``note``), never guessed silently per pixel.
+    """
+    out = arr.astype(np.float64)
+    if np.issubdtype(np.dtype(dtype), np.integer):
+        return out / 1000.0
+    print(f"note: {what} dtype {np.dtype(dtype)} taken as unitless emissivity")
+    return out
+
+
+def _load_ged_source(path: str) -> dict:
+    """Load ``--aster-ged-tif`` into a CRS-tagged dict for per-scene reprojection.
+
+    Accepts a single-band B10-adjusted static emissivity raster in any CRS
+    (reprojected onto each 30 m scene grid with bilinear resampling), or a
+    5-band 100 m ASTER GED tile (bands 10-14; B10 proxy from bands 13+14).
+    Anything else raises a clear error.
+    """
+    with rasterio.open(path) as src:
+        transform = src.transform
+        crs = src.crs
+        if crs is None:
+            raise ValueError(f"static GED raster {path!r} has no CRS; cannot reproject")
+        if src.count == 5:
+            b13 = _unitless(src.read(4), src.dtypes[3], "GED band 13")
+            b14 = _unitless(src.read(5), src.dtypes[4], "GED band 14")
+            arr = aster_ged_b10_proxy(b13, b14)
+            note = "5-band ASTER GED tile: mean of bands 13+14 as the TIRS B10 proxy"
+        elif src.count == 1:
+            arr = _unitless(src.read(1), src.dtypes[0], "single-band static raster")
+            note = "single-band B10-adjusted static emissivity raster"
+        else:
+            raise ValueError(
+                f"static GED raster {path!r} has {src.count} bands; "
+                "expected 1 (B10-adjusted) or 5 (ASTER GED bands 10-14)"
+            )
+    arr = np.where(np.isfinite(arr), arr, np.nan)
+    # Emissivity is strictly positive; non-positive codes are nodata sentinels.
+    arr = np.where(arr > 0, arr, np.nan)
+    return {"array": arr, "transform": transform, "crs": crs, "note": note}
+
+
 # ── per-scene diagnostic ─────────────────────────────────────────────────
 
 
@@ -258,9 +310,15 @@ def analyze_scene(
     *,
     with_s2: bool,
     s2_window_days: int,
-    ged_b10: np.ndarray | None,
+    ged_source: dict | None,
 ) -> dict:
-    """Run experiments (a)/(b)/(c) for one scene; return a JSON-able report."""
+    """Run experiments (a)/(b)/(c) for one scene; return a JSON-able report.
+
+    ``ged_source`` is None (uniform-EMIS fallback) or a dict with
+    ``array``/``transform``/``crs``/``note`` describing a static B10
+    emissivity raster in any CRS — it is reprojected onto the 30 m scene
+    grid inside (bilinear, explicit).
+    """
     item = _resolve_landsat_item(scene_id)
     k1, k2, k_source = _mtl_thermal_constants(item)
     doc_k1, doc_k2 = thermal_constants_for_platform(platform)
@@ -268,7 +326,11 @@ def analyze_scene(
 
     qa = raw["qa_pixel"].astype(np.uint16)
     clear = landsat_qa_to_clear_bits(qa)
-    saturated = tirs_b10_saturated(raw["qa_radsat"])
+    # TIRS has no QA_RADSAT bit (LSDS-1619 v6 Table 6-4); saturation is the
+    # ST uint16 maximum (§6.1.2). QA_RADSAT is kept only as evidence that
+    # bits 8-10 stay unset over these scenes.
+    saturated = thermal_saturated(raw["lwir11"])
+    qa_radsat = raw["qa_radsat"].astype(np.uint16)
     fill = raw["lwir11"] == 0
 
     trad = aux_dn_to_units(raw["trad"].astype(np.int32), THERMAL_RADIANCE_SCALE)
@@ -316,11 +378,22 @@ def analyze_scene(
     # (b) static emissivity counterfactuals.
     variants: dict[str, np.ndarray] = {}
     static_info: dict[str, object] = {}
-    if ged_b10 is not None:
-        if ged_b10.shape != emis.shape:
-            raise ValueError(f"static GED raster shape {ged_b10.shape} != scene grid {emis.shape}")
-        variants["static_ged"] = lst_from_aux(trad, urad, drad, atran, ged_b10, k1, k2)
-        static_info["static_ged"] = "caller-supplied B10-adjusted raster"
+    if ged_source is not None:
+        ged_b10 = ged_b10_on_scene_grid(
+            ged_source["array"],
+            ged_source["transform"],
+            ged_source["crs"],
+            emis.shape,
+            transform,
+            LOAD_CRS,
+        )
+        static_info["static_ged"] = ged_source["note"]
+        static_info["static_ged_n_nan"] = int(np.sum(~np.isfinite(ged_b10)))
+        ged_valid = np.isfinite(ged_b10) & (ged_b10 > 0) & (ged_b10 <= 1.0)
+        if not np.any(ged_valid & analysis_mask):
+            raise ValueError("static GED raster has no valid pixels on the analysis mask")
+        ged_field = np.where(ged_valid, ged_b10, np.nan)
+        variants["static_ged"] = lst_from_aux(trad, urad, drad, atran, ged_field, k1, k2)
     else:
         eps_static = uniform_static_emissivity(emis, analysis_mask)
         variants["static_uniform"] = lst_from_aux(
@@ -345,11 +418,17 @@ def analyze_scene(
     bins = assign_ndvi_bins(np.where(ndvi_mask, landsat_ndvi, np.nan))
 
     delta_stats: dict[str, object] = {}
+    # Land-cover split available in every scene: Fmask water (QA bit 7)
+    # vs land. Impervious/stadtstruktur layers are GCS-only (see report).
+    water = qa_water(qa)
+    surface_index = np.where(ndvi_mask, np.where(water, 1, 0), -1)
     for name, lst_b in variants.items():
         delta = np.where(ndvi_mask, lst_a - lst_b, np.nan)
+        by_surface = binned_stats(delta, surface_index, 2)
         delta_stats[name] = {
             "overall": binned_stats(delta, np.zeros_like(bins), 1)[0],
             "by_ndvi_bin": dict(zip(NDVI_BIN_LABELS, binned_stats(delta, bins, 5), strict=True)),
+            "by_surface": {"land": by_surface[0], "water": by_surface[1]},
         }
 
     relations: dict[str, object] = {
@@ -393,6 +472,10 @@ def analyze_scene(
         "n_analysis": int(np.sum(analysis_mask)),
         "frac_clear": float(np.mean(clear)),
         "frac_saturated_b10": float(np.mean(saturated)),
+        "qa_radsat_max": int(np.max(qa_radsat)),
+        "frac_qa_radsat_bit8_set": float(np.mean(((qa_radsat >> 8) & 1) == 1)),
+        "frac_qa_radsat_bit9_set": float(np.mean(((qa_radsat >> 9) & 1) == 1)),
+        "frac_qa_radsat_bit10_set": float(np.mean(((qa_radsat >> 10) & 1) == 1)),
         "frac_snow_qa": snow_frac,
         "emis_median": float(np.nanmedian(emis[analysis_mask])) if np.any(analysis_mask) else None,
         "emis_std": float(np.nanstd(emis[analysis_mask])) if np.any(analysis_mask) else None,
@@ -533,15 +616,17 @@ def build_figures(
     out_dir: Path, ok: list[dict], rows: list[dict], fig_variant: str
 ) -> dict[str, object]:
     """Write the SVG figures; returns {"scatter_scene": id | None}."""
+    # Season groups pool the per-scene OVERALL stats (n-weighted mean of
+    # scene means, min/max whiskers) so pixel counts — not bin counts —
+    # set the weight. Matches the report's group table.
     groups: dict[str, dict[str, float]] = {}
     for season in ("summer", "winter"):
-        sel = [r for r in rows if r["season"] == season and r["variant"] == fig_variant]
-        vals = [float(r["mean_K"]) for r in sel if math.isfinite(float(r["mean_K"]))]
-        groups[f"{season} ({fig_variant})"] = {
-            "mean": float(np.mean(vals)) if vals else float("nan"),
-            "p05": float(np.percentile(vals, 5)) if len(vals) >= 2 else float("nan"),
-            "p95": float(np.percentile(vals, 95)) if len(vals) >= 2 else float("nan"),
-        }
+        overalls = [
+            r["delta_stats"][fig_variant]["overall"]
+            for r in ok
+            if r["season"] == season and fig_variant in r["delta_stats"]
+        ]
+        groups[f"{season} ({fig_variant})"] = pool_overall_stats(overalls)
     _svg_bar_groups(out_dir / "fig_delta_groups.svg", "Mean ΔLST (a)-(b) by season", groups)
 
     # ΔLST by NDVI bin, pooled per season (n-weighted mean of scene means).
@@ -688,19 +773,11 @@ def main() -> int:
         return 0
 
     bbox = (args.bbox[0], args.bbox[1], args.bbox[2], args.bbox[3])
-    ged_b10: np.ndarray | None = None
+    ged_source: dict | None = None
     ged_meta: dict[str, object] = {"provided": False}
     if args.aster_ged_tif:
-        with rasterio.open(args.aster_ged_tif) as src:
-            arr = src.read(1).astype(np.float64)
-            if src.count == 5:
-                # Full 100 m ASTER GED tile (scaled uint16 bands 10-14):
-                # first-order B10 proxy from bands 13+14 (see module docs).
-                b13 = src.read(4).astype(np.float64) / 1000.0
-                b14 = src.read(5).astype(np.float64) / 1000.0
-                arr = aster_ged_b10_proxy(b13, b14)
-            ged_b10 = arr
-        ged_meta = {"provided": True, "path": args.aster_ged_tif}
+        ged_source = _load_ged_source(args.aster_ged_tif)
+        ged_meta = {"provided": True, "path": args.aster_ged_tif, "note": ged_source["note"]}
 
     wanted = set(args.scenes) if args.scenes else None
     scenes = [s for s in SCENES if wanted is None or s[0] in wanted]
@@ -715,7 +792,7 @@ def main() -> int:
                 bbox,
                 with_s2=args.with_s2,
                 s2_window_days=args.s2_window_days,
-                ged_b10=ged_b10,
+                ged_source=ged_source,
             )
         except Exception as exc:  # noqa: BLE001 — one scene must not kill the batch
             print(f"    FAILED: {exc}")

@@ -14,22 +14,27 @@ from berlin_lst_downscaling.analysis.emissivity import (
     K2_L8_B10,
     K2_L9_B10,
     NDVI_BIN_LABELS,
+    QA_PIXEL_WATER_BIT,
+    ST_SATURATED_DN,
     THERMAL_RADIANCE_SCALE,
     assign_ndvi_bins,
     aster_ged_b10_proxy,
     aux_dn_to_units,
     binned_stats,
     forward_trad,
+    ged_b10_on_scene_grid,
     lst_from_aux,
     ndvi,
     ndvi_lst_relation,
     olisr_dn_to_reflectance,
     planck_forward_radiance,
     planck_invert_lst,
+    pool_overall_stats,
+    qa_water,
     st_dn_to_kelvin,
     surface_leaving_radiance,
     thermal_constants_for_platform,
-    tirs_b10_saturated,
+    thermal_saturated,
     uniform_static_emissivity,
 )
 
@@ -147,10 +152,19 @@ class MasksAndStatsTest(unittest.TestCase):
         self.assertEqual(list(bins), [0, 1, 2, 3, 4])
         self.assertEqual(len(NDVI_BIN_LABELS), 5)
 
-    def test_tirs_saturation_bit(self) -> None:
-        qa = np.array([[0, 1024, 512, 2048]], dtype=np.uint16)
-        mask = tirs_b10_saturated(qa)
-        self.assertEqual(list(mask[0]), [False, True, False, False])
+    def test_tirs_saturation_is_max_dn_not_a_radsat_bit(self) -> None:
+        # LSDS-1619 v6 Table 6-4: QA_RADSAT bits 9-10 are unused for L8/9
+        # (bit 8 is OLI band 9, bit 11 terrain occlusion), so TIRS
+        # saturation is read from the ST DN itself (§6.1.2).
+        dn = np.array([[0, 1000, 65534, ST_SATURATED_DN]], dtype=np.uint16)
+        mask = thermal_saturated(dn)
+        self.assertEqual(list(mask[0]), [False, False, False, True])
+        self.assertEqual(ST_SATURATED_DN, 65535)
+
+    def test_qa_water_bit(self) -> None:
+        qa = np.array([[0, 1 << QA_PIXEL_WATER_BIT, (1 << QA_PIXEL_WATER_BIT) | (1 << 3)]])
+        mask = qa_water(qa.astype(np.uint16))
+        self.assertEqual(list(mask[0]), [False, True, True])
 
     def test_binned_stats_and_relation(self) -> None:
         values = np.array([1.0, 3.0, 2.0, 100.0])
@@ -177,6 +191,47 @@ class MasksAndStatsTest(unittest.TestCase):
         b13 = np.array([[0.96]])
         b14 = np.array([[0.98]])
         np.testing.assert_allclose(aster_ged_b10_proxy(b13, b14), [[0.97]])
+
+    def test_ged_resampling_reaches_scene_grid(self) -> None:
+        import rasterio
+
+        # Synthetic coarse 100 m source (2x2) onto a 30 m scene grid (7x7).
+        src = np.array([[0.95, 0.96], [0.97, 0.98]])
+        src_transform = rasterio.Affine(100.0, 0.0, 0.0, 0.0, -100.0, 200.0)
+        dst_transform = rasterio.Affine(30.0, 0.0, 0.0, 0.0, -30.0, 200.0)
+        out = ged_b10_on_scene_grid(
+            src, src_transform, "EPSG:32633", (7, 7), dst_transform, "EPSG:32633"
+        )
+        self.assertEqual(out.shape, (7, 7))
+        self.assertTrue(bool(np.all(np.isfinite(out))))
+        self.assertGreaterEqual(float(out.min()), 0.95 - 1e-9)
+        self.assertLessEqual(float(out.max()), 0.98 + 1e-9)
+
+    def test_ged_resampling_preserves_constant_field(self) -> None:
+        import rasterio
+
+        src = np.full((3, 3), 0.972)
+        src_transform = rasterio.Affine(100.0, 0.0, 0.0, 0.0, -100.0, 300.0)
+        dst_transform = rasterio.Affine(30.0, 0.0, 0.0, 0.0, -30.0, 300.0)
+        out = ged_b10_on_scene_grid(
+            src, src_transform, "EPSG:32633", (10, 10), dst_transform, "EPSG:32633"
+        )
+        np.testing.assert_allclose(out, 0.972, rtol=1e-9)
+
+    def test_pool_overall_stats_weights_by_pixel_count(self) -> None:
+        pooled = pool_overall_stats(
+            [
+                {"mean": 1.0, "p05": -1.0, "p95": 2.0, "n": 100},
+                {"mean": 3.0, "p05": 0.0, "p95": 5.0, "n": 300},
+            ]
+        )
+        self.assertAlmostEqual(pooled["mean"], 2.5)
+        self.assertAlmostEqual(pooled["p05"], -1.0)
+        self.assertAlmostEqual(pooled["p95"], 5.0)
+        self.assertEqual(pooled["n"], 400)
+        empty = pool_overall_stats([{"mean": float("nan"), "p05": 0.0, "p95": 0.0, "n": 0}])
+        self.assertTrue(bool(np.isnan(empty["mean"])))
+        self.assertEqual(empty["n"], 0)
 
 
 if __name__ == "__main__":
