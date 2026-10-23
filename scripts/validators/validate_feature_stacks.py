@@ -301,7 +301,26 @@ def main() -> int:
         help="Require exactly this many ledger rows, all done + complete; "
         "fail on any failed/exporting/incomplete/absent row",
     )
+    parser.add_argument(
+        "--expected-scenes-from-manifest",
+        default=None,
+        metavar="MANIFEST_PARQUET",
+        help="Derive the expected ledger count from a selection manifest "
+        "bundle (assessable 2017-2025 anchors); mutually exclusive with "
+        "--expected-scenes",
+    )
     args = parser.parse_args()
+
+    if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
+        parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
+    if args.expected_scenes_from_manifest is not None:
+        from berlin_lst_downscaling.data.selection.bundle_counts import (
+            expected_counts_for_bundle,
+        )
+
+        assessable, _ = expected_counts_for_bundle(args.expected_scenes_from_manifest)
+        print(f"  Expected scenes from manifest bundle: {assessable}")
+        args.expected_scenes = assessable
 
     root = args.root.rstrip("/")
     ledger_uri = f"{root}/_state/features/ledger.parquet"

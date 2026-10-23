@@ -22,6 +22,11 @@ import logging
 
 from odc.geo.geobox import GeoBox
 
+from berlin_lst_downscaling.data.ard.publish_guard import assert_training_output_root
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.features.paths import (
     feature_mask_cog,
     feature_provenance,
@@ -53,7 +58,9 @@ from berlin_lst_downscaling.data.training.product import (
 )
 from berlin_lst_downscaling.data.training.release import (
     V3_FEATURES_ROOT,
+    V6_FEATURES_ROOT,
     _verify_v3_release,
+    _verify_v6_release,
     publish_release,
 )
 from berlin_lst_downscaling.data.training.report import (
@@ -77,6 +84,7 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
 
     features_root = str(cfg.features_root)
     output_root = str(cfg.output_root)
+    assert_training_output_root(output_root)
     scene_ids = [str(s) for s in cfg.get("scene_ids", []) or []]
     bbox = tuple(cfg.get("bbox", None)) if cfg.get("bbox") else None
     expected_count = cfg.get("expected_scene_count")
@@ -90,13 +98,31 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
         output_root=output_root,
     )
 
-    # ── 0. V3 release gate ───────────────────────────────────────────
-    policy_hash = training_policy_hash(v3_config_hash=EXPECTED_V3_CONFIG_HASH)
-    _verify_v3_release(
-        features_root=features_root,
-        expected_scene_count=int(expected_count) if expected_count is not None else None,
-        scene_ids=scene_ids,
-    )
+    # ── 0. release gate (V3 pinned; V6 for training/v3) ──────────────
+    # The V3 path below is unchanged. A features/v6 root takes the v6
+    # gate: the shared v6 ledger hash feeds the v6 policy hash
+    # (tp_0_72h log1p then z-score, 22-channel order).
+    _schema = None
+    _v6_hash: str | None = None
+    if features_root.rstrip("/") == V6_FEATURES_ROOT:
+        _schema = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+        _, _v6_hash = _verify_v6_release(
+            features_root=features_root,
+            expected_scene_count=int(expected_count) if expected_count is not None else None,
+            scene_ids=scene_ids,
+        )
+        policy_hash = training_policy_hash(
+            v3_config_hash=_v6_hash,
+            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
+            schema=_schema,
+        )
+    else:
+        policy_hash = training_policy_hash(v3_config_hash=EXPECTED_V3_CONFIG_HASH)
+        _verify_v3_release(
+            features_root=features_root,
+            expected_scene_count=int(expected_count) if expected_count is not None else None,
+            scene_ids=scene_ids,
+        )
 
     # ── 1. inventory (same resolver as the QA gates) ─────────────────
     inventory = build_inventory(
@@ -181,6 +207,8 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
             policy_hash=policy_hash,
             run_id=run_id,
             led=led,
+            **({"schema": _schema} if _schema is not None else {}),
+            **({"v6_config_hash": _v6_hash} if _v6_hash is not None else {}),
         )
         results.append(result)
         if result.status == "done":
@@ -217,7 +245,7 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
             "bbox_subset": bbox is not None,
         },
         policy_hash=policy_hash,
-        v3_config_hash=EXPECTED_V3_CONFIG_HASH,
+        v3_config_hash=(_v6_hash if _v6_hash is not None else EXPECTED_V3_CONFIG_HASH),
         total_pairings=inventory.total_pairings,
         assessed=inventory.assessed,
         processed=processed,
@@ -251,6 +279,8 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
             grid_10m=grid_10m,
             run_id=run_id,
             policy_hash=policy_hash,
+            **({"schema": _schema} if _schema is not None else {}),
+            **({"v6_config_hash": _v6_hash} if _v6_hash is not None else {}),
         )
     else:
         log_event(
@@ -274,6 +304,8 @@ def _process_scene(
     policy_hash: str,
     run_id: str,
     led: SecondaryLedger,
+    schema=None,
+    v6_config_hash: str | None = None,
 ) -> SceneTrainingResult:
     """Compute + publish one assessable scene; returns the report row."""
     item_id = f"training_{scene.scene_id}"
@@ -360,12 +392,15 @@ def _process_scene(
             output_root=output_root,
             run_id=run_id,
             policy_hash=policy_hash,
-            v3_config_hash=EXPECTED_V3_CONFIG_HASH,
+            v3_config_hash=(
+                v6_config_hash if v6_config_hash is not None else EXPECTED_V3_CONFIG_HASH
+            ),
             feature_valid_uri=mask_uri,
             feature_provenance_uri=feature_provenance(features_root, scene.scene_id),
             landsat_cog_uri=scene.landsat_cog,
             landsat_flag_uri=scene.landsat_flag,
             geometry_id=scene.geometry_id,
+            **({"schema": schema} if schema is not None else {}),
         )
         led.upsert(
             SecondaryLedgerRow(

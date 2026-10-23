@@ -28,7 +28,10 @@ from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.data.ard.contract import BandSpec, Contract, TilingSpec
 from berlin_lst_downscaling.data.ard.writer import write_flag_cog_atomic
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_CHANNEL_NAMES,
+    FeatureSchema,
+)
 from berlin_lst_downscaling.data.io import atomic_write, exists, publish_lock, read_bytes
 from berlin_lst_downscaling.data.training.contracts import (
     TRAINING_SCHEMA_VERSION,
@@ -91,8 +94,15 @@ def publish_eligibility(
     landsat_cog_uri: str,
     landsat_flag_uri: str,
     geometry_id: str,
+    schema: FeatureSchema | None = None,
 ) -> EligibilityArtifacts:
-    """Publish one scene's eligibility mask, provenance, and completion marker."""
+    """Publish one scene's eligibility mask, provenance, and completion marker.
+
+    The default path verifies the source feature provenance against
+    Feature Release V3 (pinned hash + 28-channel order). A v6 ``schema``
+    verifies the shared v6 hash plus the schema's own channel order
+    instead; the default path is unchanged.
+    """
     completed_at = datetime.now(UTC).isoformat()
     base = output_root.rstrip("/")
     cog_uri = eligibility_cog(output_root, result.scene_id)
@@ -136,6 +146,7 @@ def publish_eligibility(
                 cog_uri=cog_uri,
                 provenance_uri=provenance_uri,
                 completion_uri=completion_uri,
+                **({"schema": schema} if schema is not None else {}),
             )
     except FileExistsError:
         raise RuntimeError(
@@ -159,6 +170,7 @@ def _publish_locked(
     cog_uri: str,
     provenance_uri: str,
     completion_uri: str,
+    schema: FeatureSchema | None = None,
 ) -> EligibilityArtifacts:
     """Write the three artifacts while holding the per-scene publish lock."""
     # ── 1. eligibility mask COG (uint8, canonical 100 m grid) ──────────
@@ -177,14 +189,19 @@ def _publish_locked(
     # ── 2. provenance ──────────────────────────────────────────────────
     # Chain the immutable source: the scene's feature-stack provenance
     # (config hash + channel order) is verified and recorded, so the
-    # training artifact is provably derived from V3.
+    # training artifact is provably derived from the pinned release.
+    # The default path is Feature Release V3; a v6 schema verifies the
+    # shared v6 hash plus the schema's own channel order instead.
+    expected_order = list(schema.names) if schema is not None else list(FEATURE_CHANNEL_NAMES)
+    release_label = "Feature Release v6" if schema is not None else "Feature Release V3"
     source_prov = json.loads(read_bytes(feature_provenance_uri))
-    if source_prov.get("config_hash") != v3_config_hash or list(
-        source_prov.get("channel_order", [])
-    ) != list(FEATURE_CHANNEL_NAMES):
+    if (
+        source_prov.get("config_hash") != v3_config_hash
+        or list(source_prov.get("channel_order", [])) != expected_order
+    ):
         raise ValueError(
             f"scene {result.scene_id}: source feature provenance does not match "
-            f"Feature Release V3 (config_hash {source_prov.get('config_hash')!r}, "
+            f"{release_label} (config_hash {source_prov.get('config_hash')!r}, "
             f"channel order {len(source_prov.get('channel_order', []))})"
         )
 

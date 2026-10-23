@@ -29,6 +29,11 @@ import pyarrow.parquet as pq
 import rasterio
 
 from berlin_lst_downscaling.common.util import sha256_bytes
+from berlin_lst_downscaling.data.ard.publish_guard import assert_patch_index_output_root
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.io import (
     atomic_write,
     exists,
@@ -50,6 +55,7 @@ from berlin_lst_downscaling.data.training.paths import (
     patch_index_parquet,
     patch_index_qa,
     release_completion,
+    scaler_json,
 )
 from berlin_lst_downscaling.data.training.report import now_iso
 from berlin_lst_downscaling.modeling.aggregation import min_eligible_cells_from_fraction
@@ -293,7 +299,14 @@ def _global_origin(src: rasterio.DatasetReader) -> tuple[int, int]:
 
 
 def _verify_source_release(source_root: str) -> str:
-    """Verify the completed source release and return its policy hash."""
+    """Verify the completed source release and return its policy hash.
+
+    training/v1 and training/v2 carry the pinned v2 policy hash. A
+    training/v3 source carries the v6 policy hash recorded in its own
+    scaler payload (``scaler.json`` stores the v6 ``v3_config_hash``);
+    the expected hash is recomputed from that stored hash so a stale or
+    hand-edited release fails closed.
+    """
     marker_uri = release_completion(source_root)
     if not exists(marker_uri):
         raise RuntimeError(
@@ -307,7 +320,23 @@ def _verify_source_release(source_root: str) -> str:
     policy_hash = marker.get("policy_hash")
     if not policy_hash:
         raise RuntimeError(f"source release marker {marker_uri} carries no policy_hash")
-    expected = training_policy_hash()
+    if source_root.rstrip("/") == "gs://berlin-lst-training-data/training/v3":
+        try:
+            scaler = json.loads(read_bytes(scaler_json(source_root)))
+        except Exception as exc:
+            raise RuntimeError(
+                f"training/v3 scaler unreadable ({scaler_json(source_root)}): {exc}"
+            ) from exc
+        v6_hash = scaler.get("v3_config_hash")
+        if not v6_hash:
+            raise RuntimeError("training/v3 scaler carries no v3_config_hash")
+        expected = training_policy_hash(
+            v3_config_hash=str(v6_hash),
+            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
+            schema=feature_schema(FEATURE_SCHEMA_VERSION_V6),
+        )
+    else:
+        expected = training_policy_hash()
     if policy_hash != expected:
         raise RuntimeError(
             f"source release {source_root!r} policy_hash {policy_hash!r} != current "
@@ -578,6 +607,7 @@ def publish_patch_index(
     idempotent no-op. The completion marker is create-only and written last,
     after the publisher-side readback.
     """
+    assert_patch_index_output_root(output_root)
     _assert_outside_source(str(build.qa.get("source", {}).get("release_root") or ""), output_root)
     completion_uri = patch_index_completion(output_root)
     if exists(completion_uri):

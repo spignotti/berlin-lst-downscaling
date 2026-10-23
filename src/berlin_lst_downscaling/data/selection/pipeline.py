@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import s2_mosaic_enabled
+from berlin_lst_downscaling.data.ard.publish_guard import assert_manifests_output_root
 from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.selection.anchors import build_anchors
 from berlin_lst_downscaling.data.selection.couple import couple_all
@@ -43,6 +44,7 @@ def run_couple(cfg: DictConfig) -> int:
 
     Returns 0 on success, 1 on hard failure (no anchors, missing cutoff).
     """
+    assert_manifests_output_root(str(cfg.output_root))
     log_event(
         _logger,
         logging.INFO,
