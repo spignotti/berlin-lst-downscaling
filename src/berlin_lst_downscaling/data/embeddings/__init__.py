@@ -10,10 +10,18 @@ from berlin_lst_downscaling.data.embeddings.cells import (
     aggregate_tessera_valid_to_100m,
     common_cell_set,
     intersect_eligibility,
+    main_arm_cell_set,
+    select_common_cell_ids,
+    tessera_arm_cell_set,
 )
 from berlin_lst_downscaling.data.embeddings.guards import (
     assert_tessera_eval_year,
     assert_tessera_not_2026,
+)
+from berlin_lst_downscaling.data.embeddings.loader import (
+    build_tessera_model_inputs,
+    load_scene_year_embedding,
+    select_kept_features,
 )
 from berlin_lst_downscaling.data.embeddings.product import (
     TESSERA_PRODUCT_PREFIX,
@@ -52,7 +60,10 @@ __all__ = [
     "aggregate_tessera_valid_to_100m",
     "assert_tessera_eval_year",
     "assert_tessera_not_2026",
+    "build_tessera_model_inputs",
     "common_cell_set",
+    "main_arm_cell_set",
+    "load_scene_year_embedding",
     "dequantize_tessera",
     "intersect_eligibility",
     "product_completion_uri",
@@ -60,6 +71,9 @@ __all__ = [
     "product_provenance_uri",
     "product_uri_for_year",
     "reproject_to_canonical",
+    "select_common_cell_ids",
+    "tessera_arm_cell_set",
+    "select_kept_features",
     "tessera_invalid_mask",
     "validate_tessera_year",
 ]

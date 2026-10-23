@@ -24,6 +24,8 @@ from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_SCHEMA_VERSION_V6,
     feature_schema,
 )
+from berlin_lst_downscaling.modeling.contracts import RealBatch, validate_real_batch
+from berlin_lst_downscaling.modeling.real_task import RealLSTTask
 from berlin_lst_downscaling.modeling.unet import UNet
 
 TESSERA_N_CHANNELS: int = 128
@@ -138,10 +140,83 @@ class TesseraUNet(nn.Module):
         return self.unet(fused)
 
 
+class TesseraRealLSTTask(RealLSTTask):
+    """Contract-conforming Lightning task for the TESSERA ablation arm.
+
+    Same eval path (val 2024, test 2025), same loss/metrics/selection as the
+    main arm. The data loader provides the 14 kept hand-built channels in
+    ``batch.features`` and the aligned annual embedding in
+    ``batch.tessera_embedding`` (both at 10 m); the learnable 1×1 adapter
+    compresses the embedding, the result is concatenated with the kept
+    channels and the prior, and the SAME U-Net predicts from there.
+    Morphology + shadow channels are never read in this mode.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_kept_channels: int = 14,
+        tessera_adapter_width: int = TESSERA_ADAPTER_WIDTH_DEFAULT,
+        base_width: int = 32,
+        depth: int = 4,
+        learning_rate: float = 1e-3,
+        weight_decay: float = 0.0,
+        record_probe_metrics: bool = False,
+        residual_prior: bool = False,
+        loss_name: str = "masked_l1",
+        aggregation: str = "arithmetic",
+    ) -> None:
+        super().__init__(
+            n_active_channels=n_kept_channels + tessera_adapter_width,
+            base_width=base_width,
+            depth=depth,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            record_probe_metrics=record_probe_metrics,
+            residual_prior=residual_prior,
+            loss_name=loss_name,
+            aggregation=aggregation,  # type: ignore[arg-type]
+        )
+        # The parent built UNet(kept+adapter+1) for kept+adapted+prior: keep
+        # it, add the learnable 1×1, and validate kept width at the boundary.
+        self.adapter = TesseraAdapter(
+            in_channels=TESSERA_N_CHANNELS, out_width=tessera_adapter_width
+        )
+        self.n_kept_channels = int(n_kept_channels)
+        self.tessera_adapter_width = int(tessera_adapter_width)
+        self.tessera_enabled = True
+        # Validate kept (not fused) width at the task boundary.
+        self.n_active_channels = int(n_kept_channels)
+
+    def forward(self, batch: RealBatch) -> Tensor:
+        """Predict from kept features + TESSERA embedding + prior."""
+        validate_real_batch(batch, n_active_channels=self.n_kept_channels)
+        if batch.tessera_embedding is None:
+            raise ValueError("tessera arm requires batch.tessera_embedding (B, 128, H, W)")
+        embedding = batch.tessera_embedding
+        if embedding.ndim != 4 or embedding.shape[1] != TESSERA_N_CHANNELS:
+            raise ValueError(
+                f"tessera_embedding must be (B, 128, H, W), got {tuple(embedding.shape)}"
+            )
+        if embedding.shape[0] != batch.features.shape[0]:
+            raise ValueError("tessera_embedding batch dimension differs from features")
+        if embedding.shape[2:] != batch.features.shape[2:]:
+            raise ValueError("tessera_embedding spatial extent differs from features")
+        adapted = self.adapter(embedding.to(batch.features.dtype))
+        inputs = torch.cat([batch.features, adapted, batch.lst_prior], dim=1)
+        delta = self.model(inputs)
+        if not self.residual_prior:
+            return delta
+        from berlin_lst_downscaling.modeling.real_task import reconstruct_prior_kelvin
+
+        return reconstruct_prior_kelvin(batch.lst_prior).float() + delta.float()
+
+
 __all__ = [
     "TESSERA_ADAPTER_WIDTH_DEFAULT",
     "TESSERA_N_CHANNELS",
     "TesseraAdapter",
+    "TesseraRealLSTTask",
     "TesseraUNet",
     "tessera_kept_channel_indices",
     "tessera_kept_channel_names",

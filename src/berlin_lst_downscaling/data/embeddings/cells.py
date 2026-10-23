@@ -105,8 +105,51 @@ def common_cell_set(
     return main & tess_100
 
 
+def main_arm_cell_set(
+    main_eligible_100m: np.ndarray,
+    tessera_valid_10m: np.ndarray,
+    *,
+    present_10m: np.ndarray | None = None,
+) -> np.ndarray:
+    """Cell set the main arm trains/evaluates on when paired with TESSERA.
+
+    Identical to :func:`common_cell_set` by construction: when the TESSERA
+    arm is active, the main arm is pointed at the same intersection instead
+    of its standalone eligibility, so both arms share one comparison
+    universe.
+    """
+    return common_cell_set(main_eligible_100m, tessera_valid_10m, present_10m=present_10m)
+
+
+def tessera_arm_cell_set(
+    main_eligible_100m: np.ndarray,
+    tessera_valid_10m: np.ndarray,
+    *,
+    present_10m: np.ndarray | None = None,
+) -> np.ndarray:
+    """Cell set the TESSERA arm trains/evaluates on (same intersection)."""
+    return common_cell_set(main_eligible_100m, tessera_valid_10m, present_10m=present_10m)
+
+
+def select_common_cell_ids(
+    main_cell_ids: list[str],
+    tessera_valid_cell_ids: list[str],
+) -> list[str]:
+    """Intersect main-arm and TESSERA-valid cell-ID sets (sorted, deduped).
+
+    Both arms point their patch index at the returned IDs, so the admitted
+    patch/cell set is identical by construction.
+    """
+    main_set = set(main_cell_ids)
+    tess_set = set(tessera_valid_cell_ids)
+    return sorted(main_set & tess_set)
+
+
 __all__ = [
     "aggregate_tessera_valid_to_100m",
     "common_cell_set",
     "intersect_eligibility",
+    "main_arm_cell_set",
+    "select_common_cell_ids",
+    "tessera_arm_cell_set",
 ]

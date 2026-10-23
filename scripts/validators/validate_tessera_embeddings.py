@@ -205,10 +205,21 @@ def main(argv: list[str] | None = None) -> int:
 def _check_grid(
     src: rasterio.DatasetReader, exp_shape: tuple[int, int], failures: list[str], label: str
 ) -> None:
+    from berlin_lst_downscaling.common.grid import canon_grid_10m as _canon
+
     if (int(src.height), int(src.width)) != exp_shape:
         failures.append(f"{label} shape {(src.height, src.width)} != canonical {exp_shape}")
     if str(src.crs) != "EPSG:25833":
         failures.append(f"{label} CRS {src.crs} != EPSG:25833")
+    exp_transform = _canon().transform
+    got = src.transform
+    if (
+        abs(got.a - exp_transform.a) > 1e-6
+        or abs(got.e - exp_transform.e) > 1e-6
+        or abs(got.xoff - exp_transform.xoff) > 1e-3
+        or abs(got.yoff - exp_transform.yoff) > 1e-3
+    ):
+        failures.append(f"{label} transform {tuple(got)} != canonical {tuple(exp_transform)}")
 
 
 if __name__ == "__main__":

@@ -123,14 +123,16 @@ def reproject_quantized_to_canonical(
     The int8 codes and the float32 scale are reprojected as separate
     nearest-neighbour fields, then recombined by the caller with
     :func:`dequantize_tessera`. Scale pixels that fall outside the source
-    footprint stay NaN (hence invalid), never zero.
+    footprint stay NaN (hence invalid), never zero. Validity rides on the
+    scale alone: every int8 code (including the 127 extreme) is preserved
+    verbatim, so no sentinel nodata is used for the code field.
     """
     q = np.asarray(quantized)
     if q.ndim != 3 or q.shape[2] != 128:
         raise ValueError(f"quantized must be (H, W, 128) int8, got {tuple(q.shape)}")
-    # Nearest on int8 codes: use a float32 view with a sentinel nodata, then
-    # round back. NaN cannot be represented in int8, so invalid codes are
-    # carried by the reprojected scale (NaN → invalid after dequantization).
+    # Nearest on int8 codes with no nodata masking: every code is a valid
+    # embedding value (including 127), and invalid pixels are carried by
+    # the reprojected scale (NaN → invalid after dequantization).
     q_work = np.moveaxis(q.astype(np.float32), 2, 0)
     s = np.asarray(scale)
     if s.ndim == 3:
@@ -153,8 +155,6 @@ def reproject_quantized_to_canonical(
         dst_transform=dst_transform,
         dst_crs=CRS.from_string(str(dst_crs)),
         resampling=Resampling.nearest,
-        src_nodata=127.0,
-        dst_nodata=float("nan"),
     )
     reproject(
         source=s_work,
@@ -168,8 +168,9 @@ def reproject_quantized_to_canonical(
         dst_nodata=float("nan"),
     )
     q_back = np.moveaxis(q_out, 0, 2)
-    # Codes that reprojected from nodata stay NaN → clamp path keeps them
-    # invalid via the NaN scale; finite codes round-trip exactly.
+    # Outside-footprint codes stay NaN from the pre-fill and become 0 here;
+    # they are invalid via the NaN scale. Inside-footprint codes (including
+    # the 127 extreme) round-trip exactly with no sentinel loss.
     q_int = np.where(np.isfinite(q_back), np.rint(q_back), 0).astype(np.int8)
     s_back = s_out[0]
     q_int[~np.isfinite(s_back)] = 0

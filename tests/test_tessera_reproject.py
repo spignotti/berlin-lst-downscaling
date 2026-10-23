@@ -97,3 +97,22 @@ def test_quantized_reprojection_keeps_gaps_nan() -> None:
     assert s_out.shape == (6, 6)
     assert bool(np.isnan(s_out[0, 0]))
     assert bool(np.isfinite(s_out[1, 1]))
+
+
+def test_int8_extreme_127_codes_are_preserved() -> None:
+    dst_shape = (4, 4)
+    dst_transform = Affine(10.0, 0.0, 0.0, 0.0, -10.0, 40.0)
+    src_transform = Affine(10.0, 0.0, 0.0, 0.0, -10.0, 40.0)
+    quantized = np.full((4, 4, 128), 127, dtype=np.int8)
+    scale = np.full((4, 4), 0.5, dtype=np.float32)
+    q_out, s_out = reproject_quantized_to_canonical(
+        quantized,
+        scale,
+        src_transform,
+        "EPSG:32633",
+        dst_shape=dst_shape,
+        dst_transform=dst_transform,
+    )
+    assert q_out.dtype == np.int8
+    assert bool(np.all(q_out == 127))
+    assert bool(np.all(np.isfinite(s_out)))

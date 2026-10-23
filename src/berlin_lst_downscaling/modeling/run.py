@@ -549,17 +549,40 @@ def _fit_contract_lifecycle(
     is_full = bool(cfg.get("stage1_full", False)) or bool(cfg.get("ablation_lock", False))
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     loss_name = str(OmegaConf.select(cfg, "contract.loss") or "masked_l1")
-    task = RealLSTTask(
-        n_active_channels=selection_from_config(cfg).n_active,
-        base_width=int(cfg.model.base_width),
-        depth=int(cfg.model.depth),
-        learning_rate=float(cfg.trainer.learning_rate),
-        weight_decay=float(cfg.trainer.weight_decay),
-        record_probe_metrics=is_probe or is_full,
-        residual_prior=residual_prior,
-        loss_name=loss_name,
-        aggregation=aggregation,
-    )
+    tessera_enabled = bool(OmegaConf.select(cfg, "data.tessera_enabled") or False)
+    if tessera_enabled:
+        from berlin_lst_downscaling.modeling.tessera_adapter import (
+            TESSERA_ADAPTER_WIDTH_DEFAULT,
+            TesseraRealLSTTask,
+            tessera_kept_channel_indices,
+        )
+
+        raw_width = OmegaConf.select(cfg, "model.tessera_adapter_width")
+        adapter_width = TESSERA_ADAPTER_WIDTH_DEFAULT if raw_width is None else int(raw_width)
+        task = TesseraRealLSTTask(
+            n_kept_channels=len(tessera_kept_channel_indices()),
+            tessera_adapter_width=adapter_width,
+            base_width=int(cfg.model.base_width),
+            depth=int(cfg.model.depth),
+            learning_rate=float(cfg.trainer.learning_rate),
+            weight_decay=float(cfg.trainer.weight_decay),
+            record_probe_metrics=is_probe or is_full,
+            residual_prior=residual_prior,
+            loss_name=loss_name,
+            aggregation=aggregation,
+        )
+    else:
+        task = RealLSTTask(
+            n_active_channels=selection_from_config(cfg).n_active,
+            base_width=int(cfg.model.base_width),
+            depth=int(cfg.model.depth),
+            learning_rate=float(cfg.trainer.learning_rate),
+            weight_decay=float(cfg.trainer.weight_decay),
+            record_probe_metrics=is_probe or is_full,
+            residual_prior=residual_prior,
+            loss_name=loss_name,
+            aggregation=aggregation,
+        )
 
     output_root = Path(str(cfg.output_root))
     source_for_identity = (

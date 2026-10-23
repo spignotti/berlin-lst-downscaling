@@ -29,7 +29,6 @@ paths fail closed.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 
@@ -37,7 +36,6 @@ from berlin_lst_downscaling.data.ard.publish_guard import assert_tessera_output_
 from berlin_lst_downscaling.data.embeddings.product import (
     TESSERA_PRODUCT_PREFIX,
     product_completion_uri,
-    product_provenance_uri,
 )
 from berlin_lst_downscaling.data.embeddings.reproject import (
     canonical_10m_shape_transform,
@@ -130,13 +128,40 @@ def main(argv: list[str] | None = None) -> int:
             valid_px=int(valid_canon.sum()),
         )
         if output_root.startswith("gs://"):
-            print(
-                "GCS publish path resolved but not executed from this context; "
-                f"year={args.year} root={output_root} "
-                f"provenance={json.dumps(read.provenance.as_dict(), sort_keys=True)} "
-                f"completion={product_completion_uri(output_root, int(args.year))} "
-                f"provenance_uri={product_provenance_uri(output_root, int(args.year))}"
+            import tempfile
+            from pathlib import Path as _Path
+
+            from berlin_lst_downscaling.data.embeddings.product import (
+                write_tessera_year_product,
             )
+            from berlin_lst_downscaling.data.io import atomic_upload
+
+            with tempfile.TemporaryDirectory(prefix="tessera_") as tmp:
+                artifacts = write_tessera_year_product(
+                    quantized=quantized_canon,
+                    scale=scale_canon,
+                    valid=valid_canon,
+                    transform=transform,
+                    crs="EPSG:25833",
+                    output_dir=str(_Path(tmp) / str(int(args.year))),
+                    year=int(args.year),
+                    provenance=read.provenance.as_dict(),
+                )
+                year_root = f"{output_root.rstrip('/')}/{int(args.year)}"
+                # Data files first, completion marker last (visibility gate).
+                for role in ("int8", "scale", "valid", "provenance"):
+                    atomic_upload(
+                        artifacts[role],
+                        f"{year_root}/{_Path(artifacts[role]).name}",
+                        overwrite=False,
+                    )
+                atomic_upload(
+                    artifacts["complete"],
+                    product_completion_uri(output_root, int(args.year)),
+                    overwrite=False,
+                )
+            print(f"Published TESSERA year {int(args.year)} to {year_root}/")
+            log_event(session, "tessera_publish_done", year=int(args.year), root=year_root)
         else:
             from berlin_lst_downscaling.data.embeddings.product import (
                 write_tessera_year_product,
