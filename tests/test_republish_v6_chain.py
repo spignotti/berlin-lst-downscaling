@@ -1017,6 +1017,81 @@ def test_dynamic_validator_uses_assessable_anchor_count(monkeypatch) -> None:
     assert module.main() == 0
 
 
+def _compose_dynamic(name: str):
+    """Replicate the Hydra composition ``_base <- full <- <name>``."""
+    parts = []
+    for fname in ("_base.yaml", "full.yaml", f"{name}.yaml"):
+        cfg = OmegaConf.load(_REPO / "configs/dynamic" / fname)
+        if "defaults" in cfg:
+            del cfg["defaults"]
+        parts.append(cfg)
+    return OmegaConf.merge(*parts)
+
+
+def test_dynamic_v6_config_uses_manifest_as_universe() -> None:
+    """v6 nulls the inherited 324 count; legacy configs keep their gates."""
+    v6 = _compose_dynamic("v6")
+    assert v6.get("expected_scene_count") is None
+    full = _compose_dynamic("full")
+    assert int(full["expected_scene_count"]) == 324
+    inference = OmegaConf.load(_REPO / "configs/dynamic/inference_2026.yaml")
+    assert int(inference["expected_scene_count"]) == 21
+
+
+def test_dynamic_gate_manifest_universe_and_legacy_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A v6 run processes fewer-than-324 anchors; legacy 324 still fails.
+
+    The manifest loader is faked with 7 anchor scenes and the geometry
+    mapping loader raises past the gate, so reaching it proves the gate
+    passed (legacy configs must return 1 before it).
+    """
+    from types import SimpleNamespace
+
+    from berlin_lst_downscaling.data.dynamic import pipeline as dynamic_pipeline
+
+    class _PastGate(Exception):
+        pass
+
+    def _fake_anchors(*args, **kwargs):
+        return SimpleNamespace(
+            ok=True,
+            scenes=[f"S{i}" for i in range(7)],
+            errors=[],
+            total_rows=7,
+            manifest_hash="fakehash",
+        )
+
+    def _raise_past_gate(*args, **kwargs):
+        raise _PastGate()
+
+    monkeypatch.setattr(dynamic_pipeline, "load_landsat_anchors", _fake_anchors)
+    monkeypatch.setattr(dynamic_pipeline, "load_geometry_mapping", _raise_past_gate)
+
+    with pytest.raises(_PastGate):
+        dynamic_pipeline.run_dynamic(_compose_dynamic("v6"), run_id="testv6")
+
+    legacy = _compose_dynamic("full")
+    assert legacy.get("expected_scene_count") == 324
+    assert dynamic_pipeline.run_dynamic(legacy, run_id="testlegacy") == 1
+
+    matching = _compose_dynamic("full")
+    monkeypatch.setattr(
+        dynamic_pipeline,
+        "load_landsat_anchors",
+        lambda *args, **kwargs: SimpleNamespace(
+            ok=True,
+            scenes=[f"S{i}" for i in range(324)],
+            errors=[],
+            total_rows=324,
+            manifest_hash="fakehash",
+        ),
+    )
+    with pytest.raises(_PastGate):
+        dynamic_pipeline.run_dynamic(matching, run_id="testmatch")
+
+
 def test_v6_launchers_derive_counts_from_the_v4_bundle() -> None:
     scripts = _REPO / ".opencode/skills/google-access/scripts"
     features = (scripts / "run-features-v6-vm.sh").read_text()

@@ -75,7 +75,10 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
         log_event(_logger, logging.ERROR, "manifest_load_failed", errors=manifest_report.errors)
         return 1
 
-    # Validate expected scene count (skip when scene_ids override)
+    # Validate expected scene count (skip when scene_ids override).
+    # A null expected_scene_count means the manifest is the universe (v6):
+    # whatever the bundle holds is processed, and the post-run validator
+    # derives its expected count from the same bundle.
     if (
         expected_count is not None
         and not scene_ids
@@ -89,6 +92,13 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
             actual=len(manifest_report.scenes),
         )
         return 1
+    if expected_count is None and not scene_ids:
+        log_event(
+            _logger,
+            logging.INFO,
+            "manifest_is_universe",
+            n_scenes=len(manifest_report.scenes),
+        )
 
     log_event(
         _logger,
