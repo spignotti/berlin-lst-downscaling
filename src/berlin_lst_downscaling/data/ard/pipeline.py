@@ -249,12 +249,16 @@ def _run_sentinel2_mosaic(
     members = []
     for item in sorted(items, key=lambda item: item.id):
         reflectance = reflectance_scale_from_item(item)
+        # Nearest resampling is explicit: both loads carry the SCL
+        # classification mask, which must never be interpolated, and the
+        # footprint/donor choice must match selection's nearest SCL mosaic.
         ds_10m, ids_10m = load_s2_scene(
             date=scene_date or cfg.scene_date,
             bbox=tuple(cfg.bbox),
             resolution=10,
             bands=["B02", "B03", "B04", "B08", "SCL"],
             items=[item],
+            resampling="nearest",
         )
         ds_20m, ids_20m = load_s2_scene(
             date=scene_date or cfg.scene_date,
@@ -262,6 +266,7 @@ def _run_sentinel2_mosaic(
             resolution=20,
             bands=list(S2_SWIR_BANDS),
             items=[item],
+            resampling="nearest",
         )
         if ids_10m != [item.id] or ids_20m != [item.id]:
             raise RuntimeError(f"Sentinel-2 mosaic member {item.id} did not load exactly")

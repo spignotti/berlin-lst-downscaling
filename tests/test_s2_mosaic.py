@@ -256,6 +256,30 @@ def test_overlap_first_footprint_donor_preserves_clouds_and_band_nans(monkeypatc
     xr.testing.assert_identical(result, forward)
 
 
+def test_mosaic_per_item_loads_use_nearest_for_scl(monkeypatch):
+    """Both per-item SCL loads must state nearest so the mask is never interpolated."""
+    seen = []
+
+    def load(*, items, resolution, **kwargs):
+        assert len(items) == 1
+        seen.append((items[0].id, resolution, kwargs.get("resampling")))
+        scl = np.full((2, 2), 4, dtype=np.float32)
+        if resolution == 10:
+            scl = np.repeat(np.repeat(scl, 2, axis=0), 2, axis=1)
+        return _raw(resolution, 2000, scl), [items[0].id]
+
+    monkeypatch.setattr(pipeline, "load_s2_scene", load)
+    monkeypatch.setattr(pipeline, "_solar_for_scene", lambda *_: (0, 0))
+    monkeypatch.setattr(pipeline, "_load_s2_mosaic_aoi", lambda *_: np.ones((4, 4), bool))
+    _run_mosaic([_item("b", "04.00"), _item("a", "03.00")])
+    assert seen == [
+        ("a", 10, "nearest"),
+        ("a", 20, "nearest"),
+        ("b", 10, "nearest"),
+        ("b", 20, "nearest"),
+    ]
+
+
 @pytest.mark.parametrize("value", [-0.01, 1.01, float("nan"), float("inf"), None, "bad", True])
 def test_missing_fraction_validation(value):
     with pytest.raises(ValueError, match="max_missing_aoi_fraction"):

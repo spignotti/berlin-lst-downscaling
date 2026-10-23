@@ -73,8 +73,10 @@ def discover_s2_mosaic_items(
 
     No tile list, item limit, cloud gate, baseline gate or single-tile fallback.
     The padded UTC search is post-filtered using exact geometry and identity.
-    The exact seed is retained even if omitted by search; results are unique
+    The exact seed is retained even if omitted from search; results are unique
     and sorted by item ID. Search/metadata errors propagate to the caller.
+    A seed whose geometry misses the AOI bbox raises: callers iterating raw
+    STAC bbox hits must skip such envelope-only seeds before calling.
     """
     group = s2_mosaic_group(seed_item, bbox=bbox)
     aoi = box(bbox[0], bbox[1], bbox[2], bbox[3])

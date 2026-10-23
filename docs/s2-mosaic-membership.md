@@ -80,10 +80,15 @@ Each recorded member is loaded alone, scaled with its own STAC processing
 baseline (`reflectance_scale_from_item`, `(DN + BOA_ADD_OFFSET) / 10000`,
 then `[0, 1]` clip), masked with its own SCL via the existing `mask_s2`
 path (including native-20 m masked SWIR reprojection), and only then
-composited. Overlaps use whole-donor selection: the first footprint-valid
+composited. Both per-item loads state `resampling="nearest"` explicitly so
+the SCL classification mask is never interpolated; this also keeps the
+footprint/donor choice identical to selection's nearest SCL mosaic.
+Overlaps use whole-donor selection: the first footprint-valid
 donor in sorted item-ID order supplies all six bands plus the flag.
 Footprint-valid means finite, nonzero SCL before cloud classification, so a
 cloudy earlier donor is retained over a clear later donor.
+Envelope-only STAC bbox hits (footprint outside the AOI) are skipped as
+seeds during selection discovery instead of aborting the anchor search.
 
 ## Coverage gate
 

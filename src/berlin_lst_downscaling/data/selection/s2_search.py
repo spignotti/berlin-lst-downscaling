@@ -16,6 +16,9 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
+from shapely.geometry import box as _box
+from shapely.geometry import shape as _shape
+
 from berlin_lst_downscaling.data.acquisition.pc_client import get_catalog
 from berlin_lst_downscaling.data.acquisition.s2_mosaic_items import (
     discover_s2_mosaic_items,
@@ -67,6 +70,7 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
 
     candidates: list[dict] = []
     seen_groups: set[tuple[str, str]] = set()
+    aoi_box = _box(*tuple(cfg.bbox))
     for item in search.items():
         dt_utc = _parse_item_datetime(item)
         if dt_utc is None:
@@ -81,6 +85,18 @@ def match_s2_candidates(anchor: dict, cfg) -> list[dict]:
 
         mosaic_fields = {}
         if s2_mosaic_enabled(cfg):
+            # STAC bbox hits may be envelope-only: their geometry can miss
+            # the AOI entirely. Skip such seeds so one neighbor cannot abort
+            # the whole anchor search; a later intersecting member of the
+            # same group still discovers the full membership.
+            if not item.geometry or not _shape(item.geometry).intersects(aoi_box):
+                log_event(
+                    _logger,
+                    logging.INFO,
+                    "s2_seed_skipped_no_aoi_intersection",
+                    scene_id=item.id,
+                )
+                continue
             identity = s2_mosaic_group(item, bbox=cfg.bbox)
             key = (identity["solar_day"], identity["datatake_id"])
             if key in seen_groups:

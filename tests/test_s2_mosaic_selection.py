@@ -242,3 +242,30 @@ def test_cutoff_never_trims_group_membership(monkeypatch):
     cfg = config()
     cfg.cutoff_utc = "2023-06-01T10:30:00Z"
     assert s2_search.match_s2_candidates({"datetime": DT}, cfg) == []
+
+
+def test_envelope_only_seed_is_skipped_not_fatal(monkeypatch):
+    """A bbox-only hit whose geometry misses the AOI must not abort the search."""
+    envelope = item("envelope")
+    envelope.geometry = {
+        "type": "Polygon",
+        "coordinates": [[[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]]],
+    }
+    a, b = item("a"), item("b")
+    monkeypatch.setattr(s2_search, "get_catalog", lambda: Catalog([envelope, a, b]))
+    candidates = s2_search.match_s2_candidates({"datetime": DT}, config())
+    assert [c["scene_id"] for c in candidates] == ["a"]
+    assert candidates[0]["s2_items"] == [
+        {"item_id": "a", "item_href": "https://example.test/items/a"},
+        {"item_id": "b", "item_href": "https://example.test/items/b"},
+    ]
+
+
+def test_only_envelope_seeds_yield_no_candidates(monkeypatch):
+    envelope = item("envelope")
+    envelope.geometry = {
+        "type": "Polygon",
+        "coordinates": [[[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]]],
+    }
+    monkeypatch.setattr(s2_search, "get_catalog", lambda: Catalog([envelope]))
+    assert s2_search.match_s2_candidates({"datetime": DT}, config()) == []
