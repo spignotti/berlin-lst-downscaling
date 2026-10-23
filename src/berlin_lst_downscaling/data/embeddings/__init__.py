@@ -18,6 +18,7 @@ from berlin_lst_downscaling.data.embeddings.guards import (
     assert_tessera_eval_year,
     assert_tessera_not_2026,
 )
+
 # NOTE: `loader` is intentionally NOT re-exported here. It pulls in
 # `modeling.tessera_adapter` (torch) for the training-side collate path.
 # The acquisition operator must import without torch (isolated PEP 723
