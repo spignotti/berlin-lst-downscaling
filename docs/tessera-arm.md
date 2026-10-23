@@ -44,7 +44,7 @@ main arm's eligible cells and TESSERA-valid cells
 (`data/embeddings/cells.py`). Main-arm eligibility is `100 m`
 (target valid + all 100 subpixels `feature_valid`); TESSERA validity is
 aggregated from `10 m` to `100 m` with the same strict `100/100` rule
-(edge-truncated cells can never be valid). TESSERA gaps are not filled.
+(edge-truncated cells can never be valid). TESSERA gaps are not filled in the product (NaN/scale-NaN). At the model boundary, gap pixels are zero-filled to finite values (mirroring the real-path predictor rule); exclusion stays via `mask_100m` and the common cell set.
 Both arms point at the identical patch/cell set via `common_cell_set` /
 `intersect_eligibility`.
 

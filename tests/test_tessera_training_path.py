@@ -100,3 +100,55 @@ def test_modeling_run_reads_tessera_enabled() -> None:
         cfg = compose(config_name="tessera_arm")
     assert bool(cfg.data.tessera_enabled) is True
     assert int(cfg.model.tessera_adapter_width) == 8
+
+
+def test_adapter_in_optimizer_and_nan_zero_filled() -> None:
+    task = TesseraRealLSTTask(n_kept_channels=14, tessera_adapter_width=8, base_width=8, depth=2)
+    opt = task.configure_optimizers()
+    n_adapter = sum(p.numel() for p in task.adapter.parameters())
+    n_opt = sum(p.numel() for group in opt.param_groups for p in group["params"])
+    n_model = sum(p.numel() for p in task.model.parameters())
+    assert n_adapter > 0
+    assert n_opt == n_model + n_adapter
+    # NaN gaps are zero-filled at the model boundary (finite prediction).
+    task.eval()
+    kept = torch.randn(1, 14, 160, 160)
+    embedding = torch.randn(1, 128, 160, 160)
+    embedding[0, :, 0, 0] = float("nan")
+    batch = RealBatch(
+        features=kept,
+        lst_prior=torch.zeros(1, 1, 160, 160),
+        target_100m=torch.full((1, 1, 16, 16), 290.0),
+        mask_100m=torch.ones(1, 1, 16, 16, dtype=torch.bool),
+        metadata=[_patch_meta()],
+        tessera_embedding=embedding,
+    )
+    with torch.inference_mode():
+        out = task(batch)
+    assert bool(torch.isfinite(out).all())
+
+
+def test_load_patch_embedding_reads_window(tmp_path) -> None:
+    from affine import Affine
+
+    from berlin_lst_downscaling.data.embeddings.loader import load_patch_embedding
+    from berlin_lst_downscaling.data.embeddings.product import write_tessera_year_product
+
+    rng = np.random.default_rng(3)
+    quantized = rng.integers(-20, 20, size=(320, 320, 128)).astype(np.int8)
+    scale = np.full((320, 320), 0.5, dtype=np.float32)
+    transform = Affine(10.0, 0.0, 0.0, 0.0, -10.0, 3200.0)
+    write_tessera_year_product(
+        quantized=quantized,
+        scale=scale,
+        valid=np.isfinite(scale),
+        transform=transform,
+        crs="EPSG:25833",
+        output_dir=str(tmp_path / "2024"),
+        year=2024,
+        provenance={"dataset_version": "v1.1-dclimate", "year": 2024},
+    )
+    embedding, valid = load_patch_embedding(str(tmp_path), 2024, row_100m=1, col_100m=2)
+    assert embedding.shape == (160, 160, 128)
+    assert valid.shape == (160, 160)
+    assert bool(np.all(valid))

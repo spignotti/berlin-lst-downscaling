@@ -20,6 +20,7 @@ from berlin_lst_downscaling.data.embeddings.guards import (
 )
 from berlin_lst_downscaling.data.embeddings.loader import (
     build_tessera_model_inputs,
+    load_patch_embedding,
     load_scene_year_embedding,
     select_kept_features,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "build_tessera_model_inputs",
     "common_cell_set",
     "main_arm_cell_set",
+    "load_patch_embedding",
     "load_scene_year_embedding",
     "dequantize_tessera",
     "intersect_eligibility",

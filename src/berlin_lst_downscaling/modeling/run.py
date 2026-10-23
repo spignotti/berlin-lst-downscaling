@@ -550,6 +550,7 @@ def _fit_contract_lifecycle(
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     loss_name = str(OmegaConf.select(cfg, "contract.loss") or "masked_l1")
     tessera_enabled = bool(OmegaConf.select(cfg, "data.tessera_enabled") or False)
+    tessera_embeddings_root = str(OmegaConf.select(cfg, "data.tessera_embeddings_root") or "")
     if tessera_enabled:
         from berlin_lst_downscaling.modeling.tessera_adapter import (
             TESSERA_ADAPTER_WIDTH_DEFAULT,
@@ -557,6 +558,11 @@ def _fit_contract_lifecycle(
             tessera_kept_channel_indices,
         )
 
+        if not tessera_embeddings_root:
+            raise ValueError(
+                "tessera arm requires data.tessera_embeddings_root "
+                "(canonical per-year product prefix)"
+            )
         raw_width = OmegaConf.select(cfg, "model.tessera_adapter_width")
         adapter_width = TESSERA_ADAPTER_WIDTH_DEFAULT if raw_width is None else int(raw_width)
         task = TesseraRealLSTTask(
@@ -742,7 +748,12 @@ def _fit_contract_lifecycle(
         # not assumed.
         # Verify on CPU: the validation batches below are CPU tensors, so the
         # reloaded module must match them regardless of the training device.
-        reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
+        if tessera_enabled:
+            from berlin_lst_downscaling.modeling.tessera_adapter import TesseraRealLSTTask
+
+            reloaded = TesseraRealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
+        else:
+            reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
         reloaded.eval()
         recheck = MaskedMAE()
         correction_abs_sum = 0.0

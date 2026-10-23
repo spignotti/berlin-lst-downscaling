@@ -32,9 +32,18 @@ from berlin_lst_downscaling.data.embeddings.tessera import (
     dequantize_tessera,
     validate_tessera_year,
 )
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.modeling.tessera_adapter import (
     tessera_kept_channel_indices,
 )
+
+
+def _v6_width() -> int:
+    """Width of the features/v6 roster (never a literal on this path)."""
+    return feature_schema(FEATURE_SCHEMA_VERSION_V6).n_channels
 
 
 def select_kept_features(features_v6: np.ndarray) -> np.ndarray:
@@ -43,7 +52,8 @@ def select_kept_features(features_v6: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     features_v6 :
-        ``(..., 22)`` or ``(C=22, H, W)`` v6 stack in roster order.
+        ``(C, H, W)`` or ``(H, W, C)`` v6 stack in roster order, where
+        ``C`` is ``schema.n_channels``.
 
     Returns
     -------
@@ -51,12 +61,13 @@ def select_kept_features(features_v6: np.ndarray) -> np.ndarray:
         The 14 kept channels (spectral + index + ERA5), same layout.
     """
     arr = np.asarray(features_v6)
+    width = _v6_width()
     kept = tessera_kept_channel_indices()
-    if arr.ndim == 3 and arr.shape[0] == 22:
+    if arr.ndim == 3 and arr.shape[0] == width:
         return arr[list(kept), :, :]
-    if arr.ndim == 3 and arr.shape[2] == 22:
+    if arr.ndim == 3 and arr.shape[2] == width:
         return arr[:, :, list(kept)]
-    raise ValueError(f"expected a 22-channel v6 stack, got shape {tuple(arr.shape)}")
+    raise ValueError(f"expected a {width}-channel v6 stack, got shape {tuple(arr.shape)}")
 
 
 def load_scene_year_embedding(
@@ -123,45 +134,90 @@ def build_tessera_model_inputs(
     return kept, emb_chw
 
 
+def load_patch_embedding(
+    embeddings_root: str,
+    year: int,
+    *,
+    row_100m: int,
+    col_100m: int,
+    patch_cells: int = 16,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load one patch window from the canonical annual product.
+
+    The product COGs are canonical-gridded, so the patch window is derived
+    from the global 100 m anchor: 10 m origin ``(col*10, row*10)`` with a
+    ``patch_cells*10`` px edge. Reads only that window (never the full-year
+    raster) via a rasterio Window. Returns dequantized ``(H, W, 128)`` with
+    NaN at gaps plus the bool validity mask.
+    """
+    from rasterio.windows import Window
+
+    validate_tessera_year(int(year))
+    import rasterio
+
+    h = w = int(patch_cells) * 10
+    col_off, row_off = int(col_100m) * 10, int(row_100m) * 10
+    window = Window.from_slices((row_off, row_off + h), (col_off, col_off + w))
+    with rasterio.open(product_cog_uri(str(embeddings_root), int(year))) as src:
+        quantized_arr = src.read(window=window).astype(np.int8).transpose(1, 2, 0)
+    with rasterio.open(product_scale_uri(str(embeddings_root), int(year))) as src:
+        scale_arr = src.read(1, window=window)
+    embedding = dequantize_tessera(
+        np.ascontiguousarray(quantized_arr, dtype=np.int8),
+        np.ascontiguousarray(scale_arr),
+    )
+    valid = np.all(np.isfinite(embedding), axis=2)
+    embedding[~valid] = np.nan
+    return embedding, np.asarray(valid, dtype=bool)
+
+
 def collate_tessera_batch(samples, embeddings_root, *, kept_indices=None):
     """Collate kept hand-built channels with per-scene-year embeddings.
 
-    Each sample carries ``features`` (full 22-channel v6 patch, channel-first)
-    and ``meta.year``. The loader reads that scene's annual embedding,
-    crops the matching patch window, dequantizes it, and stacks
-    ``(kept (B, 14, H, W), embedding (B, 128, H, W))`` for
+    Each sample carries ``features`` (full v6 patch, channel-first) and
+    ``meta`` with ``year``/``row``/``col``. The loader reads that scene's
+    annual embedding patch window (never the full-year raster), dequantizes
+    it, and stacks ``(kept (B, 14, H, W), embedding (B, 128, H, W))`` for
     :class:`TesseraRealLSTTask`. Morphology + shadow channels are dropped
     here, never passed to the model.
     """
     import torch
 
+    width = _v6_width()
     kept_idx = (
         list(kept_indices) if kept_indices is not None else list(tessera_kept_channel_indices())
     )
     kept_list: list = []
     emb_list: list = []
     for sample in samples:
-        features = __import__("numpy").asarray(sample.features)
-        if features.shape[0] != 22:
-            raise ValueError(f"expected 22-channel v6 patch, got {tuple(features.shape)}")
+        features = np.asarray(sample.features)
+        if features.shape[0] != width:
+            raise ValueError(f"expected {width}-channel v6 patch, got {tuple(features.shape)}")
         kept_list.append(features[kept_idx, :, :])
-        embedding, _ = load_scene_year_embedding(embeddings_root, int(sample.meta.year))
-        _, _, h, w = 0, 0, features.shape[1], features.shape[2]
-        # The annual product is canonical-gridded; crop the sample window by
-        # matching extents (synthetic/fake embeddings already patch-sized).
-        if embedding.shape[:2] == (h, w):
-            emb_hw = embedding
-        else:
-            raise ValueError(f"embedding extent {tuple(embedding.shape[:2])} != patch {(h, w)}")
-        emb_list.append(__import__("numpy").moveaxis(emb_hw, 2, 0))
-    kept_batch = torch.from_numpy(__import__("numpy").stack(kept_list).astype("float32"))
-    emb_batch = torch.from_numpy(__import__("numpy").stack(emb_list).astype("float32"))
+        meta = sample.meta
+        row = int(getattr(meta, "row", 0))
+        col = int(getattr(meta, "col", 0))
+        try:
+            embedding, _ = load_patch_embedding(
+                str(embeddings_root), int(meta.year), row_100m=row, col_100m=col
+            )
+        except Exception as exc:  # noqa: BLE001 — small/test products are patch-sized
+            embedding, _ = load_scene_year_embedding(str(embeddings_root), int(meta.year))
+            h, w = features.shape[1], features.shape[2]
+            if embedding.shape[:2] != (h, w):
+                raise ValueError(
+                    f"embedding extent {tuple(embedding.shape[:2])} != patch {(h, w)}"
+                ) from exc
+        emb_list.append(np.moveaxis(embedding, 2, 0))
+    kept_batch = torch.from_numpy(np.stack(kept_list).astype("float32"))
+    emb_batch = torch.from_numpy(np.stack(emb_list).astype("float32"))
     return kept_batch, emb_batch
 
 
 __all__ = [
     "build_tessera_model_inputs",
     "collate_tessera_batch",
+    "load_patch_embedding",
     "load_scene_year_embedding",
     "select_kept_features",
 ]

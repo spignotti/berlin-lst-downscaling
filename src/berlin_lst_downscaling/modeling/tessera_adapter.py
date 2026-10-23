@@ -202,7 +202,12 @@ class TesseraRealLSTTask(RealLSTTask):
             raise ValueError("tessera_embedding batch dimension differs from features")
         if embedding.shape[2:] != batch.features.shape[2:]:
             raise ValueError("tessera_embedding spatial extent differs from features")
-        adapted = self.adapter(embedding.to(batch.features.dtype))
+        # Model-boundary zero-fill (mirrors the real-path predictor rule):
+        # the product keeps NaN at gaps, but every model input must be
+        # finite — a single NaN would poison the adapter and the prediction.
+        # Gap pixels stay excluded by mask_100m and the common cell set.
+        embedding_finite = torch.nan_to_num(embedding.to(batch.features.dtype), nan=0.0)
+        adapted = self.adapter(embedding_finite)
         inputs = torch.cat([batch.features, adapted, batch.lst_prior], dim=1)
         delta = self.model(inputs)
         if not self.residual_prior:
@@ -210,6 +215,14 @@ class TesseraRealLSTTask(RealLSTTask):
         from berlin_lst_downscaling.modeling.real_task import reconstruct_prior_kelvin
 
         return reconstruct_prior_kelvin(batch.lst_prior).float() + delta.float()
+
+    def configure_optimizers(self) -> torch.optim.Optimizer:
+        """Optimize the U-Net AND the learnable 1×1 adapter jointly."""
+        return torch.optim.AdamW(
+            list(self.model.parameters()) + list(self.adapter.parameters()),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
 
 
 __all__ = [
