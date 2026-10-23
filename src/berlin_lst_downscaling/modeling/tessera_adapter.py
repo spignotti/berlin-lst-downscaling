@@ -165,7 +165,12 @@ class TesseraRealLSTTask(RealLSTTask):
         residual_prior: bool = False,
         loss_name: str = "masked_l1",
         aggregation: str = "arithmetic",
+        n_active_channels: int | None = None,
     ) -> None:
+        # `n_active_channels` is accepted for checkpoint compat: parent
+        # checkpoints record the fused width (kept+adapter). It must match
+        # the derived width when given; the canonical keys are
+        # `n_kept_channels` + `tessera_adapter_width`.
         super().__init__(
             n_active_channels=n_kept_channels + tessera_adapter_width,
             base_width=base_width,
@@ -187,6 +192,17 @@ class TesseraRealLSTTask(RealLSTTask):
         self.tessera_enabled = True
         # Validate kept (not fused) width at the task boundary.
         self.n_active_channels = int(n_kept_channels)
+        if n_active_channels is not None:
+            expected_fused = int(n_kept_channels) + int(tessera_adapter_width)
+            if int(n_active_channels) != expected_fused:
+                raise ValueError(
+                    "checkpoint n_active_channels "
+                    f"{int(n_active_channels)} != kept+adapter {expected_fused}"
+                )
+        # Re-save with the subclass signature so load_from_checkpoint
+        # reconstructs with n_kept_channels/tessera_adapter_width (plus the
+        # shared training hparams), never with parent-only keys.
+        self.save_hyperparameters()
 
     def forward(self, batch: RealBatch) -> Tensor:
         """Predict from kept features + TESSERA embedding + prior."""

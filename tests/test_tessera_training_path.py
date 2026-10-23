@@ -152,3 +152,17 @@ def test_load_patch_embedding_reads_window(tmp_path) -> None:
     assert embedding.shape == (160, 160, 128)
     assert valid.shape == (160, 160)
     assert bool(np.all(valid))
+
+
+def test_tessera_task_checkpoint_roundtrip(tmp_path) -> None:
+    task = TesseraRealLSTTask(n_kept_channels=14, tessera_adapter_width=8, base_width=8, depth=2)
+    ckpt = str(tmp_path / "tessera.ckpt")
+    from lightning.pytorch import Trainer
+
+    trainer = Trainer(max_epochs=0, logger=False, enable_checkpointing=False)
+    trainer.strategy.connect(task)
+    trainer.save_checkpoint(ckpt)
+    loaded = TesseraRealLSTTask.load_from_checkpoint(ckpt, map_location="cpu")
+    assert loaded.n_kept_channels == 14
+    assert loaded.tessera_adapter_width == 8
+    assert loaded.adapter.proj.in_channels == 128
