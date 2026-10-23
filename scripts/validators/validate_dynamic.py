@@ -13,6 +13,11 @@ Usage::
         --expected-scenes 324
 
     uv run python scripts/validators/validate_dynamic.py \\
+        --output-root gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2 \\
+        --expected-role anchor --expected-scenes-from-manifest <v4 manifest> \\
+        --check-bands
+
+    uv run python scripts/validators/validate_dynamic.py \\
         --output-root gs://berlin-lst-training-data/dynamic/inference/2026 \\
         --expected-role inference \\
         --expected-scenes 21
@@ -150,8 +155,17 @@ def main() -> int:
     parser.add_argument(
         "--expected-scenes",
         type=int,
-        required=True,
-        help="Expected total scene count per source (e.g. 324 or 21)",
+        default=None,
+        help="Expected total scene count per source (e.g. 324 or 21); "
+        "mutually exclusive with --expected-scenes-from-manifest",
+    )
+    parser.add_argument(
+        "--expected-scenes-from-manifest",
+        default=None,
+        metavar="MANIFEST_PARQUET",
+        help="Derive the expected scene count per source from a selection "
+        "manifest bundle (assessable 2017-2025 anchors, matching the anchor "
+        "role this step validates); mutually exclusive with --expected-scenes",
     )
     parser.add_argument("--progress-only", action="store_true", help="Quick status only")
     parser.add_argument("--json", action="store_true", help="Output JSON")
@@ -161,6 +175,17 @@ def main() -> int:
         help="Also validate COG band count and provenance (slower)",
     )
     args = parser.parse_args()
+
+    if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
+        parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
+    if args.expected_scenes_from_manifest is not None:
+        from berlin_lst_downscaling.data.selection.bundle_counts import (
+            expected_counts_for_bundle,
+        )
+
+        assessable, _ = expected_counts_for_bundle(args.expected_scenes_from_manifest)
+        print(f"  Expected scenes from manifest bundle: {assessable}")
+        args.expected_scenes = assessable
 
     try:
         ledger = _read_ledger(args.output_root)
@@ -188,12 +213,13 @@ def main() -> int:
     warnings = []
 
     expected_per_source = args.expected_scenes
-    for src in ("era5_land", "shadow_building", "shadow_vegetation"):
-        done = ledger["counts"].get((src, "done"), 0)
-        if done != expected_per_source:
-            errors.append(f"{src}: {done}/{expected_per_source} done")
-        else:
-            print(f"  {src}: {done}/{expected_per_source} done ✓")
+    if expected_per_source is not None:
+        for src in ("era5_land", "shadow_building", "shadow_vegetation"):
+            done = ledger["counts"].get((src, "done"), 0)
+            if done != expected_per_source:
+                errors.append(f"{src}: {done}/{expected_per_source} done")
+            else:
+                print(f"  {src}: {done}/{expected_per_source} done ✓")
 
     if ledger["non_done"]:
         for item in ledger["non_done"]:

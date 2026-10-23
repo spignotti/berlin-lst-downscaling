@@ -52,7 +52,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
   uv run python scripts/validators/validate_dynamic.py \
     --output-root "$OUTPUT_ROOT" \
     --expected-role anchor \
-    --expected-scenes 324 \
+    --expected-scenes-from-manifest "$MANIFEST_URI" \
     --check-bands \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi

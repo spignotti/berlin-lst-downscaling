@@ -70,8 +70,13 @@ after each run.
    - steps 1–2: `manifest.parquet` + `pairings.parquet` +
      `manifest_report.json` (step 1), `ledger.parquet` with `status=done`
      rows (step 2, `validate_ard.py --ledger … --manifest …`);
-   - steps 3–5: `ledger.parquet` under the release root
-     (`_state/...` for derived/dynamic), all rows `done`;
+    - steps 3–4: `ledger.parquet` under the release root
+      (`_state/...` for derived), all rows `done`;
+    - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
+      `validate_dynamic.py --output-root … --expected-role anchor
+      --expected-scenes-from-manifest <v4 manifest>` (derived from the v4
+      bundle, never hard-coded, so the AOI-overlap gate passes without
+      manual edits);
    - step 6: `ledger.parquet` all `done` plus
      `validate_feature_stacks.py --root … --expected-scenes-from-manifest
      <v4 manifest>` (derived from the v4 bundle, never hard-coded);
