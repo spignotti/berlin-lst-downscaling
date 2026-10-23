@@ -153,7 +153,9 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         run_id = uuid4().hex[:8]
     timestamp = datetime.now(UTC).isoformat()
     output_root = str(cfg.output_root)
-    assert_feature_output_root(output_root)
+    assert_feature_output_root(
+        output_root, schema_version=int(cfg.get("feature_schema_version", 4))
+    )
 
     manifest_uri = str(cfg.manifest_uri)
     ard_root = str(cfg.ard_root)

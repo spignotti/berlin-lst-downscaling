@@ -13,6 +13,8 @@ description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine 
 - Run Dynamic:    `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
 - Run Features:   `.opencode/skills/google-access/scripts/run-features-vm.sh [branch]`
 - Run Training:   `.opencode/skills/google-access/scripts/run-training-data-vm.sh [branch]`
+- Run Training v3: `.opencode/skills/google-access/scripts/run-training-v3-vm.sh [branch]`
+- Run v6 chain:   `.opencode/skills/google-access/scripts/run-selection-v4-vm.sh run-ard-v10-vm.sh run-static-sources-v6-vm.sh run-static-derived-v6-vm.sh run-dynamic-v6-vm.sh run-features-v6-vm.sh run-training-v3-vm.sh run-patch-index-v3-vm.sh run-training-eda-v3-vm.sh [branch]` (one step per VM run, in order; see `docs/republish-v6.md`)
 - Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
 - Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
 - Run Model Smoke: `.opencode/skills/google-access/scripts/run-modeling-smoke-vm.sh [branch]`

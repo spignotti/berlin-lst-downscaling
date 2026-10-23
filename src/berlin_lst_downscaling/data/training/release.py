@@ -16,7 +16,11 @@ import pyarrow.parquet as pq
 from odc.geo.geobox import GeoBox
 
 from berlin_lst_downscaling.common.util import sha256_bytes
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_CHANNEL_NAMES,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.features.paths import (
     feature_provenance,
 )
@@ -53,6 +57,11 @@ _logger = logging.getLogger(__name__)
 # Pinned feature release for this training handoff. Older feature
 # releases are rejected. Smoke reads the same published root.
 V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v5"
+
+# Feature release v6 (22-channel roster) feeding training/v3.
+# Added, not substituted: the V3 gate above is byte-for-byte unchanged.
+V6_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v6"
+V3_TRAINING_ROOT = "gs://berlin-lst-training-data/training/v3"
 
 
 # ── V3 release gate ───────────────────────────────────────────────────
@@ -132,6 +141,75 @@ def _verify_v3_release(
     return rows
 
 
+# ── V6 release gate (training/v3) ─────────────────────────────────────
+# Added, not substituted: the V3 gate above is unchanged. The v6 feature
+# hash is not pinned before publication (it is computed by the features/v6
+# run), so the gate checks self-consistency: every ledger row is done and
+# carries one shared non-empty config hash, and every verified provenance
+# carries that hash plus the 22-channel v6 order.
+
+
+def _verify_v6_release(
+    *,
+    features_root: str,
+    expected_scene_count: int | None,
+    scene_ids: list[str],
+) -> tuple[dict, str]:
+    """Hard-reject anything that is not the feature release v6 root.
+
+    Returns ``(rows, v6_config_hash)`` for reuse.
+    """
+    if features_root.rstrip("/") != V6_FEATURES_ROOT:
+        raise RuntimeError(
+            f"features_root {features_root!r} is not the pinned feature release "
+            f"({V6_FEATURES_ROOT!r})"
+        )
+
+    v6_names = list(feature_schema(FEATURE_SCHEMA_VERSION_V6).names)
+    led_uri = features_ledger_path(features_root)
+    table = pq.read_table(io.BytesIO(read_bytes(led_uri)))
+    cols = table.to_pydict()
+    statuses = {str(s) for s in cols["status"]}
+    if statuses != {"done"}:
+        raise RuntimeError(f"features ledger {led_uri}: unexpected statuses {sorted(statuses)}")
+    full_run = not scene_ids
+    if expected_scene_count is not None and full_run and table.num_rows != expected_scene_count:
+        raise RuntimeError(
+            f"features ledger {led_uri}: {table.num_rows} rows, expected {expected_scene_count}"
+        )
+
+    rows = {}
+    hashes: set[str] = set()
+    for i in range(table.num_rows):
+        period = str(cols["period_or_vintage"][i])
+        config_hash = cols["config_hash"][i]
+        if config_hash is None or not str(config_hash):
+            raise RuntimeError(f"features ledger {led_uri}: row {period} carries no config_hash")
+        hashes.add(str(config_hash))
+        rows[period] = {name: cols[name][i] for name in cols}
+    if len(hashes) != 1:
+        raise RuntimeError(
+            f"features ledger {led_uri}: expected one shared v6 config hash, found {sorted(hashes)}"
+        )
+    v6_hash = next(iter(hashes))
+
+    targets = scene_ids if scene_ids else sorted(rows)
+    for scene_id in targets:
+        prov_uri = feature_provenance(features_root, scene_id)
+        prov = json.loads(read_bytes(prov_uri))
+        if prov.get("config_hash") != v6_hash:
+            raise RuntimeError(
+                f"{scene_id}: provenance config_hash {prov.get('config_hash')!r}, "
+                f"expected shared v6 hash {v6_hash!r}"
+            )
+        if list(prov.get("channel_order", [])) != v6_names:
+            raise RuntimeError(
+                f"{scene_id}: provenance channel_order does not match the v6 22-channel order"
+            )
+
+    return rows, v6_hash
+
+
 # ── release assembly ──────────────────────────────────────────────────
 
 
@@ -143,6 +221,8 @@ def publish_release(
     grid_10m: GeoBox,
     run_id: str,
     policy_hash: str,
+    schema=None,
+    v6_config_hash: str | None = None,
 ) -> dict[str, str]:
     """Publish manifest, cells, scaler, and the release completion marker.
 
@@ -206,6 +286,8 @@ def publish_release(
                 grid_10m=grid_10m,
                 run_id=run_id,
                 policy_hash=policy_hash,
+                **({"schema": schema} if schema is not None else {}),
+                **({"v6_config_hash": v6_config_hash} if v6_config_hash is not None else {}),
             )
 
             # Publisher-side readback: verify every per-scene eligibility COG
@@ -268,11 +350,15 @@ def _publish_release_locked(
     grid_10m: GeoBox,
     run_id: str,
     policy_hash: str,
+    schema=None,
+    v6_config_hash: str | None = None,
 ) -> dict[str, str]:
     """Write the release artifacts while holding the top-level publish lock.
 
     The completion marker is deliberately NOT written here — the caller
     runs the publisher readback first and only then commits the marker.
+    The v6 path (schema + v6_config_hash given) records the v6 scaler
+    policy; the default path is the published v3 release, unchanged.
     """
     uris: dict[str, str] = {}
 
@@ -287,15 +373,23 @@ def _publish_release_locked(
         features_root=features_root,
         output_root=output_root,
         grid_10m=grid_10m,
+        **({"schema": schema} if schema is not None else {}),
     )
     scaler["policy_hash"] = policy_hash
-    scaler["v3_config_hash"] = EXPECTED_V3_CONFIG_HASH
+    if schema is not None and v6_config_hash is not None:
+        scaler["v3_config_hash"] = v6_config_hash
+        scaler["transform_policy"] = (
+            "zscore: continuous channels; log1p+zscore: tp_0_72h; "
+            "identity: shadow_building/shadow_vegetation"
+        )
+    else:
+        scaler["v3_config_hash"] = EXPECTED_V3_CONFIG_HASH
+        scaler["transform_policy"] = (
+            "zscore: continuous channels; log1p+zscore: tp_0_24h/tp_24_48h/tp_48_72h; "
+            "identity: shadow_building/shadow_vegetation"
+        )
     scaler["split_hash"] = _split_hash(report.scenes)
     scaler["training_years"] = sorted({s.year for s in report.scenes if s.split == "train"})
-    scaler["transform_policy"] = (
-        "zscore: continuous channels; log1p+zscore: tp_0_24h/tp_24_48h/tp_48_72h; "
-        "identity: shadow_building/shadow_vegetation"
-    )
 
     _write_table(
         manifest_rows,

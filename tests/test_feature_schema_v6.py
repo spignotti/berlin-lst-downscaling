@@ -141,7 +141,8 @@ def test_v6_configs_resolve_scene_value_and_the_registry_width() -> None:
     derived = (_REPO / "configs" / "static_derived" / "v6.yaml").read_text()
     assert "svf_max_radius: 3" in derived
     text = (_REPO / "configs" / "features" / "v6.yaml").read_text()
-    assert "2017-2026-s2-harmonized-v9" in text
+    assert "2017-2026-s2-mosaic-v10" in text
+    assert "manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet" in text
     assert "static/derived/lod2-area-exact-v2" in text
     assert "dynamic/lod2-area-exact-v2" in text
     assert "static/sources/lod2-area-exact-v2" in text
