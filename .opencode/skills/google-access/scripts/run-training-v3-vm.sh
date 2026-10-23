@@ -5,10 +5,9 @@
 # z-score), and release artifacts from features/v6 into training/v3.
 # training/v1 and training/v2 stay immutable. Follows the
 # run-training-eda-vm.sh pattern with an explicit config name, explicit
-# upstream input roots, and a new output root. The --expected-scenes
-# flag is intentionally omitted: the v4 AOI-overlap gate changes the
-# assessable count versus the v2 universe, and the operator confirms the
-# actual count from the selection manifest_report.json after step 1.
+# upstream input roots, and a new output root. The expected count is
+# derived from the upstream v4 bundle (the AOI-overlap gate changes the
+# assessable count versus the v2 universe), never hard-coded.
 #
 # Usage:
 #   run-training-v3-vm.sh [branch]
@@ -21,6 +20,7 @@ PIPELINE_LABEL="Training data v3"
 MARKER_CONFIG="training_v3"
 CONFIG_NAME="v3"
 CONFIG_DIR="configs/training"
+MANIFEST_URI="gs://berlin-lst-training-data/manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet"
 FEATURES_ROOT="gs://berlin-lst-training-data/features/v6"
 ARD_ROOT="gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
 RELEASE_ROOT="gs://berlin-lst-training-data/training/v3"
@@ -30,6 +30,7 @@ POLL_MAX_SECONDS=64800
 vm_init_run "training-v3"
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
 echo "  Config:   $CONFIG_DIR/$CONFIG_NAME"
+echo "  Manifest: $MANIFEST_URI"
 echo "  Features: $FEATURES_ROOT"
 echo "  ARD:      $ARD_ROOT"
 echo "  Release:  $RELEASE_ROOT"
@@ -52,6 +53,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $RELEASE_ROOT ..."
   uv run python scripts/validators/validate_training_data.py \
     --release-root "$RELEASE_ROOT" \
+    --expected-scenes-from-manifest "$MANIFEST_URI" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

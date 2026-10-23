@@ -5,11 +5,13 @@
 # into the new ARD v10 root. Landsat/ECOSTRESS ARD is reused, not
 # reprocessed: both contracts are unchanged (landsat-c2-l2 schema 7 with
 # area-mean lwir11 + native_bit_or QA, ecostress schema 7 per
-# src/berlin_lst_downscaling/data/ard/contract.py), so the operator seeds
-# the v10 ledger with the published Landsat/ECOSTRESS rows from
-# ard/full/2017-2026-qa-avg-20261019 before launching (docs/republish-v6.md).
-# Follows the run-training-eda-vm.sh pattern with an explicit config
-# name, explicit upstream input root, and a new output root.
+# src/berlin_lst_downscaling/data/ard/contract.py). The remote command
+# first seeds the v10 ledger idempotently with the published
+# Landsat/ECOSTRESS rows (scripts/operators/seed_ard_v10_reuse.py; COGs
+# stay referenced in place), then runs the S2-only mosaic config, which
+# keeps seeded rows and processes only S2 (reconcile iterates manifest
+# S2 rows). Follows the run-training-eda-vm.sh pattern with an explicit
+# config name, explicit upstream input root, and a new output root.
 #
 # Usage:
 #   run-ard-v10-vm.sh [branch]
@@ -25,7 +27,7 @@ CONFIG_DIR="configs/ard"
 MANIFEST_URI="gs://berlin-lst-training-data/manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet"
 REUSE_ROOT="gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019"
 OUTPUT_ROOT="gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
-REMOTE_CMD="uv run python scripts/runners/run_ard.py --config-name ${CONFIG_NAME} manifest_uri=${MANIFEST_URI}"
+REMOTE_CMD="uv run python scripts/operators/seed_ard_v10_reuse.py --source-ledger ${REUSE_ROOT}/ledger.parquet --dest-root ${OUTPUT_ROOT} && uv run python scripts/runners/run_ard.py --config-name ${CONFIG_NAME} manifest_uri=${MANIFEST_URI}"
 POLL_MAX_SECONDS=172800
 
 vm_init_run "ard-v10"

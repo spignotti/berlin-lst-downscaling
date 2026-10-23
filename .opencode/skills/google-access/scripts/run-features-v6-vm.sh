@@ -58,7 +58,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
   uv run python scripts/validators/validate_feature_stacks.py \
     --root "$FEATURES_ROOT" \
     --aoi data/boundaries/aoi_10m.tif \
-    --expected-scenes 324 \
+    --expected-scenes-from-manifest "$MANIFEST_URI" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

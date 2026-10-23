@@ -25,7 +25,7 @@ Order is spectral, index, morphology, ERA5, shadow.
 | 13 | `vegetation_height_mean` | morphology | unchanged |
 | 14 | `canopy_cover_fraction` | morphology | replaces `vegetation_height_max` |
 | 15 | `imperviousness` | morphology | unchanged |
-| 16 | `svf` | morphology | radius still configurable; default 30 m |
+| 16 | `svf` | morphology | radius 100 m (`svf_max_radius: 10`) |
 | 17 | `t2m_scene` | era5 | unchanged quantity |
 | 18 | `ssrd_scene` | era5 | unchanged quantity |
 | 19 | `wind_speed_10m_scene` | era5 | unchanged quantity |
@@ -57,7 +57,9 @@ the new `dynamic/lod2-area-exact-v2` prefix. Its config hash includes the
 SHA-256 prefix of the AOI file, so a different mask invalidates the
 `scene_value` product.
 
-SVF `svf_max_radius` stays 3 cells (30 m) in `configs/static_derived/v6.yaml`.
+SVF `svf_max_radius` is 10 cells (100 m) in `configs/static_derived/v6.yaml`,
+decided from the Mitte 4x4 km diagnostic: mean SVF 0.94 at 30 m / 0.90 at
+100 m / 0.88 at 200 m, r(30,100)=0.94, r(100,200)=0.99.
 `scripts/validators/diagnose_svf_radius.py` compares 30/50/100/200 m on a
 sample and does not write a product.
 
@@ -71,7 +73,7 @@ into the published schema-8 roots and feature writes into `features/v3`,
 |----------|-----|
 | `ard/full/2017-2026-s2-harmonized-v9` | schema-9 S2 ARD. The stack does not apply a second offset |
 | `static/sources/lod2-area-exact-v2` | area-exact LoD2 morphology, plus vegetation height with a third `canopy_cover_fraction` band. Mean and max stay. Imperviousness objects stay the published v3 COGs; the new ledger points at them |
-| `static/derived/lod2-area-exact-v2` | building DSM, combined DSM, building horizons, and SVF from the corrected heights. SVF radius stays 30 m unless the diagnostic changes it |
+| `static/derived/lod2-area-exact-v2` | building DSM, combined DSM, building horizons, and SVF from the corrected heights. SVF radius is 100 m (`svf_max_radius: 10`, decided) |
 | `dynamic/lod2-area-exact-v2` | building shadows from the corrected horizons. ERA5 `scene_value` may be written here or applied at compose time to an 8-band COG; both use the AOI mean of the bilinear field |
 | `features/v6` | 22-channel roster on the roots above |
 | `training/v3` | eligibility, train-only scaler (`tp_0_72h` is `log1p` then z-score), patch index |

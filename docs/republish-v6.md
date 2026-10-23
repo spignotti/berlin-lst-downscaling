@@ -14,12 +14,14 @@ and `docs/data-sources-and-contracts.md`, both contracts are unchanged:
 `landsat-c2-l2` schema 7 (area-mean `lwir11`, native bit-OR `qa_pixel`)
 and `ecostress` schema 7. The published rows live in
 `gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019`.
-Before step 2, the operator seeds the new v10 ledger with those
-published Landsat/ECOSTRESS rows (COGs stay referenced in place; only
-S2 rows are freshly processed as schema-10 mosaics). Features and
-training both read the combined v10 ledger, whose S2 rows point at the
-new mosaics and whose Landsat/ECOSTRESS rows resolve to the published
-COGs. If either contract ever bumps, the seeded rows must instead be
+Step 2 automates the seeding: `run-ard-v10-vm.sh` first runs
+`scripts/operators/seed_ard_v10_reuse.py`, which copies the published
+`done` Landsat/ECOSTRESS ledger rows into the new v10 ledger (COGs stay
+referenced in place, no COG is copied), verifies each row against the
+current contracts and its referenced COGs, and refuses to overwrite a
+differing existing row or to write anything on failure (`--dry-run`
+previews). The S2-only `run_ard` keeps seeded rows and processes only
+S2. If either contract ever bumps, the seeded rows must instead be
 reprocessed into a new root.
 
 ## Run order and launcher commands
@@ -29,7 +31,7 @@ reprocessed into a new root.
 | 1 | Selection v4 bundle | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-selection-v4-vm.sh main` | `configs/selection/full_2017_2026_v4.yaml` | `manifests/v4/2017-2026-cutoff-20260717T235959Z/{manifest.parquet,pairings.parquet,manifest_report.json}` |
 | 2 | S2 ARD v10 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-ard-v10-vm.sh main` | `configs/ard/sentinel2_mosaic_v10.yaml` (`manifest_uri=` v4 bundle) | `ard/full/2017-2026-s2-mosaic-v10/{*.cog,ledger.parquet,...}` (S2 new; Landsat/ECOSTRESS seeded, see above) |
 | 3 | Static sources v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-sources-v6-vm.sh main` | `configs/static_sources/v6.yaml` | `static/sources/lod2-area-exact-v2/{ledger.parquet,...}` (LoD2 area-exact v2 incl. BuildingPart, canopy cover; imperviousness COGs stay published v3, newly pointed at) |
-| 4 | Static derived v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-derived-v6-vm.sh main` | `configs/static_derived/v6.yaml` (`svf_max_radius: 3`) | `static/derived/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (building/vegetation/combined DSMs, horizons, SVF) |
+| 4 | Static derived v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-derived-v6-vm.sh main` | `configs/static_derived/v6.yaml` (`svf_max_radius: 10`, i.e. 100 m) | `static/derived/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (building/vegetation/combined DSMs, horizons, SVF) |
 | 5 | Dynamic v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-v6-vm.sh main` | `configs/dynamic/v6.yaml` (`manifest_uri=` v4 bundle) | `dynamic/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (shadows, ERA5 scene_value) |
 | 6 | Features v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-v6-vm.sh main` | `configs/features/v6.yaml` (ARD v10 + v4 manifest) | `features/v6/{<scene_id>/*.cog,ledger.parquet,qa/...}` (22-channel roster) |
 | 7 | Training v3 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-v3-vm.sh main` | `configs/training/v3.yaml` (from features/v6) | `training/v3/{manifest.parquet,cells.parquet,scaler.json,complete.json,...}` |
@@ -69,11 +71,12 @@ after each run.
    - steps 3–5: `ledger.parquet` under the release root
      (`_state/...` for derived/dynamic), all rows `done`;
    - step 6: `ledger.parquet` all `done` plus
-     `validate_feature_stacks.py --root … --expected-scenes 324`;
+     `validate_feature_stacks.py --root … --expected-scenes-from-manifest
+     <v4 manifest>` (derived from the v4 bundle, never hard-coded);
    - step 7: `complete.json` with the v6 policy hash plus
-     `validate_training_data.py --release-root …` (no
-     `--expected-scenes`: the v4 AOI-overlap gate changes the count;
-     confirm the actual from the step-1 `manifest_report.json`);
+     `validate_training_data.py --release-root … --expected-scenes-from-manifest
+     <v4 manifest>` (the count is derived from the v4 bundle, never
+     hard-coded, so the AOI-overlap gate passes without manual edits);
    - step 8: `complete.json` plus
      `validate_patch_index.py --index-root … --source-root …`;
    - step 9: uploaded `evaluation/eda/v3` tables plus

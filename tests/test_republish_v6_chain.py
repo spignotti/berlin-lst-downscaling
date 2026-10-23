@@ -328,9 +328,9 @@ def test_publish_guard_blocks_old_into_new_and_keeps_old_blocks() -> None:
 def test_svf_radius_is_in_the_derived_config_hash() -> None:
     from berlin_lst_downscaling.data.secondary.svf import config_hash_for_svf
 
-    assert config_hash_for_svf(3, 16, "upstream") != config_hash_for_svf(5, 16, "upstream")
+    assert config_hash_for_svf(10, 16, "upstream") != config_hash_for_svf(5, 16, "upstream")
     derived = OmegaConf.load(_REPO / "configs/static_derived/v6.yaml")
-    assert int(derived["svf_max_radius"]) == 3
+    assert int(derived["svf_max_radius"]) == 10
     assert int(derived["svf_n_directions"]) == 16
     text = (_REPO / "configs/static_derived/v6.yaml").read_text()
     assert text.count("svf_max_radius") == 1
@@ -580,3 +580,323 @@ def test_eda_v3_records_its_own_roots_and_policy(monkeypatch) -> None:
     assert "--features-root" in launcher
     assert "features/v6" in launcher
     assert "--release-id eda-v3" in launcher
+
+
+# ── 6. ARD v10 reuse seeding ──────────────────────────────────────────
+
+
+def _seed_row(source, scene_id, *, schema_hash, schema_version=7, status="done"):
+    from berlin_lst_downscaling.data.ard.ledger import LedgerRow
+
+    return LedgerRow(
+        scene_id=scene_id,
+        source=source,
+        year=2024,
+        path_cog=f"cog-{scene_id}",
+        path_flag=f"flag-{scene_id}",
+        path_stac=None,
+        status=status,
+        schema_hash=schema_hash,
+        schema_version=schema_version,
+    )
+
+
+def _good_hashes():
+    from berlin_lst_downscaling.data.ard.contract import contract_for_source
+    from berlin_lst_downscaling.data.ard.landsat_target import landsat_schema_hash
+
+    landsat = landsat_schema_hash(
+        contract_for_source("landsat-c2-l2").schema_version, "average", "native_bit_or"
+    )
+    ecostress = contract_for_source("ecostress").schema_version_str()
+    return landsat, ecostress
+
+
+def _load_seed_module():
+    import importlib.util
+
+    path = _REPO / "scripts/operators/seed_ard_v10_reuse.py"
+    spec = importlib.util.spec_from_file_location("seed_ard_v10_reuse", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _seed_fixture(tmp_path, monkeypatch, rows):
+    """Write COGs + source ledger under tmp_path; return (source_uri, scene_ids)."""
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    monkeypatch.chdir(tmp_path)
+    for row in rows:
+        if row.status == "done" and row.path_cog and row.path_flag:
+            Path(row.path_cog).write_bytes(b"x")
+            Path(row.path_flag).write_bytes(b"x")
+    ledger = Ledger.open("source/ledger.parquet")
+    for row in rows:
+        ledger.upsert(row)
+    return "source/ledger.parquet", "dest"
+
+
+def test_seed_copies_done_rows_and_is_idempotent(tmp_path, monkeypatch) -> None:
+    import os
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    landsat_hash, eco_hash = _good_hashes()
+    source_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [
+            _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash),
+            _seed_row("ecostress", "E1", schema_hash=eco_hash),
+            _seed_row("landsat-c2-l2", "L2", schema_hash=landsat_hash, status="failed"),
+            _seed_row("sentinel-2-l2a", "S1", schema_hash="9", schema_version=9),
+        ],
+    )
+    module = _load_seed_module()
+
+    summary = module.seed(source_uri, dest_root)
+    assert summary["staged"] == 2
+    assert summary["skipped_not_done"] == 1
+    dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
+    assert {(r.scene_id, r.source) for r in dest.scenes_for_source("landsat-c2-l2")} == {
+        ("L1", "landsat-c2-l2")
+    }
+    assert {(r.scene_id, r.source) for r in dest.scenes_for_source("ecostress")} == {
+        ("E1", "ecostress")
+    }
+    assert dest.scenes_for_source("sentinel-2-l2a") == []
+
+    again = module.seed(source_uri, dest_root)
+    assert again["staged"] == 0
+    assert again["skipped_identical"] == 2
+
+
+def test_seed_dry_run_writes_nothing(tmp_path, monkeypatch) -> None:
+    import os
+
+    landsat_hash, _ = _good_hashes()
+    source_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
+    )
+    module = _load_seed_module()
+    summary = module.seed(source_uri, dest_root, dry_run=True)
+    assert summary["staged"] == 1
+    assert summary["copied"] == 0
+    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+
+
+def test_seed_refuses_contract_mismatch(tmp_path, monkeypatch) -> None:
+    import os
+
+    landsat_hash, _ = _good_hashes()
+    source_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [
+            _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash),
+            _seed_row(
+                "landsat-c2-l2",
+                "LBAD",
+                schema_hash="6|st=average|qa=native_bit_or",
+                schema_version=6,
+            ),
+        ],
+    )
+    module = _load_seed_module()
+    with pytest.raises(RuntimeError, match="nothing written"):
+        module.seed(source_uri, dest_root)
+    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+
+
+def test_seed_refuses_missing_cog(tmp_path, monkeypatch) -> None:
+    import os
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    landsat_hash, _ = _good_hashes()
+    monkeypatch.chdir(tmp_path)
+    Path("flag-L1").write_bytes(b"x")
+    ledger = Ledger.open("source/ledger.parquet")
+    ledger.upsert(_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash))
+    module = _load_seed_module()
+    with pytest.raises(RuntimeError, match="nothing written"):
+        module.seed("source/ledger.parquet", "dest")
+    assert not os.path.exists(os.path.join("dest", "ledger.parquet"))
+
+
+def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> None:
+    import os
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    landsat_hash, _ = _good_hashes()
+    source_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
+    )
+    module = _load_seed_module()
+    assert module.seed(source_uri, dest_root)["staged"] == 1
+
+    dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
+    row = dest.get("L1", "landsat-c2-l2")
+    assert row is not None
+    row.path_cog = "cog-elsewhere"
+    dest.upsert(row)
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        module.seed(source_uri, dest_root)
+    assert dest.get("L1", "landsat-c2-l2").path_cog == "cog-elsewhere"
+
+    with pytest.raises(RuntimeError, match="source ledger missing"):
+        module.seed("nope/ledger.parquet", "dest2")
+
+
+def test_ard_launcher_seeds_before_processing() -> None:
+    text = (_REPO / ".opencode/skills/google-access/scripts/run-ard-v10-vm.sh").read_text()
+    seed_pos = text.index("seed_ard_v10_reuse.py")
+    run_pos = text.index("scripts/runners/run_ard.py")
+    assert seed_pos < run_pos
+    assert "--dest-root ${OUTPUT_ROOT}" in text
+    assert "${REUSE_ROOT}/ledger.parquet" in text
+
+
+# ── 7. Expected counts derived from the v4 bundle ─────────────────────
+
+
+def _bundle_tables():
+    import pyarrow as pa
+
+    manifest = pa.table(
+        {
+            "scene_id": ["A17", "A24", "A25", "A26", "S1", "S2", "E1"],
+            "source": [
+                "landsat-c2-l2",
+                "landsat-c2-l2",
+                "landsat-c2-l2",
+                "landsat-c2-l2",
+                "sentinel-2-l2a",
+                "sentinel-2-l2a",
+                "ecostress",
+            ],
+            "role": [
+                "anchor",
+                "anchor",
+                "anchor",
+                "anchor",
+                "predictor",
+                "predictor",
+                "validation",
+            ],
+            "year": [2017, 2024, 2025, 2026, 2017, 2024, 2018],
+        }
+    )
+    pairings = pa.table(
+        {
+            "landsat_scene_id": ["A17", "A24", "A25", "A26"],
+            "sentinel2_scene_id": ["S1", "S2", "S2", "S2"],
+        }
+    )
+    return manifest, pairings
+
+
+def test_bundle_counts_derive_both_universes() -> None:
+    from berlin_lst_downscaling.data.selection.bundle_counts import expected_counts
+
+    manifest, pairings = _bundle_tables()
+    assessable, total = expected_counts(manifest, pairings)
+    assert assessable == 3
+    assert total == 4
+
+
+def test_bundle_counts_reject_anchor_pairing_mismatch() -> None:
+    import pyarrow as pa
+
+    from berlin_lst_downscaling.data.selection.bundle_counts import expected_counts
+
+    manifest, _ = _bundle_tables()
+    short = pa.table(
+        {"landsat_scene_id": ["A17"], "sentinel2_scene_id": ["S1"]},
+    )
+    with pytest.raises(ValueError, match="disagree"):
+        expected_counts(manifest, short)
+
+
+def test_validators_derive_counts_without_hard_coding(monkeypatch) -> None:
+    import sys
+
+    import berlin_lst_downscaling.data.selection.bundle_counts as counts_module
+
+    class DerivationUsed(Exception):
+        pass
+
+    seen: list[str] = []
+
+    def fake_derive(uri: str):
+        seen.append(uri)
+        raise DerivationUsed(uri)
+
+    monkeypatch.setattr(counts_module, "expected_counts_for_bundle", fake_derive)
+    for script, flag in (
+        ("validate_feature_stacks.py", "--root"),
+        ("validate_training_data.py", "--release-root"),
+    ):
+        import importlib.util
+
+        path = _REPO / "scripts/validators" / script
+        spec = importlib.util.spec_from_file_location(script.replace(".py", ""), path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "prog",
+                flag,
+                "somewhere",
+                "--expected-scenes-from-manifest",
+                "bundle/manifest.parquet",
+            ],
+        )
+        with pytest.raises(DerivationUsed):
+            module.main()
+    assert seen == ["bundle/manifest.parquet", "bundle/manifest.parquet"]
+
+    # The two flags are mutually exclusive.
+    import importlib.util
+
+    path = _REPO / "scripts/validators/validate_feature_stacks.py"
+    spec = importlib.util.spec_from_file_location("validate_feature_stacks", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--root",
+            "x",
+            "--expected-scenes",
+            "5",
+            "--expected-scenes-from-manifest",
+            "y",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc:
+        module.main()
+    assert exc.value.code == 2
+
+
+def test_v6_launchers_derive_counts_from_the_v4_bundle() -> None:
+    features = (_REPO / ".opencode/skills/google-access/scripts/run-features-v6-vm.sh").read_text()
+    assert "--expected-scenes-from-manifest" in features
+    assert "--expected-scenes 324" not in features
+    training = (_REPO / ".opencode/skills/google-access/scripts/run-training-v3-vm.sh").read_text()
+    assert "--expected-scenes-from-manifest" in training
+    assert "manifests/v4/2017-2026-cutoff-20260717T235959Z/manifest.parquet" in training
