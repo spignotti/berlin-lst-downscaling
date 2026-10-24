@@ -10,10 +10,11 @@
 # fails closed instead of mixing the published SVF and building shadows
 # into this release. Do not write static/sources/imperviousness-v3.
 # The stack reads harmonized ARD and does not apply a second S2 offset.
-# S2 ARD v10 ledger is seeded with the published Landsat/ECOSTRESS rows
-# (contracts unchanged: landsat-c2-l2 schema 7 area-mean native_bit_or,
+# S2 ARD v10 ledger is seeded with the verified published Landsat/ECOSTRESS
+# rows (contracts unchanged: landsat-c2-l2 schema 7 area-mean native_bit_or,
 # ecostress schema 7) by scripts/operators/seed_ard_v10_reuse.py during the
-# step-2 VM run, before the mosaic run; see docs/republish-v6.md.
+# step-2 VM run, before the mosaic run, and gap scenes are processed into the
+# same root right after; see docs/republish-v6.md.
 defaults:
   - _base
   - _self_

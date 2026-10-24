@@ -12,13 +12,29 @@ Both contracts are unchanged (landsat-c2-l2 schema 7, ecostress schema 7
 per ``data/ard/contract.py``), so the rows are copied from the published
 reuse root — COGs stay referenced in place, no COG is copied.
 
+Only rows that fully verify are seeded. A manifest reuse key without a
+valid done reuse row is a *processing gap*, not an error: the key is
+reported in the machine-readable gap list (``--gap-out`` JSON plus the
+``gaps`` return value, never truncated; the human summary line shows at
+most 10) and left for the follow-up ``run_ard`` gap pass
+(``configs/ard/landsat_ecostress_v10.yaml``), which processes exactly
+those scenes into the v10 root with the current contracts. A gap is a
+missing source row, a non-done source row, or a done row whose
+referenced COG/flag is empty or missing. In particular, reuse rows that
+reference the retired ``gs://berlin-lst-data`` bucket (pre-cutover
+provenance, see ``data/io/uri_mapping.py``) fail the raw existence check
+and become gaps: their scenes are reprocessed into the v10 root rather
+than carrying stale URIs forward, and paths are never rewritten.
+
+Fail-closed: a contract/schema mismatch (schema_version or schema_hash)
+or a differing existing destination row aborts with ``RuntimeError``
+before anything is written — neither the ledger nor the gap file.
+``--dry-run`` previews without writing.
+
 Idempotent: already-seeded identical rows are skipped, a second run is a
-no-op. Refuses to overwrite a differing existing row. Verifies every
-copied row against the current contracts (schema version + policy hash)
-and the referenced COGs before writing anything: on any failure nothing
-is written (exit 1). ``run_ard`` with ``sources=["sentinel-2-l2a"]``
-never touches these rows (reconcile only iterates manifest S2 rows), so
-the S2 mosaic run keeps them and processes only S2.
+no-op. ``run_ard`` with ``sources=["sentinel-2-l2a"]`` never touches
+these rows (reconcile only iterates manifest S2 rows), so the S2 mosaic
+run keeps them and processes only S2.
 
 Usage
 -----
@@ -27,13 +43,15 @@ Usage
     uv run python scripts/operators/seed_ard_v10_reuse.py \\
         --source-ledger <reuse-root>/ledger.parquet \\
         --manifest-uri <v4-bundle>/manifest.parquet \\
-        --dest-root gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10
+        --dest-root gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10 \\
+        --gap-out gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10/seed_gaps.json
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -42,7 +60,7 @@ from omegaconf import OmegaConf
 from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.ard.landsat_target import landsat_schema_hash
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
-from berlin_lst_downscaling.data.io import exists, read_bytes
+from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -55,6 +73,22 @@ DEFAULT_SOURCE_LEDGER = (
     "gs://berlin-lst-training-data/ard/full/2017-2026-qa-avg-20261019/ledger.parquet"
 )
 DEFAULT_DEST_ROOT = "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
+
+# Human summary lines show at most this many gap keys; the ``gaps``
+# return value and the ``--gap-out`` JSON file always carry the full list.
+_SUMMARY_GAP_LIMIT = 10
+
+# Machine-readable gap reasons. ``missing_row``: no source-ledger row for
+# the manifest key. ``not_done``: the source row is not done (detail holds
+# the status). ``missing_cog``/``missing_flag``: the done row's referenced
+# URI is empty or the object does not exist (detail holds the URI). The
+# existence check is intentionally raw (no legacy-bucket remapping): rows
+# pointing at the retired ``gs://berlin-lst-data`` bucket become gaps and
+# are reprocessed into the v10 root instead of carrying stale URIs.
+_GAP_MISSING_ROW = "missing_row"
+_GAP_NOT_DONE = "not_done"
+_GAP_MISSING_COG = "missing_cog"
+_GAP_MISSING_FLAG = "missing_flag"
 
 # Identity fields compared before accepting an already-seeded row.
 # Volatile bookkeeping (attempts, run_id, timestamps, last error) is
@@ -107,21 +141,34 @@ def seed(
     manifest_uri: str,
     *,
     dry_run: bool = False,
+    gap_out: str | None = None,
 ) -> dict:
     """Copy verified reuse rows into the destination ledger.
 
     Only rows whose ``(scene_id, source)`` appears in the selection
     bundle are copied: the v4 AOI-overlap gate drops edge anchors, and
     the ARD validator requires exact manifest/ledger key equality, so
-    seeding dropped scenes would fail validation. A manifest key counts
-    as covered only once a done, contract-valid reuse row is staged or
-    already seeded — a failed/pending reuse row (or any row failing
-    verification) leaves the key uncovered, so the run fails closed
-    here instead of after the S2 mosaic in ``validate_ard``.
+    seeding dropped scenes would fail validation.
+
+    A manifest key counts as covered only once a done, contract-valid
+    reuse row with present COG/flag is staged or already seeded. Any
+    other manifest key — no source row, a non-done source row, or a done
+    row with an empty/missing COG or flag — is a *processing gap*: it is
+    reported in the ``gaps`` return value (full list of
+    ``{"scene_id", "source", "reason", "detail"}`` dicts, sorted, never
+    truncated) and, unless ``dry_run``, in the ``--gap-out`` JSON file,
+    while the verified rows are still written. The follow-up gap
+    ``run_ard`` pass processes exactly those scenes into the v10 root.
+
+    Still fail-closed (``RuntimeError`` before any write — neither the
+    ledger nor the gap file): a schema_version/schema_hash mismatch
+    against the current contracts, or a differing existing destination
+    row (refusing to overwrite).
 
     Returns a ``{"copied", "staged", "skipped_identical",
-    "skipped_not_in_manifest"}`` summary. Raises ``RuntimeError``
-    before any write on any failure.
+    "skipped_not_in_manifest", "gaps", "gap_count"}`` summary. The human
+    log line shows at most 10 gap keys; ``gaps`` and the gap file are
+    complete.
     """
     if not exists(source_ledger_uri):
         raise RuntimeError(f"source ledger missing: {source_ledger_uri}")
@@ -133,18 +180,29 @@ def seed(
     dest = Ledger.open(f"{dest_root.rstrip('/')}/ledger.parquet")
 
     staged: list[LedgerRow] = []
+    staged_keys: set[tuple[str, str]] = set()
     skipped_identical = 0
     skipped_not_in_manifest = 0
-    seen_manifest_keys: set[tuple[str, str]] = set()
+    gap_reasons: dict[tuple[str, str], dict] = {}
     errors: list[str] = []
+
+    def _note_gap(key: tuple[str, str], reason: str, detail: str) -> None:
+        if key not in staged_keys:
+            gap_reasons.setdefault(
+                key,
+                {"scene_id": key[0], "source": key[1], "reason": reason, "detail": detail},
+            )
+
     for reuse_source in REUSE_SOURCES:
         for row in source.scenes_for_source(reuse_source):
             key = (row.scene_id, row.source)
             if key not in manifest_keys:
                 skipped_not_in_manifest += 1
                 continue
+            if key in staged_keys:
+                continue
             if row.status != "done":
-                # Not covered: reported via the missing-key check below.
+                _note_gap(key, _GAP_NOT_DONE, f"status={row.status}")
                 continue
             expected_version = contract_for_source(reuse_source).schema_version
             if row.schema_version != expected_version:
@@ -160,19 +218,22 @@ def seed(
                     f"{row.schema_hash!r} != current contract {expected_hash!r}"
                 )
                 continue
-            for label in ("path_cog", "path_flag"):
-                uri = getattr(row, label)
-                if not uri:
-                    errors.append(f"{row.scene_id} [{reuse_source}]: missing {label}")
-                elif not exists(uri):
-                    errors.append(f"{row.scene_id} [{reuse_source}]: {label} missing: {uri}")
-            if any(e.startswith(f"{row.scene_id} [{reuse_source}]") for e in errors):
+            # Raw existence check on purpose (no legacy-bucket remapping):
+            # a stale gs://berlin-lst-data reference becomes a gap and is
+            # reprocessed into the v10 root; paths are never rewritten.
+            cog, flag = row.path_cog, row.path_flag
+            if not cog or not exists(cog):
+                _note_gap(key, _GAP_MISSING_COG, cog or "<empty path_cog>")
                 continue
-            seen_manifest_keys.add(key)
+            if not flag or not exists(flag):
+                _note_gap(key, _GAP_MISSING_FLAG, flag or "<empty path_flag>")
+                continue
+            gap_reasons.pop(key, None)
             existing = dest.get(row.scene_id, row.source)
             if existing is not None:
                 if _identity(existing) == _identity(row):
                     skipped_identical += 1
+                    staged_keys.add(key)
                 else:
                     errors.append(
                         f"{row.scene_id} [{reuse_source}]: destination row differs — "
@@ -180,14 +241,11 @@ def seed(
                     )
             else:
                 staged.append(row)
+                staged_keys.add(key)
 
-    missing = sorted(manifest_keys - seen_manifest_keys)
-    if missing:
-        shown = ", ".join(f"{sid} [{src}]" for sid, src in missing[:10])
-        errors.append(
-            f"{len(missing)} manifest reuse key(s) without a done reuse row: "
-            f"{shown} — these scenes need processing, not seeding"
-        )
+    for key in sorted(manifest_keys - staged_keys):
+        _note_gap(key, _GAP_MISSING_ROW, "no reuse row for this manifest key")
+    gaps = [gap_reasons[key] for key in sorted(gap_reasons)]
 
     if errors:
         raise RuntimeError(
@@ -197,11 +255,15 @@ def seed(
     if not dry_run:
         for row in staged:
             dest.upsert(row)
+        if gap_out:
+            atomic_write(gap_out, json.dumps({"gaps": gaps}, indent=2).encode())
     return {
         "copied": len(staged) if not dry_run else 0,
         "staged": len(staged),
         "skipped_identical": skipped_identical,
         "skipped_not_in_manifest": skipped_not_in_manifest,
+        "gaps": gaps,
+        "gap_count": len(gaps),
     }
 
 
@@ -210,20 +272,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-ledger", default=DEFAULT_SOURCE_LEDGER)
     parser.add_argument("--dest-root", default=DEFAULT_DEST_ROOT)
     parser.add_argument("--manifest-uri", default=DEFAULT_MANIFEST_URI)
+    parser.add_argument(
+        "--gap-out",
+        default=None,
+        help=(
+            "URI for the machine-readable gap list JSON "
+            "(default: <dest-root>/seed_gaps.json; use '' to skip writing)"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
+    gap_out = args.gap_out
+    if gap_out is None:
+        gap_out = f"{args.dest_root.rstrip('/')}/seed_gaps.json"
+    elif gap_out == "":
+        gap_out = None
     try:
-        summary = seed(args.source_ledger, args.dest_root, args.manifest_uri, dry_run=args.dry_run)
+        summary = seed(
+            args.source_ledger,
+            args.dest_root,
+            args.manifest_uri,
+            dry_run=args.dry_run,
+            gap_out=None if args.dry_run else gap_out,
+        )
     except RuntimeError as exc:
         print(f"FAIL: {exc}")
         return 1
     mode = "dry-run, nothing written" if args.dry_run else "seeded"
+    shown = ", ".join(
+        f"{g['scene_id']} [{g['source']}]" for g in summary["gaps"][:_SUMMARY_GAP_LIMIT]
+    )
     print(
         f"seed {mode}: staged={summary['staged']} copied={summary['copied']} "
         f"identical={summary['skipped_identical']} "
-        f"not_in_manifest={summary['skipped_not_in_manifest']}"
+        f"not_in_manifest={summary['skipped_not_in_manifest']} "
+        f"gaps={summary['gap_count']}"
+        + (f" gap_sample=[{shown}]" if summary["gap_count"] else "")
+        + (f" gap_out={gap_out}" if gap_out and not args.dry_run else "")
     )
+    if summary["gap_count"]:
+        # Full machine-readable gap list (never truncated) for the log.
+        print(f"GAPS_JSON: {json.dumps(summary['gaps'], sort_keys=True)}")
     return 0
 
 
