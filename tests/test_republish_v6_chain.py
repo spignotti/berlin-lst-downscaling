@@ -156,6 +156,7 @@ def test_no_v6_v3_config_references_a_published_old_root() -> None:
         "configs/selection/full_2017_2026_v4.yaml": ["output_root", "checkpoint_dir"],
         "configs/static_sources/v6.yaml": ["source_root"],
         "configs/static_derived/v6.yaml": ["source_root", "derived_root"],
+        "configs/lod_vintages/v6.yaml": ["raw_root", "source_root", "derived_root"],
     }
     for rel, keys in checked.items():
         cfg = OmegaConf.load(_REPO / rel)
@@ -232,7 +233,12 @@ def test_preflight_passes_with_all_upstream_markers(
         f"{TRAINING_V3}/manifest.parquet",
         f"{PATCH_INDEX_V3}/complete.json",
         "gs://berlin-lst-training-data/static/geometry_vintages/v1/geometry_mapping.json",
+        "gs://berlin-lst-training-data/lod_vintages/2017/LoD1_2017.zip",
+        "gs://berlin-lst-training-data/lod_vintages/2021/LoD2_BE_1_33_2021.zip",
+        "gs://berlin-lst-training-data/lod_vintages/2022/LoD2_2022.zip",
     }
+    present |= {uri for uri, _ in preflight.v6_vintage_horizon_uris()}
+    present |= {uri for uri, _ in preflight.v6_vintage_product_uris()}
     markers = {
         f"{TRAINING_V3}/complete.json": json.dumps({"policy_hash": "abc123"}),
         f"{PATCH_INDEX_V3}/complete.json": json.dumps(
@@ -243,8 +249,10 @@ def test_preflight_passes_with_all_upstream_markers(
     for step, config_dir, config_name in (
         ("ard_v10", "configs/ard", "sentinel2_mosaic_v10"),
         ("static_derived_v6", "configs/static_derived", "v6"),
+        ("lod_vintages_v6", "configs/lod_vintages", "v6"),
         ("dynamic_v6", "configs/dynamic", "v6"),
         ("features_v6", "configs/features", "v6"),
+        ("training_v3", "configs/training", "v3"),
     ):
         cfg = preflight._load_config(config_dir, config_name)
         assert preflight._failures_for(step, cfg) == [], f"{step} should pass, got failures"
@@ -1499,6 +1507,7 @@ def test_v6_launchers_derive_counts_from_the_v4_bundle() -> None:
         "run-ard-v10-vm.sh",
         "run-static-sources-v6-vm.sh",
         "run-static-derived-v6-vm.sh",
+        "run-lod-vintages-v6-vm.sh",
         "run-dynamic-v6-vm.sh",
         "run-features-v6-vm.sh",
         "run-training-v3-vm.sh",

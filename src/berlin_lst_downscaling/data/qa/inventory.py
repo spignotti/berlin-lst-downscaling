@@ -190,7 +190,12 @@ def build_inventory(
         dynamic_rows[(str(row["source"]), str(row["period_or_vintage"]))] = row
 
     # ── geometry mapping ───────────────────────────────────────────────
-    mapping_report = load_geometry_mapping(geometry_mapping_uri)
+    # Horizons resolve under the caller's derived root (v6 chain: v6
+    # horizons; legacy roots: full horizons via the default).
+    mapping_report = load_geometry_mapping(
+        geometry_mapping_uri,
+        derived_root=str(static_derived_root or "") or None,
+    )
     if not mapping_report.ok:
         errors.extend(mapping_report.errors)
     mapping = mapping_report.mapping

@@ -19,7 +19,7 @@ Usage
         --step features_v6 --config-dir configs/features --config-name v6
 
 Steps: selection_v4, ard_v10, static_sources_v6, static_derived_v6,
-dynamic_v6, features_v6, training_v3, patch_index_v3, eda_v3.
+lod_vintages_v6, dynamic_v6, features_v6, training_v3, patch_index_v3, eda_v3.
 """
 
 from __future__ import annotations
@@ -77,12 +77,135 @@ STEPS = (
     "ard_v10",
     "static_sources_v6",
     "static_derived_v6",
+    "lod_vintages_v6",
     "dynamic_v6",
     "features_v6",
     "training_v3",
     "patch_index_v3",
     "eda_v3",
 )
+
+
+# ── v6 LoD vintage evidence ───────────────────────────────────────────
+# Steps 5–7 (dynamic, features, training) resolve every scene year
+# through geometry_mapping v1, so they need the full per-vintage product
+# set in the v6 roots — not just the 2024 products steps 3–4 publish.
+# These helpers enumerate exactly those URIs so the preflights (and the
+# tests) can never disagree about the required evidence.
+
+V6_HISTORICAL_VINTAGES = (2017, 2021, 2022)
+V6_ALL_VINTAGES = (2017, 2021, 2022, 2024)
+
+# Morphology-derived products rebuilt per vintage by step 4b
+# (vegetation_dsm/horizon_vegetation are vintage-agnostic and reused
+# from the 2024 geometry bundle).
+_V6_PER_VINTAGE_DERIVED = ("building_dsm", "combined_dsm", "horizon_building", "svf")
+
+
+def _vintage_geometry_id(vintage: int) -> str:
+    return f"dgm1-2021__lod2-{vintage}__vh-2020"
+
+
+def v6_vintage_horizon_uris() -> list[tuple[str, str]]:
+    """(uri, label) for every horizon COG shadows resolve under v6."""
+    out: list[tuple[str, str]] = []
+    for vintage in V6_ALL_VINTAGES:
+        geometry_id = _vintage_geometry_id(vintage)
+        out.append(
+            (
+                f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_building/"
+                f"{geometry_id}/horizon_building_{geometry_id}.tif",
+                f"v6 horizon_building/{vintage} COG",
+            )
+        )
+        out.append(
+            (
+                f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_building/"
+                f"{geometry_id}/complete.json",
+                f"v6 horizon_building/{vintage} marker",
+            )
+        )
+    vegetation_geometry = _vintage_geometry_id(2024)
+    out.append(
+        (
+            f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_vegetation/"
+            f"{vegetation_geometry}/horizon_vegetation_{vegetation_geometry}.tif",
+            "v6 horizon_vegetation/2024 COG",
+        )
+    )
+    out.append(
+        (
+            f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_vegetation/"
+            f"{vegetation_geometry}/complete.json",
+            "v6 horizon_vegetation/2024 marker",
+        )
+    )
+    return out
+
+
+def v6_vintage_product_uris() -> list[tuple[str, str]]:
+    """(uri, label) for the full per-vintage evidence steps 6–7 consume."""
+    out: list[tuple[str, str]] = []
+    for vintage in V6_ALL_VINTAGES:
+        out.append(
+            (
+                f"{STATIC_SOURCES_V6}/ard/static/sources/lod2_morphology/"
+                f"{vintage}/lod2_morphology_{vintage}.tif",
+                f"v6 lod2_morphology/{vintage} COG",
+            )
+        )
+        out.append(
+            (
+                f"{STATIC_SOURCES_V6}/ard/static/sources/lod2_morphology/{vintage}/complete.json",
+                f"v6 lod2_morphology/{vintage} marker",
+            )
+        )
+    for vintage in V6_HISTORICAL_VINTAGES:
+        out.append(
+            (
+                f"{STATIC_SOURCES_V6}/ard/static/sources/lod_vintages/raw_manifest_{vintage}.json",
+                f"v6 raw_manifest_{vintage}",
+            )
+        )
+    out.append(
+        (
+            f"{STATIC_SOURCES_V6}/ard/static/sources/lod2_morphology/2024/provenance.json",
+            "v6 lod2_morphology/2024 provenance",
+        )
+    )
+    for vintage in V6_ALL_VINTAGES:
+        geometry_id = _vintage_geometry_id(vintage)
+        for product in _V6_PER_VINTAGE_DERIVED:
+            out.append(
+                (
+                    f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/"
+                    f"{geometry_id}/{product}_{geometry_id}.tif",
+                    f"v6 {product}/{vintage} COG",
+                )
+            )
+            out.append(
+                (
+                    f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/{geometry_id}/complete.json",
+                    f"v6 {product}/{vintage} marker",
+                )
+            )
+    vegetation_geometry = _vintage_geometry_id(2024)
+    for product in ("vegetation_dsm", "horizon_vegetation"):
+        out.append(
+            (
+                f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/"
+                f"{vegetation_geometry}/{product}_{vegetation_geometry}.tif",
+                f"v6 {product}/2024 COG",
+            )
+        )
+        out.append(
+            (
+                f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/"
+                f"{vegetation_geometry}/complete.json",
+                f"v6 {product}/2024 marker",
+            )
+        )
+    return out
 
 
 def _load_config(config_dir: str, config_name: str):
@@ -138,6 +261,36 @@ def _failures_for(step: str, cfg) -> list[str]:
         want_root(cfg.get("source_root"), STATIC_SOURCES_V6, "source_root")
         want_root(cfg.get("derived_root"), STATIC_DERIVED_V6, "derived_root")
         need(f"{STATIC_SOURCES_V6}/ledger.parquet", "static-sources v6 ledger")
+    elif step == "lod_vintages_v6":
+        want_root(cfg.get("source_root"), STATIC_SOURCES_V6, "source_root")
+        want_root(cfg.get("derived_root"), STATIC_DERIVED_V6, "derived_root")
+        want_root(
+            cfg.get("raw_root"),
+            "gs://berlin-lst-training-data",
+            "raw_root",
+        )
+        vintages = sorted(int(v) for v in list(cfg.get("vintages", [])))
+        if vintages != [2017, 2021, 2022]:
+            failures.append(f"vintages is {vintages!r}, expected [2017, 2021, 2022]")
+        if int(cfg.get("svf_max_radius", -1)) != 10:
+            failures.append(f"svf_max_radius is {cfg.get('svf_max_radius')!r}, expected 10 (100 m)")
+        if int(cfg.get("svf_n_directions", -1)) != 16:
+            failures.append(f"svf_n_directions is {cfg.get('svf_n_directions')!r}, expected 16")
+        need(f"{STATIC_SOURCES_V6}/ledger.parquet", "static-sources v6 ledger")
+        need(
+            f"{STATIC_DERIVED_V6}/_state/static/derived/ledger.parquet",
+            "static-derived v6 ledger",
+        )
+        need(GEOMETRY_MAPPING, "geometry mapping")
+        for vintage, archive in (
+            (2017, "LoD1_2017.zip"),
+            (2021, "LoD2_BE_1_33_2021.zip"),
+            (2022, "LoD2_2022.zip"),
+        ):
+            need(
+                f"gs://berlin-lst-training-data/lod_vintages/{vintage}/{archive}",
+                f"raw archive {vintage}",
+            )
     elif step == "dynamic_v6":
         want_root(cfg.get("output_root"), DYNAMIC_V6, "output_root")
         want_root(cfg.get("source_root"), STATIC_SOURCES_V6, "source_root")
@@ -153,6 +306,8 @@ def _failures_for(step: str, cfg) -> list[str]:
             f"{STATIC_DERIVED_V6}/_state/static/derived/ledger.parquet",
             "static-derived v6 ledger",
         )
+        for uri, label in v6_vintage_horizon_uris():
+            need(uri, label)
     elif step == "features_v6":
         want_root(cfg.get("output_root"), FEATURES_V6, "output_root")
         want_root(cfg.get("ard_root"), ARD_V10_ROOT, "ard_root")
@@ -175,6 +330,8 @@ def _failures_for(step: str, cfg) -> list[str]:
             f"{DYNAMIC_V6}/_state/dynamic/ledger.parquet",
             "dynamic v6 ledger",
         )
+        for uri, label in v6_vintage_product_uris():
+            need(uri, label)
         from berlin_lst_downscaling.data.ard.publish_guard import (
             FrozenPrefixError,
             assert_feature_output_root,
@@ -201,6 +358,9 @@ def _failures_for(step: str, cfg) -> list[str]:
         need(f"{FEATURES_V6}/ledger.parquet", "features/v6 ledger")
         need(f"{ARD_V10_ROOT}/ledger.parquet", "ARD v10 ledger")
         need(MANIFEST_V4_URI, "v4 manifest.parquet")
+        need(GEOMETRY_MAPPING, "geometry mapping")
+        for uri, label in v6_vintage_product_uris():
+            need(uri, label)
         if exists(f"{TRAINING_V3}/complete.json"):
             failures.append(
                 f"training/v3 already published ({TRAINING_V3}/complete.json) — "

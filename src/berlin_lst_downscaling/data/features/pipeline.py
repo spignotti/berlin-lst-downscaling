@@ -201,7 +201,10 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
     if not inventory.ok:
         raise RuntimeError(f"Feature inventory failed: {inventory.errors}")
 
-    mapping_report = load_geometry_mapping(geometry_mapping_uri)
+    mapping_report = load_geometry_mapping(
+        geometry_mapping_uri,
+        derived_root=str(cfg.get("static_derived_root") or "") or None,
+    )
     if not mapping_report.ok or mapping_report.mapping is None:
         raise RuntimeError(f"Geometry mapping failed: {mapping_report.errors}")
     mapping = mapping_report.mapping

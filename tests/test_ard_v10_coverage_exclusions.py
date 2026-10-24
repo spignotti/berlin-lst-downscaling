@@ -514,7 +514,7 @@ def test_features_run_skips_gate_excluded_pairing_without_ledger_row(tmp_path, m
     monkeypatch.setattr(
         fp,
         "load_geometry_mapping",
-        lambda uri: SimpleNamespace(
+        lambda uri, **kwargs: SimpleNamespace(
             ok=True,
             mapping=SimpleNamespace(vintages={2024: {"geometry_id": "g-veg"}}, content_hash="m"),
         ),
