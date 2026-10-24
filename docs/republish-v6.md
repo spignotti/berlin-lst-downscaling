@@ -19,23 +19,34 @@ Step 2 automates the seeding: `run-ard-v10-vm.sh` first runs
 verified `done` Landsat/ECOSTRESS rows present in the v4 bundle into the
 new v10 ledger (COGs stay referenced in place, no COG is copied) and
 records every other v4 reuse key — missing row, non-done row, or done
-row with an empty/missing COG/flag — as a processing gap in the full
-machine-readable gap list (`seed_gaps.json` plus `GAPS_JSON` in the log;
-the human summary line shows at most 10). The 6 ECOSTRESS reuse rows that
-reference the retired `gs://berlin-lst-data` bucket (pre-cutover
-provenance, see `src/berlin_lst_downscaling/data/io/uri_mapping.py` and
-`docs/gcs-inventory-and-transfer.md`) fail the raw existence check on
-purpose and become gaps: their scenes are reprocessed into the v10 root
-with the current contracts rather than carrying stale URIs forward, and
-paths are never rewritten. The launcher then runs the S2-only `run_ard`
-(warm mosaic config, keeps seeded rows, processes only S2) followed by
-the `landsat_ecostress_v10` gap pass (same contracts, schema, and policy
-hash), which processes exactly the gap scenes into the v10 root — a rerun
-is a no-op for seeded and processed rows. Contract/hash mismatches and
-refusals to overwrite a differing existing row stay hard errors: the seed
-writes nothing (neither ledger nor gap file) and aborts. If either
-contract ever bumps, the seeded rows must instead be reprocessed into a
-new root.
+row with an empty COG/flag or a COG/flag missing at its resolved
+canonical URI — as a processing gap in the full machine-readable gap
+list (`seed_gaps.json` plus `GAPS_JSON` in the log; the human summary
+line shows at most 10). Existence is checked on
+`resolve_canonical_uri(path)` (`src/berlin_lst_downscaling/data/io/uri_mapping.py`,
+see `docs/gcs-inventory-and-transfer.md`): the 6 ECOSTRESS reuse rows
+that reference the retired `gs://berlin-lst-data` bucket (pre-cutover
+provenance) verify against their byte-identical copies under the
+canonical bucket and are seeded with the stored URIs kept unchanged as
+provenance — downstream readers resolve stored URIs at read time, and
+paths are never rewritten. Seeding them (instead of gap-processing)
+matters because the gap pass would need a NASA Earthdata login
+(`earthaccess.login()`), which does not exist on the VM, so those
+scenes could not be reprocessed and `validate_ard` would fail. A
+`gs://` URI on any other (foreign) bucket aborts the seed fail-closed
+— a hard error, never a gap — consistent with `uri_mapping`'s
+fail-closed intent. A non-done (failed/pending) destination row for a
+key that now verifies from the reuse ledger is replaced by the verified
+reuse row (logged), while a differing `done` destination row still
+aborts the seed before anything is written. The launcher then runs the
+S2-only `run_ard` (warm mosaic config, keeps seeded rows, processes
+only S2) followed by the `landsat_ecostress_v10` gap pass (same
+contracts, schema, and policy hash), which processes exactly the gap
+scenes into the v10 root — a rerun is a no-op for seeded and processed
+rows. Contract/hash mismatches and refusals to overwrite a differing
+existing row stay hard errors: the seed writes nothing (neither ledger
+nor gap file) and aborts. If either contract ever bumps, the seeded rows
+must instead be reprocessed into a new root.
 
 ## Run order and launcher commands
 
