@@ -263,6 +263,12 @@ def _check_manifest(
         # The two cold 2022 scenes are an explicit denylist: excluded
         # before eligibility, with no mask and no cells.
         reason = str(cols["exclusion_reason"][i])
+        # A gate-exclusion reason on a non-excluded row is inconsistent:
+        # these pairings publish no mask and are recorded as excluded.
+        if reason == _S2_GATE_EXCLUSION_REASON and str(cols["status"][i]) != "excluded":
+            errors.append(
+                f"{sid}: S2 gate exclusion must have status 'excluded', got {cols['status'][i]!r}"
+            )
         if split == "inference":
             if reason != INFERENCE_DEFERRED_REASON:
                 errors.append(
@@ -287,9 +293,14 @@ def _check_manifest(
             if reason == _S2_GATE_EXCLUSION_REASON:
                 # ARD v10 coverage-gate exclusion: documented, never
                 # silent — accepted only with --ard-ledger proof for
-                # this scene.
+                # this scene, with status excluded and no asset refs
+                # (no mask is published for these pairings).
                 if s2_gate_excluded is None or sid not in s2_gate_excluded:
                     errors.append(f"{sid}: S2 gate exclusion without --ard-ledger proof")
+                else:
+                    for field in ("feature_stack", "feature_valid", "eligibility_mask"):
+                        if cols[field][i] not in ("", None):
+                            errors.append(f"{sid}: S2 gate exclusion publishes {field}")
             elif reason != NO_ELIGIBLE_CELLS_REASON:
                 errors.append(
                     f"{sid}: excluded reason {reason!r}, expected {NO_ELIGIBLE_CELLS_REASON!r}"

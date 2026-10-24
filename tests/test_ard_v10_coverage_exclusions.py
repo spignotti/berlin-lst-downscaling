@@ -729,6 +729,36 @@ def test_training_manifest_rejects_unproven_gate_exclusion(tmp_path) -> None:
     assert any("without --ard-ledger proof" in e for e in errors2)
 
 
+def test_training_manifest_rejects_gate_exclusion_with_published_status(tmp_path) -> None:
+    """A gate reason on a non-excluded row is a hard error."""
+    module = _load_validator_module("validate_training_data_manifest4", "validate_training_data.py")
+    _write_training_release(
+        tmp_path,
+        [
+            _training_row("A21", 2021, "train", "published", 5, ""),
+            _training_row("B21", 2021, "train", "published", 5, "ard sentinel2 not done"),
+        ],
+    )
+    errors: list[str] = []
+    module._check_manifest(str(tmp_path), errors, [], None, s2_gate_excluded={"B21"})
+    assert any("must have status 'excluded'" in e for e in errors)
+
+
+def test_training_manifest_rejects_gate_exclusion_publishing_refs(tmp_path) -> None:
+    """A gate-excluded row carrying asset refs is a hard error (no mask
+    is published for these pairings)."""
+    module = _load_validator_module("validate_training_data_manifest5", "validate_training_data.py")
+    row = _training_row("B21", 2021, "train", "excluded", 0, "ard sentinel2 not done")
+    row["eligibility_mask"] = "training/v3/L2021B/mask.tif"
+    _write_training_release(
+        tmp_path,
+        [_training_row("A21", 2021, "train", "published", 5, ""), row],
+    )
+    errors: list[str] = []
+    module._check_manifest(str(tmp_path), errors, [], None, s2_gate_excluded={"B21"})
+    assert any("publishes eligibility_mask" in e for e in errors)
+
+
 def test_training_manifest_rejects_unknown_exclusion_reason(tmp_path) -> None:
     """A non-gate, non-contract exclusion reason still fails."""
     module = _load_validator_module("validate_training_data_manifest3", "validate_training_data.py")
