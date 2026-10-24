@@ -138,7 +138,16 @@ the 100 m² cell, clipped to `[0, 1]` after overlapping footprints are
 summed. Mean and standard deviation of height are area-weighted. A
 building that misses every cell center still contributes its intersection.
 The LoD2 morphology config hash prefix is `lod2_morphology:v2:` and the
-contract schema version is 3. The 2017, 2021, 2022, and 2024 morphology
+contract schema version is 3. Value ranges admit physically real Berlin
+structures: `building_height_mean`/`building_height_max` in `[0, 400]` m
+and `building_height_std` in `[0, 200]` m, because the Fernsehturm
+(368 m incl. antenna, sphere at ~200–250 m) is part of the official LoD2
+stock (13 cells exceed 200 m mean, 18 cells exceed 200 m max at
+lon 13.4092–13.4096, lat 52.5206–52.5210; p99.99 of the mean is 83.8 m).
+No clamping, no data change; negative/NaN stay invalid. The published
+v5 feature roster keeps its frozen `[0, 200]`/`[0, 100]` ranges; only
+the unpublished v6 model input (`building_height_mean`) is widened to
+`[0, 400]` m. The 2017, 2021, 2022, and 2024 morphology
 products, the building DSM, the combined DSM, building horizons,
 building shadows, and SVF are rebuilt before features/v6. `total_buildings`
 in the morphology QA payload is the number of emitted units.

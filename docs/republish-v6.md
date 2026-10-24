@@ -55,6 +55,40 @@ must instead be reprocessed into a new root.
 | 1 | Selection v4 bundle | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-selection-v4-vm.sh main` | `configs/selection/full_2017_2026_v4.yaml` | `manifests/v4/2017-2026-cutoff-20260717T235959Z/{manifest.parquet,pairings.parquet,manifest_report.json}` |
 | 2 | S2 ARD v10 + Landsat/ECOSTRESS gaps | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-ard-v10-vm.sh main` | `configs/ard/sentinel2_mosaic_v10.yaml` (`manifest_uri=` v4 bundle) then `configs/ard/landsat_ecostress_v10.yaml` (same roots) | `ard/full/2017-2026-s2-mosaic-v10/{*.cog,ledger.parquet,seed_gaps.json,...}` (S2 new; Landsat/ECOSTRESS seeded where verified, gap scenes processed, see above) |
 | 3 | Static sources v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-sources-v6-vm.sh main` | `configs/static_sources/v6.yaml` | `static/sources/lod2-area-exact-v2/{ledger.parquet,...}` (LoD2 area-exact v2 incl. BuildingPart, canopy cover; imperviousness COGs stay published v3, newly pointed at) |
+
+Step 3 is fail-closed after the 2026-10-24 run
+(`static-sources-v6-20261024T084409Z-DC2E5B3B`): that run printed
+success with exit 0 while the ledger held `lod2_morphology/2024 =
+FAILED` (`building_height_mean` max 250.56 m, `std` max 108.82 m,
+`max` max 253.48 m — all at the Fernsehturm, lon 13.4092–13.4096, lat
+52.5206–52.5210 — rejected by the old `[0, 200]`/`[0, 100]` contract).
+Fixes on this branch:
+
+- LoD2 value ranges admit the Fernsehturm (mean/max `[0, 400]` m, std
+  `[0, 200]` m; `src/.../secondary/lod2.py`, feature contracts, and
+  `docs/data-sources-and-contracts.md`). No clamping, no data change.
+- `run_sources` ends with a ledger audit: any expected row not `done`
+  (or `done` without resolvable COG/completion marker) prints `FAIL`
+  and returns 1, so the remote command exits non-zero.
+- The launcher gates on the new
+  `scripts/operators/check_static_sources_ledger.py` (every ledger row
+  `done`, else `FAIL` + exit 1) before validation.
+- Validation is `--vintages 2024`: the v6 release publishes only the
+  2024 ATOM-feed product, so its coverage comes from its own
+  `lod2_morphology/2024/provenance.json`. The 2017/2021/2022 raw
+  manifests live only in older releases
+  (`static/sources/full`, `imperviousness-v3`); the validator and
+  `resolve_lod_coverage_artifacts(..., vintages=...)` still check them
+  for full roots, and fail closed (FINDINGS + exit 1, never a 404
+  traceback) when evidence is missing. The historical
+  `lod2_morphology/{2017,2021,2022}` area-exact rebuild into the v6
+  root remains a prerequisite before step 6 (features resolve every
+  scene year via `geometry_mapping.json`).
+- Rerun idempotency: `reconcile()` skips `done` rows with matching
+  config hash and present output/completion markers, retries `failed`
+  rows, and `finalize_secondary_product` overwrites the already-written
+  COG atomically — rerunning the launcher redoes only the failed
+  `lod2_morphology/2024` row and safely replaces its COG.
 | 4 | Static derived v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-derived-v6-vm.sh main` | `configs/static_derived/v6.yaml` (`svf_max_radius: 10`, i.e. 100 m) | `static/derived/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (building/vegetation/combined DSMs, horizons, SVF) |
 | 5 | Dynamic v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-v6-vm.sh main` | `configs/dynamic/v6.yaml` (`manifest_uri=` v4 bundle) | `dynamic/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (shadows, ERA5 scene_value) |
 | 6 | Features v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-v6-vm.sh main` | `configs/features/v6.yaml` (ARD v10 + v4 manifest) | `features/v6/{<scene_id>/*.cog,ledger.parquet,qa/...}` (22-channel roster) |
@@ -107,7 +141,10 @@ after each run.
       (step 2, `validate_ard.py --ledger … --manifest …`, whose per-source
       done counts fail a skipped gap pass);
     - steps 3–4: `ledger.parquet` under the release root
-      (`_state/...` for derived), all rows `done`;
+      (`_state/...` for derived), all rows `done` (step 3 also gates on
+      `check_static_sources_ledger.py` and validates 2024 coverage only:
+      `validate_lod_coverage.py --static-sources-root <release>
+      --vintages 2024`);
     - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
       `validate_dynamic.py --output-root … --expected-role anchor
       --expected-scenes-from-manifest <v4 manifest>` (derived from the v4

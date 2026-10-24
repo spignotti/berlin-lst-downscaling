@@ -42,16 +42,25 @@ vm_poll
 vm_finish
 
 VALIDATION_OK=1
+LEDGER_OK=1
 if [[ "$PIPELINE_EXIT" == "0" ]]; then
-  echo "Validating $OUTPUT_ROOT ..."
+  echo "Checking static-sources ledger (fail-closed)..."
+  uv run python scripts/operators/check_static_sources_ledger.py \
+    --source-root "$OUTPUT_ROOT" \
+    && LEDGER_OK=0 || LEDGER_OK=1
+fi
+
+if [[ "$LEDGER_OK" -eq 0 ]]; then
+  echo "Validating $OUTPUT_ROOT (2024 coverage only; historical lod2_morphology vintages live in older releases) ..."
   uv run python scripts/validators/validate_lod_coverage.py \
     --static-sources-root "$OUTPUT_ROOT" \
+    --vintages 2024 \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 
 vm_stop
 
-if [[ "$VALIDATION_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
+if [[ "$VALIDATION_OK" -eq 0 && "$LEDGER_OK" -eq 0 && "$PIPELINE_EXIT" == "0" ]]; then
   echo "SUCCESS: static sources v6 published and validated."
   echo "  Release: $OUTPUT_ROOT"
 else
