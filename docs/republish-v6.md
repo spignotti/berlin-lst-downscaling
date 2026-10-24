@@ -111,7 +111,20 @@ after each run.
       missing fraction and the release passes only if every non-done S2 row
       is such a gate exclusion and all Landsat/ECOSTRESS rows are done
       (ledger keeps `status="failed"`, no schema change; see
-      `src/berlin_lst_downscaling/data/ard/coverage_gate.py`). The launcher
+      `src/berlin_lst_downscaling/data/ard/coverage_gate.py`). ARD v10 run3
+      (run `ard-v10-20261024T040705Z-83AB242C`, release
+      `gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10`)
+      has exactly two such exclusions, confirmed against the v4 bundle
+      (`pairings.parquet`, 290 rows): 4 pairings use the two excluded S2
+      scenes, so 286 pairings remain —
+      `LC08_L2SP_193023_20210816_02_T1` and
+      `LC08_L2SP_193024_20210816_02_T1` ↔
+      `S2A_MSIL2A_20210814T102031_R065_T32UQD_20210814T215405` (missing
+      560178/8922403 AOI px, 6.28 %), `LC09_L2SP_192023_20230503_02_T1` and
+      `LC09_L2SP_192024_20230503_02_T1` ↔
+      `S2A_MSIL2A_20230503T101021_R022_T32UQD_20240905T123554` (missing
+      1629098/8922403 AOI px, 18.26 %). The 4 excluded pairings drop out of
+      features v6 (see step 6); no replacement S2 partner is picked. The launcher
       and validator point GDAL at Application Default Credentials when no
       GDAL GCS credential is set, so `gs://` COG reads work on the operator
       Mac without manual env setup;
