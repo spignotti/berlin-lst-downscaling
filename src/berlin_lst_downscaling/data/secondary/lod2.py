@@ -89,7 +89,14 @@ _CONFIG_HASH_PREFIX = "lod2_morphology:v2:"
 
 
 def contract_for_lod2_morphology() -> Contract:
-    """Return the output Contract for LoD2 morphology COGs (4 bands)."""
+    """Return the output Contract for LoD2 morphology COGs (4 bands).
+
+    Height bounds admit physically real Berlin structures: the Fernsehturm
+    (TV tower, 368 m incl. antenna, sphere at ~200–250 m) is part of the
+    official LoD2 stock, so ``building_height_mean``/``max`` admit
+    [0, 400] m and ``building_height_std`` admits [0, 200] m. No clamping:
+    out-of-range finite values fail validation; negative/NaN stay invalid.
+    """
     return Contract(
         source="lod2_morphology",
         target_crs="EPSG:25833",
@@ -103,7 +110,7 @@ def contract_for_lod2_morphology() -> Contract:
                     "Weight is the footprint intersection with the 10 m cell."
                 ),
                 unit="m",
-                valid_range=(0.0, 200.0),
+                valid_range=(0.0, 400.0),
             ),
             BandSpec(
                 name="building_height_std",
@@ -114,7 +121,7 @@ def contract_for_lod2_morphology() -> Contract:
                     "heights in the cell. Zero when one building intersects it."
                 ),
                 unit="m",
-                valid_range=(0.0, 100.0),
+                valid_range=(0.0, 200.0),
             ),
             BandSpec(
                 name="building_coverage_ratio",
@@ -133,7 +140,7 @@ def contract_for_lod2_morphology() -> Contract:
                 nodata=float("nan"),
                 description="Maximum building height in cell (for DSM derivation)",
                 unit="m",
-                valid_range=(0.0, 200.0),
+                valid_range=(0.0, 400.0),
             ),
         ),
         tiling=TilingSpec(),

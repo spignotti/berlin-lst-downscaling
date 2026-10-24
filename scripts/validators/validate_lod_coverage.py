@@ -72,6 +72,15 @@ def _manifest_members(uri: str) -> list[str]:
     return [str(x) for x in members]
 
 
+def _read_manifest_members(uri: str, findings: list[str]) -> list[str] | None:
+    """Read a raw manifest, recording a finding (not a crash) on failure."""
+    try:
+        return _manifest_members(uri)
+    except Exception as exc:
+        findings.append(f"raw manifest unreadable {uri}: {exc}")
+        return None
+
+
 def _coverage_mask(tile_keys: set[str], grid: GeoBox) -> np.ndarray:
     """Recompute the centre-in-tile coverage mask (independent of the composer)."""
     key_codes = np.array(
@@ -153,6 +162,7 @@ def _check_vintage(
     if np.any(mixed):
         n = int(np.sum(mixed))
         findings.append(f"vintage {vintage}: mixed finite/NaN LoD state on {n} px")
+        print(f"  ✗ vintage {vintage}: mixed finite/NaN LoD state on {n} px")
         raise SystemExit(1)
 
     finite = ~all_nan
@@ -197,7 +207,26 @@ def main() -> int:
         default=None,
         help="Optional WGS84 bbox west,south,east,north for a bounded check",
     )
+    parser.add_argument(
+        "--vintages",
+        default="2017,2021,2022,2024",
+        help=(
+            "Comma-separated LoD vintages to validate. The v6 release "
+            "publishes only the 2024 ATOM-feed product, so its launcher "
+            "passes '--vintages 2024'; full historical roots keep the default."
+        ),
+    )
     args = parser.parse_args()
+
+    try:
+        wanted = tuple(sorted({int(v.strip()) for v in str(args.vintages).split(",") if v.strip()}))
+    except ValueError:
+        print(f"FINDINGS:\n  ✗ cannot parse --vintages {args.vintages!r}")
+        return 1
+    unknown = [v for v in wanted if v not in (2017, 2021, 2022, 2024)]
+    if unknown:
+        print(f"FINDINGS:\n  ✗ unsupported vintages: {unknown}")
+        return 1
 
     root = args.static_sources_root.rstrip("/")
     if args.bbox:
@@ -209,64 +238,91 @@ def main() -> int:
     findings: list[str] = []
     all_counts: dict[int, dict] = {}
 
+    def _run_check(vintage: int, keys: set[str], cog: str) -> None:
+        try:
+            all_counts[vintage] = _check_vintage(
+                vintage, keys, cog, grid, aoi, _provenance_tile_count(root, vintage), findings
+            )
+        except SystemExit:
+            raise
+        except Exception as exc:
+            findings.append(f"vintage {vintage}: cannot check {cog}: {exc}")
+
     # ── 2021 / 2022 ──────────────────────────────────────────────────
+    manifest_cache: dict[int, list[str] | None] = {}
     for vintage in (2021, 2022):
+        if vintage not in wanted:
+            continue
         uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_{vintage}.json"
-        members = _manifest_members(uri)
+        members = _read_manifest_members(uri, findings)
+        manifest_cache[vintage] = members
+        if members is None:
+            continue
         if len(members) != _EXPECTED_MEMBERS[vintage]:
             findings.append(
                 f"raw manifest {uri}: {len(members)} members, expected {_EXPECTED_MEMBERS[vintage]}"
             )
         keys = {_tile_key(m, lod1=False) for m in members}
         cog = f"{root}/ard/static/sources/lod2_morphology/{vintage}/lod2_morphology_{vintage}.tif"
-        all_counts[vintage] = _check_vintage(
-            vintage, keys, cog, grid, aoi, _provenance_tile_count(root, vintage), findings
-        )
+        _run_check(vintage, keys, cog)
 
     # ── 2017: LoD1 ∩ LoD2 ────────────────────────────────────────────
-    lod1_uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_2017.json"
-    lod1_members = _manifest_members(lod1_uri)
-    if len(lod1_members) != _EXPECTED_MEMBERS[2017]:
-        findings.append(
-            f"raw manifest {lod1_uri}: {len(lod1_members)} members, "
-            f"expected {_EXPECTED_MEMBERS[2017]}"
-        )
-    lod1_keys = {_tile_key(m, lod1=True) for m in lod1_members}
-    lod2_2021 = {
-        _tile_key(m, lod1=False)
-        for m in _manifest_members(f"{root}/ard/static/sources/lod_vintages/raw_manifest_2021.json")
-    }
-    keys_2017 = lod1_keys & lod2_2021
-    if not keys_2017:
-        findings.append("2017: empty LoD1 ∩ LoD2 tile intersection")
-    cog = f"{root}/ard/static/sources/lod2_morphology/2017/lod2_morphology_2017.tif"
-    all_counts[2017] = _check_vintage(
-        2017, keys_2017, cog, grid, aoi, _provenance_tile_count(root, 2017), findings
-    )
+    if 2017 in wanted:
+        lod1_uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_2017.json"
+        lod1_members = _read_manifest_members(lod1_uri, findings)
+        if manifest_cache.get(2021) is None and 2021 not in manifest_cache:
+            manifest_cache[2021] = _read_manifest_members(
+                f"{root}/ard/static/sources/lod_vintages/raw_manifest_2021.json", findings
+            )
+        lod2_members = manifest_cache.get(2021)
+        if lod1_members is None or not lod2_members:
+            if lod1_members is not None and not lod2_members:
+                findings.append("2017: LoD2-2021 manifest unavailable for intersection")
+        else:
+            if len(lod1_members) != _EXPECTED_MEMBERS[2017]:
+                findings.append(
+                    f"raw manifest {lod1_uri}: {len(lod1_members)} members, "
+                    f"expected {_EXPECTED_MEMBERS[2017]}"
+                )
+            lod1_keys = {_tile_key(m, lod1=True) for m in lod1_members}
+            lod2_2021 = {_tile_key(m, lod1=False) for m in lod2_members}
+            keys_2017 = lod1_keys & lod2_2021
+            if not keys_2017:
+                findings.append("2017: empty LoD1 ∩ LoD2 tile intersection")
+            else:
+                cog = f"{root}/ard/static/sources/lod2_morphology/2017/lod2_morphology_2017.tif"
+                _run_check(2017, keys_2017, cog)
 
     # ── 2024: provenance tile receipts ───────────────────────────────
-    prov_uri = f"{root}/ard/static/sources/lod2_morphology/2024/provenance.json"
-    prov = json.loads(read_bytes(prov_uri))
-    tiles = (prov.get("source_metadata") or {}).get("tiles")
-    if not isinstance(tiles, list) or not tiles:
-        findings.append(f"LoD provenance {prov_uri} has no source_metadata.tiles")
+    if 2024 in wanted:
+        prov_uri = f"{root}/ard/static/sources/lod2_morphology/2024/provenance.json"
+        try:
+            prov = json.loads(read_bytes(prov_uri))
+        except Exception as exc:
+            findings.append(f"LoD provenance unreadable {prov_uri}: {exc}")
+            prov = None
         keys_2024: set[str] = set()
-    else:
-        keys_2024 = {f"{t['easting'] // 1000}_{t['northing'] // 1000}" for t in tiles}
-        if len(keys_2024) != _EXPECTED_TILES_2024:
-            findings.append(
-                f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, "
-                f"expected {_EXPECTED_TILES_2024}"
-            )
-    cog = f"{root}/ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif"
-    all_counts[2024] = _check_vintage(
-        2024, keys_2024, cog, grid, aoi, _provenance_tile_count(root, 2024), findings
-    )
+        if prov is not None:
+            tiles = (prov.get("source_metadata") or {}).get("tiles")
+            if not isinstance(tiles, list) or not tiles:
+                findings.append(f"LoD provenance {prov_uri} has no source_metadata.tiles")
+            else:
+                keys_2024 = {f"{t['easting'] // 1000}_{t['northing'] // 1000}" for t in tiles}
+                if len(keys_2024) != _EXPECTED_TILES_2024:
+                    findings.append(
+                        f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, "
+                        f"expected {_EXPECTED_TILES_2024}"
+                    )
+        cog = f"{root}/ard/static/sources/lod2_morphology/2024/lod2_morphology_2024.tif"
+        _run_check(2024, keys_2024, cog)
 
     if findings:
         print("FINDINGS:")
         for f in findings:
             print(f"  ✗ {f}")
+        return 1
+    if not all_counts:
+        print("FINDINGS:\n  ✗ no vintages checked")
         return 1
     print(f"OK: LoD coverage evidence consistent across vintages {sorted(all_counts)}.")
     return 0

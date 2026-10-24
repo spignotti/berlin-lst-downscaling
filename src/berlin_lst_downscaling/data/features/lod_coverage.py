@@ -115,17 +115,43 @@ def _cog_uri(root: str, vintage: int) -> str:
     return f"{root}/ard/static/sources/lod2_morphology/{vintage}/lod2_morphology_{vintage}.tif"
 
 
-def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCoverageArtifact]:
+def resolve_lod_coverage_artifacts(
+    static_sources_root: str,
+    vintages: tuple[int, ...] = COVERAGE_VINTAGES,
+) -> dict[int, LoDCoverageArtifact]:
     """Resolve the per-vintage LoD coverage artifacts from published evidence.
 
     Raises ``ValueError`` on missing/malformed artifacts or unexpected
     member/tile counts — a run must never proceed on guessed coverage.
+
+    Parameters
+    ----------
+    static_sources_root :
+        Published static source root holding both the raw archive
+        manifests and the ``lod2_morphology`` source COGs.
+    vintages :
+        Subset of :data:`COVERAGE_VINTAGES` to resolve. The v6 release
+        publishes only the 2024 ATOM-feed product, so its launcher
+        validates ``vintages=(2024,)``; the full historical roots resolve
+        all four. Requesting 2017 requires 2021 (the 2017 coverage is the
+        LoD1-2017 ∩ LoD2-2021 intersection).
     """
+    wanted = tuple(vintages)
+    unknown = [v for v in wanted if v not in COVERAGE_VINTAGES]
+    if unknown:
+        raise ValueError(f"unsupported LoD vintages: {unknown}")
+    requested = tuple(wanted)
+    if 2017 in wanted and 2021 not in wanted:
+        # The 2017 stock filter needs the LoD2-2021 geometry manifest even
+        # when the caller only wants 2017 coverage.
+        wanted = tuple(sorted(set(wanted) | {2021}))
     root = static_sources_root.rstrip("/")
     out: dict[int, LoDCoverageArtifact] = {}
 
     # ── 2021 / 2022: raw archive manifests ────────────────────────────
     for vintage in (2021, 2022):
+        if vintage not in wanted:
+            continue
         uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_{vintage}.json"
         members = _manifest_members(uri)
         if len(members) != _EXPECTED_MEMBERS[vintage]:
@@ -146,57 +172,60 @@ def resolve_lod_coverage_artifacts(static_sources_root: str) -> dict[int, LoDCov
         )
 
     # ── 2017: LoD1-2017 stock ∩ LoD2-2021 geometry ────────────────────
-    lod1_uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_2017.json"
-    lod1_members = _manifest_members(lod1_uri)
-    if len(lod1_members) != _EXPECTED_MEMBERS[2017]:
-        raise ValueError(
-            f"raw manifest {lod1_uri}: {len(lod1_members)} members, "
-            f"expected {_EXPECTED_MEMBERS[2017]}"
+    if 2017 in wanted:
+        lod1_uri = f"{root}/ard/static/sources/lod_vintages/raw_manifest_2017.json"
+        lod1_members = _manifest_members(lod1_uri)
+        if len(lod1_members) != _EXPECTED_MEMBERS[2017]:
+            raise ValueError(
+                f"raw manifest {lod1_uri}: {len(lod1_members)} members, "
+                f"expected {_EXPECTED_MEMBERS[2017]}"
+            )
+        lod1_keys = {_tile_key(m, lod1=True) for m in lod1_members}
+        lod2_2021 = out[2021]
+        keys_2017 = tuple(sorted(lod1_keys & set(lod2_2021.tile_keys)))
+        if not keys_2017:
+            raise ValueError("2017 LoD coverage: empty LoD1 ∩ LoD2 tile intersection")
+        cog_2017 = _cog_uri(root, 2017)
+        out[2017] = LoDCoverageArtifact(
+            vintage=2017,
+            uris=(lod1_uri, lod2_2021.uris[0]),
+            fingerprint=_fingerprint((lod1_uri, lod2_2021.uris[0])),
+            tile_keys=keys_2017,
+            cog_uri=cog_2017,
+            cog_fingerprint=_cog_fingerprint(cog_2017),
         )
-    lod1_keys = {_tile_key(m, lod1=True) for m in lod1_members}
-    lod2_2021 = out[2021]
-    keys_2017 = tuple(sorted(lod1_keys & set(lod2_2021.tile_keys)))
-    if not keys_2017:
-        raise ValueError("2017 LoD coverage: empty LoD1 ∩ LoD2 tile intersection")
-    cog_2017 = _cog_uri(root, 2017)
-    out[2017] = LoDCoverageArtifact(
-        vintage=2017,
-        uris=(lod1_uri, lod2_2021.uris[0]),
-        fingerprint=_fingerprint((lod1_uri, lod2_2021.uris[0])),
-        tile_keys=keys_2017,
-        cog_uri=cog_2017,
-        cog_fingerprint=_cog_fingerprint(cog_2017),
-    )
 
     # ── 2024: published LoD provenance tile receipts ──────────────────
-    prov_uri = f"{root}/ard/static/sources/lod2_morphology/2024/provenance.json"
-    prov = json.loads(read_bytes(prov_uri))
-    tiles = (prov.get("source_metadata") or {}).get("tiles")
-    if not isinstance(tiles, list) or not tiles:
-        raise ValueError(f"LoD provenance {prov_uri} has no source_metadata.tiles")
-    keys_2024 = []
-    for tile in tiles:
-        e = tile.get("easting")
-        n = tile.get("northing")
-        if not isinstance(e, int) or not isinstance(n, int):
-            raise ValueError(f"LoD provenance {prov_uri}: tile missing easting/northing")
-        keys_2024.append(f"{e // 1000}_{n // 1000}")
-    keys_2024 = tuple(sorted(set(keys_2024)))
-    if len(keys_2024) != _EXPECTED_TILES_2024:
-        raise ValueError(
-            f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, expected {_EXPECTED_TILES_2024}"
+    if 2024 in wanted:
+        prov_uri = f"{root}/ard/static/sources/lod2_morphology/2024/provenance.json"
+        prov = json.loads(read_bytes(prov_uri))
+        tiles = (prov.get("source_metadata") or {}).get("tiles")
+        if not isinstance(tiles, list) or not tiles:
+            raise ValueError(f"LoD provenance {prov_uri} has no source_metadata.tiles")
+        keys_2024 = []
+        for tile in tiles:
+            e = tile.get("easting")
+            n = tile.get("northing")
+            if not isinstance(e, int) or not isinstance(n, int):
+                raise ValueError(f"LoD provenance {prov_uri}: tile missing easting/northing")
+            keys_2024.append(f"{e // 1000}_{n // 1000}")
+        keys_2024 = tuple(sorted(set(keys_2024)))
+        if len(keys_2024) != _EXPECTED_TILES_2024:
+            raise ValueError(
+                f"LoD provenance {prov_uri}: {len(keys_2024)} tiles, "
+                f"expected {_EXPECTED_TILES_2024}"
+            )
+        cog_2024 = _cog_uri(root, 2024)
+        out[2024] = LoDCoverageArtifact(
+            vintage=2024,
+            uris=(prov_uri,),
+            fingerprint=_fingerprint((prov_uri,)),
+            tile_keys=keys_2024,
+            cog_uri=cog_2024,
+            cog_fingerprint=_cog_fingerprint(cog_2024),
         )
-    cog_2024 = _cog_uri(root, 2024)
-    out[2024] = LoDCoverageArtifact(
-        vintage=2024,
-        uris=(prov_uri,),
-        fingerprint=_fingerprint((prov_uri,)),
-        tile_keys=keys_2024,
-        cog_uri=cog_2024,
-        cog_fingerprint=_cog_fingerprint(cog_2024),
-    )
 
-    return out
+    return {v: out[v] for v in requested if v in out}
 
 
 def rasterize_lod_coverage(artifact: LoDCoverageArtifact, grid: GeoBox) -> np.ndarray:
