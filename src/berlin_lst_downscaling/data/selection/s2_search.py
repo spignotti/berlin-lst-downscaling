@@ -291,6 +291,9 @@ def _score_mosaic_candidates(anchor: dict, l8_items: list, candidates: list[dict
             aoi_clear_frac=cf,
             landsat_clear_px=counts.get("l8_clear_px"),
             joint_clear_px=counts.get("intersect_px"),
+            s2_aoi_missing_px=counts.get("s2_footprint_missing_px"),
+            s2_aoi_total_px=counts.get("s2_footprint_total_px"),
+            s2_aoi_missing_frac=counts.get("s2_footprint_missing_frac"),
         )
         log_event(
             _logger,

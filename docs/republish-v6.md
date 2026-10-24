@@ -102,10 +102,32 @@ after each run.
    stops it.
 3. Confirm the step's completion marker exists in GCS:
     - steps 1–2: `manifest.parquet` + `pairings.parquet` +
-      `manifest_report.json` (step 1), `ledger.parquet` with `status=done`
-      rows for every v4 manifest key of every source plus `seed_gaps.json`
+      `manifest_report.json` (step 1), `ledger.parquet` plus `seed_gaps.json`
       (step 2, `validate_ard.py --ledger … --manifest …`, whose per-source
-      done counts fail a skipped gap pass);
+      done counts fail a skipped gap pass). S2 rows failed by the mosaic AOI
+      coverage gate (`max_missing_aoi_fraction = 0.005`, `last_error`
+      `Sentinel-2 mosaic AOI coverage failed: missing …`) are explicit,
+      documented exclusions: the validator reports each with scene id and
+      missing fraction and the release passes only if every non-done S2 row
+      is such a gate exclusion and all Landsat/ECOSTRESS rows are done
+      (ledger keeps `status="failed"`, no schema change; see
+      `src/berlin_lst_downscaling/data/ard/coverage_gate.py`). ARD v10 run3
+      (run `ard-v10-20261024T040705Z-83AB242C`, release
+      `gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10`)
+      has exactly two such exclusions, confirmed against the v4 bundle
+      (`pairings.parquet`, 290 rows): 4 pairings use the two excluded S2
+      scenes, so 286 pairings remain —
+      `LC08_L2SP_193023_20210816_02_T1` and
+      `LC08_L2SP_193024_20210816_02_T1` ↔
+      `S2A_MSIL2A_20210814T102031_R065_T32UQD_20210814T215405` (missing
+      560178/8922403 AOI px, 6.28 %), `LC09_L2SP_192023_20230503_02_T1` and
+      `LC09_L2SP_192024_20230503_02_T1` ↔
+      `S2A_MSIL2A_20230503T101021_R022_T32UQD_20240905T123554` (missing
+      1629098/8922403 AOI px, 18.26 %). The 4 excluded pairings drop out of
+      features v6 (see step 6); no replacement S2 partner is picked. The launcher
+      and validator point GDAL at Application Default Credentials when no
+      GDAL GCS credential is set, so `gs://` COG reads work on the operator
+      Mac without manual env setup;
     - steps 3–4: `ledger.parquet` under the release root
       (`_state/...` for derived), all rows `done`;
     - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
@@ -115,11 +137,29 @@ after each run.
       manual edits);
    - step 6: `ledger.parquet` all `done` plus
      `validate_feature_stacks.py --root … --expected-scenes-from-manifest
-     <v4 manifest>` (derived from the v4 bundle, never hard-coded);
+     <v4 manifest> --ard-ledger <v10 ledger>` (expected count is the
+     manifest-derived assessable universe minus pairings whose S2 partner is
+     an ARD coverage-gate exclusion; excluded pairings drop out, no
+     replacement partner is picked — the conservative rule consistent with
+     the agreed 0.5 % gate. `run-features-v6-vm.sh` passes
+     `--ard-ledger "${ARD_ROOT}/ledger.parquet"`, derived from its
+     `ARD_ROOT` (same root as `configs/features/v6.yaml ard_root`), so the
+     validator agrees with the pipeline, which already records these
+     pairings as `excluded` (`ard sentinel2 not done`) and writes no ledger
+     row for them. Dynamic v6 needs no adjustment: it is
+     per-Landsat-anchor and never reads S2 ARD, so its manifest-derived
+     assessable count is unchanged);
    - step 7: `complete.json` with the v6 policy hash plus
      `validate_training_data.py --release-root … --expected-scenes-from-manifest
-     <v4 manifest>` (the count is derived from the v4 bundle, never
-     hard-coded, so the AOI-overlap gate passes without manual edits);
+     <v4 manifest> --ard-ledger <v10 ledger>` (the count is derived from the
+     v4 bundle, never hard-coded, so the AOI-overlap gate passes without
+     manual edits; `run-training-v3-vm.sh` passes
+     `--ard-ledger "${ARD_ROOT}/ledger.parquet"` from its `ARD_ROOT`. The
+     release manifest row count is unchanged — one row per pairing — while
+     the 4 gate-excluded pairings carry status `excluded` with reason
+     `ard sentinel2 not done` and publish no eligibility mask, so the
+     validator allowlists that reason only with `--ard-ledger` proof and
+     skips those scenes in the mask check);
    - step 8: `complete.json` plus
      `validate_patch_index.py --index-root … --source-root …`;
    - step 9: uploaded `evaluation/eda/v3` tables plus

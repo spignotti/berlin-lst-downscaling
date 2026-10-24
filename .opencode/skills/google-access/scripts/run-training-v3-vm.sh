@@ -48,12 +48,19 @@ vm_launch_detached
 vm_poll
 vm_finish
 
+# ARD v10 ledger for the S2 mosaic AOI coverage-gate exclusions: pairings
+# whose S2 partner failed the gate are accepted as documented exclusions
+# (reason 'ard sentinel2 not done', no eligibility mask). Derived from
+# ARD_ROOT (same root as configs/training/v3.yaml ard_root); the release
+# manifest row count is unchanged (one row per pairing).
+ARD_LEDGER="${ARD_ROOT}/ledger.parquet"
 VALIDATION_OK=1
 if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $RELEASE_ROOT ..."
   uv run python scripts/validators/validate_training_data.py \
     --release-root "$RELEASE_ROOT" \
     --expected-scenes-from-manifest "$MANIFEST_URI" \
+    --ard-ledger "$ARD_LEDGER" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

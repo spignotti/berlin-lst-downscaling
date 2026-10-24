@@ -11,6 +11,19 @@
 """Strict ARD validation — exact manifest/ledger key equality, all four artifacts,
 COG contract, STAC extensions, provenance, and completion marker.
 
+Sentinel-2 rows failed by the mosaic AOI coverage gate
+(``max_missing_aoi_fraction``) are explicit, documented exclusions: they are
+reported with scene id and missing fraction and do not fail the release, as
+long as every non-done S2 row is such a gate exclusion and every
+Landsat/ECOSTRESS row is done. The ledger keeps ``status="failed"`` for
+those rows (no schema change); the exclusion is a validator classification
+of the gate ``last_error`` (see ``data.ard.coverage_gate``). No product is
+written for an excluded scene and no replacement S2 partner is picked.
+
+GDAL GCS auth: before any ``rasterio.open`` on a ``gs://`` COG the validator
+points GDAL at Application Default Credentials when no GDAL GCS credential
+is set (env var only, no secret is read, printed, committed, or copied).
+
 Usage
 -----
     uv run python scripts/validators/validate_ard.py \
@@ -66,6 +79,13 @@ def main() -> int:
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
+    try:
+        from berlin_lst_downscaling.data.io.gdal_gcs import ensure_gdal_gcs_auth
+
+        ensure_gdal_gcs_auth()
+    except Exception:  # noqa: S110 — auth is best-effort; COG opens fail loudly
+        pass
+
     # ── Load manifest ──────────────────────────────────────────────
     try:
         manifest_tbl = _read_table(args.manifest)
@@ -91,12 +111,21 @@ def main() -> int:
 
     ledger_keys = set()
     done_rows = []
+    ledger_rows: list[dict] = []
     for i in range(ledger_tbl.num_rows):
         row_dict = ledger_tbl.slice(i, 1).to_pydict()
         scene_id = row_dict["scene_id"][0]
         source = row_dict["source"][0]
         status = row_dict["status"][0]
         ledger_keys.add((scene_id, source))
+        ledger_rows.append(
+            {
+                "scene_id": str(scene_id),
+                "source": str(source),
+                "status": str(status),
+                "last_error": row_dict.get("last_error", [None])[0],
+            }
+        )
         if status == "done":
             done_rows.append(row_dict)
 
@@ -127,11 +156,42 @@ def main() -> int:
 
     # Every manifest source must reach its full done count — including a
     # source with zero done rows (absent from source_counts), so a missing
-    # gap pass fails here instead of passing silently.
+    # gap pass fails here instead of passing silently. Exception: S2 rows
+    # failed by the mosaic AOI coverage gate are explicit exclusions, never
+    # silent — the release passes only if every non-done S2 row is such a
+    # gate exclusion and all Landsat/ECOSTRESS rows are done.
+    from berlin_lst_downscaling.data.ard.coverage_gate import collect_gate_exclusions
+
+    exclusions, real_failures = collect_gate_exclusions(ledger_rows)
+    if exclusions:
+        print(
+            "Coverage-gate exclusions (S2 mosaic AOI gate, reported, not failures): "
+            f"{len(exclusions)}"
+        )
+        for row in sorted(exclusions, key=lambda r: str(r["scene_id"])):
+            print(
+                f"  excluded {row['scene_id']}: missing "
+                f"{row['aoi_missing_px']}/{row['aoi_total_px']} AOI px "
+                f"({float(row['missing_aoi_fraction']) * 100:.2f}% > "
+                f"{float(row['max_missing_aoi_fraction']) * 100:.2f}% gate)"
+            )
+    for failure in real_failures:
+        errors.append(
+            f"failed {failure['source']}:{failure['scene_id']} "
+            f"status={failure['status']} error={failure.get('last_error')}"
+        )
     for src in sorted({s for _, s in manifest_keys}):
         expected = sum(1 for _, s in manifest_keys if s == src)
         count = source_counts.get(src, 0)
-        if count != expected:
+        if src == "sentinel-2-l2a":
+            n_excluded = sum(1 for r in exclusions if r["source"] == src)
+            if count + n_excluded != expected:
+                errors.append(f"{src}: {count}/{expected} done ({n_excluded} gate exclusions)")
+            elif n_excluded:
+                print(f"  {src}: {count}/{expected} done + {n_excluded} gate exclusions ✓")
+            else:
+                print(f"  {src}: {count}/{expected} done ✓")
+        elif count != expected:
             errors.append(f"{src}: {count}/{expected} done")
         else:
             print(f"  {src}: {count}/{expected} done ✓")
@@ -225,6 +285,13 @@ def _validate_s2_six_bands(cog_uri: str, res: SceneResult) -> None:
     try:
         import numpy as np
         import rasterio
+
+        try:
+            from berlin_lst_downscaling.data.io.gdal_gcs import ensure_gdal_gcs_auth
+
+            ensure_gdal_gcs_auth()
+        except Exception:  # noqa: S110 — auth is best-effort; open fails loudly
+            pass
 
         with rasterio.open(cog_uri) as src:
             if src.count != len(_S2_BAND_ORDER):

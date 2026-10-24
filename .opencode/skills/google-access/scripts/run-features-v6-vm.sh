@@ -53,12 +53,18 @@ vm_poll
 vm_finish
 
 VALIDATION_OK=1
+# ARD v10 ledger for the S2 mosaic AOI coverage-gate exclusions: pairings
+# whose S2 partner failed the gate drop out of the expected features count
+# (conservative rule, no replacement partner). Derived from ARD_ROOT (same
+# root as configs/features/v6.yaml ard_root); never a hard-coded run id.
+ARD_LEDGER="${ARD_ROOT}/ledger.parquet"
 if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $FEATURES_ROOT ..."
   uv run python scripts/validators/validate_feature_stacks.py \
     --root "$FEATURES_ROOT" \
     --aoi data/boundaries/aoi_10m.tif \
     --expected-scenes-from-manifest "$MANIFEST_URI" \
+    --ard-ledger "$ARD_LEDGER" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 

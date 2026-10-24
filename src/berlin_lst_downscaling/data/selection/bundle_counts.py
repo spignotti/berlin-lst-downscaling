@@ -71,10 +71,72 @@ def expected_counts_for_bundle(manifest_parquet_uri: str) -> tuple[int, int]:
     return expected_counts(manifest_table, pairings_table)
 
 
+def excluded_landsat_scene_ids(manifest_parquet_uri: str, ard_ledger_uri: str) -> list[str]:
+    """Return sorted Landsat anchor ids whose S2 partner is a gate exclusion.
+
+    Shared helper for every downstream validator that consumes ARD v10 plus
+    the v4 bundle: the listed pairings drop out (no replacement partner).
+    All years are returned; callers filter to their universe (features uses
+    the assessable 2017-2025 subset, training keeps its every-anchor
+    manifest rows and only allowlists the exclusion reason).
+    """
+    from berlin_lst_downscaling.data.ard.coverage_gate import (
+        excluded_pairings,
+        excluded_s2_scene_ids,
+    )
+
+    manifest_uri = manifest_parquet_uri.rstrip("/")
+    bundle_root = manifest_uri.rsplit("/", 1)[0]
+    pairings_uri = f"{bundle_root}/pairings.parquet"
+    pairings_table = pq.read_table(io.BytesIO(read_bytes(pairings_uri)))
+    ard_table = pq.read_table(io.BytesIO(read_bytes(ard_ledger_uri)))
+    return sorted(
+        row["landsat_scene_id"]
+        for row in excluded_pairings(pairings_table, set(excluded_s2_scene_ids(ard_table)))
+    )
+
+
+def expected_features_count_for_bundle(
+    manifest_parquet_uri: str, ard_ledger_uri: str | None = None
+) -> tuple[int, int, list[dict]]:
+    """Return ``(expected_feature_scenes, assessable, exclusions)``.
+
+    ``exclusions`` are pairings whose S2 partner failed the ARD v10 mosaic
+    AOI coverage gate (conservative rule: excluded pairings drop out, no
+    replacement partner). When ``ard_ledger_uri`` is None the expected
+    count equals the assessable 2017-2025 universe. The dynamic universe is
+    unaffected (per-Landsat-anchor products never read S2 ARD).
+    """
+    assessable, _total = expected_counts_for_bundle(manifest_parquet_uri)
+    if ard_ledger_uri is None:
+        return assessable, assessable, []
+    from berlin_lst_downscaling.data.ard.coverage_gate import (
+        excluded_pairings,
+        excluded_s2_scene_ids,
+    )
+
+    manifest_uri = manifest_parquet_uri.rstrip("/")
+    bundle_root = manifest_uri.rsplit("/", 1)[0]
+    pairings_uri = f"{bundle_root}/pairings.parquet"
+    pairings_table = pq.read_table(io.BytesIO(read_bytes(pairings_uri)))
+    ard_table = pq.read_table(io.BytesIO(read_bytes(ard_ledger_uri)))
+    manifest_table = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
+    years = anchor_years(manifest_table)
+    exclusions = excluded_pairings(pairings_table, set(excluded_s2_scene_ids(ard_table)))
+    assessable_excluded = [
+        row
+        for row in exclusions
+        if ASSESSABLE_YEAR_MIN <= years.get(row["landsat_scene_id"], -1) <= ASSESSABLE_YEAR_MAX
+    ]
+    return assessable - len(assessable_excluded), assessable, assessable_excluded
+
+
 __all__ = [
     "ASSESSABLE_YEAR_MAX",
     "ASSESSABLE_YEAR_MIN",
     "anchor_years",
+    "excluded_landsat_scene_ids",
     "expected_counts",
     "expected_counts_for_bundle",
+    "expected_features_count_for_bundle",
 ]

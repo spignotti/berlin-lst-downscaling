@@ -1,5 +1,9 @@
 """Storage I/O — local and GCS atomic writes, path detection."""
 
+from berlin_lst_downscaling.data.io.gdal_gcs import (
+    default_adc_candidate,
+    ensure_gdal_gcs_auth,
+)
 from berlin_lst_downscaling.data.io.run_logging import (
     RunLogSession,
     log_event,
@@ -30,6 +34,8 @@ __all__ = [
     "RunLogSession",
     "atomic_upload",
     "atomic_write",
+    "default_adc_candidate",
+    "ensure_gdal_gcs_auth",
     "exists",
     "log_event",
     "publish_lock",
