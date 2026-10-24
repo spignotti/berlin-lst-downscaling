@@ -19,7 +19,9 @@ and verifies, **independently of the publisher implementation**:
   assignment (2017-2023 train, 2024 validation, 2025 test, 2026
   inference), no duplicate s2_scene_id across non-inference splits,
   no sparse category (``no_eligible_cells``, plus the explicit
-  implausible-LST denylist ``usgs_st_implausible_20220827``);
+  implausible-LST denylist ``usgs_st_implausible_20220827`` and, with
+  ``--ard-ledger``, the documented ARD v10 mosaic AOI coverage-gate
+  exclusions ``ard sentinel2 not done``, which publish no mask);
 - the cell index: every row references an eligible cell of a published
   scene, splits match the manifest, cell IDs are deterministic from the
   canonical EPSG:25833 grid, no 2026 cells;
@@ -83,6 +85,13 @@ _CANON_Y = 5838410.0
 _CELL = 100.0
 
 _V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v5"
+
+# Exclusion reason the training pipeline records (via the Stage-1
+# inventory) for a pairing whose S2 partner failed the ARD v10 mosaic AOI
+# coverage gate. Mirrored from ``data/qa/inventory.py::_resolve_scene``
+# (``"ard sentinel2 not done"``); the validator accepts it only with
+# ``--ard-ledger`` proof that this scene's S2 partner failed the gate.
+_S2_GATE_EXCLUSION_REASON = "ard sentinel2 not done"
 
 
 def _read_json(uri: str) -> dict:
@@ -182,8 +191,14 @@ def _check_manifest(
     errors: list[str],
     warnings: list[str],
     expected_scenes: int | None,
+    s2_gate_excluded: set[str] | None = None,
 ) -> dict[str, dict]:
-    """Verify the scene manifest (year coverage, splits, leakage, exclusions)."""
+    """Verify the scene manifest (year coverage, splits, leakage, exclusions).
+
+    ``s2_gate_excluded`` holds the Landsat scene ids proven (via the ARD
+    v10 ledger) to pair with a coverage-gate-excluded S2 scene; only those
+    may carry the gate exclusion reason.
+    """
     table = _read_table(manifest_parquet(release_root))
     cols = table.to_pydict()
     required = {
@@ -269,7 +284,13 @@ def _check_manifest(
                     if cols[field][i] not in ("", None):
                         errors.append(f"{sid}: implausible LST scene publishes {field}")
         elif str(cols["status"][i]) == "excluded":
-            if reason != NO_ELIGIBLE_CELLS_REASON:
+            if reason == _S2_GATE_EXCLUSION_REASON:
+                # ARD v10 coverage-gate exclusion: documented, never
+                # silent — accepted only with --ard-ledger proof for
+                # this scene.
+                if s2_gate_excluded is None or sid not in s2_gate_excluded:
+                    errors.append(f"{sid}: S2 gate exclusion without --ard-ledger proof")
+            elif reason != NO_ELIGIBLE_CELLS_REASON:
                 errors.append(
                     f"{sid}: excluded reason {reason!r}, expected {NO_ELIGIBLE_CELLS_REASON!r}"
                 )
@@ -523,10 +544,22 @@ def main() -> int:
         "manifest bundle (every anchor including 2026); mutually "
         "exclusive with --expected-scenes",
     )
+    parser.add_argument(
+        "--ard-ledger",
+        default=None,
+        metavar="ARD_LEDGER_PARQUET",
+        help="ARD v10 ledger: pairings whose S2 partner failed the mosaic "
+        "AOI coverage gate are accepted as documented exclusions "
+        "(exclusion reason 'ard sentinel2 not done', no eligibility "
+        "mask). Requires --expected-scenes-from-manifest. The release "
+        "manifest row count is unchanged (one row per pairing).",
+    )
     args = parser.parse_args()
 
     if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
         parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
+    if args.ard_ledger is not None and args.expected_scenes_from_manifest is None:
+        parser.error("--ard-ledger requires --expected-scenes-from-manifest")
     if args.expected_scenes_from_manifest is not None:
         from berlin_lst_downscaling.data.selection.bundle_counts import (
             expected_counts_for_bundle,
@@ -535,6 +568,19 @@ def main() -> int:
         _, total = expected_counts_for_bundle(args.expected_scenes_from_manifest)
         print(f"  Expected scenes from manifest bundle: {total}")
         args.expected_scenes = total
+
+    from berlin_lst_downscaling.data.selection.bundle_counts import (
+        excluded_landsat_scene_ids,
+    )
+
+    s2_gate_excluded: set[str] = set()
+    if args.ard_ledger is not None:
+        s2_gate_excluded = set(
+            excluded_landsat_scene_ids(args.expected_scenes_from_manifest, args.ard_ledger)
+        )
+        print(f"  S2 coverage-gate excluded pairings ({len(s2_gate_excluded)}):")
+        for sid in sorted(s2_gate_excluded):
+            print(f"    excluded pairing {sid} (S2 failed the AOI coverage gate)")
 
     root = args.release_root.rstrip("/")
     errors: list[str] = []
@@ -547,13 +593,18 @@ def main() -> int:
 
     _check_v3_source(root, errors)
 
-    manifest = _check_manifest(root, errors, warnings, args.expected_scenes)
-    # Inference scenes and the implausible-LST denylist publish no mask.
-    # Zero-cell exclusions still carry an all-zero mask.
+    manifest = _check_manifest(
+        root, errors, warnings, args.expected_scenes, s2_gate_excluded=s2_gate_excluded
+    )
+    # Inference scenes, the implausible-LST denylist, and proven S2
+    # gate exclusions publish no mask. Zero-cell exclusions still carry
+    # an all-zero mask.
     scene_ids = sorted(
         s
         for s, m in manifest.items()
-        if m["split"] != "inference" and s not in IMPLAUSIBLE_LST_SCENE_IDS
+        if m["split"] != "inference"
+        and s not in IMPLAUSIBLE_LST_SCENE_IDS
+        and s not in s2_gate_excluded
     )
     cog_counts, cog_cell_ids = _check_eligibility_cogs(
         root, scene_ids, errors, args.expected_scenes

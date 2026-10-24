@@ -141,13 +141,25 @@ after each run.
      manifest-derived assessable universe minus pairings whose S2 partner is
      an ARD coverage-gate exclusion; excluded pairings drop out, no
      replacement partner is picked — the conservative rule consistent with
-     the agreed 0.5 % gate. Dynamic v6 needs no adjustment: it is
+     the agreed 0.5 % gate. `run-features-v6-vm.sh` passes
+     `--ard-ledger "${ARD_ROOT}/ledger.parquet"`, derived from its
+     `ARD_ROOT` (same root as `configs/features/v6.yaml ard_root`), so the
+     validator agrees with the pipeline, which already records these
+     pairings as `excluded` (`ard sentinel2 not done`) and writes no ledger
+     row for them. Dynamic v6 needs no adjustment: it is
      per-Landsat-anchor and never reads S2 ARD, so its manifest-derived
      assessable count is unchanged);
    - step 7: `complete.json` with the v6 policy hash plus
      `validate_training_data.py --release-root … --expected-scenes-from-manifest
-     <v4 manifest>` (the count is derived from the v4 bundle, never
-     hard-coded, so the AOI-overlap gate passes without manual edits);
+     <v4 manifest> --ard-ledger <v10 ledger>` (the count is derived from the
+     v4 bundle, never hard-coded, so the AOI-overlap gate passes without
+     manual edits; `run-training-v3-vm.sh` passes
+     `--ard-ledger "${ARD_ROOT}/ledger.parquet"` from its `ARD_ROOT`. The
+     release manifest row count is unchanged — one row per pairing — while
+     the 4 gate-excluded pairings carry status `excluded` with reason
+     `ard sentinel2 not done` and publish no eligibility mask, so the
+     validator allowlists that reason only with `--ard-ledger` proof and
+     skips those scenes in the mask check);
    - step 8: `complete.json` plus
      `validate_patch_index.py --index-root … --source-root …`;
    - step 9: uploaded `evaluation/eda/v3` tables plus
