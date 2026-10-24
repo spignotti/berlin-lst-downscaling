@@ -562,6 +562,132 @@ def test_runner_fails_closed_on_derive_error(
     assert row is not None and row.status == "failed"
 
 
+def test_morphology_rebuild_forces_derived_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reprocessed morphology invalidates done derived rows (Bugbot).
+
+    Pre-populate both ledgers as done, but with a stale morphology config
+    hash: reconcile reprocesses the morphology, and the run must rebuild
+    the full derived bundle instead of leaving stale horizons/SVF behind
+    done rows.
+    """
+    from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
+    from berlin_lst_downscaling.data.secondary.lod2 import config_hash_for_vintage
+    from berlin_lst_downscaling.data.secondary.lod_vintages import vintage_geometry_id
+    from berlin_lst_downscaling.data.secondary.paths import derived_ledger_path
+
+    cfg = _runner_config(tmp_path)
+    src_led = SecondaryLedger.open(str(tmp_path / "sources" / "ledger.parquet"))
+    cog = tmp_path / "old_morph.tif"
+    comp = tmp_path / "old_morph.complete.json"
+    cog.write_bytes(b"x")
+    comp.write_bytes(b"{}")
+    for vintage in (2017, 2021, 2022):
+        src_led.upsert(
+            _row(
+                f"lod2_morphology_{vintage}",
+                "lod2_morphology",
+                str(vintage),
+                "done",
+                output_uri=str(cog),
+                completion_uri=str(comp),
+            )
+        )
+        # 2017/2022 keep the current hash (skipped); 2021 is stale.
+        row = src_led.get(f"lod2_morphology_{vintage}", "lod2_morphology", str(vintage))
+        assert row is not None
+        row.config_hash = "stale-hash" if vintage == 2021 else config_hash_for_vintage(vintage)
+        src_led.upsert(row)
+    derived_led = SecondaryLedger.open(derived_ledger_path(str(tmp_path / "derived")))
+    for vintage in (2017, 2021, 2022):
+        geometry_id = vintage_geometry_id(vintage)
+        for product in ("building_dsm", "combined_dsm", "horizon_building", "svf"):
+            pcog = tmp_path / f"old_{vintage}_{product}.tif"
+            pcomp = tmp_path / f"old_{vintage}_{product}.complete.json"
+            pcog.write_bytes(b"x")
+            pcomp.write_bytes(b"{}")
+            derived_led.upsert(
+                _row(
+                    product,
+                    product,
+                    geometry_id,
+                    "done",
+                    output_uri=str(pcog),
+                    completion_uri=str(pcomp),
+                )
+            )
+
+    fakes = _Fakes(tmp_path)
+    core = _install_fakes(monkeypatch, fakes)
+    assert core.run_lod_vintages_v6(cfg, run_id="r1") == 0
+
+    # Only the stale-hash vintage reprocessed its morphology ...
+    assert fakes.morphology_calls == [2021]
+    # ... but its full derived bundle was rebuilt despite done rows.
+    assert (2021, ["building_dsm", "combined_dsm", "horizon_building", "svf"]) in (
+        fakes.derive_calls
+    )
+    assert [v for v, _ in fakes.derive_calls] == [2021]
+    # The rebuilt morphology row carries the current vintage hash.
+    row = SecondaryLedger.open(str(tmp_path / "sources" / "ledger.parquet")).get(
+        "lod2_morphology_2021", "lod2_morphology", "2021"
+    )
+    assert row is not None and row.config_hash == config_hash_for_vintage(2021)
+
+
+def test_derived_done_row_with_missing_artifacts_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A done derived row whose artifacts no longer resolve is reprocessed."""
+    from berlin_lst_downscaling.data.secondary.ledger import SecondaryLedger
+    from berlin_lst_downscaling.data.secondary.lod2 import config_hash_for_vintage
+    from berlin_lst_downscaling.data.secondary.lod_vintages import vintage_geometry_id
+    from berlin_lst_downscaling.data.secondary.paths import derived_ledger_path
+
+    cfg = _runner_config(tmp_path)
+    src_led = SecondaryLedger.open(str(tmp_path / "sources" / "ledger.parquet"))
+    for vintage in (2017, 2021, 2022):
+        cog = tmp_path / f"morph_{vintage}.tif"
+        comp = tmp_path / f"morph_{vintage}.complete.json"
+        cog.write_bytes(b"x")
+        comp.write_bytes(b"{}")
+        src_led.upsert(
+            _row(
+                f"lod2_morphology_{vintage}",
+                "lod2_morphology",
+                str(vintage),
+                "done",
+                output_uri=str(cog),
+                completion_uri=str(comp),
+            )
+        )
+        row = src_led.get(f"lod2_morphology_{vintage}", "lod2_morphology", str(vintage))
+        assert row is not None
+        row.config_hash = config_hash_for_vintage(vintage)
+        src_led.upsert(row)
+    derived_led = SecondaryLedger.open(derived_ledger_path(str(tmp_path / "derived")))
+    geometry_id = vintage_geometry_id(2017)
+    for product in ("building_dsm", "combined_dsm", "horizon_building", "svf"):
+        derived_led.upsert(
+            _row(
+                product,
+                product,
+                geometry_id,
+                "done",
+                output_uri=str(tmp_path / "gone.tif"),
+                completion_uri=str(tmp_path / "gone.complete.json"),
+            )
+        )
+
+    fakes = _Fakes(tmp_path)
+    core = _install_fakes(monkeypatch, fakes)
+    assert core.run_lod_vintages_v6(cfg, run_id="r1") == 0
+    # Morphology skipped everywhere; the unresolvable 2017 bundle rebuilt.
+    assert fakes.morphology_calls == []
+    assert [v for v, _ in fakes.derive_calls] == [2017, 2021, 2022]
+
+
 # ── 7. launcher + runbook wiring ────────────────────────────────────
 
 

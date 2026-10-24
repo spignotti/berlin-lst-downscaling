@@ -95,10 +95,13 @@ def run_lod_vintages_v6(cfg: DictConfig, run_id: str | None = None) -> int:
 
     failed = 0
     for vintage in vintages:
-        failed += _run_vintage_morphology(
+        morphology_failed, morphology_rebuilt = _run_vintage_morphology(
             src_led, cfg, run_id, raw_root, source_root, vintage, smoke_tile_count
         )
-        failed += _run_vintage_derived(cfg, run_id, source_root, derived_root, vintage)
+        failed += morphology_failed
+        failed += _run_vintage_derived(
+            cfg, run_id, source_root, derived_root, vintage, force=morphology_rebuilt
+        )
 
     report_errors = find_not_done_items(src_led, expected_source_items(cfg))
     derived_led = SecondaryLedger.open(derived_ledger_path(derived_root))
@@ -129,18 +132,24 @@ def _run_vintage_morphology(
     source_root: str,
     vintage: int,
     smoke_tile_count: int | None,
-) -> int:
-    """Materialise the archives and publish one vintage morphology product."""
+) -> tuple[int, bool]:
+    """Materialise the archives and publish one vintage morphology product.
+
+    Returns ``(failed, rebuilt)``: *rebuilt* is True when the morphology
+    was (re)published by this run, so the caller can invalidate the
+    downstream derived bundle instead of leaving stale horizons/SVF in
+    place.
+    """
     if vintage not in _VINTAGE_SOURCES:
         log_event(_logger, logging.ERROR, "unknown_vintage", vintage=vintage)
-        return 1
+        return 1, False
     item_id = f"lod2_morphology_{vintage}"
     c_hash = config_hash_for_vintage(vintage)
 
     todo = reconcile([(item_id, "lod2_morphology", str(vintage))], led, c_hash)
     if not todo:
         log_event(_logger, logging.INFO, "skipped", source="lod2_morphology", vintage=vintage)
-        return 0
+        return 0, False
 
     reason = todo[0][3]
     led.upsert(
@@ -201,7 +210,7 @@ def _run_vintage_morphology(
                 last_error=str(exc),
             )
         )
-        return 1
+        return 1, False
 
     led.upsert(
         SecondaryLedgerRow(
@@ -225,7 +234,7 @@ def _run_vintage_morphology(
         vintage=vintage,
         output_uri=artifacts.cog_uri,
     )
-    return 0
+    return 0, True
 
 
 def _publish_manifests(source_root: str, raw_root: str, vintage: int, lod1_mat, lod2_mat) -> None:
@@ -262,14 +271,25 @@ def _run_vintage_derived(
     source_root: str,
     derived_root: str,
     vintage: int,
+    *,
+    force: bool = False,
 ) -> int:
-    """Build the per-vintage derived bundle (idempotent on the ledger)."""
+    """Build the per-vintage derived bundle (idempotent on the ledger).
+
+    *force* rebuilds the whole bundle even when every row is done. The
+    caller sets it whenever this run (re)published the morphology, so a
+    hash change or artifact repair can never leave stale horizons/SVF in
+    place behind done ledger rows.
+    """
     geometry_id = vintage_geometry_id(vintage)
     led = SecondaryLedger.open(derived_ledger_path(derived_root))
 
-    missing = [
-        product for product in _DERIVED_PRODUCTS if _row_needs_work(led, product, geometry_id)
-    ]
+    if force:
+        missing = sorted(_DERIVED_PRODUCTS)
+    else:
+        missing = [
+            product for product in _DERIVED_PRODUCTS if _row_needs_work(led, product, geometry_id)
+        ]
     if not missing:
         log_event(
             _logger,
@@ -345,9 +365,25 @@ def _run_vintage_derived(
 
 
 def _row_needs_work(led: SecondaryLedger, source: str, period: str) -> bool:
-    """Return True when the derived row is missing or not done."""
+    """Return True when the derived row is missing, not done, or unresolvable.
+
+    A ``done`` row whose COG or completion marker no longer resolves is
+    treated as work (mirroring the closing audit): skipping it would pass
+    the ledger gate while downstream steps 404.
+    """
+    from berlin_lst_downscaling.data.io import exists, resolve_canonical_uri
+
     row = led.get(source, source, period)
-    return row is None or row.status != "done"
+    if row is None or row.status != "done":
+        return True
+    try:
+        output_ok = bool(row.output_uri) and exists(resolve_canonical_uri(row.output_uri))
+        completion_ok = bool(row.completion_uri) and exists(
+            resolve_canonical_uri(row.completion_uri)
+        )
+    except Exception:
+        return True
+    return not (output_ok and completion_ok)
 
 
 def _banner(cfg: DictConfig, run_id: str, source_root: str, derived_root: str) -> None:
