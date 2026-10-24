@@ -348,19 +348,31 @@ def test_expected_features_count_subtracts_gate_exclusions(tmp_path) -> None:
 
     manifest = pa.table(
         {
-            "scene_id": ["A17", "A25", "S1", "S2"],
-            "source": ["landsat-c2-l2", "landsat-c2-l2", "sentinel-2-l2a", "sentinel-2-l2a"],
-            "role": ["anchor", "anchor", "predictor", "predictor"],
-            "year": [2017, 2025, 2017, 2025],
+            "scene_id": ["A17", "A25", "A26", "S1", "S2", "S3"],
+            "source": [
+                "landsat-c2-l2",
+                "landsat-c2-l2",
+                "landsat-c2-l2",
+                "sentinel-2-l2a",
+                "sentinel-2-l2a",
+                "sentinel-2-l2a",
+            ],
+            "role": ["anchor", "anchor", "anchor", "predictor", "predictor", "predictor"],
+            "year": [2017, 2025, 2026, 2017, 2025, 2026],
         }
     )
-    pairings = pa.table({"landsat_scene_id": ["A17", "A25"], "sentinel2_scene_id": ["S1", "S2"]})
+    pairings = pa.table(
+        {
+            "landsat_scene_id": ["A17", "A25", "A26"],
+            "sentinel2_scene_id": ["S1", "S2", "S3"],
+        }
+    )
     ard = pa.table(
         {
-            "scene_id": ["S1", "S2"],
-            "source": ["sentinel-2-l2a", "sentinel-2-l2a"],
-            "status": ["done", "failed"],
-            "last_error": [None, GATE_ERROR_2],
+            "scene_id": ["S1", "S2", "S3"],
+            "source": ["sentinel-2-l2a", "sentinel-2-l2a", "sentinel-2-l2a"],
+            "status": ["done", "failed", "failed"],
+            "last_error": [None, GATE_ERROR_2, GATE_ERROR_2],
         }
     )
     pq.write_table(manifest, tmp_path / "manifest.parquet")
@@ -371,6 +383,8 @@ def test_expected_features_count_subtracts_gate_exclusions(tmp_path) -> None:
     expected, assessable, exclusions = expected_features_count_for_bundle(
         str(tmp_path / "manifest.parquet"), str(ard_path)
     )
+    # Second value is the assessable 2017-2025 universe (2), not the
+    # every-anchor total (3): the 2026 exclusion must not move the count.
     assert assessable == 2
     assert expected == 1
     assert exclusions == [{"landsat_scene_id": "A25", "sentinel2_scene_id": "S2"}]

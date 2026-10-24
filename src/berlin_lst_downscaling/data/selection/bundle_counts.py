@@ -82,9 +82,9 @@ def expected_features_count_for_bundle(
     count equals the assessable 2017-2025 universe. The dynamic universe is
     unaffected (per-Landsat-anchor products never read S2 ARD).
     """
-    assessable, total = expected_counts_for_bundle(manifest_parquet_uri)
+    assessable, _total = expected_counts_for_bundle(manifest_parquet_uri)
     if ard_ledger_uri is None:
-        return assessable, total, []
+        return assessable, assessable, []
     from berlin_lst_downscaling.data.ard.coverage_gate import (
         excluded_pairings,
         excluded_s2_scene_ids,
@@ -103,7 +103,7 @@ def expected_features_count_for_bundle(
         for row in exclusions
         if ASSESSABLE_YEAR_MIN <= years.get(row["landsat_scene_id"], -1) <= ASSESSABLE_YEAR_MAX
     ]
-    return assessable - len(assessable_excluded), total, assessable_excluded
+    return assessable - len(assessable_excluded), assessable, assessable_excluded
 
 
 __all__ = [
