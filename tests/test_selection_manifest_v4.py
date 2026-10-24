@@ -209,3 +209,61 @@ def test_selection_pipeline_reports_prefilter_and_coupling_drops(monkeypatch, tm
     sliver = next(r for r in report["dropped_anchors"] if r["scene_id"] == "LC08_sliver")
     assert sliver["aoi_overlap_frac"] == 0.01
     assert load_bundle(str(tmp_path / "manifest.parquet"))[1].ok
+
+
+def test_write_bundle_to_non_local_uri(monkeypatch, tmp_path):
+    """write_bundle works end to end for gs:// URIs (failed VM run).
+
+    Regression for run selection-20261023T160311Z-36246C2F: both parquets
+    reached GCS via pyarrow, then hashing crashed on local open() and the
+    report was never written. The transport is faked (no GCS writes); the
+    test asserts the exact uploaded bytes hash to the reported hashes and
+    re-validate cleanly, and that no local ``gs:`` mirror is created.
+    """
+    import io
+
+    from berlin_lst_downscaling.common.util import sha256_bytes
+    from berlin_lst_downscaling.data.selection import manifest as manifest_module
+    from berlin_lst_downscaling.data.selection.validate import validate_pairings_table
+
+    store: dict[str, bytes] = {}
+
+    def fake_atomic_write(uri, data, **kwargs):
+        store[str(uri)] = bytes(data)
+
+    monkeypatch.setattr(manifest_module, "atomic_write", fake_atomic_write)
+    monkeypatch.chdir(tmp_path)
+    coupled, eco = bundle_inputs()
+    root = "gs://test-bucket/manifests/v4/test"
+    result = write_bundle(
+        coupled,
+        [],
+        eco,
+        manifest_path=f"{root}/manifest.parquet",
+        pairings_path=f"{root}/pairings.parquet",
+        report_path=f"{root}/manifest_report.json",
+        cutoff_utc="2026-07-17T23:59:59Z",
+        cfg={"sentinel2": {"mosaic": {"enabled": True}}},
+    )
+    assert set(store) == {
+        f"{root}/manifest.parquet",
+        f"{root}/pairings.parquet",
+        f"{root}/manifest_report.json",
+    }
+    manifest_bytes = store[f"{root}/manifest.parquet"]
+    pairings_bytes = store[f"{root}/pairings.parquet"]
+    assert sha256_bytes(manifest_bytes) == result.manifest_hash
+    assert sha256_bytes(pairings_bytes) == result.pairings_hash
+
+    manifest_table = pq.read_table(io.BytesIO(manifest_bytes))
+    pairings_table = pq.read_table(io.BytesIO(pairings_bytes))
+    assert validate_manifest_table(manifest_table, require_item_href=True).ok
+    assert validate_pairings_table(pairings_table, manifest_table).ok
+
+    report = json.loads(store[f"{root}/manifest_report.json"].decode("utf-8"))
+    assert report["manifest_hash"] == result.manifest_hash
+    assert report["pairings_hash"] == result.pairings_hash
+    assert report["schema_version"] == 4
+
+    # No local `gs:` mirror directory may be created for remote URIs.
+    assert list(tmp_path.iterdir()) == []
