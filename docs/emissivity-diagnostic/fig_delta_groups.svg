@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320">
+<text x="320" y="24" text-anchor="middle" font-size="14">Mean ΔLST (a)-(b) by season</text>
+<line x1="60" y1="164.1900234786879" x2="580" y2="164.1900234786879" stroke="grey"/>
+<rect x="172.0" y="164.1900234786879" width="36" height="1.222217529676044" fill="steelblue"/>
+<line x1="190.0" y1="225.4030372581731" x2="190.0" y2="94.93383040208889" stroke="black" stroke-width="2"/>
+<text x="190.0" y="276" text-anchor="middle" font-size="10">summer (static_uniform)</text>
+<text x="190.0" y="290" text-anchor="middle" font-size="10">-0.00 K</text>
+<rect x="432.0" y="164.1900234786879" width="36" height="4.389147759705736" fill="steelblue"/>
+<line x1="450.0" y1="231.42857142857142" x2="450.0" y2="88.57142857142853" stroke="black" stroke-width="2"/>
+<text x="450.0" y="276" text-anchor="middle" font-size="10">winter (static_uniform)</text>
+<text x="450.0" y="290" text-anchor="middle" font-size="10">-0.05 K</text>
+</svg>
