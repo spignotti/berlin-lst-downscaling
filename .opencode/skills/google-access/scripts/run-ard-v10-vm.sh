@@ -72,6 +72,14 @@ vm_finish
 VALIDATION_OK=1
 if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $OUTPUT_ROOT ..."
+  # GDAL (/vsigs/) needs its own GCS credential while google-cloud-storage
+  # uses ADC automatically. Point GDAL at the operator ADC file when no GDAL
+  # GCS credential is set (path only — no secret is printed or copied).
+  if [[ -z "${GS_SECRET_ACCESS_KEY:-}" && -z "${GS_OAUTH2_REFRESH_TOKEN:-}" && -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+    if [[ -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
+      export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
+    fi
+  fi
   uv run python scripts/validators/validate_ard.py \
     --ledger "${OUTPUT_ROOT}/ledger.parquet" \
     --manifest "$MANIFEST_URI" \

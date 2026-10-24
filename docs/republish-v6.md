@@ -102,10 +102,19 @@ after each run.
    stops it.
 3. Confirm the step's completion marker exists in GCS:
     - steps 1–2: `manifest.parquet` + `pairings.parquet` +
-      `manifest_report.json` (step 1), `ledger.parquet` with `status=done`
-      rows for every v4 manifest key of every source plus `seed_gaps.json`
+      `manifest_report.json` (step 1), `ledger.parquet` plus `seed_gaps.json`
       (step 2, `validate_ard.py --ledger … --manifest …`, whose per-source
-      done counts fail a skipped gap pass);
+      done counts fail a skipped gap pass). S2 rows failed by the mosaic AOI
+      coverage gate (`max_missing_aoi_fraction = 0.005`, `last_error`
+      `Sentinel-2 mosaic AOI coverage failed: missing …`) are explicit,
+      documented exclusions: the validator reports each with scene id and
+      missing fraction and the release passes only if every non-done S2 row
+      is such a gate exclusion and all Landsat/ECOSTRESS rows are done
+      (ledger keeps `status="failed"`, no schema change; see
+      `src/berlin_lst_downscaling/data/ard/coverage_gate.py`). The launcher
+      and validator point GDAL at Application Default Credentials when no
+      GDAL GCS credential is set, so `gs://` COG reads work on the operator
+      Mac without manual env setup;
     - steps 3–4: `ledger.parquet` under the release root
       (`_state/...` for derived), all rows `done`;
     - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
@@ -115,7 +124,13 @@ after each run.
       manual edits);
    - step 6: `ledger.parquet` all `done` plus
      `validate_feature_stacks.py --root … --expected-scenes-from-manifest
-     <v4 manifest>` (derived from the v4 bundle, never hard-coded);
+     <v4 manifest> --ard-ledger <v10 ledger>` (expected count is the
+     manifest-derived assessable universe minus pairings whose S2 partner is
+     an ARD coverage-gate exclusion; excluded pairings drop out, no
+     replacement partner is picked — the conservative rule consistent with
+     the agreed 0.5 % gate. Dynamic v6 needs no adjustment: it is
+     per-Landsat-anchor and never reads S2 ARD, so its manifest-derived
+     assessable count is unchanged);
    - step 7: `complete.json` with the v6 policy hash plus
      `validate_training_data.py --release-root … --expected-scenes-from-manifest
      <v4 manifest>` (the count is derived from the v4 bundle, never

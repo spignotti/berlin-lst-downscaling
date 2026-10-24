@@ -57,6 +57,27 @@ def couple_one_anchor(
     lam = getattr(cfg.sentinel2.score, "lambda", 0.1)
     min_cf = cfg.sentinel2.min_clear_frac
 
+    # Opt-in S2 footprint coverage gate (future selections): candidates whose
+    # pre-cloud footprint misses more than the configured fraction of the AOI
+    # never reach scoring. Absent configuration keeps legacy behavior
+    # (annotation only, no drops).
+    from berlin_lst_downscaling.data.selection.s2_coverage import (
+        DROP_REASON as _FOOTPRINT_DROP_REASON,
+    )
+    from berlin_lst_downscaling.data.selection.s2_coverage import (
+        mosaic_threshold as _footprint_threshold,
+    )
+    from berlin_lst_downscaling.data.selection.s2_coverage import (
+        partition_by_footprint_gate as _partition_gate,
+    )
+
+    footprint_threshold = _footprint_threshold(cfg)
+    gate_dropped: list[dict] = []
+    if footprint_threshold is not None:
+        kept, gated = _partition_gate(s2_candidates, footprint_threshold)
+        gate_dropped = gated
+        s2_candidates = kept
+
     # Score each candidate (clear_frac pre-computed and stored on the candidate)
     scored: list[tuple[dict, float]] = []
     for c in s2_candidates:
@@ -72,6 +93,18 @@ def couple_one_anchor(
     max_clear_frac = max((c["clear_frac"] for c, _ in scored), default=0.0)
 
     if not scored or max_clear_frac < min_cf:
+        if gate_dropped and not scored:
+            return {
+                "status": "dropped",
+                "anchor": anchor,
+                "reason": _FOOTPRINT_DROP_REASON,
+                "max_clear_frac": max_clear_frac,
+                "s2": None,
+                "clear_frac": None,
+                "score": None,
+                "ecostress": [],
+                "s2_footprint_gated": len(gate_dropped),
+            }
         return {
             "status": "dropped",
             "anchor": anchor,
