@@ -185,6 +185,7 @@ def _index_channels() -> list[FeatureChannel]:
 
 
 def _morphology_channels() -> list[FeatureChannel]:
+    # Published v5 roster (schema 4): ranges frozen, do not touch.
     return [
         FeatureChannel(
             name="building_height_mean",
@@ -294,7 +295,9 @@ def _morphology_channels_v6(canopy_cover_threshold_m: float) -> list[FeatureChan
             family="morphology",
             description="Mean building height in metres above ground (LoD2)",
             unit="m",
-            valid_range=(0.0, 200.0),
+            # v6-only widening for the Fernsehturm (368 m): the published
+            # v5 roster above stays frozen.
+            valid_range=(0.0, 400.0),
         ),
         FeatureChannel(
             name="building_coverage_ratio",

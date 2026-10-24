@@ -35,7 +35,9 @@ from berlin_lst_downscaling.data.secondary.reports import (
 def run_sources(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the static source pipeline (Pipeline A).
 
-    Returns 0 on success, 1 if any items failed.
+    Returns 0 only when every expected ledger row is done after the run,
+    1 otherwise. The closing ledger audit is fail-closed: a run that
+    processed zero items but left a failed row behind still exits non-zero.
     """
     if run_id is None:
         run_id = uuid4().hex[:8]
@@ -86,9 +88,88 @@ def run_sources(cfg: DictConfig, run_id: str | None = None) -> int:
     log_event(_logger, logging.INFO, "qa_report", report=format_secondary_report(report))
     persist_secondary_report(report, source_root)
 
+    # ── fail-closed ledger audit ─────────────────────────────────────
+    # ``failed`` counts items that raised during this run, but a row can
+    # also be non-done without raising here (interrupted previous run,
+    # partial publication, or a runner bug that skips without reconcile).
+    # Re-read the ledger and refuse success unless every expected row is
+    # done with resolvable artifacts.
+    audit_errors = find_not_done_items(led, expected_source_items(cfg))
+    if audit_errors:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "ledger_not_all_done",
+            errors=audit_errors,
+        )
+        print(f"FAIL: static sources ledger not all done ({len(audit_errors)} items).")
+        for err in audit_errors:
+            print(f"  - {err}")
+
     elapsed = time.perf_counter() - t0
     log_event(_logger, logging.INFO, "duration", elapsed_s=round(elapsed, 1))
+    if audit_errors:
+        return 1
     return 0 if failed == 0 else 1
+
+
+# ── fail-closed ledger audit ─────────────────────────────────────────
+
+# Default vintages mirror the per-source ``cfg.get("vintages", [...])``
+# fallbacks in the runners above. A shared ``vintages`` key overrides all.
+_DEFAULT_VINTAGES: dict[str, list[int]] = {
+    "imperviousness": [2016, 2021],
+    "vegetation_height": [2020],
+    "terrain_height": [2021],
+    "lod2_morphology": [2024],
+}
+
+
+def expected_source_items(cfg) -> list[tuple[str, str, str]]:
+    """Return the expected ``(item_id, source, period)`` rows for this config."""
+    sources: list[str] = list(cfg.get("sources", []))
+    out: list[tuple[str, str, str]] = []
+    for source in sources:
+        defaults = _DEFAULT_VINTAGES.get(source, [])
+        vintages: list[int] = list(cfg.get("vintages", defaults))
+        for vintage in vintages:
+            out.append((f"{source}_{vintage}", source, str(vintage)))
+    return out
+
+
+def find_not_done_items(led: SecondaryLedger, expected: list[tuple[str, str, str]]) -> list[str]:
+    """Return human-readable errors for every expected row that is not done.
+
+    A ``done`` row must still resolve to a real COG and completion marker;
+    otherwise it is reported (partial publication is never success).
+    """
+    from berlin_lst_downscaling.data.io import exists, resolve_canonical_uri
+
+    errors: list[str] = []
+    for item_id, source, period in expected:
+        row = led.get(item_id, source, period)
+        if row is None:
+            errors.append(f"{item_id}: missing ledger row")
+            continue
+        if row.status != "done":
+            errors.append(
+                f"{item_id}: status={row.status} run_id={row.run_id} last_error={row.last_error}"
+            )
+            continue
+        try:
+            output_ok = bool(row.output_uri) and exists(resolve_canonical_uri(row.output_uri))
+            completion_ok = bool(row.completion_uri) and exists(
+                resolve_canonical_uri(row.completion_uri)
+            )
+        except Exception as exc:  # fail closed on unreadable artifacts
+            errors.append(f"{item_id}: artifact check failed: {exc}")
+            continue
+        if not output_ok or not completion_ok:
+            errors.append(
+                f"{item_id}: done but artifacts missing "
+                f"(output_ok={output_ok} completion_ok={completion_ok})"
+            )
+    return errors
 
 
 _logger = logging.getLogger(__name__)
