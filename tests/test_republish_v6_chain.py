@@ -731,7 +731,8 @@ def test_seed_refuses_contract_mismatch(tmp_path, monkeypatch) -> None:
     assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
 
 
-def test_seed_refuses_missing_cog(tmp_path, monkeypatch) -> None:
+def test_seed_gaps_missing_cog_but_writes_verified_rows(tmp_path, monkeypatch) -> None:
+    """A done row with a missing COG is a gap; verified rows still seed."""
     import os
 
     from berlin_lst_downscaling.data.ard.ledger import Ledger
@@ -750,12 +751,19 @@ def test_seed_refuses_missing_cog(tmp_path, monkeypatch) -> None:
         "bundle/manifest.parquet",
     )
     module = _load_seed_module()
-    with pytest.raises(RuntimeError, match="nothing written"):
-        module.seed("source/ledger.parquet", "dest", "bundle/manifest.parquet")
-    assert not os.path.exists(os.path.join("dest", "ledger.parquet"))
+    summary = module.seed("source/ledger.parquet", "dest", "bundle/manifest.parquet")
+    # Missing COG (cog-L1 was never written) is a gap, not an abort.
+    assert summary["staged"] == 0
+    assert [(g["scene_id"], g["source"], g["reason"]) for g in summary["gaps"]] == [
+        ("L1", "landsat-c2-l2", "missing_cog")
+    ]
+    # The verified-rows write still happened (ledger exists, empty of L1).
+    dest = Ledger.open(os.path.join("dest", "ledger.parquet"))
+    assert dest.get("L1", "landsat-c2-l2") is None
 
 
-def test_seed_refuses_new_manifest_scene_without_reuse_row(tmp_path, monkeypatch) -> None:
+def test_seed_gaps_new_manifest_scene_without_reuse_row(tmp_path, monkeypatch) -> None:
+    """A manifest key with no reuse row is a gap for the gap pass."""
     import os
 
     landsat_hash, _ = _good_hashes()
@@ -766,16 +774,19 @@ def test_seed_refuses_new_manifest_scene_without_reuse_row(tmp_path, monkeypatch
         [("L1", "landsat-c2-l2"), ("LNEW", "landsat-c2-l2")],
     )
     module = _load_seed_module()
-    with pytest.raises(RuntimeError, match="without a done reuse row"):
-        module.seed(source_uri, dest_root, manifest_uri)
-    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+    summary = module.seed(source_uri, dest_root, manifest_uri)
+    assert summary["staged"] == 1
+    assert [(g["scene_id"], g["source"], g["reason"]) for g in summary["gaps"]] == [
+        ("LNEW", "landsat-c2-l2", "missing_row")
+    ]
+    assert os.path.exists(os.path.join(dest_root, "ledger.parquet"))
 
 
-def test_seed_refuses_not_done_manifest_row(tmp_path, monkeypatch) -> None:
-    """A failed reuse row must not count as covered (Bugbot).
+def test_seed_gaps_not_done_manifest_row(tmp_path, monkeypatch) -> None:
+    """A failed reuse row is a gap, not cover.
 
-    The S2-only run_ard never writes that key, so accepting it here
-    would only surface later as a validate_ard key mismatch.
+    The S2-only run_ard never writes that key, so the gap pass must
+    process it; validate_ard would otherwise fail later as a key mismatch.
     """
     import os
 
@@ -790,9 +801,103 @@ def test_seed_refuses_not_done_manifest_row(tmp_path, monkeypatch) -> None:
         [("L1", "landsat-c2-l2"), ("L2", "landsat-c2-l2")],
     )
     module = _load_seed_module()
-    with pytest.raises(RuntimeError, match="without a done reuse row"):
-        module.seed(source_uri, dest_root, manifest_uri)
-    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+    summary = module.seed(source_uri, dest_root, manifest_uri)
+    assert summary["staged"] == 1
+    assert [(g["scene_id"], g["source"], g["reason"]) for g in summary["gaps"]] == [
+        ("L2", "landsat-c2-l2", "not_done")
+    ]
+    assert os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+
+
+def test_seed_gap_list_is_complete_and_written_to_gap_out(tmp_path, monkeypatch) -> None:
+    """The machine-readable gap list is never truncated; the log line is."""
+    import json
+    import os
+
+    landsat_hash, eco_hash = _good_hashes()
+    rows = [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)]
+    manifest = [("L1", "landsat-c2-l2")]
+    # 12 further gap keys of mixed kinds (missing rows, non-done, and a
+    # done row with a missing COG).
+    for i in range(12):
+        manifest.append((f"M{i:02d}", "ecostress"))
+    rows.append(_seed_row("ecostress", "EFAIL", schema_hash=eco_hash, status="failed"))
+    manifest.append(("EFAIL", "ecostress"))
+    rows.append(_seed_row("ecostress", "ENOCG", schema_hash=eco_hash))
+    manifest.append(("ENOCG", "ecostress"))
+    source_uri, manifest_uri, dest_root = _seed_fixture(tmp_path, monkeypatch, rows, manifest)
+    # ENOCG's COG must be absent while its flag exists.
+    import pathlib
+
+    (pathlib.Path("cog-ENOCG")).unlink(missing_ok=True)
+    module = _load_seed_module()
+    gap_out = os.path.join(dest_root, "seed_gaps.json")
+    summary = module.seed(source_uri, dest_root, manifest_uri, gap_out=gap_out)
+    assert summary["gap_count"] == 14
+    assert len(summary["gaps"]) == 14
+    on_disk = json.loads(pathlib.Path(gap_out).read_bytes())
+    assert len(on_disk["gaps"]) == 14
+    reasons = {(g["scene_id"], g["reason"]) for g in on_disk["gaps"]}
+    assert ("M00", "missing_row") in reasons
+    assert ("EFAIL", "not_done") in reasons
+    assert ("ENOCG", "missing_cog") in reasons
+    # Verified rows still seeded despite the gaps.
+    assert summary["staged"] == 1
+
+
+def test_seed_gap_rerun_is_idempotent(tmp_path, monkeypatch) -> None:
+    """A rerun re-reports the same gaps and skips seeded rows."""
+    landsat_hash, _ = _good_hashes()
+    source_uri, manifest_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [
+            _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash),
+            _seed_row("landsat-c2-l2", "L2", schema_hash=landsat_hash, status="failed"),
+        ],
+        [("L1", "landsat-c2-l2"), ("L2", "landsat-c2-l2")],
+    )
+    module = _load_seed_module()
+    first = module.seed(source_uri, dest_root, manifest_uri)
+    assert first["staged"] == 1
+    second = module.seed(source_uri, dest_root, manifest_uri)
+    assert second["staged"] == 0
+    assert second["skipped_identical"] == 1
+    assert second["gaps"] == first["gaps"]
+    assert second["gap_count"] == 1
+
+
+def test_seed_legacy_bucket_row_is_a_gap(tmp_path, monkeypatch) -> None:
+    """Rows referencing the retired gs://berlin-lst-data bucket reprocess.
+
+    The raw existence check fails for the deleted bucket, so the key
+    becomes a gap (reprocessed into the v10 root) instead of propagating
+    a stale URI — paths are never rewritten.
+    """
+    landsat_hash, _ = _good_hashes()
+    source_uri, manifest_uri, dest_root = _seed_fixture(
+        tmp_path,
+        monkeypatch,
+        [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
+        [("L1", "landsat-c2-l2")],
+    )
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    ledger = Ledger.open(source_uri)
+    row = ledger.get("L1", "landsat-c2-l2")
+    assert row is not None
+    row.path_cog = "gs://berlin-lst-data/ard/full/x/landsat-c2-l2/2024/L1/cog.tif"
+    row.path_flag = "gs://berlin-lst-data/ard/full/x/landsat-c2-l2/2024/L1/flag.tif"
+    ledger.upsert(row)
+    module = _load_seed_module()
+    # Offline stand-in for the deleted legacy bucket: no gs:// URI exists.
+    real_exists = module.exists
+    monkeypatch.setattr(
+        module, "exists", lambda uri: False if str(uri).startswith("gs://") else real_exists(uri)
+    )
+    summary = module.seed(source_uri, dest_root, manifest_uri)
+    assert summary["staged"] == 0
+    assert [(g["scene_id"], g["reason"]) for g in summary["gaps"]] == [("L1", "missing_cog")]
 
 
 def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> None:
@@ -830,7 +935,80 @@ def test_ard_launcher_seeds_before_processing() -> None:
     assert seed_pos < run_pos
     assert "--manifest-uri ${MANIFEST_URI}" in text
     assert "--dest-root ${OUTPUT_ROOT}" in text
+    assert "--gap-out ${OUTPUT_ROOT}/seed_gaps.json" in text
     assert "${REUSE_ROOT}/ledger.parquet" in text
+    # S2-only mosaic pass first, Landsat/ECOSTRESS gap pass second.
+    assert text.index("--config-name ${CONFIG_NAME}") < text.index(
+        "--config-name ${GAP_CONFIG_NAME}"
+    )
+    assert "landsat_ecostress_v10" in text
+
+
+def test_ard_v10_gap_config_matches_seed_contracts() -> None:
+    """The gap pass writes into the v10 root with the seeded contracts."""
+    gap = OmegaConf.load(_REPO / "configs/ard/landsat_ecostress_v10.yaml")
+    assert sorted(gap["sources"]) == ["ecostress", "landsat-c2-l2"]
+    assert str(gap["manifest_uri"]).rstrip("/") == MANIFEST_V4_URI
+    assert str(gap["output_root"]).rstrip("/") == ARD_V10_ROOT
+    # Same Landsat policy the seeder verifies (area-mean + native bit-OR).
+    base = OmegaConf.load(_REPO / "configs/ard/_base.yaml")
+    assert str(base["landsat_st_resampling"]) == "average"
+    assert str(base["landsat_qa_aggregation"]) == "native_bit_or"
+
+    from berlin_lst_downscaling.data.ard.contract import contract_for_source
+    from berlin_lst_downscaling.data.ard.landsat_target import landsat_schema_hash
+
+    assert contract_for_source("landsat-c2-l2").schema_version == 7
+    assert contract_for_source("ecostress").schema_version == 7
+    assert landsat_schema_hash(7, "average", "native_bit_or") == "7|st=average|qa=native_bit_or"
+
+
+def test_validate_ard_fails_when_a_manifest_source_has_no_done_row(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """validate_ard fails per source, not just on key mismatch.
+
+    The ledger carries every manifest key but none is done (e.g. a
+    skipped gap pass): key-set equality passes, yet each manifest source
+    must still report its missing done rows.
+    """
+    import importlib.util
+    import sys
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    manifest_path = tmp_path / "manifest.parquet"
+    ledger_path = tmp_path / "ledger.parquet"
+    pq.write_table(
+        pa.table({"scene_id": ["L1", "E1"], "source": ["landsat-c2-l2", "ecostress"]}),
+        manifest_path,
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "scene_id": ["L1", "E1"],
+                "source": ["landsat-c2-l2", "ecostress"],
+                "status": ["failed", "failed"],
+            }
+        ),
+        ledger_path,
+    )
+    path = _REPO / "scripts/validators/validate_ard.py"
+    spec = importlib.util.spec_from_file_location("validate_ard_gap", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["validate_ard_gap"] = module
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["validate_ard.py", "--ledger", str(ledger_path), "--manifest", str(manifest_path)],
+    )
+    assert module.main() == 1
+    out = capsys.readouterr().out
+    assert "landsat-c2-l2: 0/1 done" in out
+    assert "ecostress: 0/1 done" in out
 
 
 # ── 7. Expected counts derived from the v4 bundle ─────────────────────

@@ -125,8 +125,12 @@ def main() -> int:
     source_counts = Counter(r["source"][0] for r in done_rows)
     print(f"Done by source: {dict(source_counts)}")
 
-    for src, count in source_counts.items():
+    # Every manifest source must reach its full done count — including a
+    # source with zero done rows (absent from source_counts), so a missing
+    # gap pass fails here instead of passing silently.
+    for src in sorted({s for _, s in manifest_keys}):
         expected = sum(1 for _, s in manifest_keys if s == src)
+        count = source_counts.get(src, 0)
         if count != expected:
             errors.append(f"{src}: {count}/{expected} done")
         else:
