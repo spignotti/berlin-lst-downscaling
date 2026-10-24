@@ -92,18 +92,12 @@ IMPERV_BIN_LABELS: tuple[str, ...] = (
     "90–100 %",
 )
 
-# Vintage rule for the published imperviousness COGs: scenes before 2019
-# use the 2016 vintage, otherwise 2021 (documented choice; all pinned
-# scenes are 2022–2024, i.e. effectively 2021 throughout).
-IMPERV_VINTAGE_CUTOFF_YEAR = 2019
+# Vintage rule for the published imperviousness COGs: reuse the project's
+# canonical mapping (``vintage_for_scene_year`` in
+# ``data.secondary.imperviousness``: up to and including 2019 → 2016,
+# otherwise 2021). All pinned scenes are 2022–2024, i.e. effectively 2021
+# throughout. ``IMPERV_VINTAGE_FILES`` only names the local v3 copies.
 IMPERV_VINTAGE_FILES = {2016: "imperviousness_2016.tif", 2021: "imperviousness_2021.tif"}
-
-
-def imperv_vintage_for_year(year: int) -> int:
-    """Return the imperviousness vintage year for a scene acquisition year."""
-    if year < IMPERV_VINTAGE_CUTOFF_YEAR:
-        return 2016
-    return 2021
 
 
 # ── scaling ──────────────────────────────────────────────────────────────
@@ -389,7 +383,6 @@ __all__ = [
     "THERMAL_RADIANCE_SCALE",
     "IMPERV_BIN_EDGES",
     "IMPERV_BIN_LABELS",
-    "IMPERV_VINTAGE_CUTOFF_YEAR",
     "IMPERV_VINTAGE_FILES",
     "assign_imperv_bins",
     "assign_ndvi_bins",
@@ -398,7 +391,6 @@ __all__ = [
     "binned_stats",
     "forward_trad",
     "ged_b10_on_scene_grid",
-    "imperv_vintage_for_year",
     "lst_from_aux",
     "ndvi",
     "ndvi_lst_relation",

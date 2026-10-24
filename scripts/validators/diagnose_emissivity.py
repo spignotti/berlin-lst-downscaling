@@ -67,7 +67,6 @@ from berlin_lst_downscaling.analysis.emissivity import (
     binned_stats,
     forward_trad,
     ged_b10_on_scene_grid,
-    imperv_vintage_for_year,
     lst_from_aux,
     ndvi,
     ndvi_lst_relation,
@@ -340,11 +339,19 @@ def _resolve_imperv_source(spec: str) -> dict[int, dict]:
 
 
 def _imperv_for_scene(sources: dict[int, dict], year: int) -> dict:
-    """Pick (and lazily load) the imperviousness vintage for a scene year."""
+    """Pick (and lazily load) the imperviousness vintage for a scene year.
+
+    Uses the project's canonical ``vintage_for_scene_year`` mapping
+    (imported lazily — the secondary pipeline module is heavy).
+    """
+    from berlin_lst_downscaling.data.secondary.imperviousness import (  # lazy: heavy import
+        vintage_for_scene_year,
+    )
+
     if -1 in sources:
         key = -1
     else:
-        vintage = imperv_vintage_for_year(year)
+        vintage = vintage_for_scene_year(year)
         key = vintage if vintage in sources else sorted(sources)[-1]
     entry = sources[key]
     if entry["loaded"] is None:

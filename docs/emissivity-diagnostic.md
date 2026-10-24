@@ -163,9 +163,10 @@ pixels by ~0.9 K. Winter water samples are thin (corner-clipped scenes).
 
 Published imperviousness v3 COGs (float32 sealing percent [0, 100], NaN
 nodata), used read-only from local copies — no GCS access in code
-(`--impervious-tif` takes a single COG or the v3 directory; vintage rule:
-2016 for scenes before 2019, 2021 otherwise — all 9 pinned scenes are
-2022–2024, i.e. 2021 throughout). The 10 m percent field is area-averaged
+(`--impervious-tif` takes a single COG or the v3 directory; vintage rule
+reuses the project's canonical `vintage_for_scene_year`: up to and including
+2019 → 2016, otherwise 2021 — all 9 pinned scenes are 2022–2024, i.e. 2021
+throughout). The 10 m percent field is area-averaged
 onto the 30 m scene grid (documented method: continuous percent field, same
 rationale as the repo's own imperviousness 2.5 m → 10 m step; NaN
 propagates). Classes: 0–10 / 10–30 / 30–60 / 60–90 / 90–100 %.
