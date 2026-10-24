@@ -205,7 +205,14 @@ must round-trip exactly through float32 to equal `joint_clear_frac`.
 
 **Ledger roles.** ARD ledger carries scene+source rows. Per-pipeline
 ledger carries `(item_id, source, period_or_vintage)` rows:
-- ARD: rows are scene-centric, status tracks scene lifecycle.
+- ARD: rows are scene-centric, status tracks scene lifecycle
+  (`pending|exporting|done|failed|skipped|exhausted`). A `failed`
+  Sentinel-2 row whose `last_error` matches the mosaic AOI coverage gate
+  (`Sentinel-2 mosaic AOI coverage failed: missing …`, threshold
+  `max_missing_aoi_fraction = 0.005`) is a documented coverage-gate
+  exclusion, not a data bug: `validate_ard.py` reports it with scene id
+  and missing fraction, and downstream features skip its pairing (dropped,
+  never replaced). No new ledger status and no schema change.
 - Static sources: per `(source, vintage)` item.
 - Static derived: per `(product, geometry_id)` item.
 - Dynamic: per scene, with `role ∈ {anchor, inference}`.

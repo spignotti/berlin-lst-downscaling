@@ -65,6 +65,7 @@ def compute_clear_frac_with_counts(
     )
 
     # ── build boolean clear masks ───────────────────────────────────────────
+    scl: np.ndarray | None = None
     if s2_mosaic:
         l8_slice = select_time_slice(l8_ds, anchor_dt) if anchor_dt is not None else l8_ds
         l8_clear = landsat_qa_to_clear_bits(_band_plane(l8_slice["qa_pixel"]).astype(np.uint16))
@@ -92,12 +93,30 @@ def compute_clear_frac_with_counts(
     s2_clear_px = int(np.sum(aoi & s2_clear))
     intersect_px = int(np.sum(aoi & l8_clear & s2_clear))
 
+    # Pre-cloud SCL footprint coverage (mirrors the ARD v10 gate) for the
+    # mosaic path: footprint-valid means covered SCL (nonzero), independent
+    # of cloud classification or the Landsat-clear denominator. Annotation
+    # only here; gating happens in the coupling step when configured.
+    footprint_counts: dict = {}
+    if s2_mosaic and scl is not None:
+        footprint = scl != 0
+        missing_px = int(np.sum(aoi & ~footprint))
+        footprint_counts = {
+            "s2_footprint_missing_px": missing_px,
+            "s2_footprint_total_px": aoi_px,
+            "s2_footprint_missing_frac": (missing_px / aoi_px) if aoi_px else float("nan"),
+        }
+
     if l8_clear_px == 0:
         cf = float("nan")
-        return cf, _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
+        counts = _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
+        counts.update(footprint_counts)
+        return cf, counts
 
     cf = intersect_px / l8_clear_px
-    return cf, _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
+    counts = _counts_dict(cf, aoi_px, l8_clear_px, s2_clear_px, intersect_px)
+    counts.update(footprint_counts)
+    return cf, counts
 
 
 def _counts_dict(

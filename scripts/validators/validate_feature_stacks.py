@@ -309,18 +309,42 @@ def main() -> int:
         "bundle (assessable 2017-2025 anchors); mutually exclusive with "
         "--expected-scenes",
     )
+    parser.add_argument(
+        "--ard-ledger",
+        default=None,
+        metavar="ARD_LEDGER_PARQUET",
+        help="ARD v10 ledger: S2 mosaic AOI coverage-gate exclusions are "
+        "subtracted from the manifest-derived expected count (excluded "
+        "pairings drop out, no replacement partner). Requires "
+        "--expected-scenes-from-manifest.",
+    )
     args = parser.parse_args()
 
     if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
         parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
+    if args.ard_ledger is not None and args.expected_scenes_from_manifest is None:
+        parser.error("--ard-ledger requires --expected-scenes-from-manifest")
     if args.expected_scenes_from_manifest is not None:
         from berlin_lst_downscaling.data.selection.bundle_counts import (
             expected_counts_for_bundle,
+            expected_features_count_for_bundle,
         )
 
-        assessable, _ = expected_counts_for_bundle(args.expected_scenes_from_manifest)
-        print(f"  Expected scenes from manifest bundle: {assessable}")
-        args.expected_scenes = assessable
+        if args.ard_ledger is not None:
+            expected, _, exclusions = expected_features_count_for_bundle(
+                args.expected_scenes_from_manifest, args.ard_ledger
+            )
+            print(f"  Expected scenes from manifest bundle minus S2 gate exclusions: {expected}")
+            for row in exclusions:
+                print(
+                    f"  excluded pairing {row['landsat_scene_id']} "
+                    f"(S2 {row['sentinel2_scene_id']} failed the AOI coverage gate)"
+                )
+            args.expected_scenes = expected
+        else:
+            assessable, _ = expected_counts_for_bundle(args.expected_scenes_from_manifest)
+            print(f"  Expected scenes from manifest bundle: {assessable}")
+            args.expected_scenes = assessable
 
     root = args.root.rstrip("/")
     ledger_uri = f"{root}/_state/features/ledger.parquet"

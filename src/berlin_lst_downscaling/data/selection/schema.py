@@ -144,6 +144,11 @@ def policy_fingerprint(cfg: Any) -> str:
             "membership": "solar_day_datatake_v1",
             "donor_rule": "first_footprint_valid_sorted_item_id",
         }
+        mosaic_threshold = (
+            cfg.get("sentinel2", {}).get("mosaic", {}).get("max_missing_aoi_fraction")
+        )
+        if mosaic_threshold is not None:
+            policy["s2_mosaic"]["max_missing_aoi_fraction"] = float(mosaic_threshold)
     payload = json.dumps(policy, sort_keys=True)
     return sha256(payload.encode()).hexdigest()[:16]
 
