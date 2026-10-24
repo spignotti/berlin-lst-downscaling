@@ -1,11 +1,21 @@
 # Emissivity diagnostic: how much does ST_B10 depend on the scene-NDVI adjustment?
 
 Read-only diagnostic (no training, no republish, no GCS writes — Planetary
-Computer reads only). Run: `uv run python scripts/validators/diagnose_emissivity.py
---with-s2` (raw JSON/CSV/SVG land in the gitignored `.scratch/emissivity-diagnostic/`;
-this report and the committed SVGs under `docs/emissivity-diagnostic/` are the
-retained evidence). Physics in `src/berlin_lst_downscaling/analysis/emissivity.py`,
-tests in `tests/test_emissivity.py`.
+Computer reads plus local published-COG copies only). Run:
+`uv run python scripts/validators/diagnose_emissivity.py --with-s2
+--impervious-tif .scratch/imperviousness-v3` (raw JSON/CSV/SVG land in the
+gitignored `.scratch/emissivity-diagnostic/`; this report and the committed
+SVGs under `docs/emissivity-diagnostic/` are the retained evidence). Physics
+in `src/berlin_lst_downscaling/analysis/emissivity.py`, tests in
+`tests/test_emissivity.py`.
+
+> **What (b) actually measures.** Experiment (b) below is a *uniform*
+> scene-median emissivity, not ASTER GED. It removes ALL spatial emissivity
+> structure — the NDVI adjustment *plus* any static spatial pattern present
+> in the product EMIS — so every ΔLST number and slope change against (b)
+> is an **upper bound on the spatial-pattern effect**, not the
+> NDVI-adjustment effect alone. The `--aster-ged-tif` hook is the path to
+> the real static-GED comparison (needs Earthdata credentials).
 
 ## Method
 
@@ -34,12 +44,15 @@ LST  = K2 / ln(K1 / B(T) + 1)
   defines saturated thermal pixels by the uint16 maximum; verified bits 8–10
   unset in all 9 scenes, max QA_RADSAT 0–127 from optical bits only) + finite
   aux/EMIS. No clamps; invalid maps to NaN.
-- Experiments: **(a)** `eps` = product EMIS (sanity vs ST_B10); **(b)** static
-  emissivity without scene-NDVI adjustment (see source note); **(c)** fixed
-  `eps` 0.97 / 0.98. Landsat SR NDVI bins for stratification; same-season S2
-  NDVI (`--with-s2`: least-cloudy `sentinel-2-l2a` within ±16 d, repo ARD
-  harmonized reflectance via `reflectance_scale_from_item`, SCL-clear join,
-  averaged 10 m → 30 m with explicit resampling).
+- Experiments: **(a)** `eps` = product EMIS (sanity vs ST_B10); **(b)**
+  UNIFORM STATIC: scene-median EMIS everywhere — upper bound on the
+  spatial-pattern effect (see box above), not the NDVI adjustment alone;
+  **(c)** fixed `eps` 0.97 / 0.98. Landsat SR NDVI bins, Fmask water/land,
+  and impervious classes (published v3 COGs, `--impervious-tif`) for
+  stratification; same-season S2 NDVI (`--with-s2`: least-cloudy
+  `sentinel-2-l2a` within ±16 d, repo ARD harmonized reflectance via
+  `reflectance_scale_from_item`, SCL-clear join, averaged 10 m → 30 m with
+  explicit resampling).
 
 ## Scene selection rule
 
@@ -68,15 +81,16 @@ feasible (~17 s/scene), so no clipping was needed.
 ASTER GED v3 (AG100_003, 100 m, Hulley et al. 2015) granules require Earthdata
 credentials for download (confirmed via CMR: collection is cloud-hosted but
 gated); this read-only box has none, so the true static-GED branch could not
-run. Documented fallback used: the scene-median EMIS applied uniformly — this
-removes the *spatial* NDVI-adjustment pattern while keeping the scene mean, so
-ΔLST (a)−(b) isolates the spatial-adjustment effect (it is not an absolute GED
-product). The script accepts `--aster-ged-tif` (single-band B10-adjusted raster,
-or a 5-band GED tile combined as mean of bands 13+14, whose 10.25–11.65 µm
-passband brackets TIRS B10 10.6–11.19 µm, after Malakar et al. 2018 / Hulley et
-al. 2015) for a rerun with real GED. Fixed-eps scenarios (c) bracket the
-absolute-level sensitivity and reproduce the literature 0.5–1 K per 0.01
-emissivity.
+run. Documented fallback used: the scene-median EMIS applied uniformly — and
+per the box above, that makes every (a)−(b) comparison an **upper bound** on
+the spatial emissivity effect, because the uniform field discards the static
+spatial pattern in EMIS together with the NDVI adjustment. The script accepts
+`--aster-ged-tif` (single-band B10-adjusted raster, or a 5-band GED tile
+combined as mean of bands 13+14, whose 10.25–11.65 µm passband brackets TIRS
+B10 10.6–11.19 µm, after Malakar et al. 2018 / Hulley et al. 2015),
+reprojected per scene with bilinear resampling, for a rerun with real GED.
+Fixed-eps scenarios (c) bracket the absolute-level sensitivity and reproduce
+the literature 0.5–1 K per 0.01 emissivity.
 
 ## (a) Sanity: reproduced ST_B10 per scene
 
@@ -115,9 +129,10 @@ so the constant cancels.
 | winter L9 (2 scenes) | +0.12, [−0.25, +1.17] | −0.57, [−0.98, +0.44] | +0.00, [−0.40, +1.01] |
 
 Scene-mean EMIS is 0.972–0.974 (summer) and 0.971/0.982 (winter scenes), so the
-fixed scenarios bracket it and confirm ~0.5–1 K per 0.01 emissivity. Headline:
-removing the spatial NDVI adjustment moves the scene mean by ≤ 0.11 K, but
-moves individual clear pixels by up to ~±1 K (p05/p95).
+fixed scenarios bracket it and confirm ~0.5–1 K per 0.01 emissivity.
+Headline: removing all spatial emissivity structure moves the scene mean by
+≤ 0.12 K — an upper bound on what the NDVI adjustment alone can do to the
+mean — but moves individual clear pixels by up to ~±1 K (p05/p95).
 
 ## ΔLST (a)−(b) by NDVI bin (static-uniform; n-weighted mean, [min p05, max p95])
 
@@ -143,6 +158,53 @@ pixels by ~0.9 K. Winter water samples are thin (corner-clipped scenes).
 | summer L9 | +0.03, [−0.91, +1.08], 4 752 805 | −0.91, [−1.28, −0.86], 116 839 |
 | winter L8 | −0.03, [−1.04, +0.68], 884 367 | −0.54, [−1.06, +0.56], 63 624 |
 | winter L9 | +0.12, [−0.24, +1.17], 75 380 | −0.03, [−0.54, +1.18], 216 |
+
+## ΔLST (a)−(b) by impervious class (static-uniform; upper bound)
+
+Published imperviousness v3 COGs (float32 sealing percent [0, 100], NaN
+nodata), used read-only from local copies — no GCS access in code
+(`--impervious-tif` takes a single COG or the v3 directory; vintage rule:
+2016 for scenes before 2019, 2021 otherwise — all 9 pinned scenes are
+2022–2024, i.e. 2021 throughout). The 10 m percent field is area-averaged
+onto the 30 m scene grid (documented method: continuous percent field, same
+rationale as the repo's own imperviousness 2.5 m → 10 m step; NaN
+propagates). Classes: 0–10 / 10–30 / 30–60 / 60–90 / 90–100 %.
+
+| group | 0–10 % | 10–30 % | 30–60 % | 60–90 % | 90–100 % |
+|---|---|---|---|---|---|
+| summer L8 | −0.37, [−0.98, +0.60], 587k | +0.07, [−0.76, +0.79], 184k | +0.17, [−0.54, +0.80], 313k | +0.34, [−0.29, +0.93], 274k | +0.58, [−0.01, +1.20], 114k |
+| summer L9 | −0.33, [−1.03, +0.79], 883k | +0.10, [−0.83, +0.89], 296k | +0.18, [−0.60, +0.90], 524k | +0.37, [−0.36, +1.06], 473k | +0.60, [−0.09, +1.42], 217k |
+| winter L8 | −0.35, [−1.04, +0.57], 204k | −0.00, [−0.93, +0.58], 78k | +0.05, [−0.55, +0.58], 143k | +0.16, [−0.62, +0.66], 135k | +0.24, [−1.04, +0.79], 59k |
+| winter L9 | n/a (no overlap with the product's valid area) | — | — | — | — |
+
+The cleanest gradient in the study, identical across platforms: the uniform
+run is progressively warmer than the NDVI-adjusted product as sealing rises
+(low-emissivity sealed surfaces retrieve warmer with their true low `eps`
+than with the scene median). Physics check passed: sign and magnitude match
+the per-pixel sensitivity. Winter L9 corner-clipped scenes fall outside the
+product's valid area (E ≥ 372 360 m / N ≤ 582 8940 m in the NW overlap box),
+hence n/a — reported, not filled.
+
+![ΔLST by impervious class, summer](emissivity-diagnostic/fig_delta_imperv_summer.svg)
+![ΔLST by impervious class, winter](emissivity-diagnostic/fig_delta_imperv_winter.svg)
+
+NDVI–LST slopes stratified by impervious class (same arrays, Landsat NDVI;
+static-uniform as (b); winter L9 n/a — no product overlap):
+
+| class | summer L8 2024-08-24: slope (a) / (b), r | winter L8 2023-01-19: slope (a) / (b), r |
+|---|---|---|
+| 0–10 % | +4.67 / +4.17, r=+0.42 | −0.00 / −0.00, r=−0.00 |
+| 10–30 % | −8.57 / −7.67, r=−0.49 | −0.01 / −0.01, r=−0.04 |
+| 30–60 % | −7.06 / −6.25, r=−0.49 | −0.01 / −0.01, r=−0.03 |
+| 60–90 % | −5.95 / −5.26, r=−0.50 | −0.00 / −0.00, r=−0.01 |
+| 90–100 % | −6.92 / −6.31, r=−0.48 | −0.00 / −0.00, r=−0.01 |
+
+Within every sealed summer class the adjustment steepens the NDVI–LST slope
+by ~10% while leaving the correlation untouched — the same upper-bound
+pattern as the whole-scene relation. In winter there is no NDVI–LST relation
+in any class (January, dormant vegetation), under either emissivity. (Full
+per-scene stratified numbers: `.scratch/emissivity-diagnostic/per_scene.json`
+→ `relations` → `imperv_stratified`.)
 
 ![Mean ΔLST by season](emissivity-diagnostic/fig_delta_groups.svg)
 ![ΔLST by NDVI bin, summer](emissivity-diagnostic/fig_delta_ndvi_summer.svg)
@@ -174,12 +236,11 @@ and not interpreted; the primary result is the full-sample Landsat-NDVI pair.
 
 ## Limitations (all read-only; nothing written to GCS, no training, no jobs)
 
-- Impervious-class stratification is not implemented: the project's
-  imperviousness (Umweltatlas-derived) and stadtstruktur (WFS-derived) layers
-  exist only as GCS products / pipeline outputs, unreachable read-only from
-  this box (no GCS credentials; regenerating them would be a product-writing
-  pipeline run, out of scope). Land-cover stratification is by Landsat SR NDVI
-  bins plus the Fmask water/land split above.
+- Impervious-class stratification uses the published v3 COGs (2021 vintage
+  for all pinned scenes); stadtstruktur classes are not joined (WFS-derived
+  pipeline product, same availability reason as before — out of scope).
+  Land-cover stratification is NDVI bins + Fmask water/land + impervious
+  classes.
 - No true static-AST GED branch (Earthdata credentials); fallback documented
   above, rerunnable via `--aster-ged-tif`.
 - Winter L9 samples are thin (28k/47k px, corner-clipped scenes); one winter

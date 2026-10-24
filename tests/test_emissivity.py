@@ -17,12 +17,14 @@ from berlin_lst_downscaling.analysis.emissivity import (
     QA_PIXEL_WATER_BIT,
     ST_SATURATED_DN,
     THERMAL_RADIANCE_SCALE,
+    assign_imperv_bins,
     assign_ndvi_bins,
     aster_ged_b10_proxy,
     aux_dn_to_units,
     binned_stats,
     forward_trad,
     ged_b10_on_scene_grid,
+    imperv_vintage_for_year,
     lst_from_aux,
     ndvi,
     ndvi_lst_relation,
@@ -179,6 +181,16 @@ class MasksAndStatsTest(unittest.TestCase):
         self.assertAlmostEqual(rel["slope"], -15.0, places=9)
         self.assertAlmostEqual(rel["r"], -1.0, places=9)
         self.assertEqual(rel["n"], 50)
+
+    def test_imperv_bins_edges_and_vintage(self) -> None:
+        vals = np.array([-1.0, 0.0, 9.99, 10.0, 29.9, 30.0, 59.9, 60.0, 89.9, 90.0, 100.0])
+        bins = assign_imperv_bins(vals)
+        self.assertEqual(list(bins), [-1, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4])
+        self.assertEqual(int(assign_imperv_bins(np.array([np.nan]))[0]), -1)
+        self.assertEqual(int(assign_imperv_bins(np.array([100.5]))[0]), -1)
+        self.assertEqual(imperv_vintage_for_year(2018), 2016)
+        self.assertEqual(imperv_vintage_for_year(2019), 2021)
+        self.assertEqual(imperv_vintage_for_year(2024), 2021)
 
     def test_uniform_static_emissivity_is_median_and_rejects_empty(self) -> None:
         emis = np.array([[0.95, 0.97], [0.99, np.nan]])

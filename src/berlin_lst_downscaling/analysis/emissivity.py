@@ -81,6 +81,30 @@ NDVI_BIN_LABELS: tuple[str, ...] = (
     "dense",
 )
 
+# Imperviousness (sealing percent) reporting classes, matching the
+# published v3 COG units (float32 percent [0, 100], NaN nodata).
+IMPERV_BIN_EDGES: tuple[float, ...] = (0.0, 10.0, 30.0, 60.0, 90.0, 100.0)
+IMPERV_BIN_LABELS: tuple[str, ...] = (
+    "0–10 %",
+    "10–30 %",
+    "30–60 %",
+    "60–90 %",
+    "90–100 %",
+)
+
+# Vintage rule for the published imperviousness COGs: scenes before 2019
+# use the 2016 vintage, otherwise 2021 (documented choice; all pinned
+# scenes are 2022–2024, i.e. effectively 2021 throughout).
+IMPERV_VINTAGE_CUTOFF_YEAR = 2019
+IMPERV_VINTAGE_FILES = {2016: "imperviousness_2016.tif", 2021: "imperviousness_2021.tif"}
+
+
+def imperv_vintage_for_year(year: int) -> int:
+    """Return the imperviousness vintage year for a scene acquisition year."""
+    if year < IMPERV_VINTAGE_CUTOFF_YEAR:
+        return 2016
+    return 2021
+
 
 # ── scaling ──────────────────────────────────────────────────────────────
 
@@ -211,17 +235,31 @@ def assign_ndvi_bins(values: np.ndarray) -> np.ndarray:
     return np.digitize(values, NDVI_BIN_EDGES[1:-1], right=False)
 
 
+def assign_imperv_bins(values: np.ndarray) -> np.ndarray:
+    """Bin sealing-percent values to ``IMPERV_BIN_LABELS`` indices.
+
+    Bins are left-closed (``digitize`` with ``right=False``); exactly
+    100 % falls in the last class. Negative, above 100, NaN, or otherwise
+    out-of-range values map to -1 (excluded).
+    """
+    idx = np.digitize(values, IMPERV_BIN_EDGES[1:-1], right=False)
+    valid = np.isfinite(values) & (values >= 0.0) & (values <= 100.0)
+    return np.where(valid, idx, -1)
+
+
 # ── static emissivity proxies ────────────────────────────────────────────
 
 
 def uniform_static_emissivity(emis: np.ndarray, mask: np.ndarray) -> float:
     """Scene-median emissivity over the analysis mask (documented fallback).
 
-    This is NOT a true static ASTER GED product: it removes the spatial
-    pattern of the scene-NDVI adjustment while keeping the scene mean,
-    so ``LST(a) - LST(b)`` isolates the spatial-adjustment effect. Used
-    only because ASTER GED granules require Earthdata credentials that
-    are unavailable to this read-only diagnostic (see the report).
+    This is NOT a true static ASTER GED product and NOT the
+    NDVI-adjustment effect alone: applying one uniform value removes ALL
+    spatial emissivity structure (NDVI adjustment plus any static spatial
+    pattern in EMIS). Comparisons against it are therefore an UPPER BOUND
+    on the spatial-pattern effect, not a measurement of the NDVI
+    adjustment in isolation. Used only because ASTER GED granules require
+    Earthdata credentials unavailable to this read-only diagnostic.
     """
     selected = emis[mask]
     selected = selected[np.isfinite(selected)]
@@ -349,12 +387,18 @@ __all__ = [
     "ST_SATURATED_DN",
     "ST_SCALE",
     "THERMAL_RADIANCE_SCALE",
+    "IMPERV_BIN_EDGES",
+    "IMPERV_BIN_LABELS",
+    "IMPERV_VINTAGE_CUTOFF_YEAR",
+    "IMPERV_VINTAGE_FILES",
+    "assign_imperv_bins",
     "assign_ndvi_bins",
     "aster_ged_b10_proxy",
     "aux_dn_to_units",
     "binned_stats",
     "forward_trad",
     "ged_b10_on_scene_grid",
+    "imperv_vintage_for_year",
     "lst_from_aux",
     "ndvi",
     "ndvi_lst_relation",

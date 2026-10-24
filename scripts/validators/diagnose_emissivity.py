@@ -13,14 +13,13 @@ documented USGS constants as fallback).
 Experiments per scene
 ---------------------
 (a) ``eps`` = product ``EMIS``: sanity check, must reproduce ``ST_B10``.
-(b) static emissivity without the scene-NDVI adjustment. ASTER GED v3
-    granules require Earthdata credentials, which this read-only box
-    does not have, so the default is the documented fallback: the
-    scene-median ``EMIS`` applied uniformly (removes the spatial
-    NDVI-adjustment pattern while keeping the scene mean). A
-    caller-supplied static raster (``--aster-ged-tif``, already adjusted
-    to the TIRS B10 bandpass, e.g. mean of ASTER GED bands 13+14) is
-    reprojected onto each 30 m scene grid (bilinear, explicit) when provided.
+(b) UNIFORM STATIC: the scene-median ``EMIS`` everywhere. This removes ALL
+    spatial emissivity structure — not only the NDVI adjustment — so ΔLST
+    and slope changes against it are an UPPER BOUND on the spatial-pattern
+    effect, not the NDVI-adjustment effect alone. (True static ASTER GED
+    needs Earthdata credentials; ``--aster-ged-tif`` is the hook for the
+    real comparison: a caller-supplied B10-adjusted raster, reprojected
+    onto each 30 m scene grid with bilinear resampling.)
 (c) fixed-eps scenarios (0.97, 0.98).
 
 Scene selection rule (pinned IDs below for reproducibility): per season
@@ -46,6 +45,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -57,14 +57,17 @@ from rasterio.warp import Resampling, reproject
 from berlin_lst_downscaling.analysis.emissivity import (
     ATRAN_SCALE,
     EMIS_SCALE,
+    IMPERV_BIN_LABELS,
     NDVI_BIN_LABELS,
     THERMAL_RADIANCE_SCALE,
+    assign_imperv_bins,
     assign_ndvi_bins,
     aster_ged_b10_proxy,
     aux_dn_to_units,
     binned_stats,
     forward_trad,
     ged_b10_on_scene_grid,
+    imperv_vintage_for_year,
     lst_from_aux,
     ndvi,
     ndvi_lst_relation,
@@ -299,6 +302,83 @@ def _load_ged_source(path: str) -> dict:
     return {"array": arr, "transform": transform, "crs": crs, "note": note}
 
 
+# ── imperviousness loader ────────────────────────────────────────────────
+
+
+def _load_imperv_vintage(path: str) -> dict:
+    """Read one published imperviousness v3 COG (percent, NaN nodata)."""
+    with rasterio.open(path) as src:
+        if src.crs is None:
+            raise ValueError(f"imperviousness raster {path!r} has no CRS; cannot reproject")
+        arr = src.read(1).astype(np.float64)
+        arr = np.where(np.isfinite(arr), arr, np.nan)
+        return {"array": arr, "transform": src.transform, "crs": src.crs}
+
+
+def _resolve_imperv_source(spec: str) -> dict[int, dict]:
+    """Resolve ``--impervious-tif`` to vintage sources without GCS access.
+
+    ``spec`` is either a single COG (used for every scene) or a directory
+    holding ``imperviousness_2016.tif`` / ``imperviousness_2021.tif`` (the
+    published v3 layout; vintage picked per scene by acquisition year).
+    Returns a dict vintage-year -> loader spec; rasters load lazily.
+    """
+    from berlin_lst_downscaling.analysis.emissivity import IMPERV_VINTAGE_FILES
+
+    if os.path.isdir(spec):
+        out: dict[int, dict] = {}
+        for vintage, fname in IMPERV_VINTAGE_FILES.items():
+            candidate = os.path.join(spec, fname)
+            if os.path.exists(candidate):
+                out[vintage] = {"path": candidate, "loaded": None}
+        if not out:
+            raise ValueError(f"no imperviousness vintages found in {spec!r}")
+        return out
+    if os.path.exists(spec):
+        return {-1: {"path": spec, "loaded": None}}
+    raise ValueError(f"--impervious-tif {spec!r} is neither a file nor a directory")
+
+
+def _imperv_for_scene(sources: dict[int, dict], year: int) -> dict:
+    """Pick (and lazily load) the imperviousness vintage for a scene year."""
+    if -1 in sources:
+        key = -1
+    else:
+        vintage = imperv_vintage_for_year(year)
+        key = vintage if vintage in sources else sorted(sources)[-1]
+    entry = sources[key]
+    if entry["loaded"] is None:
+        entry["loaded"] = _load_imperv_vintage(entry["path"])
+        print(f"    imperviousness: loaded {entry['path']}")
+    out = dict(entry["loaded"])
+    out["vintage_key"] = key
+    out["path"] = entry["path"]
+    return out
+
+
+def _imperv_on_scene_grid(source: dict, dst_shape: tuple[int, int], dst_transform) -> np.ndarray:  # type: ignore[no-untyped-def]
+    """Area-average the 10 m sealing-percent field onto the 30 m scene grid.
+
+    Documented method: the field is a continuous percent (class codes were
+    already converted upstream), so averaging is correct — the same
+    rationale as the repo's own imperviousness 2.5 m → 10 m step. NaN
+    nodata propagates instead of smearing.
+    """
+    destination = np.full(dst_shape, np.nan, dtype=np.float64)
+    reproject(
+        np.ascontiguousarray(source["array"].astype(np.float64)),
+        destination,
+        src_transform=source["transform"],
+        src_crs=source["crs"],
+        dst_transform=dst_transform,
+        dst_crs=LOAD_CRS,
+        resampling=Resampling.average,
+        src_nodata=float("nan"),
+        dst_nodata=float("nan"),
+    )
+    return destination
+
+
 # ── per-scene diagnostic ─────────────────────────────────────────────────
 
 
@@ -311,6 +391,7 @@ def analyze_scene(
     with_s2: bool,
     s2_window_days: int,
     ged_source: dict | None,
+    imperv_sources: dict | None,
 ) -> dict:
     """Run experiments (a)/(b)/(c) for one scene; return a JSON-able report.
 
@@ -422,14 +503,27 @@ def analyze_scene(
     # vs land. Impervious/stadtstruktur layers are GCS-only (see report).
     water = qa_water(qa)
     surface_index = np.where(ndvi_mask, np.where(water, 1, 0), -1)
+    imperv_index = np.full(ndvi_mask.shape, -1)
+    imperv_note: object = None
+    if imperv_sources is not None:
+        year = item.datetime.year
+        imperv = _imperv_for_scene(imperv_sources, year)
+        imperv_30m = _imperv_on_scene_grid(imperv, emis.shape, transform)
+        imperv_note = {"vintage_key": imperv["vintage_key"], "path": imperv.get("path")}
+        imperv_index = assign_imperv_bins(np.where(ndvi_mask, imperv_30m, np.nan))
     for name, lst_b in variants.items():
         delta = np.where(ndvi_mask, lst_a - lst_b, np.nan)
         by_surface = binned_stats(delta, surface_index, 2)
-        delta_stats[name] = {
+        entry: dict[str, object] = {
             "overall": binned_stats(delta, np.zeros_like(bins), 1)[0],
             "by_ndvi_bin": dict(zip(NDVI_BIN_LABELS, binned_stats(delta, bins, 5), strict=True)),
             "by_surface": {"land": by_surface[0], "water": by_surface[1]},
         }
+        if imperv_sources is not None:
+            entry["by_imperv"] = dict(
+                zip(IMPERV_BIN_LABELS, binned_stats(delta, imperv_index, 5), strict=True)
+            )
+        delta_stats[name] = entry
 
     relations: dict[str, object] = {
         "landsat_ndvi_vs_a": ndvi_lst_relation(landsat_ndvi[ndvi_mask], lst_a[ndvi_mask]),
@@ -437,6 +531,16 @@ def analyze_scene(
     first_b = next(iter(variants.values()))
     relations["landsat_ndvi_vs_b"] = ndvi_lst_relation(landsat_ndvi[ndvi_mask], first_b[ndvi_mask])
     relations["b_variant_for_relation"] = next(iter(variants.keys()))
+    if imperv_sources is not None:
+        # NDVI–LST slope stratified by impervious class (cheap: same arrays).
+        strat: dict[str, object] = {}
+        for i, label in enumerate(IMPERV_BIN_LABELS):
+            sel = ndvi_mask & (imperv_index == i)
+            strat[label] = {
+                "a": ndvi_lst_relation(landsat_ndvi[sel], lst_a[sel]),
+                "b": ndvi_lst_relation(landsat_ndvi[sel], first_b[sel]),
+            }
+        relations["imperv_stratified"] = strat
 
     # Optional same-season S2 NDVI join.
     s2_info: dict[str, object] = {"requested": with_s2, "scene_id": None}
@@ -482,6 +586,7 @@ def analyze_scene(
         "emsd_mean": float(np.nanmean(emsd[analysis_mask])) if np.any(analysis_mask) else None,
         "sanity_a_vs_st": sanity,
         "static_info": static_info,
+        "imperv_note": imperv_note,
         "delta_stats": delta_stats,
         "relations": relations,
         "s2": s2_info,
@@ -670,6 +775,23 @@ def build_figures(
             binned,
         )
 
+    # ΔLST by impervious class, pooled per season (same n-weighted pooling).
+    if any("by_imperv" in r["delta_stats"].get(fig_variant, {}) for r in ok):
+        for season in ("summer", "winter"):
+            imp: dict[str, dict[str, float]] = {}
+            for label in IMPERV_BIN_LABELS:
+                cls_stats = [
+                    r["delta_stats"][fig_variant]["by_imperv"][label]
+                    for r in ok
+                    if r["season"] == season and fig_variant in r["delta_stats"]
+                ]
+                imp[label] = pool_overall_stats(cls_stats)
+            _svg_bar_groups(
+                out_dir / f"fig_delta_imperv_{season}.svg",
+                f"ΔLST (a)-(b) by impervious class, {season} ({fig_variant})",
+                imp,
+            )
+
     # NDVI-LST scatter: summer scene with the largest S2 joint sample.
     candidates = [
         r
@@ -737,6 +859,15 @@ def main() -> int:
         help="Optional local single-band static B10 emissivity raster.",
     )
     parser.add_argument(
+        "--impervious-tif",
+        default=None,
+        help=(
+            "Optional local imperviousness v3 source: a single COG or a "
+            "directory with imperviousness_2016.tif/imperviousness_2021.tif "
+            "(vintage picked per scene; no GCS access in code)."
+        ),
+    )
+    parser.add_argument(
         "--scenes", nargs="*", default=None, help="Subset of pinned scene IDs to run."
     )
     parser.add_argument(
@@ -778,6 +909,9 @@ def main() -> int:
     if args.aster_ged_tif:
         ged_source = _load_ged_source(args.aster_ged_tif)
         ged_meta = {"provided": True, "path": args.aster_ged_tif, "note": ged_source["note"]}
+    imperv_sources: dict | None = None
+    if args.impervious_tif:
+        imperv_sources = _resolve_imperv_source(args.impervious_tif)
 
     wanted = set(args.scenes) if args.scenes else None
     scenes = [s for s in SCENES if wanted is None or s[0] in wanted]
@@ -793,6 +927,7 @@ def main() -> int:
                 with_s2=args.with_s2,
                 s2_window_days=args.s2_window_days,
                 ged_source=ged_source,
+                imperv_sources=imperv_sources,
             )
         except Exception as exc:  # noqa: BLE001 — one scene must not kill the batch
             print(f"    FAILED: {exc}")
@@ -832,6 +967,34 @@ def main() -> int:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [])
         writer.writeheader()
         writer.writerows(rows)
+
+    # Same layout by impervious class (only when --impervious-tif was given).
+    imperv_rows: list[dict] = []
+    for rep in ok:
+        for variant, stats in rep["delta_stats"].items():
+            if "by_imperv" not in stats:
+                continue
+            for b, label in enumerate(IMPERV_BIN_LABELS):
+                s = stats["by_imperv"][label]
+                imperv_rows.append(
+                    {
+                        "scene_id": rep["scene_id"],
+                        "season": rep["season"],
+                        "platform": rep["platform"],
+                        "variant": variant,
+                        "imperv_class": label,
+                        "bin_index": b,
+                        "mean_K": s["mean"],
+                        "p05_K": s["p05"],
+                        "p95_K": s["p95"],
+                        "n": s["n"],
+                    }
+                )
+    if imperv_rows:
+        with open(out_dir / "delta_by_imperv.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(imperv_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(imperv_rows)
 
     # Group-pooled means for the figure (variant static_uniform/first).
     fig_variant = next(

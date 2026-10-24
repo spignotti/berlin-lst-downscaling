@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320">
+<text x="320" y="24" text-anchor="middle" font-size="14">ΔLST (a)-(b) by impervious class, summer (static_uniform)</text>
+<line x1="60" y1="171.18060232008182" x2="580" y2="171.18060232008182" stroke="grey"/>
+<rect x="94.0" y="171.18060232008182" width="36" height="21.141894124555648" fill="steelblue"/>
+<line x1="112.0" y1="231.42857142857142" x2="112.0" y2="125.31197753066812" stroke="black" stroke-width="2"/>
+<text x="112.0" y="276" text-anchor="middle" font-size="10">0–10 %</text>
+<text x="112.0" y="290" text-anchor="middle" font-size="10">-0.35 K</text>
+<rect x="198.0" y="166.09959344160904" width="36" height="6.0810088784727725" fill="steelblue"/>
+<line x1="216.0" y1="219.51230584071942" x2="216.0" y2="119.4372535169415" stroke="black" stroke-width="2"/>
+<text x="216.0" y="276" text-anchor="middle" font-size="10">10–30 %</text>
+<text x="216.0" y="290" text-anchor="middle" font-size="10">+0.09 K</text>
+<rect x="302.0" y="161.1606532712187" width="36" height="11.019949048863111" fill="steelblue"/>
+<line x1="320.0" y1="206.09393649859527" x2="320.0" y2="118.61180721067055" stroke="black" stroke-width="2"/>
+<text x="320.0" y="276" text-anchor="middle" font-size="10">30–60 %</text>
+<text x="320.0" y="290" text-anchor="middle" font-size="10">+0.17 K</text>
+<rect x="406.0" y="150.44380100619915" width="36" height="21.736801313882665" fill="steelblue"/>
+<line x1="424.0" y1="192.33419019194986" x2="424.0" y2="109.34932743697294" stroke="black" stroke-width="2"/>
+<text x="424.0" y="276" text-anchor="middle" font-size="10">60–90 %</text>
+<text x="424.0" y="290" text-anchor="middle" font-size="10">+0.36 K</text>
+<rect x="510.0" y="136.565901759572" width="36" height="35.61470056050982" fill="steelblue"/>
+<line x1="528.0" y1="176.16342807452082" x2="528.0" y2="88.57142857142856" stroke="black" stroke-width="2"/>
+<text x="528.0" y="276" text-anchor="middle" font-size="10">90–100 %</text>
+<text x="528.0" y="290" text-anchor="middle" font-size="10">+0.59 K</text>
+</svg>
