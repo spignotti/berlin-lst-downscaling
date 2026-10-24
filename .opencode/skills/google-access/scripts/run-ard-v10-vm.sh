@@ -10,15 +10,20 @@
 # The remote command first seeds the v10 ledger idempotently with the
 # verified published Landsat/ECOSTRESS rows
 # (scripts/operators/seed_ard_v10_reuse.py; COGs stay referenced in
-# place). Manifest reuse keys without a valid done reuse row (missing row,
-# non-done row, or a done row whose COG/flag is empty or missing — e.g.
-# the stale gs://berlin-lst-data references) are reported as processing
-# gaps, not errors, and the following gap pass
+# place). Existence is checked on the resolved canonical URI
+# (resolve_canonical_uri): pre-cutover gs://berlin-lst-data provenance
+# verifies against its byte-identical canonical copy and seeds with the
+# stored URIs kept unchanged. Manifest reuse keys without a valid done
+# reuse row (missing row, non-done row, or a done row whose COG/flag is
+# empty or missing at its resolved URI) are reported as processing gaps,
+# not errors, and the following gap pass
 # (configs/ard/landsat_ecostress_v10.yaml, current contracts, same output
 # root) processes exactly those scenes via reconcile; seeded done rows are
-# skipped. A rerun is a no-op for seeded and processed rows. Contract/hash
-# mismatches and differing existing rows still abort the seed before
-# anything is written. Follows the run-training-eda-vm.sh pattern with an
+# skipped. A non-done dest row for a key that now verifies is replaced by
+# the verified reuse row (logged). A rerun is a no-op for seeded and
+# processed rows. A gs:// URI on a foreign bucket aborts the seed
+# fail-closed (never a gap). Contract/hash mismatches and differing
+# *done* existing rows still abort the seed before anything is written. Follows the run-training-eda-vm.sh pattern with an
 # explicit config name, explicit upstream input root, and a new output
 # root.
 #

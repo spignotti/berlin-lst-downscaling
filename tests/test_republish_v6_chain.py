@@ -867,13 +867,163 @@ def test_seed_gap_rerun_is_idempotent(tmp_path, monkeypatch) -> None:
     assert second["gap_count"] == 1
 
 
-def test_seed_legacy_bucket_row_is_a_gap(tmp_path, monkeypatch) -> None:
-    """Rows referencing the retired gs://berlin-lst-data bucket reprocess.
+def _seed_gs_fixture(tmp_path, monkeypatch, rows, manifest_scenes, existing_uris):
+    """Write a source ledger + manifest whose rows may carry gs:// URIs.
 
-    The raw existence check fails for the deleted bucket, so the key
-    becomes a gap (reprocessed into the v10 root) instead of propagating
-    a stale URI — paths are never rewritten.
+    No local COG files are written; ``module.exists`` is faked so exactly
+    the URIs in ``existing_uris`` exist (local paths delegate to the real
+    ``exists``). Returns ``(module, source_uri, manifest_uri,
+    dest_root)``.
     """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    monkeypatch.chdir(tmp_path)
+    ledger = Ledger.open("source/ledger.parquet")
+    for row in rows:
+        ledger.upsert(row)
+    Path("bundle").mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table(
+            {
+                "scene_id": [sid for sid, _ in manifest_scenes],
+                "source": [src for _, src in manifest_scenes],
+            }
+        ),
+        "bundle/manifest.parquet",
+    )
+    module = _load_seed_module()
+    real_exists = module.exists
+
+    def _fake_exists(uri) -> bool:
+        s = str(uri)
+        if s.startswith("gs://"):
+            return s in existing_uris
+        return bool(real_exists(uri))
+
+    monkeypatch.setattr(module, "exists", _fake_exists)
+    return module, "source/ledger.parquet", "bundle/manifest.parquet", "dest"
+
+
+def _legacy_row(source, scene_id, *, schema_hash, schema_version=7, status="done"):
+    """A reuse row whose stored provenance points at the retired bucket."""
+    row = _seed_row(
+        source, scene_id, schema_hash=schema_hash, schema_version=schema_version, status=status
+    )
+    stem = f"gs://berlin-lst-data/ard/full/x/{source}/2024/{scene_id}"
+    row.path_cog = f"{stem}/cog.tif"
+    row.path_flag = f"{stem}/flag.tif"
+    return row
+
+
+def _canonical_copy(uri: str) -> str:
+    from berlin_lst_downscaling.data.io.uri_mapping import resolve_canonical_uri
+
+    return resolve_canonical_uri(uri)
+
+
+def test_seed_legacy_bucket_row_seeds_when_canonical_copy_exists(tmp_path, monkeypatch) -> None:
+    """Legacy-bucket rows whose canonical copy exists seed unchanged.
+
+    Stored URIs stay the legacy ones (provenance); downstream readers
+    resolve at read time. A rerun is a no-op for the seeded row.
+    """
+    import os
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
+    landsat_hash, _ = _good_hashes()
+    row = _legacy_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)
+    existing = {_canonical_copy(row.path_cog), _canonical_copy(row.path_flag)}
+    module, source_uri, manifest_uri, dest_root = _seed_gs_fixture(
+        tmp_path,
+        monkeypatch,
+        [row],
+        [("L1", "landsat-c2-l2")],
+        existing,
+    )
+    summary = module.seed(source_uri, dest_root, manifest_uri)
+    assert summary["staged"] == 1
+    assert summary["gaps"] == []
+    assert summary["replaced_nondone"] == 0
+    dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
+    seeded = dest.get("L1", "landsat-c2-l2")
+    assert seeded is not None
+    assert seeded.status == "done"
+    # Stored URIs are kept as provenance, not rewritten.
+    assert seeded.path_cog == row.path_cog
+    assert seeded.path_flag == row.path_flag
+
+    again = module.seed(source_uri, dest_root, manifest_uri)
+    assert again["staged"] == 0
+    assert again["skipped_identical"] == 1
+    assert again["gaps"] == []
+
+
+def test_seed_legacy_bucket_row_gaps_when_canonical_copy_missing(tmp_path, monkeypatch) -> None:
+    """Legacy-bucket rows with no canonical copy stay gaps.
+
+    The gap detail carries both the stored and the resolved URI.
+    """
+    landsat_hash, _ = _good_hashes()
+    row = _legacy_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)
+    module, source_uri, manifest_uri, dest_root = _seed_gs_fixture(
+        tmp_path,
+        monkeypatch,
+        [row],
+        [("L1", "landsat-c2-l2")],
+        set(),
+    )
+    summary = module.seed(source_uri, dest_root, manifest_uri)
+    assert summary["staged"] == 0
+    assert len(summary["gaps"]) == 1
+    gap = summary["gaps"][0]
+    assert (gap["scene_id"], gap["source"], gap["reason"]) == (
+        "L1",
+        "landsat-c2-l2",
+        "missing_cog",
+    )
+    assert row.path_cog in gap["detail"]
+    assert _canonical_copy(row.path_cog) in gap["detail"]
+
+
+def test_seed_foreign_bucket_row_is_hard_error(tmp_path, monkeypatch) -> None:
+    """A gs:// URI outside the canonical/legacy buckets aborts the seed.
+
+    Fail-closed per ``uri_mapping``: a foreign bucket is never a gap and
+    nothing (neither ledger nor gap file) is written.
+    """
+    import os
+
+    landsat_hash, _ = _good_hashes()
+    row = _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)
+    row.path_cog = "gs://other-bucket/ard/cog.tif"
+    row.path_flag = "gs://other-bucket/ard/flag.tif"
+    module, source_uri, manifest_uri, dest_root = _seed_gs_fixture(
+        tmp_path,
+        monkeypatch,
+        [row],
+        [("L1", "landsat-c2-l2")],
+        {row.path_cog, row.path_flag},
+    )
+    with pytest.raises(RuntimeError, match="nothing written"):
+        module.seed(source_uri, dest_root, manifest_uri)
+    assert not os.path.exists(os.path.join(dest_root, "ledger.parquet"))
+
+
+def test_seed_replaces_nondone_dest_row(tmp_path, monkeypatch) -> None:
+    """A non-done dest row for a now-verified key is replaced (logged).
+
+    Models the VM rerun where the dest ledger holds a failed/pending row
+    for a key the reuse ledger verifies: the verified reuse row wins. A
+    rerun afterwards is a no-op.
+    """
+    import os
+
+    from berlin_lst_downscaling.data.ard.ledger import Ledger
+
     landsat_hash, _ = _good_hashes()
     source_uri, manifest_uri, dest_root = _seed_fixture(
         tmp_path,
@@ -881,23 +1031,79 @@ def test_seed_legacy_bucket_row_is_a_gap(tmp_path, monkeypatch) -> None:
         [_seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash)],
         [("L1", "landsat-c2-l2")],
     )
-    from berlin_lst_downscaling.data.ard.ledger import Ledger
+    dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
+    failed = _seed_row("landsat-c2-l2", "L1", schema_hash=landsat_hash, status="failed")
+    dest.upsert(failed)
+    assert dest.get("L1", "landsat-c2-l2").status == "failed"
 
-    ledger = Ledger.open(source_uri)
-    row = ledger.get("L1", "landsat-c2-l2")
-    assert row is not None
-    row.path_cog = "gs://berlin-lst-data/ard/full/x/landsat-c2-l2/2024/L1/cog.tif"
-    row.path_flag = "gs://berlin-lst-data/ard/full/x/landsat-c2-l2/2024/L1/flag.tif"
-    ledger.upsert(row)
     module = _load_seed_module()
-    # Offline stand-in for the deleted legacy bucket: no gs:// URI exists.
-    real_exists = module.exists
-    monkeypatch.setattr(
-        module, "exists", lambda uri: False if str(uri).startswith("gs://") else real_exists(uri)
-    )
     summary = module.seed(source_uri, dest_root, manifest_uri)
-    assert summary["staged"] == 0
-    assert [(g["scene_id"], g["reason"]) for g in summary["gaps"]] == [("L1", "missing_cog")]
+    assert summary["staged"] == 1
+    assert summary["replaced_nondone"] == 1
+    assert summary["gaps"] == []
+    dest = Ledger.open(os.path.join(dest_root, "ledger.parquet"))
+    assert dest.get("L1", "landsat-c2-l2").status == "done"
+
+    again = module.seed(source_uri, dest_root, manifest_uri)
+    assert again["staged"] == 0
+    assert again["skipped_identical"] == 1
+    assert again["replaced_nondone"] == 0
+
+
+def test_features_inventory_resolves_legacy_ard_uris() -> None:
+    """The features ARD reader resolves stored URIs onto the canonical bucket.
+
+    ``build_inventory`` (via ``_resolve_scene``) is the reader the
+    features/v6 stack build uses for ARD COGs/flags; a legacy-bucket
+    stored URI must resolve to its canonical copy at read time.
+    """
+    from berlin_lst_downscaling.data.qa.inventory import _resolve_scene
+
+    legacy_ls_cog = "gs://berlin-lst-data/ard/full/x/landsat-c2-l2/2024/L1/cog.tif"
+    legacy_ls_flag = "gs://berlin-lst-data/ard/full/x/landsat-c2-l2/2024/L1/flag.tif"
+    legacy_s2_cog = "gs://berlin-lst-data/ard/full/x/sentinel-2-l2a/2024/S1/cog.tif"
+    legacy_s2_flag = "gs://berlin-lst-data/ard/full/x/sentinel-2-l2a/2024/S1/flag.tif"
+    ard_rows = {
+        ("landsat-c2-l2", "L1"): {
+            "source": "landsat-c2-l2",
+            "scene_id": "L1",
+            "status": "done",
+            "path_cog": legacy_ls_cog,
+            "path_flag": legacy_ls_flag,
+        },
+        ("sentinel-2-l2a", "S1"): {
+            "source": "sentinel-2-l2a",
+            "scene_id": "S1",
+            "status": "done",
+            "path_cog": legacy_s2_cog,
+            "path_flag": legacy_s2_flag,
+        },
+    }
+    resolved = _resolve_scene(
+        ls_id="L1",
+        year=2024,
+        pairings={"L1": {"sentinel2_scene_id": "S1"}},
+        manifest_rows={"L1": {"scene_id": "L1", "year": 2024}},
+        ard_rows=ard_rows,
+        derived_rows={},
+        source_rows={},
+        dynamic_rows={},
+        mapping=None,
+        ard_root="gs://berlin-lst-training-data/ard/full/v10",
+        dynamic_root="gs://berlin-lst-training-data/dynamic/v6",
+    )
+    assert resolved.landsat_cog == (
+        "gs://berlin-lst-training-data/ard/full/x/landsat-c2-l2/2024/L1/cog.tif"
+    )
+    assert resolved.landsat_flag == (
+        "gs://berlin-lst-training-data/ard/full/x/landsat-c2-l2/2024/L1/flag.tif"
+    )
+    assert resolved.s2_cog == (
+        "gs://berlin-lst-training-data/ard/full/x/sentinel-2-l2a/2024/S1/cog.tif"
+    )
+    assert resolved.s2_flag == (
+        "gs://berlin-lst-training-data/ard/full/x/sentinel-2-l2a/2024/S1/flag.tif"
+    )
 
 
 def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> None:

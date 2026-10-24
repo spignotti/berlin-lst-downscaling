@@ -20,21 +20,33 @@ most 10) and left for the follow-up ``run_ard`` gap pass
 (``configs/ard/landsat_ecostress_v10.yaml``), which processes exactly
 those scenes into the v10 root with the current contracts. A gap is a
 missing source row, a non-done source row, or a done row whose
-referenced COG/flag is empty or missing. In particular, reuse rows that
-reference the retired ``gs://berlin-lst-data`` bucket (pre-cutover
-provenance, see ``data/io/uri_mapping.py``) fail the raw existence check
-and become gaps: their scenes are reprocessed into the v10 root rather
-than carrying stale URIs forward, and paths are never rewritten.
+referenced COG/flag is empty or missing **at its resolved canonical
+URI**. Existence is checked on ``resolve_canonical_uri(path)``
+(``data/io/uri_mapping.py``): reuse rows that reference the retired
+``gs://berlin-lst-data`` bucket (pre-cutover provenance) verify against
+their byte-identical copies under the canonical bucket and are seeded
+with the stored URIs kept unchanged as provenance — downstream readers
+resolve stored URIs at read time, so carrying the stale URIs forward is
+safe and keeps the 2018-08-25 ECOSTRESS scenes out of the gap pass
+(which would need a NASA Earthdata login that the VM does not have).
+Paths are never rewritten.
 
-Fail-closed: a contract/schema mismatch (schema_version or schema_hash)
-or a differing existing destination row aborts with ``RuntimeError``
-before anything is written — neither the ledger nor the gap file.
+Fail-closed: a contract/schema mismatch (schema_version or schema_hash),
+a ``gs://`` URI on a foreign (non-canonical, non-legacy) bucket, or a
+differing existing destination row aborts with ``RuntimeError`` before
+anything is written — neither the ledger nor the gap file. A foreign
+bucket is a hard error (not a gap) because ``resolve_canonical_uri``
+fails closed on unexpected buckets: silently reprocessing an unknown
+provenance root would be the wrong recovery.
 ``--dry-run`` previews without writing.
 
 Idempotent: already-seeded identical rows are skipped, a second run is a
 no-op. ``run_ard`` with ``sources=["sentinel-2-l2a"]`` never touches
 these rows (reconcile only iterates manifest S2 rows), so the S2 mosaic
-run keeps them and processes only S2.
+run keeps them and processes only S2. A non-done (failed/pending)
+destination row for a key that now verifies from the reuse ledger is
+replaced by the verified reuse row (logged); a differing *done*
+destination row still aborts.
 
 Usage
 -----
@@ -61,6 +73,7 @@ from berlin_lst_downscaling.data.ard.contract import contract_for_source
 from berlin_lst_downscaling.data.ard.landsat_target import landsat_schema_hash
 from berlin_lst_downscaling.data.ard.ledger import Ledger, LedgerRow
 from berlin_lst_downscaling.data.io import atomic_write, exists, read_bytes
+from berlin_lst_downscaling.data.io.uri_mapping import resolve_canonical_uri
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -81,10 +94,12 @@ _SUMMARY_GAP_LIMIT = 10
 # Machine-readable gap reasons. ``missing_row``: no source-ledger row for
 # the manifest key. ``not_done``: the source row is not done (detail holds
 # the status). ``missing_cog``/``missing_flag``: the done row's referenced
-# URI is empty or the object does not exist (detail holds the URI). The
-# existence check is intentionally raw (no legacy-bucket remapping): rows
-# pointing at the retired ``gs://berlin-lst-data`` bucket become gaps and
-# are reprocessed into the v10 root instead of carrying stale URIs.
+# URI is empty, or the object is missing at its *resolved* canonical URI
+# (detail holds both the stored and the resolved URI). Existence is
+# checked on ``resolve_canonical_uri(path)`` so pre-cutover
+# ``gs://berlin-lst-data`` provenance verifies against its byte-identical
+# canonical copy; the stored URIs are seeded unchanged. A ``gs://`` URI on
+# any other (foreign) bucket is a hard fail-closed error, never a gap.
 _GAP_MISSING_ROW = "missing_row"
 _GAP_NOT_DONE = "not_done"
 _GAP_MISSING_COG = "missing_cog"
@@ -153,22 +168,26 @@ def seed(
     A manifest key counts as covered only once a done, contract-valid
     reuse row with present COG/flag is staged or already seeded. Any
     other manifest key — no source row, a non-done source row, or a done
-    row with an empty/missing COG or flag — is a *processing gap*: it is
-    reported in the ``gaps`` return value (full list of
-    ``{"scene_id", "source", "reason", "detail"}`` dicts, sorted, never
-    truncated) and, unless ``dry_run``, in the ``--gap-out`` JSON file,
-    while the verified rows are still written. The follow-up gap
+    row with an empty COG/flag or a COG/flag missing at its resolved
+    canonical URI — is a *processing gap*: it is reported in the ``gaps``
+    return value (full list of ``{"scene_id", "source", "reason",
+    "detail"}`` dicts, sorted, never truncated; the detail for
+    ``missing_cog``/``missing_flag`` holds both the stored and the
+    resolved URI) and, unless ``dry_run``, in the ``--gap-out`` JSON
+    file, while the verified rows are still written. The follow-up gap
     ``run_ard`` pass processes exactly those scenes into the v10 root.
 
     Still fail-closed (``RuntimeError`` before any write — neither the
     ledger nor the gap file): a schema_version/schema_hash mismatch
-    against the current contracts, or a differing existing destination
-    row (refusing to overwrite).
+    against the current contracts, a ``gs://`` URI on a foreign bucket,
+    or a differing *done* destination row (refusing to overwrite). A
+    non-done destination row for a key that now verifies is replaced by
+    the verified reuse row instead of aborting.
 
     Returns a ``{"copied", "staged", "skipped_identical",
-    "skipped_not_in_manifest", "gaps", "gap_count"}`` summary. The human
-    log line shows at most 10 gap keys; ``gaps`` and the gap file are
-    complete.
+    "replaced_nondone", "skipped_not_in_manifest", "gaps", "gap_count"}``
+    summary. The human log line shows at most 10 gap keys; ``gaps`` and
+    the gap file are complete.
     """
     if not exists(source_ledger_uri):
         raise RuntimeError(f"source ledger missing: {source_ledger_uri}")
@@ -182,6 +201,7 @@ def seed(
     staged: list[LedgerRow] = []
     staged_keys: set[tuple[str, str]] = set()
     skipped_identical = 0
+    replaced_nondone = 0
     skipped_not_in_manifest = 0
     gap_reasons: dict[tuple[str, str], dict] = {}
     errors: list[str] = []
@@ -218,21 +238,47 @@ def seed(
                     f"{row.schema_hash!r} != current contract {expected_hash!r}"
                 )
                 continue
-            # Raw existence check on purpose (no legacy-bucket remapping):
-            # a stale gs://berlin-lst-data reference becomes a gap and is
-            # reprocessed into the v10 root; paths are never rewritten.
+            # Existence is checked on the resolved canonical URI (legacy
+            # ``gs://berlin-lst-data`` provenance verifies against its
+            # canonical copy); the stored URIs are seeded unchanged.
+            # A foreign-bucket gs:// URI fails closed as a hard error.
             cog, flag = row.path_cog, row.path_flag
-            if not cog or not exists(cog):
-                _note_gap(key, _GAP_MISSING_COG, cog or "<empty path_cog>")
+            try:
+                resolved_cog = resolve_canonical_uri(cog) if cog else ""
+                resolved_flag = resolve_canonical_uri(flag) if flag else ""
+            except ValueError as exc:
+                errors.append(f"{row.scene_id} [{reuse_source}]: {exc} — refusing to seed")
                 continue
-            if not flag or not exists(flag):
-                _note_gap(key, _GAP_MISSING_FLAG, flag or "<empty path_flag>")
+            if not cog or not exists(resolved_cog):
+                _note_gap(
+                    key,
+                    _GAP_MISSING_COG,
+                    f"stored={cog or '<empty path_cog>'} "
+                    f"resolved={resolved_cog or '<empty path_cog>'}",
+                )
+                continue
+            if not flag or not exists(resolved_flag):
+                _note_gap(
+                    key,
+                    _GAP_MISSING_FLAG,
+                    f"stored={flag or '<empty path_flag>'} "
+                    f"resolved={resolved_flag or '<empty path_flag>'}",
+                )
                 continue
             gap_reasons.pop(key, None)
             existing = dest.get(row.scene_id, row.source)
             if existing is not None:
                 if _identity(existing) == _identity(row):
                     skipped_identical += 1
+                    staged_keys.add(key)
+                elif existing.status != "done":
+                    print(
+                        f"seed: replacing non-done dest row {row.scene_id} "
+                        f"[{reuse_source}] status={existing.status} "
+                        "with the verified reuse row"
+                    )
+                    replaced_nondone += 1
+                    staged.append(row)
                     staged_keys.add(key)
                 else:
                     errors.append(
@@ -261,6 +307,7 @@ def seed(
         "copied": len(staged) if not dry_run else 0,
         "staged": len(staged),
         "skipped_identical": skipped_identical,
+        "replaced_nondone": replaced_nondone,
         "skipped_not_in_manifest": skipped_not_in_manifest,
         "gaps": gaps,
         "gap_count": len(gaps),
@@ -306,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"seed {mode}: staged={summary['staged']} copied={summary['copied']} "
         f"identical={summary['skipped_identical']} "
+        f"replaced_nondone={summary['replaced_nondone']} "
         f"not_in_manifest={summary['skipped_not_in_manifest']} "
         f"gaps={summary['gap_count']}"
         + (f" gap_sample=[{shown}]" if summary["gap_count"] else "")
