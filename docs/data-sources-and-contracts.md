@@ -168,7 +168,11 @@ half-published state.
 
 The Dynamic pipeline resolves each scene's LoD vintage from
 `geometry_mapping.json` per scene year and applies the matching
-building-shadow horizon (`data/dynamic/geometry.py`).
+building-shadow horizon (`data/dynamic/geometry.py`). The v6 chain
+(step 4b rebuilds the 2017/2021/2022 morphology and per-vintage
+derived bundles into the v6 roots) resolves those horizons under the
+caller's configured derived root; the v1 mapping itself — year ranges
+and geometry IDs — is unchanged and needs no v6 replacement.
 
 ## Manifest bundle (v3)
 

@@ -16,6 +16,15 @@ from berlin_lst_downscaling.data.io.storage import exists, read_bytes
 
 _logger = logging.getLogger(__name__)
 
+# Legacy derived root that published the v1 geometry bundle. Kept as the
+# default so legacy (full-root) pipelines resolve exactly the horizons they
+# always did. v6 pipelines pass their own derived root (the caller's
+# configured ``derived_root``/``static_derived_root``), so per-scene
+# building/vegetation shadows read the v6 horizons instead of falling back
+# to the pre-area-exact full root. The v1 mapping itself stays the
+# authority: year → vintage ranges and geometry_ids are vintage-agnostic.
+_LEGACY_DERIVED_FULL_ROOT = "gs://berlin-lst-training-data/static/derived/full"
+
 # ── geometry mapping ────────────────────────────────────────────────────
 
 
@@ -58,7 +67,11 @@ class GeometryMappingReport:
         return self.mapping is not None and len(self.errors) == 0
 
 
-def load_geometry_mapping(uri: str) -> GeometryMappingReport:
+def load_geometry_mapping(
+    uri: str,
+    *,
+    derived_root: str | None = None,
+) -> GeometryMappingReport:
     """Load, parse, and validate the published geometry_mapping.json.
 
     Validates:
@@ -70,6 +83,14 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
     - All referenced building horizon COGs and completion markers exist.
     - Vegetation horizon (VH-2020) exists and its provenance carries a
       config hash (the lineage fingerprint for vegetation shadows).
+
+    Parameters
+    ----------
+    derived_root :
+        Derived root the horizon COGs are resolved under. Defaults to the
+        legacy ``static/derived/full`` root (previous behaviour). v6
+        callers pass their configured derived root so shadows read the v6
+        horizons.
     """
     errors: list[str] = []
 
@@ -112,19 +133,17 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
 
     # Resolve building horizons per vintage
     building_horizons: dict[int, str] = {}
+    horizon_root = (derived_root or _LEGACY_DERIVED_FULL_ROOT).rstrip("/")
     for vintage_str, vdata in vintages.items():
         vintage = int(vintage_str)
         geom_id = vdata.get("geometry_id", "")
 
         # Building horizon
         horizon_uri = (
-            f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
+            f"{horizon_root}/ard/static/derived/"
             f"horizon_building/{geom_id}/horizon_building_{geom_id}.tif"
         )
-        horizon_comp = (
-            f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
-            f"horizon_building/{geom_id}/complete.json"
-        )
+        horizon_comp = f"{horizon_root}/ard/static/derived/horizon_building/{geom_id}/complete.json"
         if not exists(horizon_uri) or not exists(horizon_comp):
             errors.append(f"Building horizon incomplete: vintage={vintage} geom_id={geom_id}")
         else:
@@ -133,17 +152,11 @@ def load_geometry_mapping(uri: str) -> GeometryMappingReport:
     # Vegetation horizon (fixed VH-2020)
     vh_geom_id = "dgm1-2021__lod2-2024__vh-2020"
     vh_uri = (
-        f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
+        f"{horizon_root}/ard/static/derived/"
         f"horizon_vegetation/{vh_geom_id}/horizon_vegetation_{vh_geom_id}.tif"
     )
-    vh_comp = (
-        f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
-        f"horizon_vegetation/{vh_geom_id}/complete.json"
-    )
-    vh_prov = (
-        f"gs://berlin-lst-training-data/static/derived/full/ard/static/derived/"
-        f"horizon_vegetation/{vh_geom_id}/provenance.json"
-    )
+    vh_comp = f"{horizon_root}/ard/static/derived/horizon_vegetation/{vh_geom_id}/complete.json"
+    vh_prov = f"{horizon_root}/ard/static/derived/horizon_vegetation/{vh_geom_id}/provenance.json"
     if not exists(vh_uri) or not exists(vh_comp):
         errors.append(f"Vegetation horizon incomplete: geom_id={vh_geom_id}")
 

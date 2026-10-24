@@ -1,0 +1,45 @@
+# @package _global_
+# Historical LoD vintages for features/v6 (republish step 4b).
+#
+# Backfills the 2017/2021/2022 area-exact LoD2 morphology (archive-first
+# via lod_vintages.py: LoD1-2017 stock filter, BuildingPart heights) plus
+# the per-vintage derived bundles (building/combined DSMs,
+# horizon_building, SVF) into the v6 roots. Runs after step 4 (needs
+# terrain_height/2021 + vegetation_height/2020 in the v6 source root and
+# the vintage-agnostic vegetation_dsm/2024 in the v6 derived root) and
+# before step 5. SVF search radius is 10 cells (100 m), same as
+# configs/static_derived/v6.yaml; part of the derived config hash.
+# See scripts/validators/diagnose_svf_radius.py.
+# Upstream archives (immutable):
+#   gs://berlin-lst-training-data/lod_vintages/<vintage>/<archive>
+
+raw_root: "gs://berlin-lst-training-data"
+source_root: "gs://berlin-lst-training-data/static/sources/lod2-area-exact-v2"
+derived_root: "gs://berlin-lst-training-data/static/derived/lod2-area-exact-v2"
+
+# 2024 is produced by steps 3-4; only the historical vintages run here.
+vintages: [2017, 2021, 2022]
+
+# Derived geometry parameters (must match configs/static_derived/v6.yaml).
+svf_max_radius: 10
+svf_n_directions: 16
+horizon_max_radius_m: 200
+
+# Logging
+logging_level: INFO                 # DEBUG, INFO, WARNING, ERROR
+
+# Hydra overrides
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+  job:
+    chdir: false
+  # Disable Hydra's job file handler; logs persist only via RunLogSession
+  # under <output_root>/logs/<pipeline>/ (AGENTS.md data-safety rule). This
+  # content form is used because a base included via a relative path
+  # (`../_base`) rejects `override hydra/job_logging` in the defaults list.
+  job_logging:
+    version: 1
+    root: null
+    disable_existing_loggers: false

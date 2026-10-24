@@ -74,22 +74,25 @@ Fixes on this branch:
   `scripts/operators/check_static_sources_ledger.py` (every ledger row
   `done`, else `FAIL` + exit 1) before validation.
 - Validation is `--vintages 2024`: the v6 release publishes only the
-  2024 ATOM-feed product, so its coverage comes from its own
-  `lod2_morphology/2024/provenance.json`. The 2017/2021/2022 raw
-  manifests live only in older releases
-  (`static/sources/full`, `imperviousness-v3`); the validator and
-  `resolve_lod_coverage_artifacts(..., vintages=...)` still check them
-  for full roots, and fail closed (FINDINGS + exit 1, never a 404
-  traceback) when evidence is missing. The historical
+  2024 ATOM-feed product in step 3, so its coverage comes from its own
+  `lod2_morphology/2024/provenance.json`. The 2017/2021/2022
   `lod2_morphology/{2017,2021,2022}` area-exact rebuild into the v6
-  root remains a prerequisite before step 6 (features resolve every
-  scene year via `geometry_mapping.json`).
+  root (plus their raw manifests, as `lod_coverage` expects) is step
+  4b (`run-lod-vintages-v6-vm.sh`, `configs/lod_vintages/v6.yaml`),
+  which also derives the per-vintage bundles
+  (`building_dsm`/`combined_dsm`/`horizon_building`/`svf` under
+  `dgm1-2021__lod2-{2017,2021,2022}__vh-2020` at SVF radius 100 m) and
+  validates all four vintages before step 5. Steps 5–7 resolve every
+  scene year via `geometry_mapping.json` and read the v6 horizons
+  (`data/dynamic/geometry.py` resolves them under the caller's
+  derived root, so the v1 mapping needs no v6 replacement).
 - Rerun idempotency: `reconcile()` skips `done` rows with matching
   config hash and present output/completion markers, retries `failed`
   rows, and `finalize_secondary_product` overwrites the already-written
   COG atomically — rerunning the launcher redoes only the failed
   `lod2_morphology/2024` row and safely replaces its COG.
 | 4 | Static derived v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-derived-v6-vm.sh main` | `configs/static_derived/v6.yaml` (`svf_max_radius: 10`, i.e. 100 m) | `static/derived/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (building/vegetation/combined DSMs, horizons, SVF) |
+| 4b | Historical LoD vintages v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-lod-vintages-v6-vm.sh main` | `configs/lod_vintages/v6.yaml` (`vintages: [2017, 2021, 2022]`, `svf_max_radius: 10`, i.e. 100 m) | `static/sources/lod2-area-exact-v2/.../lod2_morphology/{2017,2021,2022}` + `raw_manifest_{2017,2021,2022}.json`; `static/derived/lod2-area-exact-v2/.../{building_dsm,combined_dsm,horizon_building,svf}/dgm1-2021__lod2-{2017,2021,2022}__vh-2020` (vegetation products reused from the 2024 bundle) |
 | 5 | Dynamic v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-v6-vm.sh main` | `configs/dynamic/v6.yaml` (`manifest_uri=` v4 bundle) | `dynamic/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (shadows, ERA5 scene_value) |
 | 6 | Features v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-v6-vm.sh main` | `configs/features/v6.yaml` (ARD v10 + v4 manifest) | `features/v6/{<scene_id>/*.cog,ledger.parquet,qa/...}` (22-channel roster) |
 | 7 | Training v3 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-v3-vm.sh main` | `configs/training/v3.yaml` (from features/v6) | `training/v3/{manifest.parquet,cells.parquet,scaler.json,complete.json,...}` |
@@ -118,8 +121,8 @@ The launcher never auto-deletes GCS data.
 No previous run of this exact chain exists, so there are no measured
 step times. Poll budgets per launcher are upper bounds, not estimates:
 selection/ dynamic/ training/ EDA 18 h (`64800`), patch index 6 h
-(`21600`), ARD v10 / static sources / static derived / features 48 h
-(`172800`) because each touches hundreds of scenes (S2 multi-tile
+(`21600`), ARD v10 / static sources / static derived / historical
+vintages / features 48 h (`172800`) because each touches hundreds of scenes (S2 multi-tile
 mosaics, LoD2 area-exact rebuild, full-Berlin DSM/SVF, 22-channel
 compose). Feature build peaks at about 7–8 GB RAM per scene; the
 `n2-highmem-2` VM covers that. The operator records actual runtimes here
@@ -167,11 +170,21 @@ after each run.
       `check_static_sources_ledger.py` and validates 2024 coverage only:
       `validate_lod_coverage.py --static-sources-root <release>
       --vintages 2024`);
+    - step 4b: both ledgers all `done`
+      (`check_static_sources_ledger.py --source-root <v6 sources>` plus
+      `check_static_derived_ledger.py --derived-root <v6 derived>`)
+      and `validate_lod_coverage.py --static-sources-root <v6 sources>
+      --vintages 2017,2021,2022,2024` green (the historical
+      `lod2_morphology/{2017,2021,2022}` area-exact rebuild plus
+      raw manifests and per-vintage derived bundles, reusing
+      `lod_vintages.py`; reruns redo only non-done rows);
     - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
       `validate_dynamic.py --output-root … --expected-role anchor
       --expected-scenes-from-manifest <v4 manifest>` (derived from the v4
       bundle, never hard-coded, so the AOI-overlap gate passes without
-      manual edits);
+      manual edits). The step-5 preflight fails closed when any
+      per-vintage v6 building/vegetation horizon is missing (step 4b
+      output); shadows resolve under the v6 derived root;
    - step 6: `ledger.parquet` all `done` plus
      `validate_feature_stacks.py --root … --expected-scenes-from-manifest
      <v4 manifest> --ard-ledger <v10 ledger>` (expected count is the
@@ -183,9 +196,12 @@ after each run.
      `ARD_ROOT` (same root as `configs/features/v6.yaml ard_root`), so the
      validator agrees with the pipeline, which already records these
      pairings as `excluded` (`ard sentinel2 not done`) and writes no ledger
-     row for them. Dynamic v6 needs no adjustment: it is
-     per-Landsat-anchor and never reads S2 ARD, so its manifest-derived
-     assessable count is unchanged);
+      row for them. Dynamic v6 needs no adjustment: it is
+      per-Landsat-anchor and never reads S2 ARD, so its manifest-derived
+      assessable count is unchanged. The step-6/7 preflights fail
+      closed when any per-vintage v6 product is missing
+      (`lod2_morphology/{2017,2021,2022}` COGs, raw manifests, 2024
+      provenance, per-vintage horizons/DSMs/SVF);
    - step 7: `complete.json` with the v6 policy hash plus
      `validate_training_data.py --release-root … --expected-scenes-from-manifest
      <v4 manifest> --ard-ledger <v10 ledger>` (the count is derived from the

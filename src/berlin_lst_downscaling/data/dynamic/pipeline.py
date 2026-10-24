@@ -111,7 +111,12 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     )
 
     # ── 1. load geometry mapping ─────────────────────────────────────
-    mapping_report = load_geometry_mapping(geometry_mapping_uri)
+    # Horizons resolve under this run's derived root: the v6 chain reads
+    # the v6 horizons, legacy full-root runs keep reading full.
+    mapping_report = load_geometry_mapping(
+        geometry_mapping_uri,
+        derived_root=str(cfg.get("derived_root") or "") or None,
+    )
     if not mapping_report.ok or mapping_report.mapping is None:
         log_event(
             _logger,
