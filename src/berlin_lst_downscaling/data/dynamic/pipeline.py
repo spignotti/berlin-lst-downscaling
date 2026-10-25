@@ -44,7 +44,11 @@ _logger = logging.getLogger(__name__)
 def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     """Execute the dynamic scene pipeline.
 
-    Returns 0 on success, 1 if any items failed.
+    Returns 0 only when no items failed during the run and no ledger row
+    is left failed, 1 otherwise. The closing ledger audit is fail-closed:
+    a run that processed zero items but left a failed row behind (for
+    example a retry that never happened because of a scene filter) still
+    exits non-zero. A run where every row is done still exits 0.
     """
     if run_id is None:
         run_id = uuid4().hex[:8]
@@ -453,6 +457,25 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
     report_uri = persist_dynamic_report(report, output_root)
     log_event(_logger, logging.INFO, "qa_report_path", path=report_uri)
 
+    # ── fail-closed ledger audit ─────────────────────────────────────
+    # ``failed`` counts items that raised during this run, but a row can
+    # also be failed without raising here (failed row from a previous run
+    # that this run did not retry, e.g. under a scene filter). Re-read the
+    # ledger and refuse success while any row is failed/exporting — the
+    # earlier all-era5_land-failed run exited 0 and only the validator
+    # caught it. The ledger is per release root, so every row is in scope.
+    audit_failed = find_failed_ledger_rows(led)
+    if audit_failed:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "ledger_not_all_done",
+            errors=audit_failed,
+        )
+        print(f"FAIL: dynamic ledger not all done ({len(audit_failed)} items).")
+        for err in audit_failed[:20]:
+            print(f"  - {err}")
+
     elapsed = time.perf_counter() - t0
     log_event(
         _logger,
@@ -463,7 +486,30 @@ def run_dynamic(cfg: DictConfig, run_id: str | None = None) -> int:
         scenes_failed=failed,
     )
 
+    if audit_failed:
+        return 1
     return 0 if failed == 0 else 1
+
+
+def find_failed_ledger_rows(led) -> list[str]:
+    """Return human-readable errors for every ledger row left failed.
+
+    Rows still marked ``exporting`` at the end of a run are an interrupted
+    run and count as failures too. Done rows (including skipped-via-reconcile
+    rows that were already done) are not reported, so an all-done run
+    returns an empty list and exits 0.
+    """
+    errors: list[str] = []
+    table = led.table
+    for i in range(table.num_rows):
+        row = table.slice(i, 1).to_pydict()
+        status = row["status"][0]
+        if status in ("failed", "exporting"):
+            errors.append(
+                f"{row['item_id'][0]}: status={status} "
+                f"run_id={row['run_id'][0]} last_error={row['last_error'][0]}"
+            )
+    return errors
 
 
 def _banner(

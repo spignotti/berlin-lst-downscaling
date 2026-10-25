@@ -180,9 +180,14 @@ after each run.
       `lod_vintages.py`; reruns redo only non-done rows);
     - step 5: `_state/dynamic/ledger.parquet` all rows `done` plus
       `validate_dynamic.py --output-root … --expected-role anchor
-      --expected-scenes-from-manifest <v4 manifest>` (derived from the v4
-      bundle, never hard-coded, so the AOI-overlap gate passes without
-      manual edits). The step-5 preflight fails closed when any
+      --expected-scenes-from-manifest <v4 manifest> --check-bands
+      --era5-channel-set v6` (derived from the v4 bundle, never hard-coded,
+      so the AOI-overlap gate passes without manual edits; the v6 flag
+      selects the 4-band scene_value ERA5 roster — names, units, and ranges
+      from the v6 feature schema in src — and checks each band is spatially
+      constant over valid pixels, while the published dynamic/full product
+      keeps validating against the default 8-band contract). The step-5
+      preflight fails closed when any
       per-vintage v6 building/vegetation horizon is missing (step 4b
       output); shadows resolve under the v6 derived root;
    - step 6: `ledger.parquet` all `done` plus
