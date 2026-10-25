@@ -15,7 +15,7 @@ Usage::
     uv run python scripts/validators/validate_dynamic.py \\
         --output-root gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2 \\
         --expected-role anchor --expected-scenes-from-manifest <v4 manifest> \\
-        --check-bands
+        --check-bands --era5-channel-set v6
 
     uv run python scripts/validators/validate_dynamic.py \\
         --output-root gs://berlin-lst-training-data/dynamic/inference/2026 \\
@@ -35,7 +35,10 @@ import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.io import resolve_canonical_uri
 
-# ── ERA5 8-band contract ─────────────────────────────────────────────
+# ── ERA5 contracts ───────────────────────────────────────────────────
+# v5 is the published 8-band dynamic/full contract. v6 is the 4-band
+# scene_value roster; its names, units, and ranges come from the v6
+# feature schema in src (single source of truth, never duplicated here).
 
 _ERA5_BAND_NAMES = [
     "t2m_scene",
@@ -67,6 +70,27 @@ _ERA5_INPUT_VARIABLES = [
     "surface_solar_radiation_downwards",
     "total_precipitation",
 ]
+
+_ERA5_CHANNEL_SETS = ("v5", "v6")
+
+
+def _v6_era5_contract() -> tuple[list[str], dict[str, str], dict[str, tuple[float, float]]]:
+    """Return the v6 ERA5 roster (names, units, valid ranges).
+
+    Single source of truth: the v6 feature schema in src. The names are
+    never duplicated in this validator.
+    """
+    from berlin_lst_downscaling.data.features.contracts import (
+        FEATURE_SCHEMA_VERSION_V6,
+        feature_schema,
+    )
+
+    schema = feature_schema(FEATURE_SCHEMA_VERSION_V6)
+    era5_channels = [c for c in schema.channels if c.family == "era5"]
+    names = [c.name for c in era5_channels]
+    units = {c.name: c.unit for c in era5_channels}
+    ranges = {c.name: c.valid_range for c in era5_channels if c.valid_range is not None}
+    return names, units, ranges
 
 
 def _read_ledger(output_root: str) -> dict:
@@ -112,11 +136,67 @@ def _summarise(table) -> dict:
     }
 
 
-def _validate_cog_bands(cog_uri: str) -> list[str]:
-    """Check COG has the published eight-band ERA5 contract."""
+def _validate_cog_bands(cog_uri: str, channel_set: str = "v5") -> list[str]:
+    """Check a COG against the selected ERA5 band contract.
+
+    v5 is the published eight-band bilinear contract. v6 is the four-band
+    scene_value roster: same dtype/count/name checks plus a plausible-range
+    check per band and a spatial-constancy check over valid (finite) pixels.
+    An unknown channel set is an error, never a silent pass.
+    """
+    if channel_set not in _ERA5_CHANNEL_SETS:
+        return [
+            f"unknown era5 channel set {channel_set!r}: expected one of {list(_ERA5_CHANNEL_SETS)}"
+        ]
     errors = []
     try:
+        try:
+            from berlin_lst_downscaling.data.io.gdal_gcs import ensure_gdal_gcs_auth
+
+            ensure_gdal_gcs_auth()
+        except Exception:  # noqa: S110 — auth is best-effort; open fails loudly
+            pass
+
+        import numpy as np
         import rasterio
+
+        if channel_set == "v6":
+            expected_names, _units, valid_ranges = _v6_era5_contract()
+            with rasterio.open(cog_uri) as src:
+                if src.count != len(expected_names):
+                    errors.append(f"band count: expected {len(expected_names)}, got {src.count}")
+                if src.dtypes[0] != "float32":
+                    errors.append(f"dtype: expected float32, got {src.dtypes[0]}")
+                descriptions = list(src.descriptions)
+                if descriptions != expected_names:
+                    errors.append(f"band names: expected {expected_names}, got {descriptions}")
+                # Range + constancy per band, on a downsampled overview window.
+                for i in range(src.count):
+                    name = descriptions[i] if i < len(descriptions) else f"band_{i + 1}"
+                    lo_hi = valid_ranges.get(name)
+                    out_h = max(1, src.height // 32)
+                    out_w = max(1, src.width // 32)
+                    arr = src.read(i + 1, out_shape=(out_h, out_w)).astype(np.float64)
+                    valid = arr[np.isfinite(arr)]
+                    if valid.size == 0:
+                        errors.append(f"band {name} is entirely NaN (sampled overview)")
+                        continue
+                    if lo_hi is not None:
+                        lo, hi = lo_hi
+                        if valid.min() < lo or valid.max() > hi:
+                            errors.append(
+                                f"band {name} sampled range "
+                                f"{valid.min():.4g}..{valid.max():.4g} outside [{lo}, {hi}]"
+                            )
+                    ptp = float(valid.max() - valid.min())
+                    mean = float(np.mean(valid))
+                    tol = 1e-4 * max(1.0, abs(mean))
+                    if ptp > tol:
+                        errors.append(
+                            f"band {name} is not spatially constant "
+                            f"(scene_value ptp={ptp:.4g} > tol={tol:.4g})"
+                        )
+            return errors
 
         with rasterio.open(cog_uri) as src:
             if src.count != 8:
@@ -131,8 +211,19 @@ def _validate_cog_bands(cog_uri: str) -> list[str]:
     return errors
 
 
-def _validate_era5_provenance(prov_uri: str) -> list[str]:
-    """Check ERA5 provenance carries its published input-variable list."""
+def _validate_era5_provenance(prov_uri: str, channel_set: str = "v5") -> list[str]:
+    """Check ERA5 provenance carries its published input-variable list.
+
+    The six CDS input variables are identical for v5 and v6. The v6 writer
+    additionally records ``source_metadata.channel_set == "v6"``; a release
+    validated with ``--era5-channel-set v6`` must carry it, and a release
+    validated as v5 must not claim v6. Any mismatch is an error, never a
+    silent pass.
+    """
+    if channel_set not in _ERA5_CHANNEL_SETS:
+        return [
+            f"unknown era5 channel set {channel_set!r}: expected one of {list(_ERA5_CHANNEL_SETS)}"
+        ]
     errors = []
     try:
         from berlin_lst_downscaling.data.io.storage import read_bytes
@@ -143,6 +234,17 @@ def _validate_era5_provenance(prov_uri: str) -> list[str]:
             errors.append(
                 f"provenance era5_variables: expected {_ERA5_INPUT_VARIABLES}, got {variables}"
             )
+        recorded = prov.get("source_metadata", {}).get("channel_set")
+        if channel_set == "v6":
+            if recorded != "v6":
+                errors.append(
+                    f"provenance channel_set: expected 'v6' for the v6 contract, got {recorded!r}"
+                )
+        else:
+            if recorded is not None and recorded != "v5":
+                errors.append(
+                    f"provenance channel_set: expected v5 (absent or 'v5'), got {recorded!r}"
+                )
     except Exception as exc:
         errors.append(f"cannot read provenance: {exc}")
     return errors
@@ -174,7 +276,23 @@ def main() -> int:
         action="store_true",
         help="Also validate COG band count and provenance (slower)",
     )
+    parser.add_argument(
+        "--era5-channel-set",
+        choices=list(_ERA5_CHANNEL_SETS),
+        default="v5",
+        help="ERA5 band contract to validate: 'v5' is the published 8-band "
+        "bilinear dynamic/full contract (default); 'v6' is the 4-band "
+        "scene_value roster for dynamic/lod2-area-exact-v2. A COG or "
+        "provenance that does not match the selected roster is an error.",
+    )
     args = parser.parse_args()
+
+    try:
+        from berlin_lst_downscaling.data.io.gdal_gcs import ensure_gdal_gcs_auth
+
+        ensure_gdal_gcs_auth()
+    except Exception:  # noqa: S110 — auth is best-effort; COG opens fail loudly
+        pass
 
     if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
         parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
@@ -238,7 +356,7 @@ def main() -> int:
 
     # ── band/provenance checks (optional, slower) ────────────────────
     if args.check_bands:
-        print("\n  Checking ERA5 band contracts (sample) ...")
+        print(f"\n  Checking ERA5 band contracts (sample, channel_set={args.era5_channel_set}) ...")
 
         # Read raw table for artifact inspection
         ledger_path = f"{args.output_root.rstrip('/')}/_state/dynamic/ledger.parquet"
@@ -265,20 +383,20 @@ def main() -> int:
             cog_uri = resolve_canonical_uri(cog_uri) if cog_uri else cog_uri
             prov_uri = resolve_canonical_uri(prov_uri) if prov_uri else prov_uri
             if cog_uri:
-                errs = _validate_cog_bands(cog_uri)
+                errs = _validate_cog_bands(cog_uri, channel_set=args.era5_channel_set)
                 if errs:
                     band_errors += 1
                     for e in errs:
                         errors.append(f"  {row_dict['item_id'][0]}: {e}")
             if prov_uri:
-                errs = _validate_era5_provenance(prov_uri)
+                errs = _validate_era5_provenance(prov_uri, channel_set=args.era5_channel_set)
                 if errs:
                     band_errors += 1
                     for e in errs:
                         errors.append(f"  {row_dict['item_id'][0]}: {e}")
 
         if band_errors == 0 and sample_size > 0:
-            print(f"  ERA5 band contract: {sample_size} samples OK ✓")
+            print(f"  ERA5 band contract ({args.era5_channel_set}): {sample_size} samples OK ✓")
         elif sample_size == 0:
             warnings.append("No ERA5 done rows to check")
 

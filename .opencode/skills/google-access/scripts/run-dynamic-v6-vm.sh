@@ -53,7 +53,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
     --output-root "$OUTPUT_ROOT" \
     --expected-role anchor \
     --expected-scenes-from-manifest "$MANIFEST_URI" \
-    --check-bands \
+    --check-bands --era5-channel-set v6 \
     && VALIDATION_OK=0 || VALIDATION_OK=1
 fi
 
