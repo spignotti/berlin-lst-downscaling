@@ -16,3 +16,13 @@ dynamic_root: "gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2"
 geometry_mapping_uri: "gs://berlin-lst-training-data/static/geometry_vintages/v1/geometry_mapping.json"
 features_root: "gs://berlin-lst-training-data/features/v6"
 output_root: "gs://berlin-lst-training-data/training/v3"
+# The v4 bundle is the universe: selection v4's AOI-overlap gate drops edge
+# anchors versus the v2 324-scene universe, so no fixed count is valid.
+# Null skips the pipeline count gates (features-ledger row count and
+# inventory assessable count); the post-run validator derives the expected
+# count from the bundle instead (--expected-scenes-from-manifest, same as
+# configs/dynamic/v6.yaml). Fail-closed-ness is unchanged: every
+# features-ledger row must still be done with one shared config hash, the
+# inventory must still resolve ok, and per-scene provenance is still
+# verified.
+expected_scene_count: null

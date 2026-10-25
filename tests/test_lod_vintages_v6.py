@@ -215,6 +215,10 @@ def _patch_io(monkeypatch: pytest.MonkeyPatch, present: set[str]):
 
 
 def _full_v6_present(preflight) -> set[str]:
+    from berlin_lst_downscaling.data.features.paths import (
+        ledger_path as features_ledger_path,
+    )
+
     present = {
         f"{STATIC_SOURCES_V6}/ledger.parquet",
         f"{STATIC_DERIVED_V6}/_state/static/derived/ledger.parquet",
@@ -223,7 +227,8 @@ def _full_v6_present(preflight) -> set[str]:
         "2017-2026-cutoff-20260717T235959Z/manifest.parquet",
         "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10/ledger.parquet",
         "gs://berlin-lst-training-data/dynamic/lod2-area-exact-v2/_state/dynamic/ledger.parquet",
-        "gs://berlin-lst-training-data/features/v6/ledger.parquet",
+        # Published features/v6 ledger layout (<root>/_state/features/ledger.parquet).
+        features_ledger_path("gs://berlin-lst-training-data/features/v6"),
         "gs://berlin-lst-training-data/lod_vintages/2017/LoD1_2017.zip",
         "gs://berlin-lst-training-data/lod_vintages/2021/LoD2_BE_1_33_2021.zip",
         "gs://berlin-lst-training-data/lod_vintages/2022/LoD2_2022.zip",
