@@ -872,7 +872,7 @@ def test_training_main_skips_cog_check_for_proven_exclusions(tmp_path, monkeypat
 
     monkeypatch.setattr(io_module, "exists", lambda uri: True)
     monkeypatch.setattr(module, "exists", lambda uri: True)
-    monkeypatch.setattr(module, "_check_v3_source", lambda root, errors: None)
+    monkeypatch.setattr(module, "_check_v3_source", lambda root, errors, **kwargs: None)
     checked: list[str] = []
 
     def _fake_cogs(root, scene_ids, errors, expected):
@@ -881,7 +881,7 @@ def test_training_main_skips_cog_check_for_proven_exclusions(tmp_path, monkeypat
 
     monkeypatch.setattr(module, "_check_eligibility_cogs", _fake_cogs)
     monkeypatch.setattr(module, "_check_cells", lambda *args: 0)
-    monkeypatch.setattr(module, "_check_scaler", lambda *args: None)
+    monkeypatch.setattr(module, "_check_scaler", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         sys,
         "argv",

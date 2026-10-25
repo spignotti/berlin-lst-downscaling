@@ -59,6 +59,7 @@ if [[ "$PIPELINE_EXIT" == "0" ]]; then
   echo "Validating $RELEASE_ROOT ..."
   uv run python scripts/validators/validate_training_data.py \
     --release-root "$RELEASE_ROOT" \
+    --features-release v6 \
     --expected-scenes-from-manifest "$MANIFEST_URI" \
     --ard-ledger "$ARD_LEDGER" \
     && VALIDATION_OK=0 || VALIDATION_OK=1
