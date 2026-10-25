@@ -44,6 +44,33 @@ from berlin_lst_downscaling.data.ard.publish_guard import (  # noqa: E402
     STATIC_V6_ROOTS,
     TRAINING_V3_ROOT,
 )
+from berlin_lst_downscaling.data.features.paths import (  # noqa: E402
+    ledger_path as features_ledger_path,
+)
+from berlin_lst_downscaling.data.secondary.paths import (  # noqa: E402
+    derived_product_cog,
+    derived_product_dir,
+    source_product_cog,
+    source_product_dir,
+)
+from berlin_lst_downscaling.data.training.paths import (  # noqa: E402
+    cells_parquet as training_cells_parquet,
+)
+from berlin_lst_downscaling.data.training.paths import (  # noqa: E402
+    manifest_parquet as training_manifest_parquet,
+)
+from berlin_lst_downscaling.data.training.paths import (  # noqa: E402
+    patch_index_completion as patch_index_completion_uri,
+)
+from berlin_lst_downscaling.data.training.paths import (  # noqa: E402
+    patch_index_parquet as patch_index_parquet_uri,
+)
+from berlin_lst_downscaling.data.training.paths import (  # noqa: E402
+    release_completion as training_release_completion,
+)
+from berlin_lst_downscaling.data.training.paths import (  # noqa: E402
+    scaler_json as training_scaler_json,
+)
 
 # ── canonical chain roots ─────────────────────────────────────────────
 
@@ -106,40 +133,33 @@ def _vintage_geometry_id(vintage: int) -> str:
     return f"dgm1-2021__lod2-{vintage}__vh-2020"
 
 
+def _derived_cog_and_marker(product: str, geometry_id: str, vintage: int) -> list[tuple[str, str]]:
+    """(COG, marker) for one derived product via the writer's path helpers.
+
+    Uses :mod:`berlin_lst_downscaling.data.secondary.paths` (the same
+    helpers the derived pipeline publishes through), so the preflight can
+    never disagree with the published layout about these URIs.
+    """
+    return [
+        (
+            derived_product_cog(STATIC_DERIVED_V6, product, geometry_id),
+            f"v6 {product}/{vintage} COG",
+        ),
+        (
+            f"{derived_product_dir(STATIC_DERIVED_V6, product, geometry_id)}/complete.json",
+            f"v6 {product}/{vintage} marker",
+        ),
+    ]
+
+
 def v6_vintage_horizon_uris() -> list[tuple[str, str]]:
     """(uri, label) for every horizon COG shadows resolve under v6."""
     out: list[tuple[str, str]] = []
     for vintage in V6_ALL_VINTAGES:
-        geometry_id = _vintage_geometry_id(vintage)
-        out.append(
-            (
-                f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_building/"
-                f"{geometry_id}/horizon_building_{geometry_id}.tif",
-                f"v6 horizon_building/{vintage} COG",
-            )
+        out.extend(
+            _derived_cog_and_marker("horizon_building", _vintage_geometry_id(vintage), vintage)
         )
-        out.append(
-            (
-                f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_building/"
-                f"{geometry_id}/complete.json",
-                f"v6 horizon_building/{vintage} marker",
-            )
-        )
-    vegetation_geometry = _vintage_geometry_id(2024)
-    out.append(
-        (
-            f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_vegetation/"
-            f"{vegetation_geometry}/horizon_vegetation_{vegetation_geometry}.tif",
-            "v6 horizon_vegetation/2024 COG",
-        )
-    )
-    out.append(
-        (
-            f"{STATIC_DERIVED_V6}/ard/static/derived/horizon_vegetation/"
-            f"{vegetation_geometry}/complete.json",
-            "v6 horizon_vegetation/2024 marker",
-        )
-    )
+    out.extend(_derived_cog_and_marker("horizon_vegetation", _vintage_geometry_id(2024), 2024))
     return out
 
 
@@ -147,16 +167,17 @@ def v6_vintage_product_uris() -> list[tuple[str, str]]:
     """(uri, label) for the full per-vintage evidence steps 6–7 consume."""
     out: list[tuple[str, str]] = []
     for vintage in V6_ALL_VINTAGES:
+        revision = str(vintage)
         out.append(
             (
-                f"{STATIC_SOURCES_V6}/ard/static/sources/lod2_morphology/"
-                f"{vintage}/lod2_morphology_{vintage}.tif",
+                source_product_cog(STATIC_SOURCES_V6, "lod2_morphology", revision),
                 f"v6 lod2_morphology/{vintage} COG",
             )
         )
         out.append(
             (
-                f"{STATIC_SOURCES_V6}/ard/static/sources/lod2_morphology/{vintage}/complete.json",
+                f"{source_product_dir(STATIC_SOURCES_V6, 'lod2_morphology', revision)}"
+                "/complete.json",
                 f"v6 lod2_morphology/{vintage} marker",
             )
         )
@@ -169,42 +190,17 @@ def v6_vintage_product_uris() -> list[tuple[str, str]]:
         )
     out.append(
         (
-            f"{STATIC_SOURCES_V6}/ard/static/sources/lod2_morphology/2024/provenance.json",
+            f"{source_product_dir(STATIC_SOURCES_V6, 'lod2_morphology', '2024')}/provenance.json",
             "v6 lod2_morphology/2024 provenance",
         )
     )
     for vintage in V6_ALL_VINTAGES:
         geometry_id = _vintage_geometry_id(vintage)
         for product in _V6_PER_VINTAGE_DERIVED:
-            out.append(
-                (
-                    f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/"
-                    f"{geometry_id}/{product}_{geometry_id}.tif",
-                    f"v6 {product}/{vintage} COG",
-                )
-            )
-            out.append(
-                (
-                    f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/{geometry_id}/complete.json",
-                    f"v6 {product}/{vintage} marker",
-                )
-            )
+            out.extend(_derived_cog_and_marker(product, geometry_id, vintage))
     vegetation_geometry = _vintage_geometry_id(2024)
     for product in ("vegetation_dsm", "horizon_vegetation"):
-        out.append(
-            (
-                f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/"
-                f"{vegetation_geometry}/{product}_{vegetation_geometry}.tif",
-                f"v6 {product}/2024 COG",
-            )
-        )
-        out.append(
-            (
-                f"{STATIC_DERIVED_V6}/ard/static/derived/{product}/"
-                f"{vegetation_geometry}/complete.json",
-                f"v6 {product}/2024 marker",
-            )
-        )
+        out.extend(_derived_cog_and_marker(product, vegetation_geometry, 2024))
     return out
 
 
@@ -355,13 +351,19 @@ def _failures_for(step: str, cfg) -> list[str]:
         want_root(cfg.get("static_sources_root"), STATIC_SOURCES_V6, "static_sources_root")
         want_root(cfg.get("static_derived_root"), STATIC_DERIVED_V6, "static_derived_root")
         want_root(cfg.get("dynamic_root"), DYNAMIC_V6, "dynamic_root")
-        need(f"{FEATURES_V6}/ledger.parquet", "features/v6 ledger")
+        # Features ledger via the same helper the features pipeline and
+        # the training release gate publish/read through
+        # (data.features.paths.ledger_path): <root>/_state/features/ledger.parquet.
+        need(features_ledger_path(FEATURES_V6), "features/v6 ledger")
+        # ARD v10 ledger: the ARD pipeline opens Ledger at
+        # f"{output_root}/ledger.parquet" (data/ard/pipeline.py); there is
+        # no ledger helper in data/ard/paths.py, so this stays an f-string.
         need(f"{ARD_V10_ROOT}/ledger.parquet", "ARD v10 ledger")
         need(MANIFEST_V4_URI, "v4 manifest.parquet")
         need(GEOMETRY_MAPPING, "geometry mapping")
         for uri, label in v6_vintage_product_uris():
             need(uri, label)
-        if exists(f"{TRAINING_V3}/complete.json"):
+        if exists(training_release_completion(TRAINING_V3)):
             failures.append(
                 f"training/v3 already published ({TRAINING_V3}/complete.json) — "
                 "a new release requires a new training root"
@@ -369,9 +371,14 @@ def _failures_for(step: str, cfg) -> list[str]:
     elif step == "patch_index_v3":
         want_root(cfg.get("source_root"), TRAINING_V3, "source_root")
         want_root(cfg.get("output_root"), PATCH_INDEX_V3, "output_root")
-        need(f"{TRAINING_V3}/complete.json", "training/v3 complete.json")
-        need(f"{TRAINING_V3}/manifest.parquet", "training/v3 manifest.parquet")
-        marker_uri = f"{TRAINING_V3}/complete.json"
+        # Source-release artifacts via data.training.paths, matching what
+        # patch_index._verify_source_release + build require: the release
+        # marker, the scene manifest, and — for a training/v3 source — the
+        # scaler carrying the v6 v3_config_hash.
+        need(training_release_completion(TRAINING_V3), "training/v3 complete.json")
+        need(training_manifest_parquet(TRAINING_V3), "training/v3 manifest.parquet")
+        need(training_scaler_json(TRAINING_V3), "training/v3 scaler.json")
+        marker_uri = training_release_completion(TRAINING_V3)
         if exists(marker_uri):
             try:
                 marker = json.loads(read_bytes(marker_uri))
@@ -380,7 +387,7 @@ def _failures_for(step: str, cfg) -> list[str]:
             else:
                 if not marker.get("policy_hash"):
                     failures.append("training/v3 marker carries no policy_hash")
-        if exists(f"{PATCH_INDEX_V3}/complete.json"):
+        if exists(patch_index_completion_uri(PATCH_INDEX_V3)):
             failures.append(
                 f"patch-index v3 already published ({PATCH_INDEX_V3}/complete.json) — "
                 "a new index requires a new patch-index root"
@@ -396,9 +403,18 @@ def _failures_for(step: str, cfg) -> list[str]:
         ):
             if str(cfg_map.get(key) or "").rstrip("/") != expected:
                 failures.append(f"{key} is {cfg_map.get(key)!r}, expected {expected!r}")
-        need(f"{TRAINING_V3}/complete.json", "training/v3 complete.json")
-        need(f"{TRAINING_V3}/manifest.parquet", "training/v3 manifest.parquet")
-        need(f"{PATCH_INDEX_V3}/complete.json", "patch-index v3 complete.json")
+        # Release artifacts via data.training.paths, matching what the EDA
+        # runner reads (data.eda.load + run_training_eda.run): the training
+        # manifest/cells/scaler, the v4 selection bundle for the
+        # acquisition calendar, and the patch-index parquet behind its
+        # completion marker.
+        need(training_release_completion(TRAINING_V3), "training/v3 complete.json")
+        need(training_manifest_parquet(TRAINING_V3), "training/v3 manifest.parquet")
+        need(training_cells_parquet(TRAINING_V3), "training/v3 cells.parquet")
+        need(training_scaler_json(TRAINING_V3), "training/v3 scaler.json")
+        need(MANIFEST_V4_URI, "v4 manifest.parquet")
+        need(patch_index_parquet_uri(PATCH_INDEX_V3), "patch-index v3 patch_index.parquet")
+        need(patch_index_completion_uri(PATCH_INDEX_V3), "patch-index v3 complete.json")
     else:
         failures.append(f"unknown step: {step}")
     return failures

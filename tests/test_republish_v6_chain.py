@@ -219,6 +219,10 @@ def test_preflight_fails_closed_without_upstream_markers(
 def test_preflight_passes_with_all_upstream_markers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from berlin_lst_downscaling.data.features.paths import (
+        ledger_path as features_ledger_path,
+    )
+
     preflight = _import_preflight()
     present = {
         MANIFEST_V4_URI,
@@ -229,7 +233,8 @@ def test_preflight_passes_with_all_upstream_markers(
         f"{STATIC_SOURCES_V6}/ledger.parquet",
         f"{STATIC_DERIVED_V6}/_state/static/derived/ledger.parquet",
         f"{DYNAMIC_V6}/_state/dynamic/ledger.parquet",
-        f"{FEATURES_V6}/ledger.parquet",
+        # Published features/v6 ledger layout (<root>/_state/features/ledger.parquet).
+        features_ledger_path(FEATURES_V6),
         f"{TRAINING_V3}/manifest.parquet",
         f"{PATCH_INDEX_V3}/complete.json",
         "gs://berlin-lst-training-data/static/geometry_vintages/v1/geometry_mapping.json",
@@ -276,6 +281,144 @@ def test_preflight_patch_index_requires_training_complete(
     cfg = preflight._load_config("configs/training", "patch_index_v3")
     failures = preflight._failures_for("patch_index_v3", cfg)
     assert any("training/v3 complete.json" in f for f in failures)
+
+
+def test_preflight_training_v3_checks_published_features_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """training_v3 must check the published ledger layout, not a hard-coded string.
+
+    The features pipeline publishes the ledger at
+    ``data.features.paths.ledger_path`` (``<root>/_state/features/ledger.parquet``);
+    nothing publishes ``<root>/ledger.parquet``. With the real layout present
+    the preflight passes; without the ledger it fails naming the helper path.
+    """
+    from berlin_lst_downscaling.data.features.paths import (
+        ledger_path as features_ledger_path,
+    )
+
+    preflight = _import_preflight()
+    published_ledger = features_ledger_path(FEATURES_V6)
+    assert published_ledger == f"{FEATURES_V6}/_state/features/ledger.parquet"
+    assert published_ledger != f"{FEATURES_V6}/ledger.parquet"
+
+    present = {
+        MANIFEST_V4_URI,
+        f"{ARD_V10_ROOT}/ledger.parquet",
+        "gs://berlin-lst-training-data/static/geometry_vintages/v1/geometry_mapping.json",
+        published_ledger,
+    }
+    present |= {uri for uri, _ in preflight.v6_vintage_product_uris()}
+    cfg = preflight._load_config("configs/training", "v3")
+
+    _patch_io(monkeypatch, present, {})
+    assert preflight._failures_for("training_v3", cfg) == []
+
+    _patch_io(monkeypatch, present - {published_ledger}, {})
+    failures = preflight._failures_for("training_v3", cfg)
+    assert any("features/v6 ledger" in f and published_ledger in f for f in failures), failures
+
+
+def test_preflight_patch_index_v3_requires_training_scaler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """patch_index_v3 must gate on the training scaler.
+
+    ``patch_index._verify_source_release`` reads ``scaler.json`` for a
+    training/v3 source (it carries the v6 ``v3_config_hash``), so a
+    preflight that passes without it would launch a run that fails later.
+    """
+    from berlin_lst_downscaling.data.training.paths import (
+        manifest_parquet as training_manifest_parquet,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        release_completion as training_release_completion,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        scaler_json as training_scaler_json,
+    )
+
+    preflight = _import_preflight()
+    markers = {
+        training_release_completion(TRAINING_V3): json.dumps({"policy_hash": "abc123"}),
+    }
+    cfg = preflight._load_config("configs/training", "patch_index_v3")
+
+    _patch_io(
+        monkeypatch,
+        {training_release_completion(TRAINING_V3), training_manifest_parquet(TRAINING_V3)},
+        markers,
+    )
+    failures = preflight._failures_for("patch_index_v3", cfg)
+    assert any("training/v3 scaler.json" in f for f in failures), failures
+
+    _patch_io(
+        monkeypatch,
+        {
+            training_release_completion(TRAINING_V3),
+            training_manifest_parquet(TRAINING_V3),
+            training_scaler_json(TRAINING_V3),
+        },
+        markers,
+    )
+    assert preflight._failures_for("patch_index_v3", cfg) == []
+
+
+def test_preflight_eda_v3_requires_release_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """eda_v3 must gate on every release artifact the EDA runner reads.
+
+    ``run_training_eda.run`` reads the training manifest/cells/scaler, the
+    v4 bundle (acquisition calendar), and the patch-index parquet, so the
+    preflight checks each of them via ``data.training.paths`` helpers.
+    """
+    from berlin_lst_downscaling.data.training.paths import (
+        cells_parquet as training_cells_parquet,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        manifest_parquet as training_manifest_parquet,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        patch_index_completion as patch_index_completion_uri,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        patch_index_parquet as patch_index_parquet_uri,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        release_completion as training_release_completion,
+    )
+    from berlin_lst_downscaling.data.training.paths import (
+        scaler_json as training_scaler_json,
+    )
+
+    preflight = _import_preflight()
+    cfg = preflight._load_config("configs/eda", "v3")
+
+    legacy_present = {
+        training_release_completion(TRAINING_V3),
+        training_manifest_parquet(TRAINING_V3),
+        patch_index_completion_uri(PATCH_INDEX_V3),
+    }
+    _patch_io(monkeypatch, legacy_present, {})
+    failures = preflight._failures_for("eda_v3", cfg)
+    assert any("training/v3 cells.parquet" in f for f in failures), failures
+    assert any("training/v3 scaler.json" in f for f in failures), failures
+    assert any("patch_index.parquet" in f for f in failures), failures
+    assert any("v4 manifest.parquet" in f for f in failures), failures
+
+    _patch_io(
+        monkeypatch,
+        legacy_present
+        | {
+            training_cells_parquet(TRAINING_V3),
+            training_scaler_json(TRAINING_V3),
+            patch_index_parquet_uri(PATCH_INDEX_V3),
+            MANIFEST_V4_URI,
+        },
+        {},
+    )
+    assert preflight._failures_for("eda_v3", cfg) == []
 
 
 # ── 3. publish guards ─────────────────────────────────────────────────
