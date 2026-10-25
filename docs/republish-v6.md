@@ -208,8 +208,12 @@ after each run.
       (`lod2_morphology/{2017,2021,2022}` COGs, raw manifests, 2024
       provenance, per-vintage horizons/DSMs/SVF);
    - step 7: `complete.json` with the v6 policy hash plus
-     `validate_training_data.py --release-root … --expected-scenes-from-manifest
-     <v4 manifest> --ard-ledger <v10 ledger>` (the count is derived from the
+     `validate_training_data.py --release-root … --features-release v6
+     --expected-scenes-from-manifest <v4 manifest> --ard-ledger <v10 ledger>`
+     (`--features-release v6` selects the training/v3 contract: the
+     features/v6 roster from the feature schema in src, with the scaler
+     hash compared against the shared features/v6 ledger hash; the default
+     `v5` keeps validating training/v1+v2. The count is derived from the
      v4 bundle, never hard-coded, so the AOI-overlap gate passes without
      manual edits; `run-training-v3-vm.sh` passes
      `--ard-ledger "${ARD_ROOT}/ledger.parquet"` from its `ARD_ROOT`. The

@@ -11,8 +11,8 @@
 Read-only probe: re-reads the published release root (``--release-root``)
 and verifies, **independently of the publisher implementation**:
 
-- the V3 source ledger (324 done rows, pinned config hash) and the
-  features root pinning;
+- the source ledger (V3: 324 done rows, pinned config hash; v6: all done
+  rows with one shared config hash) and the features root pinning;
 - per-scene eligibility COG contract (EPSG:25833, canonical 100 m grid,
   uint8, values in {0,1}) and the per-scene completion markers;
 - the scene manifest: full year coverage 2017-2026, temporal split
@@ -25,14 +25,26 @@ and verifies, **independently of the publisher implementation**:
 - the cell index: every row references an eligible cell of a published
   scene, splits match the manifest, cell IDs are deterministic from the
   canonical EPSG:25833 grid, no 2026 cells;
-- the scaler: 28 channels in canonical order, documented transforms
-  (z-score / log1p+z-score / identity), population statistics, training
-  years only, split-hash and V3 config hash present, and — on eligible
-  cells — the count matches the cells table for the train split;
+- the scaler: the release's channel roster in canonical order, documented
+  transforms (z-score / log1p+z-score / identity), population statistics,
+  training years only, split-hash and config hash present, and — on
+  eligible cells — the count matches the cells table for the train split;
 - a successful readback of every published artifact.
 
-The validator never writes anything and never re-scans the 28-band
-feature COGs (it is a consistency gate over the published evidence, not
+``--features-release`` selects the contract: ``v5`` (default) is the
+published training/v1+v2 contract (features/v5, 28-channel roster, three
+precipitation windows, pinned ``EXPECTED_V3_CONFIG_HASH``); ``v6`` is the
+training/v3 contract (features/v6 22-channel roster from the feature
+schema in src — canopy cover instead of height maxima, one 0–72 h
+precipitation sum with log1p then z-score — with the scaler hash compared
+against the shared features/v6 ledger hash).
+The implausible-LST denylist scenes are required in the release manifest
+unless ``--expected-scenes-from-manifest`` proves they are absent from the
+upstream selection bundle (reported as an explicit outcome, never skipped
+silently).
+
+The validator never writes anything and never re-scans the feature COGs
+(it is a consistency gate over the published evidence, not
 a recomputation of the eligibility). It does not share implementation
 with ``data/training/``.
 
@@ -42,6 +54,11 @@ Usage
         --release-root gs://berlin-lst-training-data/training/v1
     uv run python scripts/validators/validate_training_data.py \
         --release-root data/smoke/training-data
+    uv run python scripts/validators/validate_training_data.py \
+        --release-root gs://berlin-lst-training-data/training/v3 \
+        --features-release v6 \
+        --expected-scenes-from-manifest <v4 manifest> \
+        --ard-ledger <v10 ledger>
 """
 
 from __future__ import annotations
@@ -55,8 +72,9 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.data.features.contracts import (
-    FEATURE_CHANNEL_NAMES,
-    FEATURE_CHANNELS,
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
 )
 from berlin_lst_downscaling.data.io import exists, read_bytes
 from berlin_lst_downscaling.data.training.contracts import (
@@ -67,6 +85,7 @@ from berlin_lst_downscaling.data.training.contracts import (
     NO_ELIGIBLE_CELLS_REASON,
     SPLIT_BY_YEAR,
     SUPPORT_PIXELS,
+    scaler_transform_for,
 )
 from berlin_lst_downscaling.data.training.paths import (
     cells_parquet,
@@ -85,6 +104,37 @@ _CANON_Y = 5838410.0
 _CELL = 100.0
 
 _V3_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v5"
+
+# Feature release v6 (22-channel roster) feeding training/v3.
+_V6_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v6"
+
+# Feature-release contracts this validator can check. ``v5`` is the
+# published training/v1+v2 contract (default); ``v6`` is training/v3.
+# The roster, order, and per-channel transforms always come from the
+# feature schema in src (single source of truth, never duplicated here).
+_FEATURE_RELEASES = ("v5", "v6")
+
+_FEATURES_ROOT_BY_RELEASE = {
+    "v5": _V3_FEATURES_ROOT,
+    "v6": _V6_FEATURES_ROOT,
+}
+
+
+def _schema_for_features_release(features_release: str):
+    """Return the feature roster for a validated release.
+
+    ``v5`` is the 28-channel roster, ``v6`` the features/v6 roster. An
+    unknown release is an error, never a silent pass.
+    """
+    if features_release not in _FEATURE_RELEASES:
+        raise ValueError(
+            f"unknown features release {features_release!r}: "
+            f"expected one of {list(_FEATURE_RELEASES)}"
+        )
+    if features_release == "v6":
+        return feature_schema(FEATURE_SCHEMA_VERSION_V6)
+    return feature_schema(FEATURE_SCHEMA_VERSION)
+
 
 # Exclusion reason the training pipeline records (via the Stage-1
 # inventory) for a pairing whose S2 partner failed the ARD v10 mosaic AOI
@@ -192,13 +242,27 @@ def _check_manifest(
     warnings: list[str],
     expected_scenes: int | None,
     s2_gate_excluded: set[str] | None = None,
+    bundle_anchors: set[str] | None = None,
+    upstream_absent: list[str] | None = None,
 ) -> dict[str, dict]:
     """Verify the scene manifest (year coverage, splits, leakage, exclusions).
 
     ``s2_gate_excluded`` holds the Landsat scene ids proven (via the ARD
     v10 ledger) to pair with a coverage-gate-excluded S2 scene; only those
     may carry the gate exclusion reason.
+
+    ``bundle_anchors`` holds the upstream selection-bundle anchor ids (from
+    ``--expected-scenes-from-manifest``). A denylist scene absent from both
+    the release manifest and the bundle is proven absent upstream: it is
+    recorded in ``upstream_absent`` (explicit outcome, reported by the
+    caller) instead of an error. A denylist scene present in the bundle but
+    missing from the release manifest stays a hard error — the pipeline
+    always emits an excluded row for an in-universe denylist scene.
+    ``bundle_anchors`` without ``upstream_absent`` is a caller error (the
+    outcome must go somewhere explicit, never silent).
     """
+    if bundle_anchors is not None and upstream_absent is None:
+        raise ValueError("bundle_anchors requires upstream_absent to record the outcome")
     table = _read_table(manifest_parquet(release_root))
     cols = table.to_pydict()
     required = {
@@ -311,7 +375,20 @@ def _check_manifest(
     if expected_scenes is not None:
         missing_denied = IMPLAUSIBLE_LST_SCENE_IDS - set(manifest)
         if missing_denied:
-            errors.append(f"full release missing implausible LST scenes: {sorted(missing_denied)}")
+            if bundle_anchors is not None:
+                proven_upstream = sorted(s for s in missing_denied if s not in bundle_anchors)
+                still_missing = sorted(s for s in missing_denied if s in bundle_anchors)
+                if proven_upstream and upstream_absent is not None:
+                    upstream_absent.extend(proven_upstream)
+                if still_missing:
+                    errors.append(
+                        "full release missing implausible LST scenes "
+                        f"present in the selection bundle: {still_missing}"
+                    )
+            else:
+                errors.append(
+                    f"full release missing implausible LST scenes: {sorted(missing_denied)}"
+                )
 
     # CSV consistency.
     try:
@@ -447,25 +524,34 @@ def _check_scaler(
     train_cells: int,
     errors: list[str],
     warnings: list[str],
+    schema=None,
+    expected_v3_hash: str | None = None,
 ) -> None:
-    """Verify the scaler contract (channels, transforms, train-only provenance)."""
+    """Verify the scaler contract (channels, transforms, train-only provenance).
+
+    The expected roster, order, and per-channel transforms come from
+    ``schema`` (default: the published v5 28-channel roster, i.e. the
+    training/v1+v2 behaviour, unchanged).     ``expected_v3_hash`` is the
+    config hash the scaler must carry: the pinned ``EXPECTED_V3_CONFIG_HASH``
+    for v5, the shared features/v6 ledger hash for v6 (resolved by
+    ``_check_v3_source``). No check is dropped in either mode.
+    """
+    resolved = schema if schema is not None else _schema_for_features_release("v5")
+    expected_hash = expected_v3_hash if expected_v3_hash is not None else EXPECTED_V3_CONFIG_HASH
+    expected_names = list(resolved.names)
     scaler = _read_json(scaler_json(release_root))
-    if list(scaler.get("channel_order", [])) != list(FEATURE_CHANNEL_NAMES):
-        errors.append("scaler channel_order does not match the canonical 28-channel order")
+    if list(scaler.get("channel_order", [])) != expected_names:
+        errors.append(
+            f"scaler channel_order does not match the canonical "
+            f"{resolved.n_channels}-channel {resolved.release} order"
+        )
     channels = scaler.get("channels", [])
-    if len(channels) != len(FEATURE_CHANNELS):
-        errors.append(f"scaler channels {len(channels)} != 28")
+    if len(channels) != resolved.n_channels:
+        errors.append(f"scaler channels {len(channels)} != {resolved.n_channels}")
 
     transforms = {str(c["channel_name"]): str(c["transform"]) for c in channels}
-    for spec in FEATURE_CHANNELS:
-        name = spec.name
-        expected = (
-            "log1p_zscore"
-            if name in ("tp_0_24h", "tp_24_48h", "tp_48_72h")
-            else "identity"
-            if name in ("shadow_building", "shadow_vegetation")
-            else "zscore"
-        )
+    for name in expected_names:
+        expected = scaler_transform_for(name, resolved)
         if transforms.get(name) != expected:
             errors.append(f"scaler transform {name}: {transforms.get(name)!r} != {expected!r}")
 
@@ -501,37 +587,78 @@ def _check_scaler(
     for key in ("policy_hash", "v3_config_hash", "split_hash"):
         if not scaler.get(key):
             errors.append(f"scaler missing {key}")
-    if scaler.get("v3_config_hash") != EXPECTED_V3_CONFIG_HASH:
-        errors.append("scaler v3_config_hash does not match the pinned V3 hash")
+    if scaler.get("v3_config_hash") != expected_hash:
+        errors.append(
+            f"scaler v3_config_hash {scaler.get('v3_config_hash')!r} does not match "
+            f"the {resolved.release} config hash {expected_hash!r}"
+        )
 
 
 # ── V3 source gate ────────────────────────────────────────────────────
 
 
-def _check_v3_source(release_root: str, errors: list[str]) -> None:
-    """Verify the release's V3 input basis (independent of the publisher)."""
+def _check_v3_source(
+    release_root: str, errors: list[str], features_release: str = "v5"
+) -> str | None:
+    """Verify the release's feature input basis (independent of the publisher).
+
+    v5 (training/v1+v2): every features/v5 ledger row is ``done``, carries
+    the pinned ``EXPECTED_V3_CONFIG_HASH`` (pin source: the feature release
+    v5 hash in ``data.training.contracts``), and the ledger holds exactly
+    324 rows. Returns the pin.
+
+    v6 (training/v3): the v6 feature hash is computed by the features/v6
+    run (``config_hash_for_features``) and cannot be pinned before
+    publication, so the gate checks self-consistency like the publisher's
+    ``_verify_v6_release``: every features/v6 ledger row is ``done`` and
+    carries one shared non-empty config hash (no hard-coded row count —
+    ``configs/training/v3.yaml`` sets ``expected_scene_count: null`` and
+    the v4 bundle is the universe). Returns that shared hash for the
+    scaler cross-check. Returns ``None`` only when the ledger is
+    unreadable (an error is recorded).
+    """
 
     # The training ledger rows carry config_hash == policy_hash (not the V3
     # hash), so pin the source via the features ledger instead.
-    features_ledger = f"{_V3_FEATURES_ROOT}/_state/features/ledger.parquet"
+    if features_release not in _FEATURE_RELEASES:
+        errors.append(
+            f"unknown features release {features_release!r}: "
+            f"expected one of {list(_FEATURE_RELEASES)}"
+        )
+        return None
+    features_root = _FEATURES_ROOT_BY_RELEASE[features_release]
+    features_ledger = f"{features_root}/_state/features/ledger.parquet"
+    expected_hash: str | None = None
     try:
         table = _read_table(features_ledger)
         cols = table.to_pydict()
         statuses = {str(s) for s in cols["status"]}
         if statuses != {"done"}:
-            errors.append(f"V3 ledger statuses {sorted(statuses)} != {{done}}")
+            errors.append(f"{features_release} ledger statuses {sorted(statuses)} != {{done}}")
         hashes = {str(h) for h in cols.get("config_hash", []) if h is not None}
-        if hashes != {EXPECTED_V3_CONFIG_HASH}:
-            errors.append(f"V3 ledger config hashes {sorted(hashes)} != pinned")
-        if table.num_rows != 324:
-            errors.append(f"V3 ledger rows {table.num_rows} != 324")
+        if features_release == "v6":
+            non_empty = {h for h in hashes if h}
+            if len(non_empty) != 1:
+                errors.append(
+                    f"v6 ledger must carry one shared config hash, found {sorted(hashes)}"
+                )
+            else:
+                expected_hash = next(iter(non_empty))
+        else:
+            if hashes != {EXPECTED_V3_CONFIG_HASH}:
+                errors.append(f"V3 ledger config hashes {sorted(hashes)} != pinned")
+            if table.num_rows != 324:
+                errors.append(f"V3 ledger rows {table.num_rows} != 324")
+            expected_hash = EXPECTED_V3_CONFIG_HASH
     except Exception as exc:  # noqa: BLE001
-        errors.append(f"V3 features ledger unreadable: {exc}")
+        errors.append(f"{features_release} features ledger unreadable: {exc}")
+        return None
 
     # Release-level completion marker must carry a policy hash.
     marker = _read_json(release_completion(release_root))
     if not marker.get("policy_hash"):
         errors.append("release complete.json missing policy_hash")
+    return expected_hash
 
 
 # ── orchestrator ──────────────────────────────────────────────────────
@@ -565,20 +692,44 @@ def main() -> int:
         "mask). Requires --expected-scenes-from-manifest. The release "
         "manifest row count is unchanged (one row per pairing).",
     )
+    parser.add_argument(
+        "--features-release",
+        choices=list(_FEATURE_RELEASES),
+        default="v5",
+        help="Feature-release contract to validate: 'v5' is the published "
+        "training/v1+v2 contract (features/v5, 28-channel roster, pinned "
+        "V3 config hash; default); 'v6' is the training/v3 contract "
+        "(features/v6 roster from the feature schema in src, scaler hash "
+        "compared against the shared features/v6 ledger hash). A scaler or "
+        "ledger that does not match the selected contract is an error.",
+    )
     args = parser.parse_args()
 
     if args.expected_scenes is not None and args.expected_scenes_from_manifest is not None:
         parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
     if args.ard_ledger is not None and args.expected_scenes_from_manifest is None:
         parser.error("--ard-ledger requires --expected-scenes-from-manifest")
+    schema = _schema_for_features_release(args.features_release)
+    bundle_anchors: set[str] | None = None
     if args.expected_scenes_from_manifest is not None:
         from berlin_lst_downscaling.data.selection.bundle_counts import (
+            anchor_years,
             expected_counts_for_bundle,
         )
 
         _, total = expected_counts_for_bundle(args.expected_scenes_from_manifest)
         print(f"  Expected scenes from manifest bundle: {total}")
         args.expected_scenes = total
+        bundle_manifest_uri = args.expected_scenes_from_manifest.rstrip("/")
+        bundle_root = bundle_manifest_uri.rsplit("/", 1)[0]
+        pairings_uri = f"{bundle_root}/pairings.parquet"
+        for uri in (args.expected_scenes_from_manifest, pairings_uri):
+            if not exists(uri):
+                parser.error(f"bundle artifact missing: {uri}")
+        import pyarrow.parquet as _pq
+
+        bundle_table = _pq.read_table(io.BytesIO(read_bytes(args.expected_scenes_from_manifest)))
+        bundle_anchors = set(anchor_years(bundle_table))
 
     from berlin_lst_downscaling.data.selection.bundle_counts import (
         excluded_landsat_scene_ids,
@@ -596,17 +747,28 @@ def main() -> int:
     root = args.release_root.rstrip("/")
     errors: list[str] = []
     warnings: list[str] = []
+    upstream_absent: list[str] = []
 
-    print(f"Validating training release: {root}")
+    print(f"Validating training release: {root} (features-release {args.features_release})")
     print("  Release marker:", "present" if exists(release_completion(root)) else "MISSING")
     if not exists(release_completion(root)):
         errors.append("release complete.json missing — release not finalised")
 
-    _check_v3_source(root, errors)
+    expected_v3_hash = _check_v3_source(root, errors, features_release=args.features_release)
 
     manifest = _check_manifest(
-        root, errors, warnings, args.expected_scenes, s2_gate_excluded=s2_gate_excluded
+        root,
+        errors,
+        warnings,
+        args.expected_scenes,
+        s2_gate_excluded=s2_gate_excluded,
+        bundle_anchors=bundle_anchors,
+        upstream_absent=upstream_absent,
     )
+    if upstream_absent:
+        print(f"  Implausible-LST denylist scenes absent upstream ({len(upstream_absent)}):")
+        for sid in sorted(upstream_absent):
+            print(f"    {sid} not in the selection bundle — no release row expected")
     # Inference scenes, the implausible-LST denylist, and proven S2
     # gate exclusions publish no mask. Zero-cell exclusions still carry
     # an all-zero mask.
@@ -629,7 +791,14 @@ def main() -> int:
             )
 
     train_cells = _check_cells(root, manifest, cog_cell_ids, errors) if manifest else 0
-    _check_scaler(root, train_cells, errors, warnings)
+    _check_scaler(
+        root,
+        train_cells,
+        errors,
+        warnings,
+        schema=schema,
+        expected_v3_hash=expected_v3_hash,
+    )
 
     for w in warnings:
         print(f"  ⚠ {w}")
