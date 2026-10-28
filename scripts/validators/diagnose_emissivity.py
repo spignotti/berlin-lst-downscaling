@@ -13,14 +13,19 @@ documented USGS constants as fallback).
 Experiments per scene
 ---------------------
 (a) ``eps`` = product ``EMIS``: sanity check, must reproduce ``ST_B10``.
-(b) UNIFORM STATIC: the scene-median ``EMIS`` everywhere. This removes ALL
-    spatial emissivity structure — not only the NDVI adjustment — so ΔLST
-    and slope changes against it are an UPPER BOUND on the spatial-pattern
-    effect, not the NDVI-adjustment effect alone. (True static ASTER GED
-    needs Earthdata credentials; ``--aster-ged-tif`` is the hook for the
-    real comparison: a caller-supplied B10-adjusted raster, reprojected
-    onto each 30 m scene grid with bilinear resampling.)
-(c) fixed-eps scenarios (0.97, 0.98).
+(b) ``static_ged``: static ASTER GED v3 (AG100.003) emissivity via
+    ``--aster-ged`` (CMR discovery + LP DAAC download with the bearer token
+    from env ``EARTHDATA_TOKEN``, cached in ``.scratch/aster-ged-v3/``),
+    adjusted to TIRS B10 with the Malakar 2018 coefficients and NO NDVI /
+    vegetation / water / snow adjustment. Hence (a)-(b) isolates the
+    scene-NDVI/phenology adjustment of the C2 ST product, up to the
+    GED/TIRS spectral-fit error and the 100 m -> 30 m resampling error.
+    Landsat 9 uses the L8 coefficients (labelled approximation).
+    ``--aster-ged-tif`` is the offline alternative (local raster, mutually
+    exclusive with ``--aster-ged``). Without either flag, (b) is absent.
+(c) ``uniform_median``: the scene-median ``EMIS`` everywhere (removes ALL
+    spatial structure, an UPPER BOUND on the spatial-pattern effect), plus
+    fixed-eps scenarios ``fixed_0.97`` / ``fixed_0.98``.
 
 Scene selection rule (pinned IDs below for reproducibility): per season
 (JJA summer / DJF winter) x platform (Landsat 8 / 9) group, the lowest
@@ -37,6 +42,7 @@ Examples
 --------
     uv run python scripts/validators/diagnose_emissivity.py --synthetic
     uv run python scripts/validators/diagnose_emissivity.py --with-s2
+    EARTHDATA_TOKEN=... uv run python scripts/validators/diagnose_emissivity.py --aster-ged
 """
 
 from __future__ import annotations
@@ -46,6 +52,7 @@ import csv
 import json
 import math
 import os
+import sys
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +61,14 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling, reproject
 
+from berlin_lst_downscaling.analysis.aster_ged import (
+    DEFAULT_GED_CACHE_DIR,
+    AsterGedError,
+    ged_b10_from_bands,
+    ged_coefficients_label,
+    ged_dn_to_emissivity,
+    load_ged_b10_for_bbox,
+)
 from berlin_lst_downscaling.analysis.emissivity import (
     ATRAN_SCALE,
     EMIS_SCALE,
@@ -62,7 +77,6 @@ from berlin_lst_downscaling.analysis.emissivity import (
     THERMAL_RADIANCE_SCALE,
     assign_imperv_bins,
     assign_ndvi_bins,
-    aster_ged_b10_proxy,
     aux_dn_to_units,
     binned_stats,
     forward_trad,
@@ -269,13 +283,21 @@ def _unitless(arr: np.ndarray, dtype: object, what: str) -> np.ndarray:
     return out
 
 
+def _ged_band(arr: np.ndarray, dtype: object, what: str) -> np.ndarray:
+    """GED band to unitless emissivity: integer DN x0.001, float taken as unitless."""
+    if np.issubdtype(np.dtype(dtype), np.integer):
+        return ged_dn_to_emissivity(arr)
+    print(f"note: {what} dtype {np.dtype(dtype)} taken as unitless emissivity")
+    return arr.astype(np.float64)
+
+
 def _load_ged_source(path: str) -> dict:
     """Load ``--aster-ged-tif`` into a CRS-tagged dict for per-scene reprojection.
 
     Accepts a single-band B10-adjusted static emissivity raster in any CRS
     (reprojected onto each 30 m scene grid with bilinear resampling), or a
-    5-band 100 m ASTER GED tile (bands 10-14; B10 proxy from bands 13+14).
-    Anything else raises a clear error.
+    5-band 100 m ASTER GED tile (bands 10-14; Malakar 2018 B10 adjustment
+    from bands 13/14). Anything else raises a clear error.
     """
     with rasterio.open(path) as src:
         transform = src.transform
@@ -283,10 +305,13 @@ def _load_ged_source(path: str) -> dict:
         if crs is None:
             raise ValueError(f"static GED raster {path!r} has no CRS; cannot reproject")
         if src.count == 5:
-            b13 = _unitless(src.read(4), src.dtypes[3], "GED band 13")
-            b14 = _unitless(src.read(5), src.dtypes[4], "GED band 14")
-            arr = aster_ged_b10_proxy(b13, b14)
-            note = "5-band ASTER GED tile: mean of bands 13+14 as the TIRS B10 proxy"
+            b13 = _ged_band(src.read(4), src.dtypes[3], "GED band 13")
+            b14 = _ged_band(src.read(5), src.dtypes[4], "GED band 14")
+            arr = ged_b10_from_bands(b13, b14)
+            note = (
+                "5-band ASTER GED tile: bands 13/14 x0.001 (integer DN), "
+                "Malakar 2018 L8 TIRS B10 spectral adjustment; no NDVI adjustment"
+            )
         elif src.count == 1:
             arr = _unitless(src.read(1), src.dtypes[0], "single-band static raster")
             note = "single-band B10-adjusted static emissivity raster"
@@ -402,10 +427,11 @@ def analyze_scene(
 ) -> dict:
     """Run experiments (a)/(b)/(c) for one scene; return a JSON-able report.
 
-    ``ged_source`` is None (uniform-EMIS fallback) or a dict with
+    ``ged_source`` is None (no (b)) or a dict with
     ``array``/``transform``/``crs``/``note`` describing a static B10
     emissivity raster in any CRS — it is reprojected onto the 30 m scene
-    grid inside (bilinear, explicit).
+    grid inside (bilinear, explicit). (c) ``uniform_median`` and the fixed
+    scenarios are always computed.
     """
     item = _resolve_landsat_item(scene_id)
     k1, k2, k_source = _mtl_thermal_constants(item)
@@ -463,7 +489,7 @@ def analyze_scene(
         float(np.nanmean(st_qa[sanity_mask])) if np.any(sanity_mask) else float("nan")
     )
 
-    # (b) static emissivity counterfactuals.
+    # (b) static GED and (c) uniform / fixed emissivity counterfactuals.
     variants: dict[str, np.ndarray] = {}
     static_info: dict[str, object] = {}
     if ged_source is not None:
@@ -475,24 +501,27 @@ def analyze_scene(
             transform,
             LOAD_CRS,
         )
-        static_info["static_ged"] = ged_source["note"]
-        static_info["static_ged_n_nan"] = int(np.sum(~np.isfinite(ged_b10)))
+        # Invalid GED pixels are excluded (NaN), never filled or clamped.
         ged_valid = np.isfinite(ged_b10) & (ged_b10 > 0) & (ged_b10 <= 1.0)
         if not np.any(ged_valid & analysis_mask):
-            raise ValueError("static GED raster has no valid pixels on the analysis mask")
+            raise ValueError("no valid GED pixels on analysis mask")
+        n_invalid = int(np.sum(analysis_mask & ~ged_valid))
         ged_field = np.where(ged_valid, ged_b10, np.nan)
         variants["static_ged"] = lst_from_aux(trad, urad, drad, atran, ged_field, k1, k2)
-    else:
-        eps_static = uniform_static_emissivity(emis, analysis_mask)
-        variants["static_uniform"] = lst_from_aux(
-            trad, urad, drad, atran, np.full_like(emis, eps_static), k1, k2
-        )
-        static_info["static_uniform_eps"] = eps_static
-        static_info["static_uniform_note"] = (
-            "FALLBACK: scene-median EMIS applied uniformly (ASTER GED "
-            "requires Earthdata credentials); isolates the spatial "
-            "NDVI-adjustment pattern, not an absolute GED product."
-        )
+        static_info["ged_note"] = ged_source["note"]
+        static_info["ged_coefficients"] = ged_coefficients_label(platform)
+        static_info["ged_n_invalid_in_analysis_mask"] = n_invalid
+        static_info["ged_frac_invalid_in_analysis_mask"] = n_invalid / int(np.sum(analysis_mask))
+        static_info["ged_eps_median"] = float(np.median(ged_field[ged_valid & analysis_mask]))
+    eps_static = uniform_static_emissivity(emis, analysis_mask)
+    variants["uniform_median"] = lst_from_aux(
+        trad, urad, drad, atran, np.full_like(emis, eps_static), k1, k2
+    )
+    static_info["uniform_median_eps"] = eps_static
+    static_info["uniform_median_note"] = (
+        "Variant (c): scene-median EMIS applied uniformly; removes ALL spatial "
+        "emissivity structure, so (a)-(c) is an UPPER BOUND on the spatial-pattern effect."
+    )
     for eps_fix in FIXED_EPS_SCENARIOS:
         variants[f"fixed_{eps_fix:.2f}"] = lst_from_aux(
             trad, urad, drad, atran, np.full_like(emis, eps_fix), k1, k2
@@ -532,21 +561,23 @@ def analyze_scene(
             )
         delta_stats[name] = entry
 
+    relation_variants = [v for v in ("static_ged", "uniform_median") if v in variants]
     relations: dict[str, object] = {
         "landsat_ndvi_vs_a": ndvi_lst_relation(landsat_ndvi[ndvi_mask], lst_a[ndvi_mask]),
     }
-    first_b = next(iter(variants.values()))
-    relations["landsat_ndvi_vs_b"] = ndvi_lst_relation(landsat_ndvi[ndvi_mask], first_b[ndvi_mask])
-    relations["b_variant_for_relation"] = next(iter(variants.keys()))
+    for v in relation_variants:
+        relations[f"landsat_ndvi_vs_{v}"] = ndvi_lst_relation(
+            landsat_ndvi[ndvi_mask], variants[v][ndvi_mask]
+        )
     if imperv_sources is not None:
         # NDVI–LST slope stratified by impervious class (cheap: same arrays).
         strat: dict[str, object] = {}
         for i, label in enumerate(IMPERV_BIN_LABELS):
             sel = ndvi_mask & (imperv_index == i)
-            strat[label] = {
-                "a": ndvi_lst_relation(landsat_ndvi[sel], lst_a[sel]),
-                "b": ndvi_lst_relation(landsat_ndvi[sel], first_b[sel]),
-            }
+            per_class = {"a": ndvi_lst_relation(landsat_ndvi[sel], lst_a[sel])}
+            for v in relation_variants:
+                per_class[v] = ndvi_lst_relation(landsat_ndvi[sel], variants[v][sel])
+            strat[label] = per_class
         relations["imperv_stratified"] = strat
 
     # Optional same-season S2 NDVI join.
@@ -559,14 +590,18 @@ def analyze_scene(
             joint = ndvi_mask & np.isfinite(s2_ndvi_30m)
             s2_info["n_joint"] = int(np.sum(joint))
             relations["s2_ndvi_vs_a"] = ndvi_lst_relation(s2_ndvi_30m[joint], lst_a[joint])
-            relations["s2_ndvi_vs_b"] = ndvi_lst_relation(s2_ndvi_30m[joint], first_b[joint])
+            for v in relation_variants:
+                relations[f"s2_ndvi_vs_{v}"] = ndvi_lst_relation(
+                    s2_ndvi_30m[joint], variants[v][joint]
+                )
             # Scatter subsample for the figure (deterministic stride).
             idx = np.flatnonzero(joint)[:: max(1, int(np.sum(joint)) // 1200)]
             s2_info["scatter_idx"] = [int(i) for i in idx]
             s2_info["scatter_s2_ndvi"] = [float(v) for v in s2_ndvi_30m.ravel()[idx]]
             s2_info["scatter_landsat_ndvi"] = [float(v) for v in landsat_ndvi.ravel()[idx]]
             s2_info["scatter_a"] = [float(v) for v in lst_a.ravel()[idx]]
-            s2_info["scatter_b"] = [float(v) for v in first_b.ravel()[idx]]
+            for v in relation_variants:
+                s2_info[f"scatter_{v}"] = [float(x) for x in variants[v].ravel()[idx]]
 
     snow_frac = float(np.mean(((qa >> 5) & 1) == 1))
     report = {
@@ -605,7 +640,11 @@ def analyze_scene(
 
 
 def synthetic_self_check() -> dict:
-    """Offline end-to-end check of the analysis math (no network)."""
+    """Offline end-to-end check of the analysis math (no network).
+
+    Variant (c) is ``uniform_median``; the static-GED identity check
+    covers the (b) reprojection path.
+    """
     rng = np.random.default_rng(7)
     shape = (40, 40)
     lst_true = 290.0 + 10.0 * rng.random(shape)
@@ -618,18 +657,39 @@ def synthetic_self_check() -> dict:
     lst_a = lst_from_aux(trad, urad, drad, atran, emis, k1, k2)
     max_diff = float(np.nanmax(np.abs(lst_a - lst_true)))
     eps_static = uniform_static_emissivity(emis, np.ones(shape, dtype=bool))
-    lst_b = lst_from_aux(trad, urad, drad, atran, np.full(shape, eps_static), k1, k2)
-    delta = lst_a - lst_b
+    lst_c = lst_from_aux(trad, urad, drad, atran, np.full(shape, eps_static), k1, k2)
+    delta = lst_a - lst_c
+
+    # Static-GED identity: a constant EPSG:4326 GED field equal to a constant
+    # product EMIS, reprojected onto a 30 m UTM grid, must reproduce (a).
+    eps_const = 0.97
+    trad_c = forward_trad(lst_true, urad, drad, atran, np.full(shape, eps_const), k1, k2)
+    lst_a_const = lst_from_aux(trad_c, urad, drad, atran, np.full(shape, eps_const), k1, k2)
+    ged_field = np.full((80, 60), eps_const)  # 0.01 deg cells over lon 13.0-13.6, lat 52.2-53.0
+    ged_transform = rasterio.Affine(0.01, 0.0, 13.0, 0.0, -0.01, 53.0)
+    utm_transform = rasterio.Affine(30.0, 0.0, 390000.0, 0.0, -30.0, 5820000.0)
+    ged_on_grid = ged_b10_on_scene_grid(
+        ged_field, ged_transform, "EPSG:4326", shape, utm_transform, LOAD_CRS
+    )
+    lst_ged = lst_from_aux(trad_c, urad, drad, atran, ged_on_grid, k1, k2)
+    ged_diff = (
+        float(np.nanmax(np.abs(lst_ged - lst_a_const)))
+        if np.any(np.isfinite(lst_ged))
+        else float("nan")
+    )
+    ged_ok = bool(np.all(np.isfinite(lst_ged)) and ged_diff < 1e-6)
     fake_ndvi = (emis - emis.min()) / (emis.max() - emis.min()) * 0.8
     bins = assign_ndvi_bins(fake_ndvi)
     return {
         "synthetic_roundtrip_max_abs_diff_K": max_diff,
         "roundtrip_ok": max_diff < 1e-6,
         "delta_mean_K": float(np.nanmean(delta)),
-        "static_eps": eps_static,
+        "uniform_median_eps": eps_static,
+        "static_ged_identity_max_abs_diff_K": ged_diff,
+        "static_ged_identity_ok": ged_ok,
         "by_bin": dict(zip(NDVI_BIN_LABELS, binned_stats(delta, bins, 5), strict=True)),
         "relation_a": ndvi_lst_relation(fake_ndvi.ravel(), lst_a.ravel()),
-        "relation_b": ndvi_lst_relation(fake_ndvi.ravel(), lst_b.ravel()),
+        "relation_uniform_median": ndvi_lst_relation(fake_ndvi.ravel(), lst_c.ravel()),
     }
 
 
@@ -739,7 +799,9 @@ def build_figures(
             if r["season"] == season and fig_variant in r["delta_stats"]
         ]
         groups[f"{season} ({fig_variant})"] = pool_overall_stats(overalls)
-    _svg_bar_groups(out_dir / "fig_delta_groups.svg", "Mean ΔLST (a)-(b) by season", groups)
+    _svg_bar_groups(
+        out_dir / "fig_delta_groups.svg", f"Mean ΔLST (a)−({fig_variant}) by season", groups
+    )
 
     # ΔLST by NDVI bin, pooled per season (n-weighted mean of scene means).
     short = {
@@ -778,7 +840,7 @@ def build_figures(
             }
         _svg_bar_groups(
             out_dir / f"fig_delta_ndvi_{season}.svg",
-            f"ΔLST (a)-(b) by NDVI bin, {season} ({fig_variant})",
+            f"ΔLST (a)−({fig_variant}) by NDVI bin, {season}",
             binned,
         )
 
@@ -795,7 +857,7 @@ def build_figures(
                 imp[label] = pool_overall_stats(cls_stats)
             _svg_bar_groups(
                 out_dir / f"fig_delta_imperv_{season}.svg",
-                f"ΔLST (a)-(b) by impervious class, {season} ({fig_variant})",
+                f"ΔLST (a)−({fig_variant}) by impervious class, {season}",
                 imp,
             )
 
@@ -811,6 +873,10 @@ def build_figures(
     if candidates:
         rep = max(candidates, key=lambda r: int(r["s2"].get("n_joint", 0)))
         info["scatter_scene"] = rep["scene_id"]
+        s2 = rep["s2"]
+        # Old per_scene.json files stored the second series as ``scatter_b``.
+        second_name = fig_variant if f"scatter_{fig_variant}" in s2 else "uniform_median"
+        second = s2.get(f"scatter_{second_name}", s2.get("scatter_b"))
         _svg_scatter(
             out_dir / "fig_ndvi_lst_scatter.svg",
             f"NDVI-LST {rep['scene_id']}",
@@ -820,9 +886,9 @@ def build_figures(
                     rep["s2"]["scatter_a"],
                     "steelblue",
                 ),
-                "LST(b) vs S2 NDVI": (
+                f"LST({second_name}) vs S2 NDVI": (
                     rep["s2"]["scatter_s2_ndvi"],
-                    rep["s2"]["scatter_b"],
+                    second,
                     "tomato",
                 ),
             },
@@ -844,10 +910,91 @@ def _coerce(value: str) -> object:
         return value
 
 
+def _select_fig_variant(ok: list[dict]) -> str:
+    """static_ged if present, else uniform_median (old runs: static_uniform), else fixed."""
+    for v in ("static_ged", "uniform_median", "static_uniform"):
+        if any(v in r["delta_stats"] for r in ok):
+            return v
+    return "fixed_0.98"
+
+
+def _rel_summary(rel: dict) -> dict:
+    return {"slope": rel["slope"], "r": rel["r"], "n": rel["n"]}
+
+
+def _slope_pair(relations: dict, prefix: str) -> dict | None:
+    a_key, g_key = f"{prefix}_ndvi_vs_a", f"{prefix}_ndvi_vs_static_ged"
+    if a_key not in relations or g_key not in relations:
+        return None
+    a, g = _rel_summary(relations[a_key]), _rel_summary(relations[g_key])
+    return {
+        "a": a,
+        "static_ged": g,
+        "d_slope": a["slope"] - g["slope"],  # (a) minus (b), like ΔLST
+        "d_r": a["r"] - g["r"],
+    }
+
+
+def build_ged_summary(ok: list[dict], ged_meta: dict) -> dict:
+    """Pool the static-GED (b) results over all ok scenes that have them.
+
+    ``d_slope``/``d_r`` are (a) minus static_ged, matching the ΔLST sign.
+    Pooling uses ``pool_overall_stats`` (n-weighted mean and median of
+    per-scene medians; min/max whiskers).
+    """
+    reps = [r for r in ok if "static_ged" in r["delta_stats"]]
+
+    def stats_of(r: dict) -> dict:
+        return r["delta_stats"]["static_ged"]
+
+    groups: dict[str, list[dict]] = {}
+    for r in reps:
+        groups.setdefault(f"{r['season']}/{r['platform']}", []).append(r)
+    summary: dict[str, object] = {
+        "variant": "static_ged",
+        "ged": ged_meta,
+        "overall": pool_overall_stats([stats_of(r)["overall"] for r in reps]),
+        "by_group": {
+            g: pool_overall_stats([stats_of(r)["overall"] for r in members])
+            for g, members in sorted(groups.items())
+        },
+        "by_ndvi_bin": {
+            label: pool_overall_stats([stats_of(r)["by_ndvi_bin"][label] for r in reps])
+            for label in NDVI_BIN_LABELS
+        },
+        "by_surface": {
+            k: pool_overall_stats([stats_of(r)["by_surface"][k] for r in reps])
+            for k in ("land", "water")
+        },
+    }
+    with_imperv = [r for r in reps if "by_imperv" in stats_of(r)]
+    if with_imperv:
+        summary["by_imperv"] = {
+            label: pool_overall_stats([stats_of(r)["by_imperv"][label] for r in with_imperv])
+            for label in IMPERV_BIN_LABELS
+        }
+    summary["per_scene"] = [
+        {
+            "scene_id": r["scene_id"],
+            "season": r["season"],
+            "platform": r["platform"],
+            "ged_coefficients": r["static_info"].get("ged_coefficients"),
+            "ged_frac_invalid_in_analysis_mask": r["static_info"].get(
+                "ged_frac_invalid_in_analysis_mask"
+            ),
+            "overall": stats_of(r)["overall"],
+            "landsat": _slope_pair(r["relations"], "landsat"),
+            "s2": _slope_pair(r["relations"], "s2"),
+        }
+        for r in reps
+    ]
+    return summary
+
+
 # ── driver ───────────────────────────────────────────────────────────────
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only Landsat emissivity diagnostic")
     parser.add_argument("--synthetic", action="store_true", help="Offline math self-check only.")
     parser.add_argument(
@@ -860,10 +1007,24 @@ def main() -> int:
     )
     parser.add_argument("--with-s2", action="store_true", help="Join same-season S2 NDVI.")
     parser.add_argument("--s2-window-days", type=int, default=16)
-    parser.add_argument(
+    ged_group = parser.add_mutually_exclusive_group()
+    ged_group.add_argument(
+        "--aster-ged",
+        action="store_true",
+        help=(
+            "Variant (b): download static ASTER GED v3 (AG100.003) via CMR + LP DAAC "
+            "(bearer token from env EARTHDATA_TOKEN), Malakar-adjusted to TIRS B10."
+        ),
+    )
+    ged_group.add_argument(
         "--aster-ged-tif",
         default=None,
-        help="Optional local single-band static B10 emissivity raster.",
+        help="Optional local static B10 emissivity raster (1 band) or 5-band GED tile.",
+    )
+    parser.add_argument(
+        "--ged-cache-dir",
+        default=DEFAULT_GED_CACHE_DIR,
+        help="Cache directory for downloaded GED tiles (gitignored scratch).",
     )
     parser.add_argument(
         "--impervious-tif",
@@ -882,7 +1043,7 @@ def main() -> int:
         action="store_true",
         help="Rebuild SVGs from saved per_scene.json/delta_by_bin.csv (no network).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -892,10 +1053,7 @@ def main() -> int:
         ok = [r for r in per_scene if "error" not in r]
         with open(out_dir / "delta_by_bin.csv", newline="") as f:
             rows = [{k: _coerce(v) for k, v in row.items()} for row in csv.DictReader(f)]
-        fig_variant = next(
-            (v for v in ("static_uniform", "static_ged") if any(v in r["delta_stats"] for r in ok)),
-            "fixed_0.98",
-        )
+        fig_variant = _select_fig_variant(ok)
         info = build_figures(out_dir, ok, rows, fig_variant)
         print(json.dumps(info, indent=2))
         return 0
@@ -904,7 +1062,7 @@ def main() -> int:
         report = synthetic_self_check()
         (out_dir / "synthetic_self_check.json").write_text(json.dumps(report, indent=2))
         print(json.dumps(report, indent=2))
-        if not report["roundtrip_ok"]:
+        if not (report["roundtrip_ok"] and report["static_ged_identity_ok"]):
             print("SYNTHETIC SELF-CHECK FAILED")
             return 1
         print("synthetic self-check OK")
@@ -913,9 +1071,27 @@ def main() -> int:
     bbox = (args.bbox[0], args.bbox[1], args.bbox[2], args.bbox[3])
     ged_source: dict | None = None
     ged_meta: dict[str, object] = {"provided": False}
-    if args.aster_ged_tif:
+    if args.aster_ged:
+        try:
+            ged_source = load_ged_b10_for_bbox(bbox, args.ged_cache_dir)
+        except AsterGedError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        ged_meta = {
+            "provided": True,
+            "source": "aster-ged",
+            "granules": ged_source["granules"],
+            "cache_dir": str(args.ged_cache_dir),
+            "note": ged_source["note"],
+        }
+    elif args.aster_ged_tif:
         ged_source = _load_ged_source(args.aster_ged_tif)
-        ged_meta = {"provided": True, "path": args.aster_ged_tif, "note": ged_source["note"]}
+        ged_meta = {
+            "provided": True,
+            "source": "aster-ged-tif",
+            "path": args.aster_ged_tif,
+            "note": ged_source["note"],
+        }
     imperv_sources: dict | None = None
     if args.impervious_tif:
         imperv_sources = _resolve_imperv_source(args.impervious_tif)
@@ -965,6 +1141,7 @@ def main() -> int:
                         "ndvi_bin": label,
                         "bin_index": b,
                         "mean_K": s["mean"],
+                        "median_K": s["median"],
                         "p05_K": s["p05"],
                         "p95_K": s["p95"],
                         "n": s["n"],
@@ -992,6 +1169,7 @@ def main() -> int:
                         "imperv_class": label,
                         "bin_index": b,
                         "mean_K": s["mean"],
+                        "median_K": s["median"],
                         "p05_K": s["p05"],
                         "p95_K": s["p95"],
                         "n": s["n"],
@@ -1003,11 +1181,34 @@ def main() -> int:
             writer.writeheader()
             writer.writerows(imperv_rows)
 
-    # Group-pooled means for the figure (variant static_uniform/first).
-    fig_variant = next(
-        (v for v in ("static_uniform", "static_ged") if any(v in r["delta_stats"] for r in ok)),
-        "fixed_0.98",
-    )
+    # Pooled overall stats per "<season>/<platform>" group and for all scenes.
+    group_rows: list[dict] = []
+    group_members: dict[str, list[dict]] = {"all": ok}
+    for rep in ok:
+        group_members.setdefault(f"{rep['season']}/{rep['platform']}", []).append(rep)
+    for group, members in sorted(group_members.items()):
+        for variant in sorted({v for r in members for v in r["delta_stats"]}):
+            having = [r for r in members if variant in r["delta_stats"]]
+            pooled = pool_overall_stats([r["delta_stats"][variant]["overall"] for r in having])
+            group_rows.append(
+                {
+                    "group": group,
+                    "variant": variant,
+                    "mean_K": pooled["mean"],
+                    "median_K": pooled["median"],
+                    "p05_K": pooled["p05"],
+                    "p95_K": pooled["p95"],
+                    "n": pooled["n"],
+                    "n_scenes": len(having),
+                }
+            )
+    if group_rows:
+        with open(out_dir / "delta_by_group.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(group_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(group_rows)
+
+    fig_variant = _select_fig_variant(ok)
     build_figures(out_dir, ok, rows, fig_variant)
 
     summary = {
@@ -1026,6 +1227,9 @@ def main() -> int:
             for r in ok
         ],
     }
+    if any("static_ged" in r["delta_stats"] for r in ok):
+        ged_summary = build_ged_summary(ok, ged_meta)
+        (out_dir / "ged_summary.json").write_text(json.dumps(ged_summary, indent=2))
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
     return 0
