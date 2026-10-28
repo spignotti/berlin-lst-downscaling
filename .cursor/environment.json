@@ -1,4 +1,0 @@
-{
-  "name": "berlin-lst-downscaling",
-  "install": "uv sync --locked"
-}

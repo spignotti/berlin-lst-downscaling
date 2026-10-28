@@ -21,3 +21,4 @@ wandb
 docs
 tests
 *.md
+.claude
