@@ -34,22 +34,49 @@ pushes and opens the PR; you commit on the current branch only.
   Frozen docs (`docs/results/`, `docs/*-full-results.md`, `docs/stage1-*`, `docs/random-forest-*`) stay
   untouched.
 
+## Standard workflow
+
+The main session runs on Opus and is the orchestrator. It plans, delegates execution to cheap subagents,
+checks their output itself, and calls an independent verifier only when the criteria below require it.
+
+1. **Plan (Opus, main session).** Read the task and acceptance criteria, then write the plan yourself: methodology
+   check, files and exact changes, tests and validators per criterion. There is no planner subagent. If the
+   plan hits an open methodology question, stop and report it (see Scientific rules).
+2. **Execute (cheap subagents).** Hand self-contained chunks of the plan to:
+   - `implementer` (Sonnet): code and tests for a concrete plan chunk.
+   - `mechanic` (Haiku): searches, renames, path or string replacements, other edits without design judgment.
+   - `test-runner` (Haiku): nox/pytest and offline validators; returns only a PASS/FAIL summary.
+   Do trivial one-line edits yourself when delegating would cost more than doing it.
+3. **Check (Opus, main session).** Read the diff and the test-runner summary yourself. Compare against the plan and
+   every acceptance criterion. Send fixes back to `implementer` or `mechanic`. At most 2 fix rounds; nits never
+   block.
+4. **Independent verification (only when required).** A verifier subagent runs in a fresh context, without your
+   reasoning, and re-checks the diff, the tests, and the data/validator outputs itself.
+   - **Required: `scientific-reviewer` (Opus)** whenever the change touches
+     - the data pipeline (`src/berlin_lst_downscaling/data/`, `scripts/operators/`, `scripts/validators/`,
+       `configs/` for selection, ARD, static, dynamic, features, training, QA, EDA),
+     - a contract or schema (`*contract*.py`, `docs/data-sources-and-contracts.md`,
+       `docs/pseudo-pair-tensor-contract.md`, `docs/features-v6.md`),
+     - splits, holdouts, scalers, or anything that could leak 2025 test data,
+     - the model, the loss, or training/ablation configs (`src/berlin_lst_downscaling/modeling/`,
+       `configs/modeling/`, `configs/training/`),
+     - thresholds, exclusions, config hashes, or fingerprints.
+   - **Optional: `code-reviewer` (Sonnet)** for larger code-only changes (refactors, harness, CLI, IO) or when you
+     are unsure. Not needed for docs, typos, CI config, or small fixes with a clear test.
+   - Fix blocking findings from the verifier (at most 2 rounds), then re-run `test-runner`.
+5. **Commit.** Conventional Commit on the current branch. Do not push, do not use `gh`, do not create or switch
+   branches. The runner pushes and opens the PR; merges happen only after Silas' OK. The PR body lists each
+   acceptance criterion with its evidence and states whether independent verification ran and its verdict.
+
 ## Efficiency rules
 
-- The main session (Opus) orchestrates: it plans, decides the hard parts, and integrates. Delegate the rest
-  to subagents in `.claude/agents/`:
-  - `planner` (Opus): plan, methodology check, design decisions for non-trivial tasks.
-  - `implementer` (Sonnet): code and tests from a concrete plan.
-  - `test-runner` (Haiku): runs nox/pytest and validators, returns only a failure summary.
-  - `code-reviewer` (Sonnet): every change.
-  - `scientific-reviewer` (Opus): only when the diff touches the data pipeline, validators, contracts,
-    configs, or `modeling/`. Skip it for docs, CI, and harness-only changes.
-- Keep context lean. Use Grep/Glob to find the few files you need and read only the relevant ranges.
-  `noxfile.py` (~1750 lines) and the large docs are read by section, not whole. Do not read generated data,
-  lock files, or logs unless the task is about them.
-- Never paste full test logs into the main session; the test-runner summarizes.
-- Small, obvious changes (a typo, a one-line fix with a clear test) do not need the planner.
-- At most 2 review/fix rounds. Nits never block.
+- Opus does the plan, the hard decisions, and the checks. Sonnet and Haiku do the volume work. Do not run
+  long implementation or test loops in the main session.
+- Keep context lean. Use Grep/Glob (or `mechanic`) to find the few files you need and read only the relevant
+  ranges. `noxfile.py` (~1750 lines) and the large docs are read by section, not whole. Do not read generated
+  data, lock files, or logs unless the task is about them.
+- Never paste full test logs into the main session; `test-runner` summarizes.
+- Give each subagent a self-contained brief (files, exact change, how to test); it does not see this session.
 
 ## Validation
 
@@ -59,14 +86,7 @@ pushes and opens the PR; you commit on the current branch only.
 - Autoformat: `uv run nox -s fix`.
 - Sessions prefixed `cloud-` touch GCS or the VM. Never run them.
 
-## Workflow
+## Custom commands
 
-1. Read the task and its acceptance criteria. For non-trivial work, ask `planner` for a plan.
-2. `implementer` writes code and tests; new computational logic (math, masks, splits, aggregation, hashing)
-   gets offline unit tests.
-3. `test-runner` runs the checks until green.
-4. `code-reviewer` (and `scientific-reviewer` when it applies) review the diff; fix blocking findings.
-5. Commit with a Conventional Commit message on the current branch. Do not push, do not use `gh`, do not
-   create or switch branches. Merges happen only after Silas' OK.
-
-Custom commands: `/plan-task` (planner on a task) and `/validate` (test-runner on the full suite).
+- `/plan-task <task>`: write the plan in the main session without editing files.
+- `/validate [session or path]`: run the CI-equivalent checks through `test-runner`.

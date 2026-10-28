@@ -32,7 +32,7 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 ## Coding agents
 
 - Coding tasks run headless through the shared runner with Claude Code (`run-task.sh --tool claude`). Claude follows `CLAUDE.md` and the subagents in `.claude/agents/`.
-- Review happens in the Claude review pipeline (`code-reviewer` on every change, `scientific-reviewer` for data-pipeline and model changes). There is no separate bot review on GitHub.
+- Review happens in the Claude review pipeline: the Opus main session checks every change, and an independent `scientific-reviewer` (Opus) verification is required for changes to the data pipeline, contracts, splits, the model, or the loss (see `CLAUDE.md`). There is no separate bot review on GitHub.
 - Coding agents work on code only. They never publish data, start pipelines, republishes, or trainings, and they do not use the VM or Vertex launchers.
 - Agents commit on their branch only. They do not push, open PRs, or use `gh`; the runner does that. Nothing is merged without the project owner's OK.
 - Validation is `uv run --locked nox` (the default sessions).
