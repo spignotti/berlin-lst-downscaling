@@ -254,8 +254,18 @@ def within_scene_correlations(
 
     Scenes with fewer than ``MIN_WITHIN_SCENE_N`` finite pairs are omitted
     and counted. The median does not weight a scene by its cell count.
+
+    Raises:
+        ValueError: If any scene ID is missing (NaN or None). Rows without a
+            scene cannot be assigned to a within-scene correlation.
     """
     ids = np.asarray(scene_ids).ravel()
+    n_missing = int(np.sum(pd.isna(ids)))
+    if n_missing:
+        raise ValueError(
+            f"within_scene_correlations: {n_missing} row(s) have a missing scene ID "
+            "(NaN/None); every row must belong to a scene"
+        )
     pair_left = np.asarray(left, dtype=np.float64).ravel()
     pair_right = np.asarray(right, dtype=np.float64).ravel()
     all_codes, uniques = pd.factorize(ids, use_na_sentinel=False)

@@ -154,5 +154,18 @@ def test_handles_many_large_scenes() -> None:
     assert 0.3 < float(result["median_spearman"]) < 0.6
 
 
+@pytest.mark.parametrize(
+    "scene_ids",
+    [
+        np.array([1.0, 1.0, math.nan, 2.0]),
+        np.array(["a", "a", None, "b"], dtype=object),
+    ],
+)
+def test_missing_scene_id_raises(scene_ids: np.ndarray) -> None:
+    values = np.arange(scene_ids.size, dtype=np.float64)
+    with pytest.raises(ValueError, match="missing scene ID"):
+        within_scene_correlations(scene_ids, values, values)
+
+
 def test_self_check_passes() -> None:
     assert self_check() == []
