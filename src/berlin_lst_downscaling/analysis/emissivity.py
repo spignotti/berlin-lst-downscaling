@@ -16,6 +16,12 @@ Database v3 (ASTER GED, 2000–2008 mean; Hulley et al. 2015) and is
 adjusted per scene with the Landsat TOA NDVI (Malakar et al. 2018;
 USGS LSDS-1619).
 
+Diagnostic variants: (a) product EMIS, (b) static ASTER GED v3 B10
+emissivity (``analysis.aster_ged``; reprojected with
+``ged_b10_on_scene_grid``), (c) ``uniform_median`` scene-median EMIS
+(``uniform_static_emissivity``; an upper bound on the spatial-pattern
+effect) plus fixed 0.97/0.98.
+
 Forward model (radiative transfer equation solved for ``B``, the
 surface-leaving radiance)::
 
@@ -245,36 +251,19 @@ def assign_imperv_bins(values: np.ndarray) -> np.ndarray:
 
 
 def uniform_static_emissivity(emis: np.ndarray, mask: np.ndarray) -> float:
-    """Scene-median emissivity over the analysis mask (documented fallback).
+    """Scene-median emissivity over the analysis mask: variant (c) ``uniform_median``.
 
-    This is NOT a true static ASTER GED product and NOT the
-    NDVI-adjustment effect alone: applying one uniform value removes ALL
-    spatial emissivity structure (NDVI adjustment plus any static spatial
-    pattern in EMIS). Comparisons against it are therefore an UPPER BOUND
-    on the spatial-pattern effect, not a measurement of the NDVI
-    adjustment in isolation. Used only because ASTER GED granules require
-    Earthdata credentials unavailable to this read-only diagnostic.
+    This is NOT the static ASTER GED product (variant (b), see
+    ``analysis.aster_ged``) and NOT the NDVI-adjustment effect alone:
+    applying one uniform value removes ALL spatial emissivity structure
+    (NDVI adjustment plus any static spatial pattern in EMIS). Comparisons
+    against it are therefore an UPPER BOUND on the spatial-pattern effect.
     """
     selected = emis[mask]
     selected = selected[np.isfinite(selected)]
     if selected.size == 0:
         raise ValueError("uniform_static_emissivity: empty analysis mask")
     return float(np.median(selected))
-
-
-def aster_ged_b10_proxy(ged_band13: np.ndarray, ged_band14: np.ndarray) -> np.ndarray:
-    """Static TIRS-B10 emissivity proxy from two ASTER GED TIR bands.
-
-    TIRS Band 10 (10.6–11.19 um) sits inside the joint passband of ASTER
-    TIR bands 13 (10.25–10.95 um) and 14 (10.95–11.65 um); the USGS C2 ST
-    code regresses the ASTER GED TIR bands onto the TIRS bandpass
-    (Malakar et al. 2018; Hulley et al. 2015). This helper applies the
-    documented first-order form — the band mean — to caller-supplied
-    100 m ASTER GED rasters. Scale handling (GED tiles store
-    ``emis * 1000`` as uint16) is the caller's responsibility and must
-    be stated wherever this is used.
-    """
-    return 0.5 * (ged_band13.astype(np.float64) + ged_band14.astype(np.float64))
 
 
 def ged_b10_on_scene_grid(
@@ -288,8 +277,11 @@ def ged_b10_on_scene_grid(
     """Reproject a static emissivity raster onto the 30 m scene grid.
 
     Bilinear resampling (explicit — never the library default), NaN as
-    nodata on both ends so missing GED cells propagate instead of
-    smearing. Used by the ``--aster-ged-tif`` path.
+    nodata on both ends. GDAL re-weights bilinear over the valid source
+    neighbours, so only destination pixels whose centre lies in a missing
+    GED cell become NaN; they are never filled with a default. Used for
+    variant (b), the static GED B10 emissivity (from ``--aster-ged`` or
+    ``--aster-ged-tif``).
     """
     destination = np.full(dst_shape, np.nan, dtype=np.float64)
     reproject(
@@ -310,16 +302,25 @@ def ged_b10_on_scene_grid(
 
 
 def binned_stats(values: np.ndarray, bin_index: np.ndarray, n_bins: int) -> list[dict[str, float]]:
-    """Mean / p05 / p95 / count of finite ``values`` per bin index."""
+    """Mean / median / p05 / p95 / count of finite ``values`` per bin index."""
     stats: list[dict[str, float]] = []
     for b in range(n_bins):
         sel = values[(bin_index == b) & np.isfinite(values)]
         if sel.size == 0:
-            stats.append({"mean": float("nan"), "p05": float("nan"), "p95": float("nan"), "n": 0})
+            stats.append(
+                {
+                    "mean": float("nan"),
+                    "median": float("nan"),
+                    "p05": float("nan"),
+                    "p95": float("nan"),
+                    "n": 0,
+                }
+            )
         else:
             stats.append(
                 {
                     "mean": float(np.mean(sel)),
+                    "median": float(np.median(sel)),
                     "p05": float(np.percentile(sel, 5)),
                     "p95": float(np.percentile(sel, 95)),
                     "n": int(sel.size),
@@ -345,20 +346,39 @@ def pool_overall_stats(stats_list: list[dict[str, float]]) -> dict[str, float]:
     """Pool per-scene overall stats into one group summary.
 
     Mean is n-weighted (pixel counts); p05/p95 are the min/max across
-    scenes so the whiskers span the observed scene range. Entries with
-    ``n == 0`` or non-finite means are skipped.
+    scenes so the whiskers span the observed scene range. The pooled
+    ``median`` is the n-weighted median of the per-scene medians — an
+    approximation (like the whiskers), not the exact pixel median. Entries
+    without a finite ``median`` are skipped for the median only. Entries
+    with ``n == 0`` or non-finite means are skipped.
     """
+    nan = float("nan")
     usable = [s for s in stats_list if int(s["n"]) > 0 and np.isfinite(float(s["mean"]))]
     n_tot = sum(int(s["n"]) for s in usable)
     if n_tot == 0:
-        return {"mean": float("nan"), "p05": float("nan"), "p95": float("nan"), "n": 0}
+        return {"mean": nan, "median": nan, "p05": nan, "p95": nan, "n": 0}
     mean = sum(float(s["mean"]) * int(s["n"]) for s in usable) / n_tot
     p05 = [float(s["p05"]) for s in usable if np.isfinite(float(s["p05"]))]
     p95 = [float(s["p95"]) for s in usable if np.isfinite(float(s["p95"]))]
+    with_median = sorted(
+        (float(s["median"]), int(s["n"]))
+        for s in usable
+        if "median" in s and np.isfinite(float(s["median"]))
+    )
+    median = nan
+    if with_median:
+        half = sum(w for _, w in with_median) / 2.0
+        cum = 0
+        for value, weight in with_median:
+            cum += weight
+            if cum >= half:
+                median = value
+                break
     return {
         "mean": float(mean),
-        "p05": float(min(p05)) if p05 else float("nan"),
-        "p95": float(max(p95)) if p95 else float("nan"),
+        "median": float(median),
+        "p05": float(min(p05)) if p05 else nan,
+        "p95": float(max(p95)) if p95 else nan,
         "n": int(n_tot),
     }
 
@@ -386,7 +406,6 @@ __all__ = [
     "IMPERV_VINTAGE_FILES",
     "assign_imperv_bins",
     "assign_ndvi_bins",
-    "aster_ged_b10_proxy",
     "aux_dn_to_units",
     "binned_stats",
     "forward_trad",

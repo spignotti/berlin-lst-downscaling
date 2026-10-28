@@ -19,7 +19,6 @@ from berlin_lst_downscaling.analysis.emissivity import (
     THERMAL_RADIANCE_SCALE,
     assign_imperv_bins,
     assign_ndvi_bins,
-    aster_ged_b10_proxy,
     aux_dn_to_units,
     binned_stats,
     forward_trad,
@@ -202,11 +201,6 @@ class MasksAndStatsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             uniform_static_emissivity(emis, np.zeros_like(mask, dtype=bool))
 
-    def test_ged_proxy_averages_bands(self) -> None:
-        b13 = np.array([[0.96]])
-        b14 = np.array([[0.98]])
-        np.testing.assert_allclose(aster_ged_b10_proxy(b13, b14), [[0.97]])
-
     def test_ged_resampling_reaches_scene_grid(self) -> None:
         import rasterio
 
@@ -247,6 +241,25 @@ class MasksAndStatsTest(unittest.TestCase):
         empty = pool_overall_stats([{"mean": float("nan"), "p05": 0.0, "p95": 0.0, "n": 0}])
         self.assertTrue(bool(np.isnan(empty["mean"])))
         self.assertEqual(empty["n"], 0)
+
+    def test_binned_stats_median(self) -> None:
+        values = np.array([1.0, 2.0, 10.0, 5.0])
+        stats = binned_stats(values, np.array([0, 0, 0, 1]), 3)
+        self.assertAlmostEqual(stats[0]["median"], 2.0)
+        self.assertAlmostEqual(stats[1]["median"], 5.0)
+        self.assertTrue(bool(np.isnan(stats[2]["median"])))
+
+    def test_pool_overall_stats_weighted_median(self) -> None:
+        pooled = pool_overall_stats(
+            [
+                {"mean": 1.0, "median": 0.5, "p05": -1.0, "p95": 2.0, "n": 100},
+                {"mean": 3.0, "median": 2.5, "p05": 0.0, "p95": 5.0, "n": 300},
+                {"mean": 9.0, "p05": 0.0, "p95": 5.0, "n": 50},
+            ]
+        )
+        self.assertAlmostEqual(pooled["median"], 2.5)
+        no_median = pool_overall_stats([{"mean": 1.0, "p05": 0.0, "p95": 1.0, "n": 5}])
+        self.assertTrue(bool(np.isnan(no_median["median"])))
 
 
 if __name__ == "__main__":
