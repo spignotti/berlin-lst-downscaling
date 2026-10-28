@@ -7,6 +7,7 @@
 .opencode
 .herdr
 .tmp
+.runs
 .env
 .env.*
 !.env.example

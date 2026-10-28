@@ -928,7 +928,7 @@ def test_training_ard_ledger_requires_manifest_flag(monkeypatch) -> None:
 def test_v6_launchers_pass_ard_ledger_for_gate_exclusions() -> None:
     """Step 6/7 launchers derive the v10 ledger URI from ARD_ROOT (no
     hard-coded run id) and pass it to the manifest-derived validators."""
-    scripts = _REPO / ".opencode/skills/google-access/scripts"
+    scripts = _REPO / "scripts/runners/vm"
     for name in ("run-features-v6-vm.sh", "run-training-v3-vm.sh"):
         text = (scripts / name).read_text()
         assert 'ARD_LEDGER="${ARD_ROOT}/ledger.parquet"' in text

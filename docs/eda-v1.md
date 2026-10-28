@@ -78,7 +78,7 @@ uv run python scripts/validators/validate_training_eda.py \
 ```
 
 The full raster scan runs on `berlin-lst-vm` through
-`.opencode/skills/google-access/scripts/run-training-eda-vm.sh`. That
+`scripts/runners/vm/run-training-eda-vm.sh`. That
 launcher writes to `/workspace/eda-v2` on the boot disk. The validator's
 `--self-check` locks the season map, the vintage map, the quantiles, the
 neighbor rule, and the area weights without reading GCS.

@@ -21,7 +21,7 @@ read-invariant, not what those duplicate opens cost.
   code. It measures admission and one read pass separately, repeats the read
   pass, and wall-times a streamed `RealPatchDataset` `DataLoader` with
   `num_workers` in {0, 2}.
-- Launcher: `.opencode/skills/google-access/scripts/run-patch-read-timing-vm.sh`,
+- Launcher: `scripts/runners/vm/run-patch-read-timing-vm.sh`,
   the shared fail-closed lifecycle (start, deploy pinned SHA, detached launch,
   poll, capture report, clean up, stop).
 - Sample: deterministic and scene-spread. The probe takes up to
@@ -119,5 +119,5 @@ opens are not the lever they were suspected to be.
 ## Reproduce
 
 ```bash
-.opencode/skills/google-access/scripts/run-patch-read-timing-vm.sh <branch>
+scripts/runners/vm/run-patch-read-timing-vm.sh <branch>
 ```

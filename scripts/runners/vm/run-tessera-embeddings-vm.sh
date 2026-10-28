@@ -15,6 +15,7 @@
 #   run-tessera-embeddings-vm.sh feat/tessera-arm 2024
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-feat/tessera-arm}"

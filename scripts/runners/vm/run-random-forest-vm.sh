@@ -3,6 +3,7 @@
 # Usage: run-random-forest-vm.sh <smoke|full> <branch> <hourly-rate-usd>
 # Full mode requires operator inspection of smoke memory/throughput first.
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 MODE="${1:-}"
@@ -48,6 +49,7 @@ ssh_cmd() {
 }
 
 PIPELINE_LABEL="Random Forest $MODE (stages 1–4)"
+# shellcheck disable=SC2034  # launcher contract field (see vm-runner-common.sh)
 MARKER_CONFIG="$CONFIG"
 POLL_MAX_SECONDS=$((RUN_SECONDS + 900))
 vm_preflight_pushed

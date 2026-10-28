@@ -69,8 +69,8 @@ from berlin_lst_downscaling.data.secondary.lod2 import (
 from berlin_lst_downscaling.data.secondary.lod_vintages import _Accumulator
 
 _ROOT = Path(__file__).resolve().parents[1]
-_LAUNCHER = _ROOT / ".opencode/skills/google-access/scripts/run-feature-diagnostics-vm.sh"
-_ALLOWLIST = _ROOT / ".opencode/skills/google-access/scripts/start-vm-run-tab.sh"
+_LAUNCHER = _ROOT / "scripts/runners/vm/run-feature-diagnostics-vm.sh"
+_ALLOWLIST = _ROOT / "scripts/runners/vm/start-vm-run-tab.sh"
 _OPERATOR = _ROOT / "scripts/operators/diagnose_feature_correctness.py"
 
 
@@ -543,14 +543,14 @@ def test_diagnostics_paths_and_launcher_are_read_only() -> None:
         assert token in launcher
     subprocess.run(["bash", "-n", str(_LAUNCHER)], check=True)  # noqa: S603, S607
     subprocess.run(["bash", "-n", str(_ALLOWLIST)], check=True)  # noqa: S603, S607
-    common = _ROOT / ".opencode/skills/google-access/scripts/vm-runner-common.sh"
+    common = _ROOT / "scripts/runners/vm/vm-runner-common.sh"
     subprocess.run(["bash", "-n", str(common)], check=True)  # noqa: S603, S607
     common_text = common.read_text(encoding="utf-8")
     assert "no output yet" in common_text
     assert "[ -s" in common_text
     assert "vm_preserve_logs" in common_text
     assert "gcloud storage cp" in common_text
-    assert "/tmp/${WRAP_RUN_ID}" in common_text  # noqa: S108
+    assert '"$RUNLOG_DIR/$RUNLOG_ID"' in common_text
     assert "tail -n 50" in common_text
     stop = common_text.split("vm_stop()", 1)[1]
     assert stop.index("vm_preserve_logs") < stop.index("stop-vm.sh")
@@ -558,7 +558,6 @@ def test_diagnostics_paths_and_launcher_are_read_only() -> None:
     assert "python -u" in launcher
     assert "--expected-scene-count ${EXPECTED_SCENE_COUNT}" in launcher
     assert "--output-dir /workspace/feature-diagnostics/${WRAP_RUN_ID}" in launcher
-    assert 'mkdir -p "$dest" || true' in common_text
     assert 'EXPECTED_SCENE_COUNT="${EXPECTED_SCENE_COUNT:-324}"' in launcher
     allowlist = _ALLOWLIST.read_text(encoding="utf-8")
     assert allowlist.count("run-feature-diagnostics-vm.sh") >= 3

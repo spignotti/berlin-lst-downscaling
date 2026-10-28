@@ -25,6 +25,7 @@
 #     5a0daca809055195028c6688da7f337b4448723038c07bc4b30c24c9353d62d6
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-}"
@@ -108,6 +109,7 @@ if [[ "$SHA_OK" -eq 0 && "$VALIDATOR_OK" -eq 0 ]]; then
   rm -f "$LOCAL_DIR/artifact.tgz"
   LOCAL_REPORT_SHA=$(shasum -a 256 "$LOCAL_DIR/baseline_report.json" | cut -d' ' -f1)
   if [[ -s "$LOCAL_DIR/baseline_report.json" && "$LOCAL_REPORT_SHA" == "$REMOTE_REPORT_SHA" ]]; then
+    # shellcheck disable=SC2034  # kept for parity with EVIDENCE_OK
     TRANSFER_OK=0
     EVIDENCE_OK=0
   fi

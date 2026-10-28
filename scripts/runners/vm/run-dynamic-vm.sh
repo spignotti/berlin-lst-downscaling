@@ -22,6 +22,7 @@
 #   run-dynamic-vm.sh inference_2026 fix/dynamic-resumable-on-demand
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 CONFIG="${1:-}"

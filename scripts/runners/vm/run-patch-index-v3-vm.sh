@@ -11,6 +11,7 @@
 #   run-patch-index-v3-vm.sh [branch]
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-main}"

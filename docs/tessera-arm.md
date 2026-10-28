@@ -99,7 +99,7 @@ Code only in this PR; nothing is executed or published here.
 
 1. From a clean checkout of this branch, run on the On-Demand VM (one year
    at a time, 2017–2025):
-   `.opencode/skills/google-access/scripts/run-tessera-embeddings-vm.sh feat/tessera-arm 2024`.
+   `scripts/runners/vm/run-tessera-embeddings-vm.sh feat/tessera-arm 2024`.
    The launcher runs the acquisition operator in an ISOLATED uv script env
    (PEP 723 block at the top of `scripts/operators/run_tessera_embeddings.py`:
    `geotessera` / `icechunk` / `zarr>=3`, with `PYTHONPATH=src`), leaving the
