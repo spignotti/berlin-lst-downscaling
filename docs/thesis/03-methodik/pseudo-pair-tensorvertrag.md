@@ -87,7 +87,7 @@ Kein NaN-as-zero. Pool folgt dem kanonischen Nested Grid, kein freies Resampling
 ## Trainings-I/O (2026-09-28, #30/#32)
 
 - Default-Read-Pfad: **COG-Window-Streaming** (`data.mode=stream` für Full-Train). Eager nur bounded Smokes.
-- Streaming read-invariant vs. Eager (IDs, Exclusions, Tensoren, Seed-Order) — Evidenz: [Notion-Seite c315449f](https://app.notion.com/p/c315449f6a3a45a3bdcb0d8449e8b08c) (Notion-Archiv).
+- Streaming read-invariant vs. Eager (IDs, Exclusions, Tensoren, Seed-Order) — Evidenz: Notion-Seite c315449f (Notion-Archiv).
 - Augmentation Stage 1: **keine**.
 - Zarr bleibt optionaler Benchmark-Kandidat nach stabilem Stage-1 auf Streaming, nicht Default.
 

@@ -87,7 +87,7 @@ Die externen Literaturvergleiche motivieren die methodische Entscheidung in drei
 
 ## Kritische Revision der explorativen WB1-Synthese
 
-Die ältere Seite [Notion-Seite 4b623598](https://app.notion.com/p/4b623598308148e18911f34f7cf01695) (Notion-Archiv) wird als historische Recherchebasis aufbewahrt. Ihre pauschalen Aussagen werden hier **nicht automatisch übernommen**:
+Die ältere Seite Notion-Seite 4b623598 (Notion-Archiv) wird als historische Recherchebasis aufbewahrt. Ihre pauschalen Aussagen werden hier **nicht automatisch übernommen**:
 
 - **„DL schlägt klassische Verfahren konsistent“** ist zu stark: Li et al. (2019) berichten einen besseren RF als ANN im gemeinsamen Vergleich; bei WGAST liegt FuseTen an einem Einzeltermin vor WGAST. Bei einigen Benchmarks schlagen bestimmte DL-Modelle die dort gewählten Baselines, aber kein allgemeines Architekturgesetz folgt.
 - **„RMSE-Werte verschiedener SOTA-Verfahren ergeben eine belastbare Rangliste“** ist nicht haltbar: PGDM 0,610 K, Jamaluddin MAE 0,5816 °C und WGAST RMSE 1,951 K betreffen unterschiedliche Zielskalen, Zielvariablenaufbereitungen und Referenz- beziehungsweise Supervisonsregime. Sie sind kein direktes Berlin-Benchmark.

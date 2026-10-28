@@ -22,7 +22,7 @@
 
 ## Wolkenmaskierung und Selektionsrisiken
 
-In der [Betreuungsbesprechung Ende Juli 2026](https://app.notion.com/p/f10d9184bd4a4c87be630abbea8475f8) wurde eine mögliche **oberflächentypabhängige Verzerrung der Wolkenklassifikation** diskutiert. Nicht erkannte Cirrus- oder Wolkenreste können thermische Landsat-Beobachtungen beeinflussen; bei systematisch unterschiedlicher Maskierungsqualität zwischen Stadtstrukturen könnte die gültige Trainingsstichprobe selektiv zusammengesetzt sein. Der frühere [Cloud-Masking-Audit vom 28.06.2026](https://app.notion.com/p/38d356451f66818bb446f40023498682) belegt entsprechende technische Maskenprüfungen in einem historischen GEE-Pipeline-Stand, ist aber **kein Nachweis** eines vorhandenen Bias im aktuellen Datenstand (ARD v10, `training/v3`). Eine eigenständige statistische Untersuchung solcher Restverzerrungen ist bislang nicht als Ergebnis dokumentiert.
+In Abstimmung mit der Betreuung wird eine mögliche **oberflächentypabhängige Verzerrung der Wolkenklassifikation** als Selektionsrisiko berücksichtigt. Nicht erkannte Cirrus- oder Wolkenreste können thermische Landsat-Beobachtungen beeinflussen; bei systematisch unterschiedlicher Maskierungsqualität zwischen Stadtstrukturen könnte die gültige Trainingsstichprobe selektiv zusammengesetzt sein. Der frühere Cloud-Masking-Audit vom 28.06.2026 belegt entsprechende technische Maskenprüfungen in einem historischen GEE-Pipeline-Stand, ist aber **kein Nachweis** eines vorhandenen Bias im aktuellen Datenstand (ARD v10, `training/v3`). Eine eigenständige statistische Untersuchung solcher Restverzerrungen ist bislang nicht als Ergebnis dokumentiert.
 
 ## Emissivitätskopplung des Landsat-Targets
 

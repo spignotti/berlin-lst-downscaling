@@ -50,7 +50,7 @@ Die EDA v3 über `training/v3` umfasst 266 Szenen, davon 201 Trainingsszenen, ru
 
 Der WB2c-4-Trainingsrelease vom 27.08.2026 (`training/v1`, Grundlage der dokumentierten Stage-1–5-Läufe; abgelöst durch `training/v2`, siehe unten) enthält **345 Ankerzeilen**, davon 324 aus dem Zeitraum 2017–2025 und 21 als Inferenz-Reserve für 2026. Unter den 324 Trainings-/Evaluationskandidaten besitzen **30 keine gültigen 100-m-Zellen** nach der strikten Eligibility-Regel. Damit sind **294 Szenen** für die Modellstichprobe freigegeben. Die tatsächlich publizierten Zellen verteilen sich auf **4.057.392 Train**, **696.942 Validation** und **765.831 Test**. Der unabhängige Release-Check bestätigte die deterministische Zell-ID-Bildung, die Train-Only-Skalierung und **keine Sentinel-2-Szenen-ID, die in mehreren nicht-Inferenz-Splits vorkommt** (149 eindeutige S2-Szenen im geprüften Bestand). Das ist eine geprüfte formale Split-Eigenschaft; eine räumlich unabhängige Validierung ist daraus nicht abzuleiten.
 
-**Evidenz:** [WB2c-4 Release Evidence, 27.08.2026](https://app.notion.com/p/3c9356451f668182ac88cfd2350b9007), normativer [Repository-Datenvertrag](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/data-sources-and-contracts.md). Die im Augustbericht aufgeführten früheren GCS-Pfade wurden im September in den kanonischen Bucket `gs://berlin-lst-training-data/` übertragen.
+**Evidenz:** WB2c-4 Release Evidence, 27.08.2026, normativer [Repository-Datenvertrag](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/data-sources-and-contracts.md). Die im Augustbericht aufgeführten früheren GCS-Pfade wurden im September in den kanonischen Bucket `gs://berlin-lst-training-data/` übertragen.
 
 ## Datenstand training/v2 und EDA v2
 

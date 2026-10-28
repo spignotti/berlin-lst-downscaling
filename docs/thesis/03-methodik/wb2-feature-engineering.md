@@ -108,11 +108,11 @@ Der WB2-Bestand bleibt rasterbasiert. Raster- und Tensorwerte liegen in COG und 
 
 ## Referenzen
 
-- [Notion-Seite dcd52e71](https://app.notion.com/p/dcd52e71657847a4846da7645f56bbd9) (Notion-Archiv)
+- Notion-Seite dcd52e71 (Notion-Archiv)
 - [WB2 ARD-Pipeline](wb2-ard-pipeline.md)
 - [WB2 Sekundärdaten](wb2-sekundaerdaten.md)
 - WB2c-4 Splits, Normalisierung und Skalierung (Notion-Archiv)
 - WB2c-4 As-built: Feature-Stack-, Masken-, Metadaten- und QA-Vertrag (V3) (Notion-Archiv)
 - WB2c-4 Release Evidence (2026-08-27) (Notion-Archiv)
-- [Notion-Seite d4879e15](https://app.notion.com/p/d4879e1526874d9fabe158795617b92a) (Notion-Archiv)
-- [Notion-Seite d70d4ed1](https://app.notion.com/p/d70d4ed168714d878e0b0f2f0f251b7b) (Notion-Archiv)
+- Notion-Seite d4879e15 (Notion-Archiv)
+- Notion-Seite d70d4ed1 (Notion-Archiv)

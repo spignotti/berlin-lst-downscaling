@@ -3,13 +3,11 @@
 > Migriert aus Notion am 2026-10-28 (Seite `0515103db5684a4c8a93e5adbffe48df`, zuletzt bearbeitet 2026-10-08). Text unverändert übernommen.
 > Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet.
 
-> **Historischer Stand (Juli/August 2026), abgelöst durch features v6 / ARD v10, siehe [Datenbasis & Feature Engineering](03-methodik/datenbasis-feature-engineering.md).**
+> **Historischer Stand (Juli/August 2026; Snapshot 27.08.2026, V3-Datenbestand mit 28 Kanälen, training/v1), abgelöst durch features v6 / ARD v10 / training/v3, siehe [Datenbasis & Feature Engineering](03-methodik/datenbasis-feature-engineering.md) und [04 · Ergebnisse & Analysen](04-ergebnisse.md).**
 
 > 📊 Konsolidierter Abschlussstand von WB2: Primärdaten-ARD, Sekundärdaten, Feature Engineering, QA sowie der publizierte Split-, Eligibility- und Scaler-Vertrag für WB3.
 
 ## Ergebnisstand
-
-> Dieser Snapshot (27.08.2026) beschreibt den V3-Datenbestand (28 Kanäle, training/v1). Der gültige Datenstand (features/v6, ARD v10, training/v3) steht in [04 · Ergebnisse & Analysen](04-ergebnisse.md).
 
 **Snapshot:** 27.08.2026
 
@@ -171,4 +169,4 @@ Mess- und Datenfreigabeprotokolle in GitHub/GCS bleiben unverändert; hier wurde
 
 Das unabhängige WB2c-4-Acceptance-Audit bestätigte **345 Manifestzeilen**, davon 21 reine Inferenz-Reserve, 324 Kandidaten 2017–2025 und **30 Szenen ohne eine einzige eligible Zelle**. **294 Szenen** wurden mit gültigen Trainings-, Validierungs- oder Testzellen publiziert. Unter den drei Nicht-Inferenz-Splits liegen **149 eindeutige Sentinel-2-Szenen-IDs** vor; es wurde **keine** Überschneidung einer `s2_scene_id` über diese Splits festgestellt. Auch Eligibility, Cell-ID-Determinismus, Train-Only-Scaler und Artefaktlesbarkeit wurden als PASS protokolliert. Diese technische Leakage-Prüfung ersetzt keinen räumlichen Holdout.
 
-[Original-Acceptance-Audit](https://app.notion.com/p/3c9356451f668182ac88cfd2350b9007) (historische Pfadangaben; kanonischer GCS-Bucket seit September: `gs://berlin-lst-training-data/`).
+Original-Acceptance-Audit (historische Pfadangaben; kanonischer GCS-Bucket seit September: `gs://berlin-lst-training-data/`).

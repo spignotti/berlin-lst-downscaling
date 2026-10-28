@@ -62,7 +62,7 @@ Festgehaltene Methodik- und Scope-Entscheidungen aus den Arbeitssessions (Stand 
 
 ## Aktualisierung 08.10.2026: aus GitHub-Evidenz übernommene Entscheidungen
 
-Dieser Abschnitt dokumentiert **den realisierten Forschungsstand** und ersetzt im Konfliktfall den frühen Planungsstand vom 03.06.2026. Normative technische Interfaces bleiben im Repository; wissenschaftliche Ergebnisse/Interpretationen in [Notion-Seite 3f335645](https://app.notion.com/p/3f3356451f66812bb823fd5ecd7f6fa6) (Notion-Archiv).
+Dieser Abschnitt dokumentiert **den realisierten Forschungsstand** und ersetzt im Konfliktfall den frühen Planungsstand vom 03.06.2026. Normative technische Interfaces bleiben im Repository; wissenschaftliche Ergebnisse/Interpretationen in Notion-Seite 3f335645 (Notion-Archiv).
 
 ### Kelvin-Residual statt absoluter Initialvorhersage
 
@@ -79,4 +79,4 @@ Dieser Abschnitt dokumentiert **den realisierten Forschungsstand** und ersetzt i
 
 ### Abgrenzung zur späteren Thesis-Diskussion
 
-Der Ergebnisblock [Notion-Seite 3f335645](https://app.notion.com/p/3f3356451f66812bb823fd5ecd7f6fa6) (Notion-Archiv) unterscheidet Beobachtung und Interpretation. Insbesondere ist die gegenüber dem Naive-Prior große Stage-1-Verbesserung **nicht** der Beitrag der zusätzlichen urbanen Kontextvariablen. Für diese zählt ausschließlich der inkrementelle Vergleich gegen Stage 1, unter den dargelegten Einschränkungen.
+Der Ergebnisblock Notion-Seite 3f335645 (Notion-Archiv) unterscheidet Beobachtung und Interpretation. Insbesondere ist die gegenüber dem Naive-Prior große Stage-1-Verbesserung **nicht** der Beitrag der zusätzlichen urbanen Kontextvariablen. Für diese zählt ausschließlich der inkrementelle Vergleich gegen Stage 1, unter den dargelegten Einschränkungen.

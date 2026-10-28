@@ -4,7 +4,7 @@
 
 **BHT Berlin · FB III · Luxemburger Str. 10 · 13353 Berlin**
 
-**Prof. Dr. Ronny Schomacker · E-Mail:** [rschomacker@bht-berlin.de](mailto:rschomacker@bht-berlin.de)
+**Betreuer:** Prof. Dr. Ronny Schomacker
 
 ## Aufgabenstellung für die Masterarbeit von Silas Pignotti
 
@@ -52,11 +52,3 @@ Die Ausarbeitung erfolgt gemäß den wissenschaftlichen Richtlinien der Berliner
 Berlin, 24. Juli 2026
 
 Prof. Dr. Ronny Schomacker
-
----
-
-## Dateien
-
-> Anhang in Notion (nicht exportiert): `Aufg_MA_Pignotti_final.docx`
-
-> Anhang in Notion (nicht exportiert): `Aufg_MA_Pignotti_final.pdf`

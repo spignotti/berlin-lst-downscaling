@@ -42,6 +42,5 @@ titles marked "(Notion-Archiv)" or as Notion URLs. Parts 03–05 were updated on
 
 - Notion archive page, literature database (Zotero and NotebookLM are
   canonical), old notes and tasks.
-- File attachments of the Aufgabenstellung (`Aufg_MA_Pignotti_final.docx`,
-  `Aufg_MA_Pignotti_final.pdf`) stay in Notion; the text is in
+- File attachments of the Aufgabenstellung are not exported; the text is in
   `00-aufgabenstellung.md`.

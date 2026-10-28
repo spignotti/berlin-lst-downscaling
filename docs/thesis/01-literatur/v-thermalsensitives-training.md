@@ -79,7 +79,7 @@ Nicht isoliert wurden: der Beitrag von SSIM gegenüber Gradient-L1, mögliche In
 
 ## Kritische Revision des früheren WB1-Blocks 1b
 
-Der explorative [Block 1b](https://app.notion.com/p/dbedb11302af477b9a17c0c5edd67108) wird als historische Recherchegrundlage aufbewahrt, nicht als unmittelbar zitierbarer Überblick. Die Originalprüfung erfordert folgende Korrekturen:
+Der explorative Block 1b wird als historische Recherchegrundlage aufbewahrt, nicht als unmittelbar zitierbarer Überblick. Die Originalprüfung erfordert folgende Korrekturen:
 
 1. **Keine universelle Loss-Rangfolge:** Dai et al. (2025, Tabelle XI) zeigen kleine und teils negative Effekte zusätzlicher SSIM-/MS-SSIM-Verluste.
 2. **PGDM „L\_phy“ richtig einordnen:** Der 0,025-K-Wert ist eine Evaluationskennzahl; das dokumentierte Trainingsziel ist MSE. Keine zusätzliche (L\_mathrm\{phy\})-Optimierung erfinden.
