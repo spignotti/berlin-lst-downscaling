@@ -45,3 +45,6 @@ wandb/
 
 # TESSERA task scratch (probes only, never committed)
 .scratch/
+
+# Claude Code local overrides
+.claude/settings.local.json

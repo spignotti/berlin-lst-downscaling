@@ -1,5 +1,0 @@
-version: 1
-prSummary:
-  mode: comment
-autofix:
-  mode: disabled
