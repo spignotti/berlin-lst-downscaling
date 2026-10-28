@@ -31,7 +31,7 @@ Freigegeben 2026-09-23.
 
 ### Patch-Index v3 (training/v3)
 
-Der aktuelle Patch-Index v3 (`gs://berlin-lst-training-data/training/patch-index/v3`, `configs/training/patch_index_v3.yaml`) umfasst **8.078 Patches** (Train 5.523, Validation 1.047, Test 1.508). Geometrie (160×160 px @ 10 m) und Zulassungsschwelle (0,95) sind unverändert. Weitere Aufschlüsselung (Szenen, Anker, Jahre): TODO.
+Der aktuelle Patch-Index v3 (`gs://berlin-lst-training-data/training/patch-index/v3`, `configs/training/patch_index_v3.yaml`) umfasst **8.078 Patches** (Train 5.523, Validation 1.047, Test 1.508; Lauf `4c896c29`, [QA](../../results/patch-index-v3/patch_index_qa.json), [complete.json](../../results/patch-index-v3/complete.json)). Geometrie (160×160 px @ 10 m) und Zulassungsschwelle (0,95) sind unverändert. Weitere Aufschlüsselung (Szenen, Anker, Jahre): TODO.
 
 ### Patch-Index Ergebnis (2026-09-23)
 

@@ -40,7 +40,7 @@ Stand: training/v3 (features/v6, ARD v10).
 - **Bewertungsskala:** Die Bewertung erfolgt auf 100-m-Pseudo-Paaren (Prior 1.000 m, Supervision 100 m); die 10-m-Ausgabe wird nach exakter 10×10-Aggregation bewertet. Es gibt keine unabhängige thermische 10-m-Referenz.
 - **Zeitlicher Split:** Train 2017–2023, Validation 2024, Test 2025; 2026 dient nur der Inferenz. Der Test 2025 darf nicht in Checkpoint-, Modell-, Hyperparameter- oder Schwellenwahl eingehen.
 - **Datenausschluss:** Das ARD-v10-Gate schließt 4 Paarungen aus (286 von 290 verbleiben).
-- **EDA v3:** Die EDA beschreibt auch das Jahr 2025 deskriptiv; für deskriptive Aussagen ist 2025 damit kein unberührter Holdout (wie schon bei EDA v2). Modellentscheidungen dürfen sich nicht auf diese Deskription stützen.
+- **EDA v3:** Die EDA beschreibt auch das Jahr 2025 deskriptiv ([summary.json](../results/eda-v3/summary.json), `data_gaps`); für deskriptive Aussagen ist 2025 damit kein unberührter Holdout (wie schon bei EDA v2). Modellentscheidungen dürfen sich nicht auf diese Deskription stützen.
 - **Seeds, Varianzschätzung und Baselines:** offen, abhängig von der finalen Ablationsmatrix.
 - **Emissivität:** siehe oben; keine Target-Variante im Vergleich.
 

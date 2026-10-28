@@ -7,7 +7,7 @@
 
 - **Zeitraum:** Training 2017–2023, Validation 2024, Test 2025; 2026 nur Inferenz.
 - **Thermisches Target:** Landsat 8/9 LST auf dem kanonischen 100-m-Raster, gebildet als Flächenmittel der 30-m-`lwir11`-Werte; QA bitweise auf dem nativen 30-m-Raster ausgewertet.
-- **Eingangsgrößen:** `features/v6` (Trainingsfreigabe `training/v3`) mit 22 möglichen 10-m-Kanälen: Sentinel-2-Spektralkanäle (6), Indizes (4), urbane Morphologie (6; Sichtfaktor SVF mit Radius 100 m), ERA5-Land-Meteorologie (4, als Szenenwert) und Gebäude-/Vegetationsschatten (2). Grundlage ist ARD v10 mit 286 von 290 Paarungen; zwei Sentinel-2-Szenen sind durch das Coverage-Gate ausgeschlossen. Der Patch-Index v3 umfasst 8.078 Patches (Train 5.523, Validation 1.047, Test 1.508). `features/v5` (28 Kanäle), `training/v1` und `training/v2` sind nur noch historisch.
+- **Eingangsgrößen:** `features/v6` (Trainingsfreigabe `training/v3`) mit 22 möglichen 10-m-Kanälen: Sentinel-2-Spektralkanäle (6), Indizes (4), urbane Morphologie (6; Sichtfaktor SVF mit Radius 100 m), ERA5-Land-Meteorologie (4, als Szenenwert) und Gebäude-/Vegetationsschatten (2). Grundlage ist ARD v10 mit 286 von 290 Paarungen; zwei Sentinel-2-Szenen sind durch das Coverage-Gate ausgeschlossen. Der Patch-Index v3 umfasst 8.078 Patches (Train 5.523, Validation 1.047, Test 1.508; [QA](../../results/patch-index-v3/patch_index_qa.json)). `features/v5` (28 Kanäle), `training/v1` und `training/v2` sind nur noch historisch.
 - **Datenfreigabe:** Strikte Trainingseignung für vollständige 10-m-Featurevektoren in allen 100 Unterzellen eines gültigen 100-m-Thermalziels; Scaler ausschließlich auf Trainingdaten angepasst.
 
 ## Modell und Ablation

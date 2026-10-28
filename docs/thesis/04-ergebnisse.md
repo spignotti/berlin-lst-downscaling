@@ -10,8 +10,8 @@
 - **ARD v10:** Release `ard/full/2017-2026-s2-mosaic-v10` (Lauf `ard-v10-20261024T040705Z-83AB242C`). Das Sentinel-2-Mosaik-Gate (`max_missing_aoi_fraction = 0.005`) schließt genau zwei Szenen aus: `S2A_MSIL2A_20210814T102031_R065_T32UQD_20210814T215405` (6,28 % der AOI-Pixel fehlend) und `S2A_MSIL2A_20230503T101021_R022_T32UQD_20240905T123554` (18,26 % fehlend). Dadurch entfallen 4 Paarungen; 286 von 290 bleiben, ein Sentinel-2-Ersatzpartner wird nicht gewählt. Das Landsat-Target ist der Flächenmittelwert der 30-m-Schicht `lwir11` (`resampling=average`) mit QA `native_bit_or`.
 - **features/v6:** 22 Kanäle (Schema-Version 5): 6 spektrale Bänder, 4 Indizes, 6 Morphologiekanäle (u. a. `canopy_cover_fraction`, `svf` mit Radius 100 m), 4 ERA5-Kanäle (je Szene ein Wert) und 2 Schattenkanäle. Die Morphologie stammt aus `lod2-area-exact-v2`. Details: [Datenbasis & Feature Engineering](03-methodik/datenbasis-feature-engineering.md) und [Features v6](../features-v6.md).
 - **training/v3:** aus features/v6 mit Train-only-Scaler; die 4 durch das Gate ausgeschlossenen Paarungen tragen den Status `excluded` ([Republish v6](../republish-v6.md)).
-- **Patch-Index v3:** 8.078 Patches (Train 5.523, Validation 1.047, Test 1.508) bei unveränderter Geometrie von 160×160 px.
-- **EDA v3:** 266 Szenen, davon 201 Trainingsszenen, rund 5,97 Mio. Beobachtungen und 83.602 Zellen. TODO: Definitionen von „Beobachtungen“ und „Zellen“ gegen `summary.json` prüfen; TODO: Interpretation der EDA-v3-Befunde.
+- **Patch-Index v3:** 8.078 Patches (Train 5.523, Validation 1.047, Test 1.508) bei unveränderter Geometrie von 160×160 px ([QA](../results/patch-index-v3/patch_index_qa.json), [complete.json](../results/patch-index-v3/complete.json)).
+- **EDA v3:** 266 gescannte Szenen (265 mit Beobachtungen), davon 201 Trainingsszenen, rund 5,97 Mio. Beobachtungen (Szene-Zelle-Kombinationen) und 83.602 verschiedene zulässige 100-m-Zellen ([summary.json](../results/eda-v3/summary.json)). TODO: Interpretation der EDA-v3-Befunde.
 
 ## Ergebnisse der Ablation auf training/v3
 

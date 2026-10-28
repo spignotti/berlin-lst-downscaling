@@ -23,8 +23,8 @@
 | ARD v10 | Release `gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10`, Run `ard-v10-20261024T040705Z-83AB242C` | 286 von 290 Paarungen; Coverage-Gate `max_missing_aoi_fraction = 0.005` schließt zwei Sentinel-2-Szenen aus (siehe unten) | [Republish v6](../../republish-v6.md) |
 | `features/v6` | Feature-Schema 5; Static-/Derived-/Dynamic-Roots `lod2-area-exact-v2` | 22 Kanäle (Spektral 6, Indizes 4, Morphologie 6, ERA5-Land 4, Schatten 2) | [Features v6](../../features-v6.md) |
 | `training/v3` | `gs://berlin-lst-training-data/training/v3` (`configs/training/v3.yaml`) | Aus `features/v6`, Train-Only-Scaler; die vier durch das Gate ausgeschlossenen Paarungen tragen den Status `excluded` (`ard sentinel2 not done`) | [Republish v6](../../republish-v6.md) |
-| `training/patch-index/v3` | `gs://berlin-lst-training-data/training/patch-index/v3` (`configs/training/patch_index_v3.yaml`) | 8.078 Patches (Train 5.523, Validation 1.047, Test 1.508); Schwelle `train_min_eligible_fraction` 0,95, gleiche Geometrie (160×160 px, 16×16 Zellen) | [Pseudo-Pair-Tensorvertrag](pseudo-pair-tensorvertrag.md) |
-| EDA v3 | `gs://berlin-lst-training-data/evaluation/eda/v3` (`configs/eda/v3.yaml`) | 266 Szenen, davon 201 Trainingsszenen; rund 5,97 Mio. Beobachtungen; 83.602 Zellen | siehe unten |
+| `training/patch-index/v3` | `gs://berlin-lst-training-data/training/patch-index/v3` (`configs/training/patch_index_v3.yaml`) | 8.078 Patches (Train 5.523, Validation 1.047, Test 1.508; Lauf `4c896c29`, [QA](../../results/patch-index-v3/patch_index_qa.json), [complete.json](../../results/patch-index-v3/complete.json)); Schwelle `train_min_eligible_fraction` 0,95, gleiche Geometrie (160×160 px, 16×16 Zellen) | [Pseudo-Pair-Tensorvertrag](pseudo-pair-tensorvertrag.md) |
+| EDA v3 | `gs://berlin-lst-training-data/evaluation/eda/v3` (`configs/eda/v3.yaml`) | 266 gescannte Szenen (265 mit Beobachtungen), davon 201 Trainingsszenen; rund 5,97 Mio. Beobachtungen; 83.602 Zellen ([summary.json](../../results/eda-v3/summary.json)) | siehe unten |
 
 Die beiden durch das Coverage-Gate ausgeschlossenen Sentinel-2-Szenen sind `S2A_MSIL2A_20210814T102031_R065_T32UQD_20210814T215405` (6,28 % der AOI-Pixel fehlen; Landsat-Partner LC08 193023/193024 vom 16.08.2021) und `S2A_MSIL2A_20230503T101021_R022_T32UQD_20240905T123554` (18,26 % fehlen; Landsat-Partner LC09 192023/192024 vom 03.05.2023). Damit entfallen vier Paarungen; ein Sentinel-2-Ersatzpartner wird nicht gewählt. Das Landsat-Target bleibt das Flächenmittel der 30-m-`lwir11`-Werte (`resampling=average`) mit QA `native_bit_or`, gespeist aus `ard/full/2017-2026-qa-avg-20261019`; die Versiegelungsobjekte bleiben die publizierten `imperviousness-v3`-COGs. TODO: Denylist-Übernahme in `training/v3` belegen.
 
@@ -42,7 +42,7 @@ Korrekturen in `training/v3` (`features/v6`):
 
 ### EDA v3
 
-Die EDA v3 über `training/v3` umfasst 266 Szenen, davon 201 Trainingsszenen, rund 5,97 Mio. Beobachtungen und 83.602 Zellen (`evaluation/eda/v3/summary.json`; Validator `validate_training_eda.py`). TODO: Definitionen von „Beobachtungen“ und „Zellen“ gegen `summary.json` prüfen. TODO: detaillierte Interpretation der EDA v3.
+Die EDA v3 über `training/v3` hat 266 Szenen gescannt, davon 265 mit Beobachtungen und 201 Trainingsszenen; sie umfasst rund 5,97 Mio. Beobachtungen (5.967.063) und 83.602 Zellen ([summary.json](../../results/eda-v3/summary.json), Commit `edc20e9`; Validator `validate_training_eda.py`). Eine Beobachtung ist eine Szene-Zelle-Kombination, also eine zulässige 100-m-Zelle in einer Szene; „Zellen“ zählt die verschiedenen zulässigen 100-m-Zellen über alle Szenen (`rules` und `data_gaps` in `summary.json`). TODO: detaillierte Interpretation der EDA v3.
 
 ## Trainingsfreigabe und Split-Integrität
 
@@ -101,7 +101,7 @@ Der Bandname `s2_broadband_albedo` bezeichnet ein kurzwelliges Reflektanz-Proxy,
 
 ## Deskriptive Datencharakteristik
 
-Die aktuelle deskriptive Verteilungsanalyse liegt als EDA v3 über `training/v3` vor (`gs://berlin-lst-training-data/evaluation/eda/v3/`; Abschnitt „EDA v3“). Die EDA v2 über `training/v2` ist historisch (Abschnitt „Datenstand training/v2 und EDA v2“, [docs/eda-v1.md](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/eda-v1.md)). Abbildungen für den Ergebnisteil werden aus den gespeicherten Tabellen der EDA v3 erzeugt; die historischen Tabellen der EDA v2 liegen unter `gs://berlin-lst-training-data/evaluation/eda/v2/tables/`.
+Die aktuelle deskriptive Verteilungsanalyse liegt als EDA v3 über `training/v3` vor (`gs://berlin-lst-training-data/evaluation/eda/v3/`, [summary.json](../../results/eda-v3/summary.json); Abschnitt „EDA v3“). Die EDA v2 über `training/v2` ist historisch (Abschnitt „Datenstand training/v2 und EDA v2“, [docs/eda-v1.md](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/eda-v1.md)). Abbildungen für den Ergebnisteil werden aus den gespeicherten Tabellen der EDA v3 erzeugt; die historischen Tabellen der EDA v2 liegen unter `gs://berlin-lst-training-data/evaluation/eda/v2/tables/`.
 
 - [WB2 ARD-Pipeline](wb2-ard-pipeline.md)
 
