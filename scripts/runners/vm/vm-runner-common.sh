@@ -33,6 +33,12 @@
 #     vm_discover_run_id()  optional function; called by vm_finish to
 #                           discover a pipeline-specific run id
 
+# Launchers source _logging.sh first; without it no run log would reach GCS.
+if [[ "${RUNLOG_ACTIVE:-}" != "1" ]]; then
+  echo "ERROR: source _logging.sh before vm-runner-common.sh." >&2
+  exit 1
+fi
+
 # ── pinned VM access ─────────────────────────────────────────────────
 
 VM_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -234,6 +240,7 @@ vm_launch_detached() {
   # local ssh client — the remote job is nohup-detached and unaffected —
   # then verify the launch via the pid file before marking the VM as
   # occupied.
+  # shellcheck disable=SC2153  # REMOTE_CMD is set by the launcher
   ssh_cmd "
     cd $APP_DIR && \
     nohup sh -c '$REMOTE_CMD; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
@@ -406,19 +413,19 @@ vm_finish() {
 
 # ── preserve logs (always, including a failed pipeline) ──────────────
 # Runs between vm_finish and the VM stop. Copies the remote log, marker,
-# and exit status onto the Mac, and uploads them under the diagnostics
-# prefix when UPLOAD_URI is set. A copy or upload failure must not skip
-# the stop that follows.
+# and exit status into the local run-log directory, where _logging.sh
+# uploads them with the launcher log on exit, and uploads them under the
+# diagnostics prefix when UPLOAD_URI is set. A copy or upload failure must
+# not skip the stop that follows.
 
 vm_preserve_logs() {
   if [[ -z "${WRAP_RUN_ID:-}" ]]; then
     return 0
   fi
-  local dest="/tmp/${WRAP_RUN_ID}"
-  mkdir -p "$dest" || true
-  ssh_cmd "cat '$REMOTE_LOG'" > "$dest/nohup.log" 2>/dev/null || true
-  ssh_cmd "cat '$MARKER'" > "$dest/marker.json" 2>/dev/null || true
-  ssh_cmd "cat '$STATUS_FILE'" > "$dest/exit_status" 2>/dev/null || true
+  local dest="$RUNLOG_DIR/$RUNLOG_ID"
+  ssh_cmd "cat '$REMOTE_LOG'" > "$dest.remote-nohup.log" 2>/dev/null || true
+  ssh_cmd "cat '$MARKER'" > "$dest.remote-marker.json" 2>/dev/null || true
+  ssh_cmd "cat '$STATUS_FILE'" > "$dest.remote-exit_status" 2>/dev/null || true
   if [[ -n "${UPLOAD_URI:-}" ]] \
     && [[ "$UPLOAD_URI" == gs://berlin-lst-training-data/evaluation/diagnostics/* ]]; then
     ssh_cmd "gcloud storage cp '$REMOTE_LOG' '$MARKER' '$STATUS_FILE' '${UPLOAD_URI}logs/'" \
@@ -426,8 +433,8 @@ vm_preserve_logs() {
   fi
   if [[ "${PIPELINE_EXIT:-1}" != "0" ]]; then
     echo "---- last 50 lines of nohup.log ----"
-    if [[ -s "$dest/nohup.log" ]]; then
-      tail -n 50 "$dest/nohup.log" || true
+    if [[ -s "$dest.remote-nohup.log" ]]; then
+      tail -n 50 "$dest.remote-nohup.log" || true
     else
       echo "(no local nohup.log)"
     fi

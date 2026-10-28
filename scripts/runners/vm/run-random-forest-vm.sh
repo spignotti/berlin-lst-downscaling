@@ -3,6 +3,7 @@
 # Usage: run-random-forest-vm.sh <smoke|full> <branch> <hourly-rate-usd>
 # Full mode requires operator inspection of smoke memory/throughput first.
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 MODE="${1:-}"
@@ -48,6 +49,7 @@ ssh_cmd() {
 }
 
 PIPELINE_LABEL="Random Forest $MODE (stages 1–4)"
+# shellcheck disable=SC2034  # launcher contract field (see vm-runner-common.sh)
 MARKER_CONFIG="$CONFIG"
 POLL_MAX_SECONDS=$((RUN_SECONDS + 900))
 vm_preflight_pushed
@@ -59,7 +61,7 @@ fi
 vm_init_run "random-forest-$MODE"
 OUTPUT_REL="data/runs/random-forest/$WRAP_RUN_ID"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
-REPO_ROOT="$(cd "$VM_SCRIPTS/../../../.." && pwd)"
+REPO_ROOT="$(cd "$VM_SCRIPTS/../../.." && pwd)"
 LOCAL_DIR="$REPO_ROOT/data/runs/random-forest/$WRAP_RUN_ID"
 
 # Keep this launcher's wrapper log and marker under the pipeline output root.

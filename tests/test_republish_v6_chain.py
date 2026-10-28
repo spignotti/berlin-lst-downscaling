@@ -725,9 +725,7 @@ def test_eda_v3_records_its_own_roots_and_policy(monkeypatch) -> None:
         == training_policy_hash()
     )
 
-    launcher = (
-        _REPO / ".opencode/skills/google-access/scripts/run-training-eda-v3-vm.sh"
-    ).read_text()
+    launcher = (_REPO / "scripts/runners/vm/run-training-eda-v3-vm.sh").read_text()
     assert "--features-root" in launcher
     assert "features/v6" in launcher
     assert "--release-id eda-v3" in launcher
@@ -1286,7 +1284,7 @@ def test_seed_refuses_overwrite_and_missing_source(tmp_path, monkeypatch) -> Non
 
 
 def test_ard_launcher_seeds_before_processing() -> None:
-    text = (_REPO / ".opencode/skills/google-access/scripts/run-ard-v10-vm.sh").read_text()
+    text = (_REPO / "scripts/runners/vm/run-ard-v10-vm.sh").read_text()
     seed_pos = text.index("seed_ard_v10_reuse.py")
     run_pos = text.index("scripts/runners/run_ard.py")
     assert seed_pos < run_pos
@@ -1628,7 +1626,7 @@ def test_dynamic_gate_manifest_universe_and_legacy_fail_closed(
 
 
 def test_v6_launchers_derive_counts_from_the_v4_bundle() -> None:
-    scripts = _REPO / ".opencode/skills/google-access/scripts"
+    scripts = _REPO / "scripts/runners/vm"
     features = (scripts / "run-features-v6-vm.sh").read_text()
     assert "--expected-scenes-from-manifest" in features
     assert "--expected-scenes 324" not in features

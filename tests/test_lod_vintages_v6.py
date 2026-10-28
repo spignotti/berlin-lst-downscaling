@@ -697,7 +697,7 @@ def test_derived_done_row_with_missing_artifacts_is_rebuilt(
 
 
 def test_historical_launcher_follows_vm_runner_pattern() -> None:
-    text = (_REPO / ".opencode/skills/google-access/scripts/run-lod-vintages-v6-vm.sh").read_text()
+    text = (_REPO / "scripts/runners/vm/run-lod-vintages-v6-vm.sh").read_text()
     assert 'source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"' in text
     assert "set -euo pipefail" in text
     assert "--step lod_vintages_v6" in text

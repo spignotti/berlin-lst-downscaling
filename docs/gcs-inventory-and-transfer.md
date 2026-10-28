@@ -407,7 +407,7 @@ redirect was added to `data/io/storage.py`.
   `scripts/operators/compare_feature_releases.py`, `noxfile.py`.
   Smoke configs and smoke baselines are also affected: the
   `configs/*/smoke*.yaml` files and the smoke sessions in `noxfile.py`.
-- Local and VM access: the `google-access` skill was updated to the new
+- Local and VM access: the `google-access` skill (now `docs/vm-operations.md`) was updated to the new
   project, bucket, and VM; the rclone remote and the local ADC setting are
   operator-local config outside this repo (see below).
 - Provenance records under the copied roots reference the old bucket in

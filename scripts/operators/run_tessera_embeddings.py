@@ -24,7 +24,7 @@ canonical product under::
     gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate/<year>/
 
 Code only in this PR: the operator is NOT executed here. The VM launcher
-``.opencode/skills/google-access/scripts/run-tessera-embeddings-vm.sh``
+``scripts/runners/vm/run-tessera-embeddings-vm.sh``
 runs this script on the On-Demand VM via ``uv run --script`` with
 ``PYTHONPATH=src`` (isolated acquisition env, see the ``/// script``
 block above). Never run against the canonical prefix from a workstation.

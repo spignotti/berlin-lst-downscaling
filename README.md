@@ -128,8 +128,8 @@ Scripts are grouped by role under `scripts/`:
 
 Each script is self-documenting (`uv run python scripts/<group>/<name>.py
 --help`) and runnable directly on the VM. VM lifecycle (start, stop, SSH,
-and the fail-closed `run-*-vm.sh` launchers) lives in
-`.opencode/skills/google-access/`.
+and the fail-closed `run-*-vm.sh` launchers) lives in `scripts/runners/vm/`;
+see `docs/vm-operations.md`.
 
 ## Documentation
 

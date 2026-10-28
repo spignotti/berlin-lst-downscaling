@@ -24,6 +24,7 @@
 #   run-baseline-vm.sh [branch]
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-main}"
@@ -34,7 +35,7 @@ POLL_MAX_SECONDS=7200
 # means re-derived by a different path than the reader (whole-COG accumulation).
 VALIDATOR_PATCHES=25
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 TMP_BASE="${TMPDIR:-$REPO_ROOT/.tmp}"
 
 vm_init_run "baseline-full"
@@ -42,7 +43,7 @@ vm_init_run "baseline-full"
 OUTPUT_REL="data/runs/baseline-full/$WRAP_RUN_ID"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
 REMOTE_REPORT="$REMOTE_OUTPUT/baseline_report.json"
-LOCAL_DIR="${TMP_BASE%/}/opencode/baseline-full/$WRAP_RUN_ID"
+LOCAL_DIR="${TMP_BASE%/}/vm/baseline-full/$WRAP_RUN_ID"
 # `set -f` (noglob) keeps the Hydra list override safe inside the detached
 # shell. No single quote may appear in REMOTE_CMD (see vm_launch_detached).
 REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name baseline_full splits=[validation,test] output_root=$OUTPUT_REL"

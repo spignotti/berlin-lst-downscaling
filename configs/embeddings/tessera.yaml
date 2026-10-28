@@ -5,7 +5,7 @@
 # Int8 COG (128 bands) + float32 scale COG + uint8 validity mask COG plus
 # provenance.json and complete.json (written last). Written once per year by
 # scripts/operators/run_tessera_embeddings.py via the VM launcher
-# .opencode/skills/google-access/scripts/run-tessera-embeddings-vm.sh.
+# scripts/runners/vm/run-tessera-embeddings-vm.sh.
 # Int8 + scale is ~2.3 GB per year on the Berlin bbox.
 defaults:
   - _self_
