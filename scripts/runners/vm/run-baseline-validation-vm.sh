@@ -48,7 +48,7 @@ MARKER_CONFIG="baseline_validation"
 POLL_MAX_SECONDS=3600
 VALIDATOR_PATCHES=25
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 TMP_BASE="${TMPDIR:-$REPO_ROOT/.tmp}"
 
 vm_init_run "baseline-validate"
@@ -56,7 +56,7 @@ vm_init_run "baseline-validate"
 OUTPUT_REL="data/runs/baseline-full/$RUN_ID_ARG"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
 REMOTE_REPORT="$REMOTE_OUTPUT/baseline_report.json"
-LOCAL_DIR="${TMP_BASE%/}/opencode/baseline-full/$RUN_ID_ARG"
+LOCAL_DIR="${TMP_BASE%/}/vm/baseline-full/$RUN_ID_ARG"
 # `set -f` (noglob) keeps the command safe inside the detached shell. No single
 # quote may appear in REMOTE_CMD (see vm_launch_detached).
 REMOTE_CMD="set -f; uv run python scripts/validators/validate_baseline.py --report $OUTPUT_REL/baseline_report.json --max-patches $VALIDATOR_PATCHES"

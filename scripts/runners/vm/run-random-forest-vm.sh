@@ -61,7 +61,7 @@ fi
 vm_init_run "random-forest-$MODE"
 OUTPUT_REL="data/runs/random-forest/$WRAP_RUN_ID"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
-REPO_ROOT="$(cd "$VM_SCRIPTS/../../../.." && pwd)"
+REPO_ROOT="$(cd "$VM_SCRIPTS/../../.." && pwd)"
 LOCAL_DIR="$REPO_ROOT/data/runs/random-forest/$WRAP_RUN_ID"
 
 # Keep this launcher's wrapper log and marker under the pipeline output root.

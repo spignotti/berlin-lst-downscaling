@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -97,3 +98,32 @@ def test_every_launcher_sources_the_helper_first() -> None:
         helper = text.index('/_logging.sh"')
         assert helper < text.index('/vm-runner-common.sh"'), path.name
         assert "vm-runs" not in text and "$HOME/vm" not in text, path.name
+
+
+def test_every_repo_root_resolves_to_the_repository_root(tmp_path: Path) -> None:
+    pattern = re.compile(r"^\s*(\w*REPO_ROOT)=(.+)$", re.MULTILINE)
+    found: dict[str, str] = {}
+    for path in sorted(_VM.glob("*.sh")):
+        for name, expr in pattern.findall(path.read_text()):
+            # Evaluate from an unrelated cwd, as the launcher would see it.
+            expr = expr.replace("${BASH_SOURCE[0]}", "$0")
+            proc = subprocess.run(  # noqa: S603
+                [  # noqa: S607
+                    "bash",
+                    "-c",
+                    f'VM_SCRIPTS="$(dirname "$0")"; {name}={expr}; printf %s "${name}"',
+                    str(path),
+                ],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assert Path(proc.stdout).resolve() == _ROOT, f"{path.name}: {name}={expr}"
+            found[path.name] = name
+    assert {
+        "_logging.sh",
+        "run-baseline-vm.sh",
+        "run-baseline-validation-vm.sh",
+        "run-random-forest-vm.sh",
+    } <= found.keys()
