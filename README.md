@@ -66,7 +66,7 @@ released-source wiring. Completed since then: the Stage-1 full temporal run
 (validation 0.50285 K, one-shot 2025 test 0.53257 K), the Tag-11 ablation
 ladder (Stages 2–5) with two single-family isolation runs, and the validated
 four-stage random-forest baseline (Stage-4 test 1.18341 K vs naive 1.39523 K).
-Scientific interpretation lives in Notion; machine-readable evidence and
+Scientific interpretation lives in `docs/thesis/`; machine-readable evidence and
 frozen result notes stay in this repository (see Documentation).
 
 ## Setup
@@ -133,7 +133,7 @@ see `docs/vm-operations.md`.
 
 ## Documentation
 
-Scientific reasoning and interpretation live in Notion; this repository keeps
+Scientific reasoning and interpretation live in `docs/thesis/`; this repository keeps
 normative technical contracts, operating guides, and frozen evidence
 (see `docs/README.md` for the map).
 

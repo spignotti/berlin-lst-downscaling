@@ -3,8 +3,8 @@
 One VM run per step, in order, launched from the operator's Mac via
 `start-vm-run-tab.sh` (fail-closed lifecycle in `vm-runner-common.sh`:
 start → deploy pinned commit → detached launch → poll → validate → stop;
-the VM is stopped after each run). Nothing here has run yet — this page
-is the runbook for the later VM executions.
+the VM is stopped after each run). This page is the runbook for the VM
+executions; see "Status" below for steps with recorded evidence.
 
 ## Upstream decision (Landsat/ECOSTRESS)
 
@@ -96,8 +96,19 @@ Fixes on this branch:
 | 5 | Dynamic v6 | `scripts/runners/vm/start-vm-run-tab.sh run-dynamic-v6-vm.sh main` | `configs/dynamic/v6.yaml` (`manifest_uri=` v4 bundle) | `dynamic/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (shadows, ERA5 scene_value) |
 | 6 | Features v6 | `scripts/runners/vm/start-vm-run-tab.sh run-features-v6-vm.sh main` | `configs/features/v6.yaml` (ARD v10 + v4 manifest) | `features/v6/{<scene_id>/*.cog,ledger.parquet,qa/...}` (22-channel roster) |
 | 7 | Training v3 | `scripts/runners/vm/start-vm-run-tab.sh run-training-v3-vm.sh main` | `configs/training/v3.yaml` (from features/v6) | `training/v3/{manifest.parquet,cells.parquet,scaler.json,complete.json,...}` |
-| 8 | Patch index v3 | `scripts/runners/vm/start-vm-run-tab.sh run-patch-index-v3-vm.sh main` | `configs/training/patch_index_v3.yaml` (from training/v3) | `training/patch-index/v3/{patch_index.parquet,qa.json,complete.json}` |
+| 8 | Patch index v3 | `scripts/runners/vm/start-vm-run-tab.sh run-patch-index-v3-vm.sh main` | `configs/training/patch_index_v3.yaml` (from training/v3) | `training/patch-index/v3/{patch_index.parquet,patch_index_qa.json,complete.json}` |
 | 9 | EDA v3 | `scripts/runners/vm/start-vm-run-tab.sh run-training-eda-v3-vm.sh analysis/eda-v1` | `configs/eda/v3.yaml` (flags for `scripts/operators/run_training_eda.py`) | `evaluation/eda/v3/{tables,summary.json,observations/...}` |
+
+### Status
+
+- Step 8 (patch index v3): published, run `4c896c29`
+  (2026-10-25T21:16:47Z), 8078 patches (train 5523, validation 1047,
+  test 1508). Evidence:
+  [`patch_index_qa.json`](results/patch-index-v3/patch_index_qa.json),
+  [`complete.json`](results/patch-index-v3/complete.json).
+- Step 9 (EDA v3): done, git commit `edc20e9`; 266 scenes scanned, 265
+  with observations, 201 training scenes. Evidence:
+  [`summary.json`](results/eda-v3/summary.json).
 
 Each launcher takes an optional `[branch]` (default `main`, step 9
 defaults to `analysis/eda-v1` like its v2 template). Every launcher runs

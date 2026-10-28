@@ -26,7 +26,7 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 ## Git
 
 - Work on a feature branch. Open a pull request into `main`. Squash-merge only after the `validate` check is green and the project owner (Silas) has approved the merge.
-- A change to method, a data product, or a training run needs an explicit task with acceptance criteria from the project owner (a GitHub issue or an agent task). The task states the current state, the desired state, and what is out of scope. Agents must not decide new scientific choices (thresholds, exclusions, new channels, split changes) themselves; report them back instead. Hygiene (lint, harness, typos) needs no task. Notion holds the plan.
+- A change to method, a data product, or a training run needs an explicit task with acceptance criteria from the project owner (a GitHub issue or an agent task). The task states the current state, the desired state, and what is out of scope. Agents must not decide new scientific choices (thresholds, exclusions, new channels, split changes) themselves; report them back instead. Hygiene (lint, harness, typos) needs no task. `docs/thesis/` holds the thesis documentation (Notion is archived).
 - PR titles and commits follow Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `docs: ...`, `test: ...`, `chore: ...`).
 - When a task comes with acceptance criteria, copy them verbatim into the PR description under `## Acceptance criteria` as a checklist. Tick an item only when it is implemented and tested, and give the file or test that covers it. List anything not done, and why.
 
@@ -41,5 +41,5 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 
 ## Planning
 
-- Notion page: `28c35645-1f66-8057-b647-db5aebf191a5`
+- Notion page (archived 2026-10-28): `28c35645-1f66-8057-b647-db5aebf191a5`
 - GitHub: `spignotti/berlin-lst-downscaling`
