@@ -1,7 +1,7 @@
 # Documentation map
 
 Thesis reasoning, method justification, and scientific interpretation live in
-Notion. This repository owns normative technical contracts, source, configs,
+`thesis/` (migrated from Notion 2026-10-28; Notion is archived). This repository owns normative technical contracts, source, configs,
 validators, operating instructions, and immutable evidence records. W&B owns
 live run metrics; GCS holds released datasets, provenance, and checkpoints.
 
