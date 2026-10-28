@@ -52,9 +52,9 @@ must instead be reprocessed into a new root.
 
 | # | Step | Launcher command (from repo root) | Config | Expected outputs |
 |---|------|-----------------------------------|--------|------------------|
-| 1 | Selection v4 bundle | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-selection-v4-vm.sh main` | `configs/selection/full_2017_2026_v4.yaml` | `manifests/v4/2017-2026-cutoff-20260717T235959Z/{manifest.parquet,pairings.parquet,manifest_report.json}` |
-| 2 | S2 ARD v10 + Landsat/ECOSTRESS gaps | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-ard-v10-vm.sh main` | `configs/ard/sentinel2_mosaic_v10.yaml` (`manifest_uri=` v4 bundle) then `configs/ard/landsat_ecostress_v10.yaml` (same roots) | `ard/full/2017-2026-s2-mosaic-v10/{*.cog,ledger.parquet,seed_gaps.json,...}` (S2 new; Landsat/ECOSTRESS seeded where verified, gap scenes processed, see above) |
-| 3 | Static sources v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-sources-v6-vm.sh main` | `configs/static_sources/v6.yaml` | `static/sources/lod2-area-exact-v2/{ledger.parquet,...}` (LoD2 area-exact v2 incl. BuildingPart, canopy cover; imperviousness COGs stay published v3, newly pointed at) |
+| 1 | Selection v4 bundle | `scripts/runners/vm/start-vm-run-tab.sh run-selection-v4-vm.sh main` | `configs/selection/full_2017_2026_v4.yaml` | `manifests/v4/2017-2026-cutoff-20260717T235959Z/{manifest.parquet,pairings.parquet,manifest_report.json}` |
+| 2 | S2 ARD v10 + Landsat/ECOSTRESS gaps | `scripts/runners/vm/start-vm-run-tab.sh run-ard-v10-vm.sh main` | `configs/ard/sentinel2_mosaic_v10.yaml` (`manifest_uri=` v4 bundle) then `configs/ard/landsat_ecostress_v10.yaml` (same roots) | `ard/full/2017-2026-s2-mosaic-v10/{*.cog,ledger.parquet,seed_gaps.json,...}` (S2 new; Landsat/ECOSTRESS seeded where verified, gap scenes processed, see above) |
+| 3 | Static sources v6 | `scripts/runners/vm/start-vm-run-tab.sh run-static-sources-v6-vm.sh main` | `configs/static_sources/v6.yaml` | `static/sources/lod2-area-exact-v2/{ledger.parquet,...}` (LoD2 area-exact v2 incl. BuildingPart, canopy cover; imperviousness COGs stay published v3, newly pointed at) |
 
 Step 3 is fail-closed after the 2026-10-24 run
 (`static-sources-v6-20261024T084409Z-DC2E5B3B`): that run printed
@@ -91,13 +91,13 @@ Fixes on this branch:
   rows, and `finalize_secondary_product` overwrites the already-written
   COG atomically — rerunning the launcher redoes only the failed
   `lod2_morphology/2024` row and safely replaces its COG.
-| 4 | Static derived v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-static-derived-v6-vm.sh main` | `configs/static_derived/v6.yaml` (`svf_max_radius: 10`, i.e. 100 m) | `static/derived/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (building/vegetation/combined DSMs, horizons, SVF) |
-| 4b | Historical LoD vintages v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-lod-vintages-v6-vm.sh main` | `configs/lod_vintages/v6.yaml` (`vintages: [2017, 2021, 2022]`, `svf_max_radius: 10`, i.e. 100 m) | `static/sources/lod2-area-exact-v2/.../lod2_morphology/{2017,2021,2022}` + `raw_manifest_{2017,2021,2022}.json`; `static/derived/lod2-area-exact-v2/.../{building_dsm,combined_dsm,horizon_building,svf}/dgm1-2021__lod2-{2017,2021,2022}__vh-2020` (vegetation products reused from the 2024 bundle) |
-| 5 | Dynamic v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-v6-vm.sh main` | `configs/dynamic/v6.yaml` (`manifest_uri=` v4 bundle) | `dynamic/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (shadows, ERA5 scene_value) |
-| 6 | Features v6 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-v6-vm.sh main` | `configs/features/v6.yaml` (ARD v10 + v4 manifest) | `features/v6/{<scene_id>/*.cog,ledger.parquet,qa/...}` (22-channel roster) |
-| 7 | Training v3 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-v3-vm.sh main` | `configs/training/v3.yaml` (from features/v6) | `training/v3/{manifest.parquet,cells.parquet,scaler.json,complete.json,...}` |
-| 8 | Patch index v3 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-patch-index-v3-vm.sh main` | `configs/training/patch_index_v3.yaml` (from training/v3) | `training/patch-index/v3/{patch_index.parquet,patch_index_qa.json,complete.json}` |
-| 9 | EDA v3 | `.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-eda-v3-vm.sh analysis/eda-v1` | `configs/eda/v3.yaml` (flags for `scripts/operators/run_training_eda.py`) | `evaluation/eda/v3/{tables,summary.json,observations/...}` |
+| 4 | Static derived v6 | `scripts/runners/vm/start-vm-run-tab.sh run-static-derived-v6-vm.sh main` | `configs/static_derived/v6.yaml` (`svf_max_radius: 10`, i.e. 100 m) | `static/derived/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (building/vegetation/combined DSMs, horizons, SVF) |
+| 4b | Historical LoD vintages v6 | `scripts/runners/vm/start-vm-run-tab.sh run-lod-vintages-v6-vm.sh main` | `configs/lod_vintages/v6.yaml` (`vintages: [2017, 2021, 2022]`, `svf_max_radius: 10`, i.e. 100 m) | `static/sources/lod2-area-exact-v2/.../lod2_morphology/{2017,2021,2022}` + `raw_manifest_{2017,2021,2022}.json`; `static/derived/lod2-area-exact-v2/.../{building_dsm,combined_dsm,horizon_building,svf}/dgm1-2021__lod2-{2017,2021,2022}__vh-2020` (vegetation products reused from the 2024 bundle) |
+| 5 | Dynamic v6 | `scripts/runners/vm/start-vm-run-tab.sh run-dynamic-v6-vm.sh main` | `configs/dynamic/v6.yaml` (`manifest_uri=` v4 bundle) | `dynamic/lod2-area-exact-v2/{_state/.../ledger.parquet,...}` (shadows, ERA5 scene_value) |
+| 6 | Features v6 | `scripts/runners/vm/start-vm-run-tab.sh run-features-v6-vm.sh main` | `configs/features/v6.yaml` (ARD v10 + v4 manifest) | `features/v6/{<scene_id>/*.cog,ledger.parquet,qa/...}` (22-channel roster) |
+| 7 | Training v3 | `scripts/runners/vm/start-vm-run-tab.sh run-training-v3-vm.sh main` | `configs/training/v3.yaml` (from features/v6) | `training/v3/{manifest.parquet,cells.parquet,scaler.json,complete.json,...}` |
+| 8 | Patch index v3 | `scripts/runners/vm/start-vm-run-tab.sh run-patch-index-v3-vm.sh main` | `configs/training/patch_index_v3.yaml` (from training/v3) | `training/patch-index/v3/{patch_index.parquet,patch_index_qa.json,complete.json}` |
+| 9 | EDA v3 | `scripts/runners/vm/start-vm-run-tab.sh run-training-eda-v3-vm.sh analysis/eda-v1` | `configs/eda/v3.yaml` (flags for `scripts/operators/run_training_eda.py`) | `evaluation/eda/v3/{tables,summary.json,observations/...}` |
 
 ### Status
 

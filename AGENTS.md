@@ -6,11 +6,12 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 
 - Canonical bucket: `gs://berlin-lst-training-data/` (GCP project `berlin-lst-training`, `europe-west3`).
 - Local mount: rclone at `~/.mnt/berlin-lst/` (gcsfuse is unavailable on this arm64 Mac).
-- Heavy pipeline runs use the On-Demand VM `berlin-lst-vm`. Start, stop, SSH, and run launchers live only in `.opencode/skills/google-access/scripts/`. Application code consumes GCS and Hydra and does not know the VM.
+- Heavy pipeline runs use the On-Demand VM `berlin-lst-vm`. Start, stop, SSH, and run launchers live only in `scripts/runners/vm/`. Application code consumes GCS and Hydra and does not know the VM.
 - Managed GPU training runs on Vertex AI (`docs/vertex-gpu-training.md`).
 - Keep the VM stopped when it is not running a job. Deletion protection stays on; the boot disk is not auto-delete.
 - The bucket holds immutable canonical products, retained QA evidence, and ephemeral run outputs. Do not delete or rewrite canonical products outside a planned task. Do not edit retained evidence. Remove ephemeral outputs in the task that created them.
 - Logs live only at `<output_root>/logs/<pipeline>/`.
+- VM launcher logs go to `gs://berlin-lst-training-data/logs/vm-runs/<YYYY-MM>/` through `scripts/runners/vm/_logging.sh` (see `docs/vm-operations.md`); never redirect them into `$HOME`.
 
 ## Runtime
 

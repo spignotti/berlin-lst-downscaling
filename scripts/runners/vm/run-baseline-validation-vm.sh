@@ -25,6 +25,7 @@
 #     5a0daca809055195028c6688da7f337b4448723038c07bc4b30c24c9353d62d6
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-}"
@@ -47,7 +48,7 @@ MARKER_CONFIG="baseline_validation"
 POLL_MAX_SECONDS=3600
 VALIDATOR_PATCHES=25
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 TMP_BASE="${TMPDIR:-$REPO_ROOT/.tmp}"
 
 vm_init_run "baseline-validate"
@@ -55,7 +56,7 @@ vm_init_run "baseline-validate"
 OUTPUT_REL="data/runs/baseline-full/$RUN_ID_ARG"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
 REMOTE_REPORT="$REMOTE_OUTPUT/baseline_report.json"
-LOCAL_DIR="${TMP_BASE%/}/opencode/baseline-full/$RUN_ID_ARG"
+LOCAL_DIR="${TMP_BASE%/}/vm/baseline-full/$RUN_ID_ARG"
 # `set -f` (noglob) keeps the command safe inside the detached shell. No single
 # quote may appear in REMOTE_CMD (see vm_launch_detached).
 REMOTE_CMD="set -f; uv run python scripts/validators/validate_baseline.py --report $OUTPUT_REL/baseline_report.json --max-patches $VALIDATOR_PATCHES"
@@ -108,6 +109,7 @@ if [[ "$SHA_OK" -eq 0 && "$VALIDATOR_OK" -eq 0 ]]; then
   rm -f "$LOCAL_DIR/artifact.tgz"
   LOCAL_REPORT_SHA=$(shasum -a 256 "$LOCAL_DIR/baseline_report.json" | cut -d' ' -f1)
   if [[ -s "$LOCAL_DIR/baseline_report.json" && "$LOCAL_REPORT_SHA" == "$REMOTE_REPORT_SHA" ]]; then
+    # shellcheck disable=SC2034  # kept for parity with EVIDENCE_OK
     TRANSFER_OK=0
     EVIDENCE_OK=0
   fi

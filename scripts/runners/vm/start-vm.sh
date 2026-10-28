@@ -38,7 +38,7 @@ esac
 
 echo ""
 echo "Waiting for external IP..."
-for i in {1..30}; do
+for _ in {1..30}; do
   IP=$(vm_external_ip)
   if [[ -n "$IP" && "$IP" != "(unset)" ]]; then
     echo "External IP: $IP"

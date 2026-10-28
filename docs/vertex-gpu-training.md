@@ -401,7 +401,7 @@ incomplete and is not a GO.
 |---|---|---|
 | Purpose | pipeline stages, smoke, timing, baseline | managed GPU training |
 | Lifetime | persistent, stopped between runs | ephemeral, released at job end |
-| Launchers | `.opencode/skills/google-access/scripts/run-*-vm.sh` | `scripts/operators/launch_vertex_modeling.py` |
+| Launchers | `scripts/runners/vm/run-*-vm.sh` | `scripts/operators/launch_vertex_modeling.py` |
 | Secrets | VM `.env` / metadata ADC | Infisical GCP ID token at runtime |
 
 ## Acceptance record

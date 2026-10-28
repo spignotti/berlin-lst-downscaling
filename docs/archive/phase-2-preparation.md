@@ -207,7 +207,7 @@ The approved training contract is implemented as a reproducible release
 under `gs://berlin-lst-data/training/v1` (pipeline `data/training/`,
 runner `scripts/runners/run_training_data.py`, independent validator
 `scripts/validators/validate_training_data.py`, smoke gate `nox -s smoke-training-data`,
-VM wrapper `.opencode/skills/google-access/scripts/run-training-data-vm.sh`). Full normative details are
+VM wrapper `scripts/runners/vm/run-training-data-vm.sh`). Full normative details are
 in `data-sources-and-contracts.md` § WB2c-4 training-data release.
 
 - **Input basis pinned to Feature Release V3** (324 done scenes, config

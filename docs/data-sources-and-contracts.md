@@ -609,7 +609,7 @@ full artifact readback. The smoke gate (`nox -s smoke-training-data`)
 runs the pipeline twice on one scene per split with a clean slate between
 runs, asserts deterministic release artifacts, and runs the validator.
 The full release runs on the VM via
-`.opencode/skills/google-access/scripts/run-training-data-vm.sh`
+`scripts/runners/vm/run-training-data-vm.sh`
 (guardrailed lifecycle, then the same validator).
 
 **Responsibility boundary to WB3.** This release fixes the training

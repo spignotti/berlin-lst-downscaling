@@ -25,6 +25,7 @@
 #   run-modeling-smoke-vm.sh feat/30-stream-real-patch-dataset
 
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-main}"

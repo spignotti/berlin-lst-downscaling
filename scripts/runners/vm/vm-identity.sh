@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Constants and VM_* results are read by the scripts that source this file.
+# shellcheck disable=SC2034
 # Shared VM identity assertions for berlin-lst scripts.
 #
 # Source this file to assert that the pinned Compute Engine instance

@@ -1,41 +1,65 @@
----
-name: google-access
-description: Google Cloud Storage (rclone mount), ADC setup, and Compute Engine VM lifecycle for the berlin-lst-downscaling project
----
+# VM operations
+
+Google Cloud Storage (rclone mount), ADC setup, and the Compute Engine VM
+lifecycle for berlin-lst-downscaling. The launchers and helpers live in
+`scripts/runners/vm/` (moved from the retired `google-access` opencode skill).
 
 ## Quick Reference
 
-- Status:         `.opencode/skills/google-access/scripts/status-vm.sh`
-- Start VM:       `.opencode/skills/google-access/scripts/start-vm.sh`
-- Stop VM:        `.opencode/skills/google-access/scripts/stop-vm.sh`
-- SSH into VM:    `.opencode/skills/google-access/scripts/ssh-vm.sh`
-- SSH readiness:  `.opencode/skills/google-access/scripts/ssh-vm.sh --check`
-- Run Dynamic:    `.opencode/skills/google-access/scripts/run-dynamic-vm.sh <full|inference_2026> [branch]`
-- Run Features:   `.opencode/skills/google-access/scripts/run-features-vm.sh [branch]`
-- Run Training:   `.opencode/skills/google-access/scripts/run-training-data-vm.sh [branch]`
-- Run Training v3: `.opencode/skills/google-access/scripts/run-training-v3-vm.sh [branch]`
-- Run v6 chain:   `.opencode/skills/google-access/scripts/run-selection-v4-vm.sh run-ard-v10-vm.sh run-static-sources-v6-vm.sh run-static-derived-v6-vm.sh run-dynamic-v6-vm.sh run-features-v6-vm.sh run-training-v3-vm.sh run-patch-index-v3-vm.sh run-training-eda-v3-vm.sh [branch]` (one step per VM run, in order; see `docs/republish-v6.md`)
-- Run QA Stage 1: `.opencode/skills/google-access/scripts/run-qa-stage1-vm.sh [branch]`
-- Run QA Stage 2: `.opencode/skills/google-access/scripts/run-qa-stage2-vm.sh [branch]`
-- Run Model Smoke: `.opencode/skills/google-access/scripts/run-modeling-smoke-vm.sh [branch]`
-- Run Baseline:   `.opencode/skills/google-access/scripts/run-baseline-vm.sh [branch]`
-- Validate Baseline: `.opencode/skills/google-access/scripts/run-baseline-validation-vm.sh <branch> <run-id> <report-sha256>`
-- Run Patch Timing: `.opencode/skills/google-access/scripts/run-patch-read-timing-vm.sh [branch] [extra args...]`
-- Run status:     `.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id <id>`
-- Start run tab:  `.opencode/skills/google-access/scripts/start-vm-run-tab.sh <launcher> [args...]`
-- Cloud monitor:  `.opencode/skills/google-access/scripts/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
+- Status:         `scripts/runners/vm/status-vm.sh`
+- Start VM:       `scripts/runners/vm/start-vm.sh`
+- Stop VM:        `scripts/runners/vm/stop-vm.sh`
+- SSH into VM:    `scripts/runners/vm/ssh-vm.sh`
+- SSH readiness:  `scripts/runners/vm/ssh-vm.sh --check`
+- Run Dynamic:    `scripts/runners/vm/run-dynamic-vm.sh <full|inference_2026> [branch]`
+- Run Features:   `scripts/runners/vm/run-features-vm.sh [branch]`
+- Run Training:   `scripts/runners/vm/run-training-data-vm.sh [branch]`
+- Run Training v3: `scripts/runners/vm/run-training-v3-vm.sh [branch]`
+- Run v6 chain:   `scripts/runners/vm/run-selection-v4-vm.sh run-ard-v10-vm.sh run-static-sources-v6-vm.sh run-static-derived-v6-vm.sh run-dynamic-v6-vm.sh run-features-v6-vm.sh run-training-v3-vm.sh run-patch-index-v3-vm.sh run-training-eda-v3-vm.sh [branch]` (one step per VM run, in order; see `docs/republish-v6.md`)
+- Run QA Stage 1: `scripts/runners/vm/run-qa-stage1-vm.sh [branch]`
+- Run QA Stage 2: `scripts/runners/vm/run-qa-stage2-vm.sh [branch]`
+- Run Model Smoke: `scripts/runners/vm/run-modeling-smoke-vm.sh [branch]`
+- Run Baseline:   `scripts/runners/vm/run-baseline-vm.sh [branch]`
+- Validate Baseline: `scripts/runners/vm/run-baseline-validation-vm.sh <branch> <run-id> <report-sha256>`
+- Run Patch Timing: `scripts/runners/vm/run-patch-read-timing-vm.sh [branch] [extra args...]`
+- Run status:     `scripts/runners/vm/status-dynamic-vm.sh --run-id <id>`
+- Start run tab:  `scripts/runners/vm/start-vm-run-tab.sh <launcher> [args...]`
+- Cloud monitor:  `scripts/runners/vm/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
 - Local ADC:     `gcloud auth application-default login` (new account)
 
 All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
-`.opencode/skills/google-access/scripts/vm-runner-common.sh` (start → deploy pinned
+`scripts/runners/vm/vm-runner-common.sh` (start → deploy pinned
 commit → detached launch → poll → validate → stop; the VM is never stopped
 automatically after a connection loss or an ambiguous exit). Pipeline-specific
 parameters (runner, config, validator, output roots) live only in each
 launcher; the application code itself stays VM-agnostic.
 
+## Run logs
+
+Every `run-*-vm.sh` launcher sources `scripts/runners/vm/_logging.sh` first.
+The helper tees the launcher's stdout and stderr to the gitignored
+`.runs/logs/<run_id>.log` (`<run_id>` = launcher name, UTC start time, PID).
+`vm_stop` also fetches the VM-side `nohup.log`, `marker.json`, and
+`exit_status` next to it as `<run_id>.remote-*`. When the launcher exits,
+on success, failure, or interrupt, all of these files are uploaded with
+`gcloud storage cp` (operator ADC) to
+
+    ${LOG_GCS_PREFIX:-gs://berlin-lst-training-data/logs/vm-runs}/<YYYY-MM>/
+
+and the GCS path is printed. After a successful upload the local files are
+deleted. If the upload fails, they stay in `.runs/logs/` and a warning names
+them; upload them by hand later. The launcher's exit code is preserved
+either way. Do not redirect launcher output into `$HOME` by hand.
+
+Example:
+
+    scripts/runners/vm/start-vm-run-tab.sh run-features-v6-vm.sh main
+    # or without Herdr:
+    scripts/runners/vm/run-features-v6-vm.sh main
+
 ## Purpose
 
-This skill documents how to access Google Cloud resources for the berlin-lst-downscaling project: GCS bucket (via rclone mount, gcloud CLI, and Python), and ADC authentication.
+This page documents how to access Google Cloud resources for the berlin-lst-downscaling project: GCS bucket (via rclone mount, gcloud CLI, and Python), and ADC authentication.
 
 ## Account Info
 
@@ -329,29 +353,29 @@ identity is independently verified.
 
 ```bash
 # Read-only status (never changes anything)
-.opencode/skills/google-access/scripts/status-vm.sh
+scripts/runners/vm/status-vm.sh
 
 # Start (fails closed; never creates; supports --dry-run)
-.opencode/skills/google-access/scripts/start-vm.sh
-.opencode/skills/google-access/scripts/start-vm.sh --dry-run
+scripts/runners/vm/start-vm.sh
+scripts/runners/vm/start-vm.sh --dry-run
 
 # SSH readiness check (read-only, no connection)
-.opencode/skills/google-access/scripts/ssh-vm.sh --check
+scripts/runners/vm/ssh-vm.sh --check
 
 # SSH (direct OpenSSH, strict host-key)
-.opencode/skills/google-access/scripts/ssh-vm.sh
-.opencode/skills/google-access/scripts/ssh-vm.sh -- uptime
+scripts/runners/vm/ssh-vm.sh
+scripts/runners/vm/ssh-vm.sh -- uptime
 
 # Run a Dynamic config end-to-end (start → deploy → run → validate → stop)
-.opencode/skills/google-access/scripts/run-dynamic-vm.sh full main
-.opencode/skills/google-access/scripts/run-dynamic-vm.sh inference_2026 main
+scripts/runners/vm/run-dynamic-vm.sh full main
+scripts/runners/vm/run-dynamic-vm.sh inference_2026 main
 
 # Check status of a running or completed run
-.opencode/skills/google-access/scripts/status-dynamic-vm.sh --run-id full-20260804T120000Z
+scripts/runners/vm/status-dynamic-vm.sh --run-id full-20260804T120000Z
 
 # Stop (keeps disk, resumable; supports --dry-run)
-.opencode/skills/google-access/scripts/stop-vm.sh
-.opencode/skills/google-access/scripts/stop-vm.sh --dry-run
+scripts/runners/vm/stop-vm.sh
+scripts/runners/vm/stop-vm.sh --dry-run
 ```
 
 The pipeline is ledger-aware and idempotent — re-running skips scenes already
@@ -382,10 +406,10 @@ process from the agent pane and create dedicated monitoring panels:
 
 ```bash
 # Launch in a monitored tab (agent continues in main)
-.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-dynamic-vm.sh full main
-.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-features-vm.sh main
-.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-training-data-vm.sh main
-.opencode/skills/google-access/scripts/start-vm-run-tab.sh run-baseline-vm.sh main
+scripts/runners/vm/start-vm-run-tab.sh run-dynamic-vm.sh full main
+scripts/runners/vm/start-vm-run-tab.sh run-features-vm.sh main
+scripts/runners/vm/start-vm-run-tab.sh run-training-data-vm.sh main
+scripts/runners/vm/start-vm-run-tab.sh run-baseline-vm.sh main
 ```
 
 The launcher:
