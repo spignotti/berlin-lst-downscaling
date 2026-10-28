@@ -1,6 +1,9 @@
 # WB2 Feature Engineering & Trainingsdatenaufbereitung
 
 > Migriert aus Notion am 2026-10-28 (Seite `44fa223915bf49a39b303ba79a340254`, zuletzt bearbeitet 2026-08-27). Text unverändert übernommen.
+> Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet.
+
+> **Historischer Stand (Juli/August 2026), abgelöst durch features v6 / ARD v10, siehe [Datenbasis & Feature Engineering](datenbasis-feature-engineering.md).**
 
 > 🧩 **WB2 Feature Engineering und Trainingsdatenaufbereitung abgeschlossen:** Feature-Release V3, QA, temporale Splits, strikte 100-m-Eligibility, stabile Zellidentitäten und train-only Scaler sind reproduzierbar publiziert und für WB3 freigegeben.
 

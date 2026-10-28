@@ -5,8 +5,7 @@ this folder is the single source for the thesis documentation from now on.
 
 The export is mechanical: the text is kept verbatim from Notion. Links to
 pages that were not migrated (tasks, old notes, archive) are kept as plain
-titles marked "(Notion-Archiv)" or as Notion URLs. Parts 03–05 still describe
-an older repo state in places and are being revised.
+titles marked "(Notion-Archiv)" or as Notion URLs. Parts 03–05 were updated on 2026-10-28 to features v6, ARD v10 and training v3; older content is labelled as historical.
 
 ## Contents
 

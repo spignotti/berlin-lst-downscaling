@@ -1,8 +1,11 @@
 # WB2 Sekundärdaten
 
 > Migriert aus Notion am 2026-10-28 (Seite `61879b5f5bc641e88bc7eb56724972bc`, zuletzt bearbeitet 2026-07-15). Text unverändert übernommen.
+> Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet; Abschnitte zu Tooling und archivierten Arbeitsnotizen entfernt.
 
-> 🧱 Lebendes Ergebnisdokument für Beschaffung, Aufbereitung und zeitliche Zuordnung der Sekundärdaten in den Ablationsstufen 2 bis 4. Implementierungsdetails bleiben im Repository und in den zugehörigen OpenCode-Tasks.
+> **Historischer Stand (Juli/August 2026), abgelöst durch features v6 / ARD v10, siehe [Datenbasis & Feature Engineering](datenbasis-feature-engineering.md).**
+
+> 🧱 Lebendes Ergebnisdokument für Beschaffung, Aufbereitung und zeitliche Zuordnung der Sekundärdaten in den Ablationsstufen 2 bis 4. Implementierungsdetails bleiben im Repository.
 
 ## Status
 
@@ -45,17 +48,6 @@ Research und Cloud-Workflow am 14.07.2026 konsolidiert. Frühere unvollständige
 | SVF | Aus DSM | xarray-spatial nach Smoke-Test | SVF 10 m je Vintage |
 | Schatten | Aus Horizon und Sonnenstand | Custom numpy/numba | Gebäude- und Vegetationsschatten je Szene |
 
-## Cloud-Ausführung
-
-- **GCP-Projekt:** `masterarbeit-berlin-lst-v2`
-- **Bucket:** `gs://berlin-lst-data`, HNS, Region `europe-west3`
-- **VM:** `berlin-lst-vm`, `europe-west3-a`, `n2-standard-2`, Debian 12, Spot, Stop bei Preemption
-- **Service Account:** `masterarbeit-vertex@masterarbeit-berlin-lst-v2.iam.gserviceaccount.com`, VM-ADC ohne lokalen Schlüssel
-- **Lifecycle:** bestehende Start-/Stop-Skripte unter `.opencode/skills/google-access/scripts/`
-- **Kanonisches Raster:** EPSG:25833, Origin 369190/5838410, nested 10/70/100 m
-- **Pipeline-Muster:** config- und manifestgetrieben, COG-Validierung, atomare Writes, Ledger mit `exporting`, `done`, `failed`, idempotenter Resume
-- **Lokaler Rechner:** kleine Fixtures, Steuerung und QGIS-Review. Keine Vollverarbeitung.
-
 ## Gestaffelter Ablauf
 
 1. Gemeinsamen Secondary-Foundation-Layer für Config, Pfade, Ledger, Downloads, COG-Vertrag und QA festlegen.
@@ -90,21 +82,6 @@ qa/secondary/{run_id}/
 - Kein Produkt gilt als fertig, wenn die räumliche Abdeckung nur formal, aber nicht inhaltlich plausibel ist.
 - SSRD wird entsprechend der verifizierten ERA5-Land-Akkumulationssemantik in W/m² umgerechnet.
 - SVF und Schatten werden getrennt für Gebäude und Vegetation plausibilisiert.
-
-## OpenCode-Umsetzung
-
-Die Umsetzung ist nach kohärenten Ergebnissen in drei outcome-basierte Tasks gegliedert. Technische Architektur, Dateien, Dependencies und Implementierungsreihenfolge werden nach Prüfung des tatsächlichen Repository-Stands durch OpenCode festgelegt.
-
-1. Secondary-Data-Pipeline lokal und in der Cloud ausführbar machen (Notion-Archiv)
-   - Gemeinsamer lokaler Smoke-, Cloud-Ausführungs- und QA-Ablauf.
-   - Die bereits vorhandenen Implementierungen für Vegetationshöhe und Versiegelung werden an diesen gemeinsamen Ablauf angepasst.
-2. Statische Sekundärdaten für Morphologie und Oberflächengeometrie bereitstellen (Notion-Archiv)
-   - DGM, Vegetationshöhe, Versiegelung, LoD2, Morphologie, DSM, Horizon und SVF.
-   - Die bereits verarbeiteten Vegetationshöhen- und Versiegelungsprodukte werden einbezogen und gegen das gemeinsame QA-Gate geprüft.
-3. Dynamische Meteorologie- und Verschattungsdaten je Szene bereitstellen (Notion-Archiv)
-   - ERA5-Land, Day of Year, Sonnenstand, getrennte Schattenprodukte und DWD als Validierung.
-
-Die beiden abgeschlossenen Quellaufbereitungen für Vegetationshöhe 2020 beschaffen und auf 10 m aufbereiten (Notion-Archiv) und Versiegelung 2016/2021 beschaffen und vintagisieren (Notion-Archiv) bleiben als Umsetzungshistorie erhalten. Sie sind Inputs der konsolidierten Tasks und werden nicht unnötig neu gebaut.
 
 ## Konsolidierungsquellen
 

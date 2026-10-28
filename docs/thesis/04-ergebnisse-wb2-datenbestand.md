@@ -1,10 +1,15 @@
 # WB2 Ergebnisse: Datenbestand und Pipelines
 
 > Migriert aus Notion am 2026-10-28 (Seite `0515103db5684a4c8a93e5adbffe48df`, zuletzt bearbeitet 2026-10-08). Text unverändert übernommen.
+> Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet.
+
+> **Historischer Stand (Juli/August 2026), abgelöst durch features v6 / ARD v10, siehe [Datenbasis & Feature Engineering](03-methodik/datenbasis-feature-engineering.md).**
 
 > 📊 Konsolidierter Abschlussstand von WB2: Primärdaten-ARD, Sekundärdaten, Feature Engineering, QA sowie der publizierte Split-, Eligibility- und Scaler-Vertrag für WB3.
 
 ## Ergebnisstand
+
+> Dieser Snapshot (27.08.2026) beschreibt den V3-Datenbestand (28 Kanäle, training/v1). Der gültige Datenstand (features/v6, ARD v10, training/v3) steht in [04 · Ergebnisse & Analysen](04-ergebnisse.md).
 
 **Snapshot:** 27.08.2026
 
@@ -90,6 +95,8 @@ Day of Year sowie Sonnenazimut und Sonnenhöhe werden aus dem Aufnahmezeitpunkt 
 
 ## Feature Engineering und Trainingsfreigabe
 
+> **Historischer Stand – ungültig nach Datenkorrektur (training/v1).** Abgelöst durch features/v6 und training/v3, siehe [04 · Ergebnisse & Analysen](04-ergebnisse.md).
+
 - Feature-Release V3 umfasst 324 von 324 erfolgreiche 28-Kanal-Stacks; Stage-2-QA `cc00406a` meldet 0 Findings.
 - Der temporale Vertrag ist umgesetzt: 2017 bis 2023 Training, 2024 Validation, 2025 Test und 2026 Inferenz.
 - Das Release enthält 5.520.165 valide 100-m-Zellbeobachtungen: 4.057.392 Training, 696.942 Validation und 765.831 Test.
@@ -139,6 +146,8 @@ Die frühere Aussage „LoD2 2024 retrospektiv für alle Jahre“ ist **nicht me
 
 ### V3-Semantik der Modellprädiktoren
 
+> **Historischer Stand – ungültig nach Datenkorrektur (training/v1).** Der aktuelle 22-Kanal-Stack (features/v6) ist in [Datenbasis & Feature Engineering](03-methodik/datenbasis-feature-engineering.md) beschrieben.
+
 Der aktive V3-Stack enthält 28 Kanäle: sechs Sentinel-2-Reflektanzbänder, vier spektrale Indizes/Proxies, acht Morphologiekanäle, **acht ERA5-Land-Kanäle** und zwei binäre Schattenkanäle. Die ältere Beschreibung von nur drei meteorologischen Modellkanälen stammt aus einem früheren Dynamik-Snapshot. Die Sonnengeometrie und Day-of-Year werden als Metadaten geführt und steuern gegebenenfalls abgeleitete Schatten, bilden aber **keine zusätzlichen eigenständigen V3-Kanäle**.
 
 - Die „Albedo“ ist ein lineares sechsbandiges kurzwelliges Reflektanz-Proxy, **keine** physikalisch BRDF-korrigierte Albedo.
@@ -157,6 +166,8 @@ Der aktive V3-Stack enthält 28 Kanäle: sechs Sentinel-2-Reflektanzbänder, vie
 Mess- und Datenfreigabeprotokolle in GitHub/GCS bleiben unverändert; hier wurden nur für Methodik und Ausarbeitung notwendige Aussagen fortgeschrieben. Quantitative Modellbefunde der Baselines und Ablation: [WB3 · Ergebnistabellen – Baselines und Ablation](04-ergebnisse-wb3-ergebnistabellen.md). Die wissenschaftliche Interpretation ist getrennt dokumentiert in [WB3 · Diskussion der Ablationsbefunde](05-diskussion-wb3-ablationsbefunde.md).
 
 ### Release-Prüfung: Stichprobe und Sentinel-2-Kopplung (27.08.2026)
+
+> **Historischer Stand – ungültig nach Datenkorrektur (training/v1).** Die Prüfung bezieht sich auf das Release training/v1; für training/v3 siehe [04 · Ergebnisse & Analysen](04-ergebnisse.md).
 
 Das unabhängige WB2c-4-Acceptance-Audit bestätigte **345 Manifestzeilen**, davon 21 reine Inferenz-Reserve, 324 Kandidaten 2017–2025 und **30 Szenen ohne eine einzige eligible Zelle**. **294 Szenen** wurden mit gültigen Trainings-, Validierungs- oder Testzellen publiziert. Unter den drei Nicht-Inferenz-Splits liegen **149 eindeutige Sentinel-2-Szenen-IDs** vor; es wurde **keine** Überschneidung einer `s2_scene_id` über diese Splits festgestellt. Auch Eligibility, Cell-ID-Determinismus, Train-Only-Scaler und Artefaktlesbarkeit wurden als PASS protokolliert. Diese technische Leakage-Prüfung ersetzt keinen räumlichen Holdout.
 

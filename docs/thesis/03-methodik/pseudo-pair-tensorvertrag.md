@@ -1,6 +1,7 @@
 # Pseudo-Pair- und Tensorvertrag (WB3)
 
 > Migriert aus Notion am 2026-10-28 (Seite `bce40f9b320e431aa285d04e84a1343c`, zuletzt bearbeitet 2026-10-08). Text unverändert übernommen.
+> Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet.
 
 Freigegeben 2026-09-23. Variante B.
 
@@ -28,7 +29,13 @@ Freigegeben 2026-09-23.
 - Sampling (2026-09-24): Patch-Zeile = Landsat-Szene × Spatial-Fenster; Batch-Diversität nach `s2_scene_id` (S2-Reuse ist der Redundanzpunkt, nicht Spatial-Reuse allein); keine Split-Regewichtung
 - Noch offen: Batchgröße, konkrete Caps/Weights im Reader
 
+### Patch-Index v3 (training/v3)
+
+Der aktuelle Patch-Index v3 (`gs://berlin-lst-training-data/training/patch-index/v3`, `configs/training/patch_index_v3.yaml`) umfasst **8.078 Patches** (Train 5.523, Validation 1.047, Test 1.508). Geometrie (160×160 px @ 10 m) und Zulassungsschwelle (0,95) sind unverändert. Weitere Aufschlüsselung (Szenen, Anker, Jahre): TODO.
+
 ### Patch-Index Ergebnis (2026-09-23)
+
+> **Historischer Stand – ungültig nach Datenkorrektur (training/v1).** Abgelöst durch Patch-Index v3 auf `training/v3` (siehe oben).
 
 Aus `patch_index.parquet` über 345 Manifestzeilen:
 
@@ -54,11 +61,13 @@ Split: train 6.873 Patches / 126 Szenen, validation 1.342 / 30, test 1.803 / 26.
 
 | Feld | Form | Training | Inferenz |
 | --- | --- | --- | --- |
-| `features` | 28 × H10 × W10 | V3, Scaler `training/v1` | gleich |
+| `features` | 22 × H10 × W10 | `features/v6`, Scaler `training/v3` | gleich |
 | `lst_prior` | 1 × H10 × W10 | 100 m LST → mean-pool 10×10 → 1000 m, block-expand auf 10 m | natives 100 m LST, block-expand auf 10 m |
 | `target_100m` | 1 × H100 × W100 | natives Landsat-LST | nicht verwendet |
 | `mask_100m` | H100 × W100 | `training_eligible@100m` | nicht verwendet |
 | `prediction_10m` | 1 × H10 × W10 | Modellausgabe | Produktausgabe |
+
+Die historischen Läufe nutzten 28 × H10 × W10, V3 und Scaler `training/v1`.
 
 ## Loss
 
@@ -70,8 +79,8 @@ Kein NaN-as-zero. Pool folgt dem kanonischen Nested Grid, kein freies Resampling
 
 ## Bereits fest (nicht neu verhandeln)
 
-- Feature-Release V3, 28-Kanal-Order
-- Split: Train 2017–2023, Val 2024, Test 2025; 2026 Inferenz-Reserve
+- `features/v6`, 22-Kanal-Order (Feature-Schema 5); V3/`features/v5` mit 28 Kanälen historisch
+- Split: Train 2017–2023, Val 2024, Test 2025; 2026 nur Inferenz
 - `s2_scene_id`-Gruppierung, 100/100 Eligibility, kein Input-Impute
 - Scaler train-only
 

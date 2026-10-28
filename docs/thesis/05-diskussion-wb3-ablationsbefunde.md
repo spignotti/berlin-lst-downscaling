@@ -1,6 +1,9 @@
 # WB3 · Diskussion der Ablationsbefunde
 
 > Migriert aus Notion am 2026-10-28 (Seite `3f3356451f66814e9b25deacb0f788cc`, zuletzt bearbeitet 2026-10-09). Text unverändert übernommen.
+> Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet.
+
+> **Historischer Stand – ungültig nach Datenkorrektur (training/v1).** Die gesamte Seite bezieht sich auf die Ablation auf training/v1. Die aktuellen Evidenzgrenzen stehen in [05 · Diskussion & Limitationen](05-diskussion.md).
 
 **Zugehörige Ergebnistabellen:** [WB3 · Ergebnistabellen – Baselines und Ablation](04-ergebnisse-wb3-ergebnistabellen.md). Die Beurteilung bezieht sich auf diese veröffentlichten MAE-Vergleiche.
 
@@ -43,7 +46,7 @@ Die isolierte ERA5-Erweiterung liegt im 2025-Test zahlenmäßig leicht unter dem
 
 1. Was können ECOSTRESS, räumliche Strukturmetriken und räumlicher Holdout **zusätzlich** zur 100-m-Skalentreue belegen?
 2. Wie stabil sind die beobachteten Inkremente über Seeds, Szenen, Stadtstrukturen und Wetterlagen? Was davon passt noch in den Scope?
-3. Der Random-Forest-Vergleich ist seit 09.10.2026 abgeschlossen: bestes RF-Test-MAE 1.18341 K, U-Net mit gleichen Featurefamilien (Stage 4) 0.47535 K. Wie weit erlaubt der Vergleich unterschiedlicher Lernrepräsentationen und Modellkapazitäten eine methodische Aussage über den Vorteil räumlicher DL-Modelle? [Validierter RF-Bericht](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/random-forest-full-results.md).
+3. (historisch, training/v1) Der Random-Forest-Vergleich ist seit 09.10.2026 abgeschlossen: bestes RF-Test-MAE 1.18341 K, U-Net mit gleichen Featurefamilien (Stage 4) 0.47535 K. Wie weit erlaubt der Vergleich unterschiedlicher Lernrepräsentationen und Modellkapazitäten eine methodische Aussage über den Vorteil räumlicher DL-Modelle? [Validierter RF-Bericht](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/random-forest-full-results.md).
 4. Wie lassen sich die Ergebnisse in der Berliner stadtklimatischen Anwendung beschreiben, ohne LST mit Lufttemperatur oder FITNAH-Modellkarten mit thermischer Ground Truth gleichzusetzen?
 5. Wo bleiben kausale oder quasi-experimentelle Maßnahmenbewertungen optional statt notwendige Schlussfolgerung?
 

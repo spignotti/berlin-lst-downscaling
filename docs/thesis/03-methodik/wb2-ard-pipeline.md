@@ -1,6 +1,9 @@
 # WB2 ARD-Pipeline
 
 > Migriert aus Notion am 2026-10-28 (Seite `101d47201582443da9e2157ecf696194`, zuletzt bearbeitet 2026-07-15). Text unverändert übernommen.
+> Überarbeitet am 2026-10-28: Datenstand features/v6 / ARD v10 / training/v3; ältere Inhalte als historisch gekennzeichnet; Abschnitte zu Tooling und archivierten Arbeitsnotizen entfernt.
+
+> **Historischer Stand (Juli/August 2026), abgelöst durch features v6 / ARD v10, siehe [Datenbasis & Feature Engineering](datenbasis-feature-engineering.md).**
 
 > 🛰️ Stand 2026-07-08. Lebendes Ergebnis-Dokument für WB2. Datenakquise über Planetary Computer STAC + odc-stac (Landsat/Sentinel-2) und earthaccess/CMR (ECOSTRESS). Google Earth Engine ist abgelöst. Zeitliche Kopplung Landsat zu Sentinel-2 steht. Keine Code-Details, die liegen im Repo.
 
@@ -60,19 +63,3 @@
 - **Aktueller Bestand:** 474 gekoppelte Landsat-Sentinel-2-Paare nach Szenenselektion. Der ARD-Voll-Run schreibt die Landsat-Targets auf das kanonische 100-m-Grid.
 
 **Primärquellen:** [NASA Landsat 8](https://science.nasa.gov/mission/landsat-8/), [NASA Landsat 9](https://science.nasa.gov/mission/landsat-9/), [USGS Collection 2 Surface Temperature](https://www.usgs.gov/landsat-missions/landsat-collection-2-surface-temperature).
-
-## Legacy: archivierte OpenCode-Notes
-
-Frühere OpenCode-Notes zum Stand der Datenpipeline. Nach der Konsolidierung in dieses Dokument archiviert, weiterhin über die Notes-DB mit Archiv-Filter auffindbar.
-
-- Plan A+B abgeschlossen — Manifest + Canonical Grid + Validation (Notion-Archiv) (Primärquelle für Selektion und Kopplung oben)
-- ARD Datenvolumen — 960 Szenen, ~102 GB, ~4.5h Laufzeit (Notion-Archiv) (Primärquelle für Datenvolumen oben)
-- Architektur-Dokumentation & Cloud-Readiness-Review (berlin-lst-downscaling) (Notion-Archiv) (Schema v4, lokaler Stand, Code-Details gehören ins Repo/[PROJECT.md](http://PROJECT.md))
-- Volumen-Scan Szenen-Selektion 2017-2025 (Juli 2026) (Notion-Archiv) (Schätzung, durch gemessenes ARD-Datenvolumen ersetzt)
-- ARD Pipeline Audit — Cloud-Masking Feinjustierung + Pipeline-Verifikation (2026-06-28) (Notion-Archiv) (GEE-Ära, Bug-Funde in gee\_[scenes.py](http://scenes.py), obsolet)
-- ARD Pipeline Audit + ECOSTRESS Reprojection Fix (2026-06-28) (Notion-Archiv) (GEE-Ära, vor dem Pivot)
-- Feasibility Check: Secondary Data Sources (Notion-Archiv) (Sekundärdaten-Machbarkeit, Inhalt im Project Memory, wieder relevant erst für Stage 2 bis 4)
-- Coupling Analysis: Landsat ↔ Sentinel-2 (Δt Window) (Notion-Archiv) (Δt-Fenster plus/minus 3 bestätigt, in Kopplungsergebnis aufgegangen)
-- ECOSTRESS Data Availability — Updated Findings (2026-06-24) (Notion-Archiv) (durch tatsächliches Kopplungsergebnis ersetzt: 12 Granules 2018)
-- Forschung: Datenquellen-Recherche verdichtet (2026-06-23) (Notion-Archiv) (in Research Results eingeflossen, überholt)
-- Research Results — Data Availability & Additional Data Sources (Notion-Archiv) (GEE-Ära, Zeitfenster und Median-Empfehlung überholt)
