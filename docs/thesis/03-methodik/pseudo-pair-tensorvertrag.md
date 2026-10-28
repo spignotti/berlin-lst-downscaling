@@ -31,7 +31,11 @@ Freigegeben 2026-09-23.
 
 ### Patch-Index v3 (training/v3)
 
-Der aktuelle Patch-Index v3 (`gs://berlin-lst-training-data/training/patch-index/v3`, `configs/training/patch_index_v3.yaml`) umfasst **8.078 Patches** (Train 5.523, Validation 1.047, Test 1.508; Lauf `4c896c29`, [QA](../../results/patch-index-v3/patch_index_qa.json), [complete.json](../../results/patch-index-v3/complete.json)). Geometrie (160×160 px @ 10 m) und Zulassungsschwelle (0,95) sind unverändert. Weitere Aufschlüsselung (Szenen, Anker, Jahre): TODO.
+Der aktuelle Patch-Index v3 (`gs://berlin-lst-training-data/training/patch-index/v3`, `configs/training/patch_index_v3.yaml`) umfasst **8.078 Patches** (Train 5.523, Validation 1.047, Test 1.508; Lauf `4c896c29`, [QA](../../results/patch-index-v3/patch_index_qa.json), [complete.json](../../results/patch-index-v3/complete.json)). Geometrie (160×160 px @ 10 m) und Zulassungsschwelle (0,95) sind unverändert. Aufschlüsselung laut QA:
+
+- Szenen: 165 Szenen liefern Patches (Train 114, Validation 27, Test 24). 100 Szenen haben kein gültiges Patch, 1 Szene hat keine zulässigen Zellen; 24 Szenen wurden übersprungen (`inference_deferred` 20, `ard sentinel2 not done` 4).
+- Anker: 263 verschiedene Ankerpositionen auf dem kanonischen 100-m-Raster (Zeile 48–336, Spalte 32–416). Über alle Patches summiert 2.046.618 zulässige 100-m-Zellen (je Szene gezählt); der zulässige Anteil je Patch liegt zwischen 0,953125 und 1,0.
+- Jahre: 2017 157, 2018 1.061, 2019 410, 2020 543, 2021 241, 2022 1.421, 2023 1.690 (Summe 5.523 = Train), 2024 1.047 (Validation), 2025 1.508 (Test); Summe 8.078.
 
 ### Patch-Index Ergebnis (2026-09-23)
 

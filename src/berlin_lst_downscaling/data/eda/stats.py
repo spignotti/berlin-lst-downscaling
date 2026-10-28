@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pandas as pd
 from scipy.stats import rankdata
 
 from berlin_lst_downscaling.data.eda.rules import (
@@ -218,6 +219,32 @@ def within_between(scene_ids: np.ndarray, values: np.ndarray) -> dict[str, float
     }
 
 
+def _grouped_pearson(
+    codes: np.ndarray,
+    left: np.ndarray,
+    right: np.ndarray,
+    n_groups: int,
+    constant: np.ndarray,
+) -> np.ndarray:
+    """Per-group Pearson from centered two-pass sums; NaN for constant groups."""
+    counts = np.bincount(codes, minlength=n_groups).astype(np.float64)
+
+    def centered(values: np.ndarray) -> np.ndarray:
+        # Second pass removes the rounding error of the first group mean.
+        dev = values - (np.bincount(codes, weights=values, minlength=n_groups) / counts)[codes]
+        return dev - (np.bincount(codes, weights=dev, minlength=n_groups) / counts)[codes]
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        left_dev = centered(left)
+        right_dev = centered(right)
+        sxx = np.bincount(codes, weights=left_dev * left_dev, minlength=n_groups)
+        syy = np.bincount(codes, weights=right_dev * right_dev, minlength=n_groups)
+        sxy = np.bincount(codes, weights=left_dev * right_dev, minlength=n_groups)
+        corr = np.clip(sxy / (np.sqrt(sxx) * np.sqrt(syy)), -1.0, 1.0)
+    corr[constant | (sxx <= 0.0) | (syy <= 0.0)] = math.nan
+    return corr
+
+
 def within_scene_correlations(
     scene_ids: np.ndarray,
     left: np.ndarray,
@@ -231,30 +258,35 @@ def within_scene_correlations(
     ids = np.asarray(scene_ids).ravel()
     pair_left = np.asarray(left, dtype=np.float64).ravel()
     pair_right = np.asarray(right, dtype=np.float64).ravel()
-    pearsons: list[float] = []
-    spearmans: list[float] = []
-    used = 0
-    skipped = 0
-    for scene_id in dict.fromkeys(ids.tolist()):
-        mask = ids == scene_id
-        ok = np.isfinite(pair_left[mask]) & np.isfinite(pair_right[mask])
-        if int(np.sum(ok)) < MIN_WITHIN_SCENE_N:
-            skipped += 1
-            continue
-        used += 1
-        scene_left = pair_left[mask][ok]
-        scene_right = pair_right[mask][ok]
-        left_corr = pearson(scene_left, scene_right)
-        right_corr = spearman(scene_left, scene_right)
-        if math.isfinite(left_corr):
-            pearsons.append(left_corr)
-        if math.isfinite(right_corr):
-            spearmans.append(right_corr)
+    all_codes, uniques = pd.factorize(ids, use_na_sentinel=False)
+    n_groups = len(uniques)
+    ok = np.isfinite(pair_left) & np.isfinite(pair_right)
+    n_finite = np.bincount(all_codes[ok], minlength=n_groups)
+    eligible = n_finite >= MIN_WITHIN_SCENE_N
+    used = int(np.sum(eligible))
+    skipped = n_groups - used
+    keep = ok & eligible[all_codes]
+    codes = all_codes[keep]
+    frame = pd.DataFrame({"g": codes, "x": pair_left[keep], "y": pair_right[keep]})
+    grouped = frame.groupby("g", sort=True)
+    spread = grouped[["x", "y"]].agg(["min", "max"]).reindex(range(n_groups))
+    constant = (
+        (spread[("x", "min")] == spread[("x", "max")])
+        | (spread[("y", "min")] == spread[("y", "max")])
+    ).to_numpy()
+    rank_left = np.asarray(grouped["x"].rank(method="average"), dtype=np.float64)
+    rank_right = np.asarray(grouped["y"].rank(method="average"), dtype=np.float64)
+    pearsons = _grouped_pearson(
+        codes, frame["x"].to_numpy(), frame["y"].to_numpy(), n_groups, constant
+    )
+    spearmans = _grouped_pearson(codes, rank_left, rank_right, n_groups, constant)
+    pearsons = pearsons[eligible & np.isfinite(pearsons)]
+    spearmans = spearmans[eligible & np.isfinite(spearmans)]
     return {
         "n_scenes_used": used,
         "n_scenes_skipped": skipped,
-        "median_pearson": float(np.median(pearsons)) if pearsons else math.nan,
-        "median_spearman": float(np.median(spearmans)) if spearmans else math.nan,
+        "median_pearson": float(np.median(pearsons)) if pearsons.size else math.nan,
+        "median_spearman": float(np.median(spearmans)) if spearmans.size else math.nan,
     }
 
 
