@@ -15,7 +15,9 @@
 #   VERTEX_RUN_LABEL, VERTEX_SOURCE_SHA, VERTEX_IMAGE_DIGEST, VERTEX_EVIDENCE_URI,
 #   INFISICAL_MACHINE_IDENTITY_ID, INFISICAL_PROJECT_ID, INFISICAL_ENV
 # Optional: INFISICAL_SECRET_PATH (default "/"), VERTEX_OUTPUT_ROOT,
-#   VERTEX_CONFIG_NAME (default "vertex_smoke"), VERTEX_PROFILE (default "smoke")
+#   VERTEX_CONFIG_NAME (default "vertex_smoke"), VERTEX_PROFILE (default "smoke"),
+#   VERTEX_SEED and VERTEX_MAX_EPOCHS (v6 ablation modes; appended as the Hydra
+#   overrides seed=... and trainer.max_epochs=... when non-empty)
 set -euo pipefail
 
 : "${VERTEX_RUN_LABEL:?VERTEX_RUN_LABEL is required}"
@@ -108,6 +110,12 @@ elif [[ "$PROFILE" == "efficiency" ]]; then
 else
   run_command=(uv run python scripts/runners/run_modeling.py \
     --config-name "$CONFIG_NAME" "output_root=$OUTPUT_ROOT")
+  if [[ -n "${VERTEX_SEED:-}" ]]; then
+    run_command+=("seed=$VERTEX_SEED")
+  fi
+  if [[ -n "${VERTEX_MAX_EPOCHS:-}" ]]; then
+    run_command+=("trainer.max_epochs=$VERTEX_MAX_EPOCHS")
+  fi
 fi
 
 rc=0

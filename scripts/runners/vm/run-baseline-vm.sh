@@ -21,15 +21,20 @@
 #     stopped even when the run's evidence checks fail.
 #
 # Usage (run from the repository root, like the sibling launchers):
-#   run-baseline-vm.sh [branch]
+#   run-baseline-vm.sh [branch] [baseline_full|baseline_v6_full]
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 
 BRANCH="${1:-main}"
+BASELINE_CONFIG="${2:-baseline_full}"
+case "$BASELINE_CONFIG" in
+  baseline_full|baseline_v6_full) ;;
+  *) echo "Usage: $0 [branch] [baseline_full|baseline_v6_full]" >&2; exit 1 ;;
+esac
 PIPELINE_LABEL="Full naive baseline (validation+test)"
-MARKER_CONFIG="baseline_full"
+MARKER_CONFIG="$BASELINE_CONFIG"
 POLL_MAX_SECONDS=7200
 # Independent-validator coverage: patches recomputed per split, with the block
 # means re-derived by a different path than the reader (whole-COG accumulation).
@@ -38,15 +43,17 @@ VALIDATOR_PATCHES=25
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 TMP_BASE="${TMPDIR:-$REPO_ROOT/.tmp}"
 
-vm_init_run "baseline-full"
+RUN_TAG="baseline-full"
+if [[ "$BASELINE_CONFIG" == "baseline_v6_full" ]]; then RUN_TAG="baseline-v6-full"; fi
+vm_init_run "$RUN_TAG"
 
-OUTPUT_REL="data/runs/baseline-full/$WRAP_RUN_ID"
+OUTPUT_REL="data/runs/$RUN_TAG/$WRAP_RUN_ID"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
 REMOTE_REPORT="$REMOTE_OUTPUT/baseline_report.json"
-LOCAL_DIR="${TMP_BASE%/}/vm/baseline-full/$WRAP_RUN_ID"
+LOCAL_DIR="${TMP_BASE%/}/vm/$RUN_TAG/$WRAP_RUN_ID"
 # `set -f` (noglob) keeps the Hydra list override safe inside the detached
 # shell. No single quote may appear in REMOTE_CMD (see vm_launch_detached).
-REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name baseline_full splits=[validation,test] output_root=$OUTPUT_REL"
+REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name $BASELINE_CONFIG splits=[validation,test] output_root=$OUTPUT_REL"
 
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
 echo "  Validation/test only; output root: $OUTPUT_REL"

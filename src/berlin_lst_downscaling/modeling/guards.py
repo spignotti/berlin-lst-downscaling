@@ -24,6 +24,8 @@ from berlin_lst_downscaling.modeling.channels import (
     ABLATION_ISOLATION_CHANNELS,
     ABLATION_LOCKED_CONFIG_NAMES,
     ABLATION_STAGE_CHANNELS,
+    V6_ABLATION_ARMS,
+    V6_ABLATION_LOCKED_CONFIG_NAMES,
     feature_order_for,
     schema_version_from_config,
     selection_from_config,
@@ -35,7 +37,9 @@ from berlin_lst_downscaling.modeling.contracts import (
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 
 _ALLOWED_CONTRACT_LOSSES = frozenset({"masked_l1", "thermal_aware"})
-_ALLOWED_FEATURE_ORDERS = frozenset({"v3_first_c", "v3_named_subset", "v6_registry"})
+_ALLOWED_FEATURE_ORDERS = frozenset(
+    {"v3_first_c", "v3_named_subset", "v6_registry", "v6_named_subset"}
+)
 
 
 def contract_invariants(cfg: DictConfig) -> None:
@@ -76,7 +80,8 @@ def contract_invariants(cfg: DictConfig) -> None:
             f"{feature_order!r} is not one of {sorted(_ALLOWED_FEATURE_ORDERS)}"
         )
     selection = selection_from_config(cfg)
-    expected_order = feature_order_for(selection)
+    schema_version = schema_version_from_config(cfg)
+    expected_order = feature_order_for(selection, schema_version)
     if feature_order != expected_order:
         raise ValueError(
             f"contract.feature_order = {feature_order!r} does not match the resolved "
@@ -84,15 +89,27 @@ def contract_invariants(cfg: DictConfig) -> None:
         )
     if not bool(cfg.get("ablation_lock", False)) and loss != "masked_l1":
         raise ValueError("thermal_aware loss is only admitted on ablation_lock configs")
-    if feature_order == "v6_registry":
-        if bool(cfg.get("ablation_lock", False)):
-            raise ValueError("v6_registry is not an ablation-lock profile")
-        if schema_version_from_config(cfg) != FEATURE_SCHEMA_VERSION_V6:
+    ablation_lock = bool(cfg.get("ablation_lock", False))
+    release = cfg.get("ablation_release")
+    if feature_order in ("v6_registry", "v6_named_subset"):
+        if schema_version != FEATURE_SCHEMA_VERSION_V6:
             raise ValueError(
-                f"v6_registry requires feature schema version {FEATURE_SCHEMA_VERSION_V6}"
+                f"{feature_order} requires feature schema version {FEATURE_SCHEMA_VERSION_V6}"
             )
-    elif not bool(cfg.get("ablation_lock", False)) and feature_order != "v3_first_c":
-        raise ValueError("v3_named_subset is only admitted on ablation_lock configs")
+        if ablation_lock:
+            if release != "v6":
+                raise ValueError(
+                    f"{feature_order} is not an ablation-lock profile outside the v6 lock"
+                )
+        elif feature_order == "v6_named_subset":
+            raise ValueError("v6_named_subset is only admitted on the v6 ablation lock")
+    else:
+        if release == "v6":
+            raise ValueError(
+                f"ablation_release 'v6' requires a v6 feature order; got {feature_order!r}"
+            )
+        if not ablation_lock and feature_order != "v3_first_c":
+            raise ValueError("v3_named_subset is only admitted on ablation_lock configs")
     if split_for_year(2024) != "validation" or split_for_year(2025) != "test":
         raise RuntimeError("temporal split contract no longer maps 2024/2025 as frozen")
 
@@ -149,6 +166,17 @@ def _check_ablation_channels(
 
 
 def assert_ablation_lock(cfg: DictConfig) -> None:
+    """Fail closed unless the config is an ablation lock (v1 Tag-11 or v6)."""
+    release = cfg.get("ablation_release")
+    if release is None:
+        _assert_ablation_lock_v1(cfg)
+    elif release == "v6":
+        _assert_ablation_lock_v6(cfg)
+    else:
+        raise ValueError(f"ablation_release={release!r} is not a known ablation release")
+
+
+def _assert_ablation_lock_v1(cfg: DictConfig) -> None:
     """Fail closed unless the config is a Tag-11 ablation under the Stage-1 lock."""
     problems: list[str] = []
     if cfg.get("ablation_lock") is not True:
@@ -219,6 +247,120 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
         problems.append(f"output_root={output_root!r} (expected a job-local path under data/runs/)")
     if problems:
         raise ValueError("ablation lock is off-contract: " + "; ".join(problems))
+
+
+_V6_DATA_RELEASE_ID = "training/v3"
+_V6_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v6"
+_V6_TRAINING_ROOT = "gs://berlin-lst-training-data/training/v3"
+_V6_PATCH_INDEX_ROOT = "gs://berlin-lst-training-data/training/patch-index/v3"
+_V6_ARD_ROOT = "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
+
+# Exact pins of the v6 ablation lock. ``seed`` and ``trainer.max_epochs`` are
+# parameters (validated separately), everything else must match exactly.
+_V6_LOCK_EXPECTED: dict[str, object] = {
+    "data.kind": "real",
+    "data.mode": "stream",
+    "data.max_patches_per_split": None,
+    "data.shuffle_train": True,
+    "data.batch_size": 4,
+    "data.num_workers": 0,
+    "data.pin_memory": False,
+    "data.feature_schema_version": FEATURE_SCHEMA_VERSION_V6,
+    "model.depth": 4,
+    "model.base_width": 32,
+    "trainer.learning_rate": 1.0e-3,
+    "trainer.weight_decay": 0.0,
+    "trainer.precision": "16-mixed",
+    "trainer.accelerator": "gpu",
+    "wandb.mode": "online",
+    "aggregation": "arithmetic",
+    "data_release_id": _V6_DATA_RELEASE_ID,
+    "features_root": _V6_FEATURES_ROOT,
+    "training_root": _V6_TRAINING_ROOT,
+    "patch_index_root": _V6_PATCH_INDEX_ROOT,
+    "ard_root": _V6_ARD_ROOT,
+}
+
+
+def _is_plain_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _assert_ablation_lock_v6(cfg: DictConfig) -> None:
+    """Fail closed unless the config is a v6 ablation arm on the pinned lock."""
+    problems: list[str] = []
+    if cfg.get("ablation_lock") is not True:
+        problems.append("ablation_lock marker is not true")
+    arm_id = cfg.get("ablation_arm")
+    arm = V6_ABLATION_ARMS.get(arm_id) if isinstance(arm_id, str) else None
+    if arm is None:
+        problems.append(f"ablation_arm={arm_id!r} (expected one of {sorted(V6_ABLATION_ARMS)})")
+    for key in ("ablation_stage", "ablation_isolation"):
+        if cfg.get(key) is not None:
+            problems.append(f"{key}={cfg.get(key)!r} (expected null on a v6 arm)")
+    if cfg.get("stage1_residual_prior") is not True:
+        problems.append("ablation configs require the frozen residual prior")
+    for marker in ("stage1_lock", "stage1_full", "stage1_probe"):
+        if bool(cfg.get(marker, False)):
+            problems.append(f"ablation config must not carry {marker}")
+    for key, expected in _V6_LOCK_EXPECTED.items():
+        actual = OmegaConf.select(cfg, key)
+        if actual != expected or isinstance(actual, bool) != isinstance(expected, bool):
+            problems.append(f"{key}={actual!r} (expected {expected!r})")
+    devices = OmegaConf.select(cfg, "trainer.devices")
+    if not _is_plain_int(devices) or devices != 1:
+        problems.append(f"trainer.devices={devices!r} (expected 1)")
+    if list(cfg.data.get("splits") or []) != ["train", "validation"]:
+        problems.append("ablation data.splits must be exactly ['train', 'validation']")
+    if list(cfg.data.get("scene_ids") or []):
+        problems.append("ablation data.scene_ids must be empty")
+    seed = cfg.get("seed")
+    if not _is_plain_int(seed) or seed < 0:
+        problems.append(f"seed={seed!r} (expected an int >= 0)")
+    max_epochs = OmegaConf.select(cfg, "trainer.max_epochs")
+    if not _is_plain_int(max_epochs) or max_epochs < 1:
+        problems.append(f"trainer.max_epochs={max_epochs!r} (expected an int >= 1)")
+    if arm is not None:
+        _check_ablation_channels(
+            problems,
+            cfg,
+            label=f"v6 arm {arm.arm_id}",
+            expected_names=list(arm.channels),
+            expected_loss=arm.loss,
+        )
+        expected_order = "v6_registry" if len(arm.channels) == 22 else "v6_named_subset"
+        try:
+            actual_order = feature_order_for(
+                selection_from_config(cfg), schema_version_from_config(cfg)
+            )
+        except ValueError as exc:
+            problems.append(str(exc))
+        else:
+            if actual_order != expected_order:
+                problems.append(
+                    f"resolved feature order {actual_order!r} (expected {expected_order!r})"
+                )
+        if OmegaConf.select(cfg, "contract.feature_order") != expected_order:
+            problems.append(
+                f"contract.feature_order={OmegaConf.select(cfg, 'contract.feature_order')!r} "
+                f"(expected {expected_order!r})"
+            )
+    output_root = str(cfg.get("output_root", ""))
+    segments = output_root.split("/")
+    seed_segment = f"seed-{seed}" if _is_plain_int(seed) else None
+    if (
+        not output_root
+        or output_root.startswith("gs://")
+        or "/runs/" not in output_root
+        or seed_segment is None
+        or seed_segment not in segments
+    ):
+        problems.append(
+            f"output_root={output_root!r} (expected a job-local path under data/runs/ "
+            f"with a 'seed-{seed}' segment)"
+        )
+    if problems:
+        raise ValueError("v6 ablation lock is off-contract: " + "; ".join(problems))
 
 
 def assert_vertex_smoke_bounds(cfg: DictConfig) -> None:
@@ -783,6 +925,7 @@ _LOCKED_AGGREGATION_CONFIGS = frozenset(
     {
         STAGE1_LOCKED_CONFIG_NAME,
         *ABLATION_LOCKED_CONFIG_NAMES,
+        *V6_ABLATION_LOCKED_CONFIG_NAMES,
     }
 )
 
@@ -833,6 +976,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         STAGE1_PROBE_CONFIG_NAME,
         STAGE1_PROBE_LR3_CONFIG_NAME,
         *ABLATION_LOCKED_CONFIG_NAMES,
+        *V6_ABLATION_LOCKED_CONFIG_NAMES,
     }
     if bool(cfg.get("stage1_residual_prior", False)) and config_name not in _residual_prior_configs:
         raise ValueError(
@@ -844,7 +988,8 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "stage1_full is the unbounded Stage-1 Vertex run marker "
             f"(issue #53) but is set on config {config_name!r}; refusing to run"
         )
-    if bool(cfg.get("ablation_lock", False)) and config_name not in ABLATION_LOCKED_CONFIG_NAMES:
+    _ablation_names = (*ABLATION_LOCKED_CONFIG_NAMES, *V6_ABLATION_LOCKED_CONFIG_NAMES)
+    if bool(cfg.get("ablation_lock", False)) and config_name not in _ablation_names:
         raise ValueError(
             "ablation_lock is the Tag-11 ablation marker (issue #57) but is set on "
             f"config {config_name!r}; refusing to run"
@@ -857,7 +1002,21 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         assert_stage1_probe(cfg)
     if config_name == STAGE1_PROBE_LR3_CONFIG_NAME:
         assert_stage1_probe_lr3(cfg)
-    if config_name in ABLATION_LOCKED_CONFIG_NAMES:
+    release = cfg.get("ablation_release")
+    if config_name in V6_ABLATION_LOCKED_CONFIG_NAMES:
+        arm_id = cfg.get("ablation_arm")
+        arm = V6_ABLATION_ARMS.get(arm_id) if isinstance(arm_id, str) else None
+        if release != "v6" or arm is None or arm.config_name != config_name:
+            raise ValueError(
+                f"config {config_name!r} requires ablation_release='v6' and its own "
+                f"ablation_arm; got release={release!r} arm={arm_id!r}"
+            )
+    elif release is not None:
+        raise ValueError(
+            f"ablation_release={release!r} is only admitted on the v6 ablation configs; "
+            f"got config {config_name!r}"
+        )
+    if config_name in _ablation_names:
         assert_ablation_lock(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
         assert_vertex_smoke_bounds(cfg)

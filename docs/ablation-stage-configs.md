@@ -3,6 +3,8 @@
 Hydra profiles for the cumulative feature ladder under the Stage-1 residual
 lock. Full temporal runs are issue #58.
 
+v6 successor: [ablation-v6-configs.md](ablation-v6-configs.md)
+
 | Config | Stage | Channels | `feature_order` | Loss |
 |--------|------:|---------:|-----------------|------|
 | `stage2_locked` | 2 | 18 | `v3_first_c` | masked L1 |

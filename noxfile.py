@@ -145,6 +145,13 @@ def validate_ablation_configs(session: nox.Session) -> None:
         "scripts/validators/validate_ablation_configs.py",
         external=True,
     )
+    session.run(
+        "uv",
+        "run",
+        "python",
+        "scripts/validators/plan_v6_ablation.py",
+        external=True,
+    )
 
 
 # ── manifest-driven smoke test ────────────────────────────────────────

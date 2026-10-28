@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run a committed RF smoke or full baseline, validate, secure artifacts, and stop.
-# Usage: run-random-forest-vm.sh <smoke|full> <branch> <hourly-rate-usd>
+# Usage: run-random-forest-vm.sh <smoke|full|v6-smoke|v6-full> <branch> <hourly-rate-usd>
 # Full mode requires operator inspection of smoke memory/throughput first.
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
@@ -12,7 +12,9 @@ HOURLY_RATE="${3:-}"
 case "$MODE" in
   smoke) CONFIG="random_forest_smoke"; RUN_SECONDS=1800; TOTAL_SECONDS=3600 ;;
   full) CONFIG="random_forest_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
-  *) echo "Usage: $0 <smoke|full> <branch> <hourly-rate-usd>" >&2; exit 1 ;;
+  v6-smoke) CONFIG="random_forest_v6_smoke"; RUN_SECONDS=1800; TOTAL_SECONDS=3600 ;;
+  v6-full) CONFIG="random_forest_v6_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
+  *) echo "Usage: $0 <smoke|full|v6-smoke|v6-full> <branch> <hourly-rate-usd>" >&2; exit 1 ;;
 esac
 if [[ ! "$HOURLY_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]] \
   || ! awk -v rate="$HOURLY_RATE" 'BEGIN { exit !(rate > 0 && rate * 8 <= 10) }'; then
@@ -59,10 +61,12 @@ if [[ "$(_vm_field 'machineType.basename()')" != "$VM_MACHINE" ]]; then
   exit 1
 fi
 vm_init_run "random-forest-$MODE"
-OUTPUT_REL="data/runs/random-forest/$WRAP_RUN_ID"
+RUN_DIR="random-forest"
+if [[ "$MODE" == v6-* ]]; then RUN_DIR="random-forest-v6"; fi
+OUTPUT_REL="data/runs/$RUN_DIR/$WRAP_RUN_ID"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
 REPO_ROOT="$(cd "$VM_SCRIPTS/../../.." && pwd)"
-LOCAL_DIR="$REPO_ROOT/data/runs/random-forest/$WRAP_RUN_ID"
+LOCAL_DIR="$REPO_ROOT/data/runs/$RUN_DIR/$WRAP_RUN_ID"
 
 # Keep this launcher's wrapper log and marker under the pipeline output root.
 LOG_DIR="$REMOTE_OUTPUT/logs/random_forest/launcher"
@@ -87,7 +91,7 @@ fi
 vm_push_deploy
 REMAINING=$(remaining_seconds)
 RESERVE=1200
-if [[ "$MODE" == "full" ]]; then RESERVE=3600; fi
+if [[ "$MODE" == "full" || "$MODE" == "v6-full" ]]; then RESERVE=3600; fi
 AVAILABLE=$((REMAINING - RESERVE))
 if (( AVAILABLE < 60 )); then
   echo "ERROR: deployment consumed the run budget; refusing to launch." >&2
@@ -127,7 +131,7 @@ fi
 leave_running=1
 mkdir -p "$LOCAL_DIR"
 printf '%s\n' "$VALIDATION_OUT" > "$LOCAL_DIR/validation.txt"
-ARCHIVE="$APP_DIR/data/runs/random-forest/$WRAP_RUN_ID-artifact.tgz"
+ARCHIVE="$APP_DIR/data/runs/$RUN_DIR/$WRAP_RUN_ID-artifact.tgz"
 ssh_cmd "tar --exclude=./artifact.tgz -C '$REMOTE_OUTPUT' -czf '$ARCHIVE' ."
 REMOTE_SHA=$(ssh_cmd "sha256sum '$ARCHIVE'" | cut -d' ' -f1)
 ssh_cmd "cat '$ARCHIVE'" > "$LOCAL_DIR/artifact.tgz"

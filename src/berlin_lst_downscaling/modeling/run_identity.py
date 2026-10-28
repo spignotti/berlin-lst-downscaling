@@ -56,6 +56,7 @@ class RunIdentity:
     patch_index_content_fingerprint: ContentFingerprint | None
     patch_index_source_release_root: str | None
     aggregation: str
+    seed: int | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -223,7 +224,17 @@ def resolve_run_identity(
         patch_index_content_fingerprint=index_fp,
         patch_index_source_release_root=index_source,
         aggregation=aggregation,
+        seed=_seed_from_config(cfg),
     )
+
+
+def _seed_from_config(cfg: DictConfig) -> int | None:
+    raw = cfg.get("seed")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"seed must be an int or null, got {raw!r}")
+    return raw
 
 
 def _active_expectations(expect: dict[str, object]) -> dict[str, str]:
