@@ -18,8 +18,9 @@ in `src/berlin_lst_downscaling/analysis/emissivity.py`, tests in
 > adjustment. Hence (a)−(b) isolates the scene-NDVI/phenology adjustment of
 > the C2 ST product, up to the GED/TIRS spectral-fit error and the 100 m →
 > 30 m bilinear resampling error, and land-cover change since the 2000–2008
-> GED period. Landsat 9 uses the L8 coefficients
-> (labelled approximation; open question). Variant (c) is the uniform
+> GED period. Landsat 9 uses the L8 coefficients as a documented
+> approximation (Malakar 2018 predates L9; TIRS-2 B10 RSR is near-identical),
+> accepted by the project owner. Variant (c) is the uniform
 > scene-median EMIS (`uniform_median`), which removes ALL spatial emissivity
 > structure and is therefore an **upper bound on the spatial-pattern
 > effect**, plus fixed 0.97 / 0.98.
@@ -151,11 +152,44 @@ is 20–40× smaller than the product's own stated uncertainty (ST_QA mean
 2.2–5.2 K). ΔLST (a)−(c) below is unaffected — both legs share the inversion,
 so the constant cancels.
 
-> The numbers and tables below are from the PR #93 run with the uniform
-> scene-median emissivity, i.e. variant (c) `uniform_median` (and the fixed
-> scenarios, also (c)). The committed SVGs in `docs/emissivity-diagnostic/`
-> are from that same run and show (c). Static-GED (b) results are not yet
-> produced.
+> The (c) tables below are from the PR #93 run with the uniform scene-median
+> emissivity (`uniform_median`, plus the fixed scenarios). The committed SVGs in
+> `docs/emissivity-diagnostic/` are from that same run and show (c). The (b)
+> tables come from the static-GED run (`--aster-ged --with-s2
+> --impervious-tif`, same 9 pinned scenes, one GED granule
+> `AG100.v003.53.013.0001`), taken from its `delta_by_group.csv`,
+> `delta_by_bin.csv`, `delta_by_imperv.csv`, `per_scene.json` and
+> `ged_summary.json`. The (a) sanity residuals of that run are identical to
+> the table above. GED-invalid pixels inside the analysis mask: ≤ 0.03 % per
+> scene (0.016–0.028 %; 0 % for the two corner-clipped winter L9 scenes).
+
+## Interpretation
+
+- **The scene-NDVI emissivity coupling of the C2 ST product is real but small
+  on average.** Against static ASTER GED, the pooled ΔLST (a)−(b) is −0.07 K
+  (mean) / +0.04 K (median) over 8.48 M clear pixels, with p05/p95 of
+  −0.86 / +0.57 K. Under the uniform-median upper bound (c) the p05–p95
+  range is about 1.5× as wide (−1.04 / +1.17 K).
+- **There is a systematic gradient with imperviousness.** Pooled (a)−(b) rises
+  monotonically from −0.21 K (0–10 % sealed) to +0.14 K (90–100 %). The NDVI
+  adjustment cools vegetated pixels and warms sealed ones relative to static
+  GED. The direction matches (c), at roughly a quarter to a third of the
+  uniform-median magnitude.
+- **In summer the NDVI–LST slope is somewhat steeper with the product
+  emissivity.** Landsat-NDVI slopes are 4–17 % steeper than with static GED
+  (median ≈ 7 %; 4–12 % in 5 of 6 summer scenes, 17 % on the nearly flat
+  2023-09-07 relation). Correlations change by ≤ 0.02. In winter the relation
+  is flat except for 2024-01-28 (corner-clipped L9 scene, 47k px), where the
+  slope is −1.59 vs −0.89 K/NDVI.
+- **Consequence for the ablation.** The coupling is a second-order effect next
+  to the product uncertainty (ST_QA mean 2.2–5.2 K). No separate target arm
+  (e.g. an LST target recomputed with static emissivity) is added to the
+  ablation matrix; the effect is documented here instead and is a stated
+  limitation of using C2 ST_B10 as the target.
+- **Caveats.** ASTER GED v3 is a 2000–2008 mean, while the scenes are from
+  2022–2024. Land-cover change since then (new buildings, sealing,
+  re-greening) appears as (a)−(b) signal and is not separable here. For
+  Landsat 9 the L8 B10 Malakar coefficients are a documented approximation.
 
 ## ΔLST (a)−(c): overall per scene group (K; mean, [p05, p95])
 
@@ -172,7 +206,17 @@ Headline: removing all spatial emissivity structure moves the scene mean by
 ≤ 0.12 K — an upper bound on what the NDVI adjustment alone can do to the
 mean — but moves individual clear pixels by up to ~±1 K (p05/p95).
 
-(b) results: pending run with `--aster-ged`.
+### (b) static ASTER GED: ΔLST (a)−(b) per scene group (K; pooled over pixels)
+
+| group | mean | median | p05 | p95 | n |
+|---|---|---|---|---|---|
+| all 9 scenes | −0.07 | +0.04 | −0.86 | +0.57 | 8 484 341 |
+| summer L8 (3 scenes) | −0.05 | +0.04 | −0.71 | +0.50 | 2 591 261 |
+| summer L9 (3 scenes) | −0.08 | −0.02 | −0.81 | +0.57 | 4 869 755 |
+| winter L8 (1 scene) | −0.04 | +0.06 | −0.86 | +0.40 | 947 729 |
+| winter L9 (2 scenes) | −0.32 | −0.36 | −0.81 | +0.33 | 75 596 |
+
+The winter L9 row is two corner-clipped scenes (75k px) and is not interpreted.
 
 ## ΔLST (a)−(c) by NDVI bin (uniform median (c); n-weighted mean, [min p05, max p95])
 
@@ -186,7 +230,18 @@ warms dense vegetation (negative Δ = (a)−(c) means the static run is warmer �
 i.e. the adjustment cools dense canopies by ~0.2–0.3 K) and water/negative NDVI
 (~−0.9 K), while slightly warming sparse/low NDVI (~+0.2–0.3 K).
 
-(b) results: pending run with `--aster-ged`.
+### (b) static ASTER GED: ΔLST (a)−(b) by NDVI bin (n-weighted mean, [min p05, max p95])
+
+| season | NDVI≤0 | 0–0.2 | 0.2–0.4 | 0.4–0.6 | >0.6 |
+|---|---|---|---|---|---|
+| summer | −0.05, [−1.53, +0.28] | +0.08, [−0.80, +0.68] | +0.07, [−0.50, +0.67] | +0.02, [−0.65, +0.55] | −0.19, [−0.88, +0.48] |
+| winter | −0.48, [−1.40, +0.39] | +0.04, [−0.97, +0.45] | +0.08, [−0.51, +0.41] | +0.02, [−0.62, +0.42] | −0.22, [−0.95, +0.39] |
+| all (pooled median) | median +0.09 | median +0.09 | median +0.11 | median +0.06 | median −0.09 |
+
+Relative to static GED, the adjustment cools dense vegetation (NDVI > 0.6) by about 0.2 K and slightly
+warms low and moderate NDVI (+0.02 to +0.08 K). The water/negative-NDVI bin is near zero in summer, because GED
+water emissivity is already high. The ~−0.9 K water signal under (c) was therefore an artefact of the uniform
+median.
 
 ## ΔLST (a)−(c) by surface: land vs water (uniform median (c); QA_PIXEL bit 7)
 
@@ -201,7 +256,14 @@ pixels by ~0.9 K. Winter water samples are thin (corner-clipped scenes).
 | winter L8 | −0.03, [−1.04, +0.68], 884 367 | −0.54, [−1.06, +0.56], 63 624 |
 | winter L9 | +0.12, [−0.24, +1.17], 75 380 | −0.03, [−0.54, +1.18], 216 |
 
-(b) results: pending run with `--aster-ged`.
+### (b) static ASTER GED: ΔLST (a)−(b) land vs water (n-weighted mean, [min p05, max p95], n)
+
+| group | land mean, [p05, p95], n | water mean, [p05, p95], n |
+|---|---|---|
+| summer L8 | −0.05, [−0.70, +0.50], 2.50M | −0.10, [−1.22, +0.09], 95k |
+| summer L9 | −0.08, [−0.80, +0.57], 4.75M | −0.15, [−1.45, +0.09], 117k |
+| winter L8 | −0.02, [−0.78, +0.41], 884k | −0.30, [−1.37, +0.26], 63k |
+| winter L9 | −0.32, [−0.81, +0.33], 75k | −0.60, [−1.42, +0.30], 216 |
 
 ## ΔLST (a)−(c) by impervious class (uniform median (c); upper bound)
 
@@ -255,7 +317,28 @@ per-scene stratified numbers: `.scratch/emissivity-diagnostic/per_scene.json`
 ![ΔLST by NDVI bin, summer](emissivity-diagnostic/fig_delta_ndvi_summer.svg)
 ![ΔLST by NDVI bin, winter](emissivity-diagnostic/fig_delta_ndvi_winter.svg)
 
-(b) results: pending run with `--aster-ged`.
+### (b) static ASTER GED: ΔLST (a)−(b) by impervious class (n-weighted mean, [min p05, max p95], n)
+
+| group | 0–10 % | 10–30 % | 30–60 % | 60–90 % | 90–100 % |
+|---|---|---|---|---|---|
+| summer L8 | −0.17, [−0.75, +0.40], 587k | +0.04, [−0.54, +0.44], 184k | +0.09, [−0.30, +0.42], 313k | +0.14, [−0.18, +0.45], 274k | +0.17, [−0.12, +0.51], 114k |
+| summer L9 | −0.23, [−0.90, +0.48], 883k | +0.01, [−0.62, +0.44], 296k | +0.06, [−0.39, +0.42], 524k | +0.12, [−0.24, +0.46], 473k | +0.15, [−0.20, +0.54], 217k |
+| winter L8 | −0.18, [−0.92, +0.39], 204k | +0.02, [−0.56, +0.35], 78k | +0.05, [−0.29, +0.34], 143k | +0.06, [−0.34, +0.35], 135k | +0.00, [−1.27, +0.37], 59k |
+| winter L9 | n/a | n/a | n/a | n/a | n/a |
+| all (pooled mean / median) | −0.21 / −0.10 | +0.02 / +0.05 | +0.07 / +0.07 | +0.11 / +0.12 | +0.14 / +0.14 |
+
+The gradient has the same direction as under (c) but is about a quarter to a third of the size
+(summer L8 90–100 %: +0.17 K vs +0.58 K). Winter L9: no overlap with the product's valid area (see above).
+
+NDVI–LST slopes stratified by impervious class, (a) vs (b):
+
+| class | summer L8 2024-08-24: slope (a) / (b), r (a) / (b) | winter L8 2023-01-19: slope (a) / (b), r (a) / (b) |
+|---|---|---|
+| 0–10 % | +4.67 / +4.91, r=+0.42 / +0.45 | −0.00 / −0.00, r=−0.00 / −0.01 |
+| 10–30 % | −8.57 / −8.18, r=−0.49 / −0.49 | −0.01 / −0.01, r=−0.04 / −0.04 |
+| 30–60 % | −7.06 / −6.79, r=−0.49 / −0.50 | −0.01 / −0.01, r=−0.03 / −0.03 |
+| 60–90 % | −5.95 / −5.80, r=−0.50 / −0.50 | −0.00 / −0.00, r=−0.01 / −0.02 |
+| 90–100 % | −6.92 / −6.82, r=−0.48 / −0.48 | −0.00 / −0.00, r=−0.01 / −0.01 |
 
 ## NDVI–LST relation: slope (K per unit NDVI) and r for (a) vs (c)
 
@@ -281,7 +364,22 @@ and not interpreted; the primary result is the full-sample Landsat-NDVI pair.
 
 ![NDVI–LST scatter, LC09 2022-06-24](emissivity-diagnostic/fig_ndvi_lst_scatter.svg)
 
-(b) results: pending run with `--aster-ged`.
+### (b) static ASTER GED: NDVI–LST slope (K per unit NDVI) and r, (a) vs (b)
+
+| scene | Landsat NDVI → LST(a) | Landsat NDVI → LST(b) | Δslope (b vs a) | S2 NDVI → LST(a) | S2 NDVI → LST(b) |
+|---|---|---|---|---|---|
+| L8 2024-08-24 | −4.21, r=−0.26 | −3.75, r=−0.24 | +12 % | −5.73, r=−0.40 (n=8k) | −5.09, r=−0.37 |
+| L8 2023-06-03 | −16.01, r=−0.51 | −15.38, r=−0.50 | +4 % | −5.85, r=−0.23 (n=116k) | −5.32, r=−0.22 |
+| L8 2023-09-07 | −0.68, r=−0.11 | −0.58, r=−0.09 | +17 % | +1.31, r=+0.13 (n=253k) | +1.74, r=+0.18 |
+| L9 2022-06-24 | −7.21, r=−0.39 | −6.66, r=−0.37 | +8 % | −6.96, r=−0.40 (n=1.44M) | −6.43, r=−0.39 |
+| L9 2022-07-19 | −10.31, r=−0.49 | −9.76, r=−0.48 | +6 % | −8.70, r=−0.42 (n=691k) | −8.14, r=−0.40 |
+| L9 2022-08-11 | −1.52, r=−0.20 | −1.44, r=−0.19 | +5 % | −17.89, r=−0.73 (n=7k) | −17.55, r=−0.72 |
+| L8 2023-01-19 | −0.00, r=−0.01 | −0.00, r=−0.01 | n/a (flat) | −3.81, r=−0.91 (n=4k) | −3.10, r=−0.90 |
+| L9 2023-02-26 | −0.00, r=−0.00 | −0.00, r=−0.00 | n/a (flat) | n/a | n/a |
+| L9 2024-01-28 | −1.59, r=−0.37 | −0.89, r=−0.23 | +79 % | −1.54, r=−0.40 (n=48k) | −0.93, r=−0.27 |
+
+Δslope = (slope(a) − slope(b)) / slope(b). Positive means the product emissivity steepens the relation.
+"Flat" scenes have |slope| < 0.05 K/NDVI. The same S2 caveats apply as for (c).
 
 ## Limitations (all read-only; nothing written to GCS, no training, no jobs)
 
@@ -290,11 +388,13 @@ and not interpreted; the primary result is the full-sample Landsat-NDVI pair.
   pipeline product, same availability reason as before — out of scope).
   Land-cover stratification is NDVI bins + Fmask water/land + impervious
   classes.
-- The static-GED branch (b) is implemented (`--aster-ged`); its numbers are
-  pending a run with an Earthdata token. Open points: Landsat 9 uses the L8
-  Malakar coefficients (approximation; Malakar 2018 predates L9, TIRS-2 B10 RSR
-  is near-identical), and GED is a 2000–2008 mean vintage compared with
-  2022–2024 scene dates (land-cover change appears as (a)−(b) signal).
+- Static GED (b): Landsat 9 uses the L8 Malakar coefficients. This is a
+  documented approximation accepted by the project owner (Malakar 2018 predates
+  L9; TIRS-2 B10 RSR is near-identical). GED is a 2000–2008 mean vintage while
+  the scenes are from 2022–2024, so land-cover change appears as (a)−(b)
+  signal. GDAL bilinear resampling with NaN nodata drops only 30 m pixels whose
+  centre falls in an invalid GED cell (≤ 0.03 % of the analysis mask), and the
+  validity filter is `0 < eps <= 1`. Both are kept as is.
 - Winter L9 samples are thin (28k/47k px, corner-clipped scenes); one winter
   scene has no joint S2 pixels.
 - Sanity residual 0.11–0.17 K exceeds the 0.1 K target (uniform constant, see
