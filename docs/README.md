@@ -22,6 +22,7 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 - `vertex-gpu-training.md` — Vertex AI GPU launch recipe.
 - `ablation-stage-configs.md` — frozen comparison configs for the ablation
   stages and isolation runs.
+- `ablation-v6-configs.md` — v6 ablation arms, run matrix, and launcher modes.
 
 ## Frozen evidence
 

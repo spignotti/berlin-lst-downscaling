@@ -74,6 +74,8 @@ from berlin_lst_downscaling.modeling.run import (
     assert_stage1_probe_lr3,
     assert_stage1_runtime,
     assert_vertex_smoke_bounds,
+    contract_invariants,
+    guard_modeling_config,
 )
 from berlin_lst_downscaling.modeling.verification_protocol import (
     VERIFICATION_MAX_HOURLY_RATE_USD,
@@ -154,6 +156,15 @@ MODE_CONFIG_NAME = {
     "stage5": "stage5_locked",
     "isolate-shadows": "isolate_shadows_locked",
     "isolate-era5": "isolate_era5_locked",
+    "v6-l1": "v6_l1_locked",
+    "v6-l2": "v6_l2_locked",
+    "v6-l3": "v6_l3_locked",
+    "v6-l4": "v6_l4_locked",
+    "v6-l5": "v6_l5_locked",
+    "v6-loo-morph": "v6_loo_morph_locked",
+    "v6-loo-shadow": "v6_loo_shadow_locked",
+    "v6-no-ndvi-ndwi": "v6_no_ndvi_ndwi_locked",
+    "v6-no-red-nir-index": "v6_no_red_nir_index_locked",
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
@@ -161,6 +172,21 @@ MODE_CONFIG_NAME = {
 # Ablation full runs reuse the Stage-1 `full` evidence schema (epoch curve,
 # one-shot test, create-only checkpoint).
 _PROBE_MODES = ("probe", "probe-lr3")
+# v6 ablation arms (feature schema 5, training/v3). They take --seed and
+# --max-epochs; every other mode rejects both.
+_V6_ABLATION_MODES = (
+    "v6-l1",
+    "v6-l2",
+    "v6-l3",
+    "v6-l4",
+    "v6-l5",
+    "v6-loo-morph",
+    "v6-loo-shadow",
+    "v6-no-ndvi-ndwi",
+    "v6-no-red-nir-index",
+)
+V6_DEFAULT_SEED = 0
+V6_DEFAULT_MAX_EPOCHS = 20
 _FULL_TEMPORAL_MODES = (
     "full",
     "stage2",
@@ -169,6 +195,7 @@ _FULL_TEMPORAL_MODES = (
     "stage5",
     "isolate-shadows",
     "isolate-era5",
+    *_V6_ABLATION_MODES,
 )
 _ABLATION_MODES = (
     "stage2",
@@ -177,6 +204,7 @@ _ABLATION_MODES = (
     "stage5",
     "isolate-shadows",
     "isolate-era5",
+    *_V6_ABLATION_MODES,
 )
 # Modes that require the verified regional rate before submitting.
 _RATE_REQUIRED_MODES = ("probe", "probe-lr3", *_FULL_TEMPORAL_MODES)
@@ -191,6 +219,15 @@ MODE_EVIDENCE_PROFILE = {
     "stage5": "full",
     "isolate-shadows": "full",
     "isolate-era5": "full",
+    "v6-l1": "full",
+    "v6-l2": "full",
+    "v6-l3": "full",
+    "v6-l4": "full",
+    "v6-l5": "full",
+    "v6-loo-morph": "full",
+    "v6-loo-shadow": "full",
+    "v6-no-ndvi-ndwi": "full",
+    "v6-no-red-nir-index": "full",
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -207,14 +244,22 @@ def _config_dir() -> str:
     return str((Path(__file__).resolve().parents[2] / "configs" / "modeling").resolve())
 
 
-def check_bounds(config_name: str, *, efficiency_role: str | None = None) -> None:
+def check_bounds(
+    config_name: str,
+    *,
+    efficiency_role: str | None = None,
+    overrides: list[str] | None = None,
+) -> None:
     """Assert the shipped config still satisfies its own profile bounds."""
     with initialize_config_dir(config_dir=_config_dir(), version_base=None):
-        overrides = (
-            [f"stage1_efficiency_role={efficiency_role}"] if efficiency_role is not None else []
-        )
-        cfg = compose(config_name=config_name, overrides=overrides)
-    if config_name == MODE_CONFIG_NAME["probe"]:
+        compose_overrides = list(overrides or [])
+        if efficiency_role is not None:
+            compose_overrides.append(f"stage1_efficiency_role={efficiency_role}")
+        cfg = compose(config_name=config_name, overrides=compose_overrides)
+    if config_name in {MODE_CONFIG_NAME[m] for m in _V6_ABLATION_MODES}:
+        guard_modeling_config(cfg, config_name)
+        contract_invariants(cfg)
+    elif config_name == MODE_CONFIG_NAME["probe"]:
         assert_stage1_probe(cfg)
     elif config_name == MODE_CONFIG_NAME["probe-lr3"]:
         assert_stage1_probe_lr3(cfg)
@@ -987,6 +1032,25 @@ def main() -> int:
         type=int,
         choices=tuple(sorted(EFFICIENCY_SLOT_ROLE)),
     )
+    parser.add_argument("--seed", type=int, default=None, help="v6 modes only (default 0)")
+    parser.add_argument("--max-epochs", type=int, default=None, help="v6 modes only (default 20)")
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help="v6 modes only; enables early stopping on validation/mae_100m (default off)",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=None,
+        help="v6 modes only; requires --early-stopping-patience",
+    )
+    parser.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="v6 modes only; do not score the 2025 test split (pilot/timing runs)",
+    )
     parser.add_argument("--efficiency-role", choices=("baseline", "cache", "diagnostic", "final"))
     parser.add_argument("--efficiency-workers", type=int, choices=(0, 2, 4), default=2)
     parser.add_argument(
@@ -1067,6 +1131,47 @@ def main() -> int:
         raise SystemExit(f"ERROR: missing required options: {', '.join(missing)}")
 
     config_name = MODE_CONFIG_NAME[args.mode]
+    is_v6 = args.mode in _V6_ABLATION_MODES
+    if not is_v6 and (args.seed is not None or args.max_epochs is not None):
+        raise SystemExit(
+            f"ERROR: --seed and --max-epochs are only accepted by the v6 modes, not {args.mode!r}"
+        )
+    es_patience = args.early_stopping_patience
+    es_min_delta = args.early_stopping_min_delta
+    if not is_v6 and (es_patience is not None or es_min_delta is not None or args.skip_test):
+        raise SystemExit(
+            "ERROR: --early-stopping-patience, --early-stopping-min-delta and --skip-test "
+            f"are only accepted by the v6 modes, not {args.mode!r}"
+        )
+    if es_min_delta is not None and es_patience is None:
+        raise SystemExit("ERROR: --early-stopping-min-delta requires --early-stopping-patience")
+    if es_patience is not None and es_patience < 1:
+        raise SystemExit(f"ERROR: --early-stopping-patience must be >= 1, got {es_patience}")
+    if es_min_delta is not None and (not math.isfinite(es_min_delta) or es_min_delta < 0):
+        raise SystemExit(
+            f"ERROR: --early-stopping-min-delta must be finite and >= 0, got {es_min_delta}"
+        )
+    seed = V6_DEFAULT_SEED if args.seed is None else args.seed
+    max_epochs = V6_DEFAULT_MAX_EPOCHS if args.max_epochs is None else args.max_epochs
+    run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_v6 else args.run_label
+    if is_v6 and args.skip_test:
+        run_label += "-notest"
+    job_output_root = (
+        f"data/runs/{args.mode}/{run_label}/seed-{seed}"
+        if is_v6
+        else f"data/runs/{args.mode}/{run_label}"
+    )
+    hydra_overrides = (
+        [f"seed={seed}", f"trainer.max_epochs={max_epochs}", f"output_root={job_output_root}"]
+        if is_v6
+        else []
+    )
+    if es_patience is not None:
+        hydra_overrides += ["early_stopping.enabled=true", f"early_stopping.patience={es_patience}"]
+        if es_min_delta is not None:
+            hydra_overrides.append(f"early_stopping.min_delta={es_min_delta}")
+    if args.skip_test:
+        hydra_overrides.append("evaluate_test=false")
     if args.timeout_seconds is not None:
         timeout_seconds = args.timeout_seconds
     elif args.mode in _FULL_TEMPORAL_MODES:
@@ -1174,14 +1279,19 @@ def main() -> int:
             raise SystemExit("ERROR: verification non-compute estimate cannot exceed $2.00")
 
     _validate_image_uri(args.image_uri)
-    _validate_run_label(args.run_label)
+    _validate_run_label(run_label)
     prefix = args.evidence_prefix.rstrip("/") + "/"
     if not prefix.startswith(APPROVED_EVIDENCE_ROOT):
         raise SystemExit(
             f"ERROR: --evidence-prefix must stay under {APPROVED_EVIDENCE_ROOT}, "
             f"got {args.evidence_prefix!r}"
         )
-    check_bounds(config_name, efficiency_role=args.efficiency_role)
+    try:
+        check_bounds(config_name, efficiency_role=args.efficiency_role, overrides=hydra_overrides)
+    except ValueError as exc:
+        if not is_v6:
+            raise
+        raise SystemExit(f"ERROR: {config_name} is off-contract: {exc}") from exc
 
     exposure = _exposure_usd(hourly_rate, timeout_seconds, max_wait_seconds)
     if not math.isfinite(exposure) or exposure > max_exposure:
@@ -1242,7 +1352,7 @@ def main() -> int:
                 "no replacement submission is authorized"
             )
 
-    evidence_uri = f"{args.evidence_prefix.rstrip('/')}/{args.run_label}/evidence.json"
+    evidence_uri = f"{args.evidence_prefix.rstrip('/')}/{run_label}/evidence.json"
     if _evidence_exists(evidence_uri):
         raise SystemExit(
             f"ERROR: evidence already exists at {evidence_uri}; the run label "
@@ -1261,18 +1371,27 @@ def main() -> int:
             "label must never be reused"
         )
     env = [
-        ("VERTEX_RUN_LABEL", args.run_label),
+        ("VERTEX_RUN_LABEL", run_label),
         ("VERTEX_SOURCE_SHA", args.source_sha),
         ("VERTEX_IMAGE_DIGEST", args.image_uri.split("@", 1)[1]),
         ("VERTEX_EVIDENCE_URI", evidence_uri),
         ("VERTEX_CONFIG_NAME", config_name),
         ("VERTEX_PROFILE", MODE_EVIDENCE_PROFILE[args.mode]),
-        ("VERTEX_OUTPUT_ROOT", f"data/runs/{args.mode}/{args.run_label}"),
+        ("VERTEX_OUTPUT_ROOT", job_output_root),
         ("INFISICAL_MACHINE_IDENTITY_ID", args.infisical_identity),
         ("INFISICAL_PROJECT_ID", args.infisical_project),
         ("INFISICAL_ENV", args.infisical_env),
         ("INFISICAL_SECRET_PATH", args.infisical_path),
     ]
+    if is_v6:
+        env.extend([("VERTEX_SEED", str(seed)), ("VERTEX_MAX_EPOCHS", str(max_epochs))])
+        if es_patience is not None:
+            env.append(("VERTEX_EARLY_STOPPING_PATIENCE", str(es_patience)))
+            if es_min_delta is not None:
+                env.append(("VERTEX_EARLY_STOPPING_MIN_DELTA", str(es_min_delta)))
+        if args.skip_test:
+            env.append(("VERTEX_SKIP_TEST", "1"))
+        env.append(("VERTEX_EPOCH_METRICS_URI", f"{run_prefix}/epoch_metrics.json"))
     if args.mode == "efficiency":
         env.extend(
             [
@@ -1305,7 +1424,7 @@ def main() -> int:
             ]
         )
 
-    display_name = f"{args.mode}-{args.run_label}"
+    display_name = f"{args.mode}-{run_label}"
     print("Planned Vertex Custom Job:")
     print(f"  project/region : {PROJECT}/{REGION}")
     print(f"  mode/config    : {args.mode} / {config_name}")
@@ -1330,6 +1449,19 @@ def main() -> int:
             f"~${EFFICIENCY_MAX_TOTAL_COMPUTE_USD + EFFICIENCY_MAX_NONCOMPUTE_USD:.2f} "
             "including preserved failure and all four replacement slots"
         )
+    if is_v6:
+        print(f"  seed/epochs    : {seed} / {max_epochs}")
+        print(
+            "  early stopping : "
+            + (
+                "off"
+                if es_patience is None
+                else f"patience {es_patience} min_delta {es_min_delta or 0.0}"
+            )
+        )
+        print(f"  test pass      : {'skipped' if args.skip_test else 'scored'}")
+        print(f"  hydra overrides: {' '.join(hydra_overrides)}")
+    print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")
 
     if args.preflight:

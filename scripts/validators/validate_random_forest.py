@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
@@ -64,9 +65,15 @@ import rasterio
 import sklearn
 from rasterio.windows import Window
 
-from berlin_lst_downscaling.data.features.contracts import FEATURE_CHANNEL_NAMES
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_CHANNEL_NAMES,
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.io import read_bytes, resolve_canonical_uri
 from berlin_lst_downscaling.modeling.aggregation import resolve_report_aggregation
+from berlin_lst_downscaling.modeling.channels import V6_LADDER_STAGE_CHANNELS
 from berlin_lst_downscaling.modeling.random_forest import load_model
 
 _CANON_X = 369190.0
@@ -100,6 +107,47 @@ _EXPECTED_FEATURE_ORDER = {
     3: "v3_named_subset",
     4: "v3_named_subset",
 }
+
+
+@dataclass(frozen=True)
+class _Layout:
+    """Channel roster, stage indices, and feature-order labels of one schema."""
+
+    names: tuple[str, ...]
+    stage_indices: dict[int, tuple[int, ...]]
+    feature_order: dict[int, str]
+
+    @property
+    def width(self) -> int:
+        return len(self.names)
+
+
+_V3_LAYOUT = _Layout(tuple(FEATURE_CHANNEL_NAMES), _STAGE_CHANNEL_INDICES, _EXPECTED_FEATURE_ORDER)
+
+
+def _v6_layout() -> _Layout:
+    """Derive the v6 ladder indices from the registry names (positions in the v6 roster)."""
+    names = tuple(feature_schema(FEATURE_SCHEMA_VERSION_V6).names)
+    indices = {
+        stage: tuple(names.index(name) for name in channels)
+        for stage, channels in V6_LADDER_STAGE_CHANNELS.items()
+    }
+    order = {
+        stage: "v6_registry" if indices[stage] == tuple(range(len(names))) else "v6_named_subset"
+        for stage in indices
+    }
+    return _Layout(names, indices, order)
+
+
+def _layout_for(report: dict) -> _Layout:
+    """Pick the layout from the report; reports without the field are v1 (V3)."""
+    version = report.get("feature_schema_version")
+    if version is None or int(version) == FEATURE_SCHEMA_VERSION:
+        return _V3_LAYOUT
+    if int(version) == FEATURE_SCHEMA_VERSION_V6:
+        return _v6_layout()
+    raise ValueError(f"unsupported feature_schema_version {version!r}")
+
 
 # The baseline validator's tolerance reasoning applies here too: the report
 # accumulates float32 pooling while this validator accumulates float64, so a
@@ -162,12 +210,12 @@ def _load_landsat(ard_root: str) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _load_scaler(training_root: str) -> dict:
+def _load_scaler(training_root: str, names: tuple[str, ...] = tuple(FEATURE_CHANNEL_NAMES)) -> dict:
     scaler = _read_json(resolve_canonical_uri(f"{training_root.rstrip('/')}/scaler.json"))
     order = tuple(str(name) for name in scaler.get("channel_order", ()))
-    if order != FEATURE_CHANNEL_NAMES:
+    if order != tuple(names):
         raise RuntimeError(f"scaler channel order drift: {order}")
-    if len(scaler.get("channels", ())) != len(FEATURE_CHANNEL_NAMES):
+    if len(scaler.get("channels", ())) != len(names):
         raise RuntimeError("scaler channel count drift")
     return scaler
 
@@ -283,13 +331,18 @@ def _pool_10m_cells_to_100m(values: np.ndarray) -> np.ndarray:
 
 
 def _read_features(
-    scene_id: str, row: int, col: int, features_root: str, scaler: dict
+    scene_id: str,
+    row: int,
+    col: int,
+    features_root: str,
+    scaler: dict,
+    n_channels: int = len(FEATURE_CHANNEL_NAMES),
 ) -> tuple[np.ndarray, int]:
     """Read, scale, and zero-fill one native 10 m feature window."""
     uri = f"{features_root.rstrip('/')}/{scene_id}/{scene_id}.tif"
     with rasterio.open(uri) as src:
         _check_raster(src, res=_CELL_10, scene=scene_id, what="feature stack")
-        if src.count != len(FEATURE_CHANNEL_NAMES):
+        if src.count != n_channels:
             raise RuntimeError(f"{scene_id}: feature stack has {src.count} bands")
         window = Window.from_slices(
             (row * 10, row * 10 + _PATCH_PX), (col * 10, col * 10 + _PATCH_PX)
@@ -350,6 +403,7 @@ def _recompute_patch(
     features_root: str,
     *,
     method: str,
+    n_channels: int = len(FEATURE_CHANNEL_NAMES),
 ) -> tuple[dict | None, str | None]:
     """Rebuild target/mask/prior/features of one patch, or return a reason."""
     scene_id = str(index_row["scene_id"])
@@ -365,7 +419,7 @@ def _recompute_patch(
         return None, "prior_unavailable"
     mask = _read_mask(index_row)
     target = _read_target(index_row, landsat)
-    features, filled = _read_features(scene_id, row, col, features_root, scaler)
+    features, filled = _read_features(scene_id, row, col, features_root, scaler, n_channels)
     return {
         "target": target,
         "mask": mask,
@@ -574,16 +628,16 @@ def _find_naive_report(explicit: str | None) -> str | None:
     return str(local_smoke) if local_smoke.is_file() else None
 
 
-def _native_inputs(features: np.ndarray, prior: np.ndarray, stage: int) -> np.ndarray:
+def _native_inputs(
+    features: np.ndarray, prior: np.ndarray, stage: int, layout: _Layout = _V3_LAYOUT
+) -> np.ndarray:
     """Build native pixel rows independently, with the physical prior last."""
-    if features.shape != (28, _PATCH_PX, _PATCH_PX):
-        raise ValueError("native feature shape must be (28, 160, 160)")
+    if features.shape != (layout.width, _PATCH_PX, _PATCH_PX):
+        raise ValueError(f"native feature shape must be ({layout.width}, 160, 160)")
     if prior.shape != (_PATCH_CELLS, _PATCH_CELLS):
         raise ValueError("physical prior shape must be (16, 16)")
     selected = (
-        features[list(_STAGE_CHANNEL_INDICES[stage])]
-        .reshape(len(_STAGE_CHANNEL_INDICES[stage]), -1)
-        .T
+        features[list(layout.stage_indices[stage])].reshape(len(layout.stage_indices[stage]), -1).T
     )
     expanded = np.repeat(np.repeat(prior, _POOL, axis=0), _POOL, axis=1)
     return np.ascontiguousarray(np.column_stack((selected, expanded.ravel())), dtype=np.float32)
@@ -731,23 +785,24 @@ def main() -> int:
 
     # ── per-stage structure and aggregates ────────────────────────────
     stages = report.get("stages", {})
-    if sorted(int(s) for s in stages) != sorted(_STAGE_CHANNEL_INDICES):
-        errors.append(f"expected stages {sorted(_STAGE_CHANNEL_INDICES)}, got {sorted(stages)}")
+    layout = _layout_for(report)
+    if sorted(int(s) for s in stages) != sorted(layout.stage_indices):
+        errors.append(f"expected stages {sorted(layout.stage_indices)}, got {sorted(stages)}")
     stage_ids: dict[int, dict[str, list[str]]] = {}
     stage_cells: dict[int, dict[str, dict[str, int]]] = {}
     for stage_key in sorted(stages, key=int):
         stage_id = int(stage_key)
         stage = stages[stage_key]
-        expected_indices = _STAGE_CHANNEL_INDICES.get(stage_id)
+        expected_indices = layout.stage_indices.get(stage_id)
         if expected_indices is None:
             errors.append(f"stage {stage_id}: not part of the frozen Tag-11 ladder")
             continue
-        expected_names = [FEATURE_CHANNEL_NAMES[i] for i in expected_indices]
+        expected_names = [layout.names[i] for i in expected_indices]
         if list(stage["channels"]) != expected_names:
             errors.append(f"stage {stage_id}: channels do not match the frozen selection")
         if int(stage["n_active_channels"]) != len(expected_indices):
             errors.append(f"stage {stage_id}: n_active_channels mismatch")
-        if str(stage["feature_order"]) != _EXPECTED_FEATURE_ORDER[stage_id]:
+        if str(stage["feature_order"]) != layout.feature_order[stage_id]:
             errors.append(f"stage {stage_id}: feature_order mismatch")
         model_path = report_dir / str(stage["model_file"])
         if not model_path.is_file():
@@ -924,7 +979,7 @@ def main() -> int:
 
     # ── numeric recomputation on a bounded patch sample ───────────────
     landsat = _load_landsat(resolve_canonical_uri(str(source["ard_root"])))
-    scaler = _load_scaler(str(source["training_root"]))
+    scaler = _load_scaler(str(source["training_root"]), layout.names)
     features_root = str(source["features_root"])
     grids: dict[str, tuple[dict, dict]] = {}
     models = {}
@@ -936,9 +991,9 @@ def main() -> int:
                 continue
             model = load_model(str(model_path))
             stage_id = int(stage_key)
-            if stage_id not in _STAGE_CHANNEL_INDICES:
+            if stage_id not in layout.stage_indices:
                 continue
-            if getattr(model, "n_features_in_", None) != len(_STAGE_CHANNEL_INDICES[stage_id]) + 1:
+            if getattr(model, "n_features_in_", None) != len(layout.stage_indices[stage_id]) + 1:
                 errors.append(f"stage {stage_id}: model must consume C+1 features")
                 continue
             if model_path.suffix != ".skops":
@@ -960,7 +1015,13 @@ def main() -> int:
                 errors.append(f"{record['patch_id']}: not in the published index")
                 continue
             rebuilt, reason = _recompute_patch(
-                index_row, landsat, grids, scaler, features_root, method=aggregation
+                index_row,
+                landsat,
+                grids,
+                scaler,
+                features_root,
+                method=aggregation,
+                n_channels=layout.width,
             )
             if rebuilt is None:
                 errors.append(f"{record['patch_id']}: recomputation unavailable ({reason})")
@@ -979,7 +1040,7 @@ def main() -> int:
             if _support_count(rebuilt["mask"]) != int(record["ssim_windows"]):
                 errors.append(f"{record['patch_id']}: SSIM support != artifact ssim_windows")
             for stage_id, model in sorted(models.items()):
-                cells = _native_inputs(rebuilt["features"], rebuilt["prior"], stage_id)
+                cells = _native_inputs(rebuilt["features"], rebuilt["prior"], stage_id, layout)
                 residual = np.asarray(model.predict(cells), dtype=np.float32).reshape(
                     _PATCH_PX, _PATCH_PX
                 )
@@ -1019,7 +1080,7 @@ def main() -> int:
             return 1
         probe = np.load(io.BytesIO(probe_blob), allow_pickle=False)
         n_probe = len(probe["patch_id"])
-        if probe["features"].shape != (n_probe, 28, _PATCH_PX, _PATCH_PX):
+        if probe["features"].shape != (n_probe, layout.width, _PATCH_PX, _PATCH_PX):
             print("FAIL: probe features must retain the native 10 m grid")
             return 1
         for stage in stages:
@@ -1047,7 +1108,13 @@ def main() -> int:
                 errors.append(f"{pid}: probe patch not in the published index")
                 continue
             rebuilt, reason = _recompute_patch(
-                index_row, landsat, grids, scaler, features_root, method=aggregation
+                index_row,
+                landsat,
+                grids,
+                scaler,
+                features_root,
+                method=aggregation,
+                n_channels=layout.width,
             )
             if rebuilt is None:
                 errors.append(f"{pid}: probe recomputation unavailable ({reason})")
@@ -1067,7 +1134,9 @@ def main() -> int:
             if int(probe["filled_feature_pixels"][k]) != int(rebuilt["filled"]):
                 errors.append(f"{pid}: probe filled pixels != rebuilt count")
             for stage_id, model in sorted(models.items()):
-                cells = _native_inputs(probe["features"][k], probe["prior_100m"][k], stage_id)
+                cells = _native_inputs(
+                    probe["features"][k], probe["prior_100m"][k], stage_id, layout
+                )
                 residual = np.asarray(model.predict(cells), dtype=np.float32).reshape(
                     _PATCH_PX, _PATCH_PX
                 )

@@ -46,6 +46,127 @@ ABLATION_ISOLATION_CHANNELS: dict[str, tuple[str, ...]] = {
     "era5": _SPECTRAL_INDEX + _ERA5,
 }
 
+# ── v6 / training-v3 ablation (feature schema version 5, 22 channels) ──
+# Families are slices of the v6 registry roster by name; the registry order is
+# spectral → morphology → ERA5 → shadow.
+_V6_NAMES: tuple[str, ...] = feature_schema(FEATURE_SCHEMA_VERSION_V6).names
+
+
+def _v6_family(*names: str) -> tuple[str, ...]:
+    unknown = [name for name in names if name not in _V6_NAMES]
+    if unknown:
+        raise RuntimeError(f"v6 family names not in the v6 roster: {unknown}")
+    return tuple(names)
+
+
+V6_SPECTRAL_INDEX = _v6_family(
+    "B02",
+    "B03",
+    "B04",
+    "B08",
+    "B11",
+    "B12",
+    "ndvi",
+    "ndwi_mcfeeters",
+    "ndbi",
+    "s2_broadband_albedo",
+)
+V6_MORPHOLOGY = _v6_family(
+    "building_height_mean",
+    "building_coverage_ratio",
+    "vegetation_height_mean",
+    "canopy_cover_fraction",
+    "imperviousness",
+    "svf",
+)
+V6_ERA5 = _v6_family("t2m_scene", "ssrd_scene", "wind_speed_10m_scene", "tp_0_72h")
+V6_SHADOW = _v6_family("shadow_building", "shadow_vegetation")
+
+V6_FAMILIES: dict[str, tuple[str, ...]] = {
+    "spectral_index": V6_SPECTRAL_INDEX,
+    "morphology": V6_MORPHOLOGY,
+    "era5": V6_ERA5,
+    "shadow": V6_SHADOW,
+}
+
+
+def _assert_v6_families_partition() -> None:
+    flat = [name for family in V6_FAMILIES.values() for name in family]
+    if len(flat) != len(set(flat)) or set(flat) != set(_V6_NAMES) or len(flat) != len(_V6_NAMES):
+        raise RuntimeError("v6 channel families do not partition the v6 roster")
+
+
+_assert_v6_families_partition()
+
+
+def v6_registry_order(names: Sequence[str] | set[str] | frozenset[str]) -> tuple[str, ...]:
+    """Return ``names`` restricted to and sorted by the v6 registry order."""
+    wanted = set(names)
+    unknown = sorted(wanted - set(_V6_NAMES))
+    if unknown:
+        raise ValueError(f"names not in the v6 roster: {unknown}")
+    return tuple(name for name in _V6_NAMES if name in wanted)
+
+
+@dataclass(frozen=True)
+class V6Arm:
+    """One v6 ablation arm: model inputs in v6 registry order plus its loss."""
+
+    arm_id: str
+    config_name: str
+    kind: str  # ladder | loo | input
+    channels: tuple[str, ...]
+    loss: str
+
+
+def _v6_arm(arm_id: str, config_name: str, kind: str, channels: set[str], loss: str) -> V6Arm:
+    return V6Arm(arm_id, config_name, kind, v6_registry_order(channels), loss)
+
+
+_V6_FULL = set(_V6_NAMES)
+# LOO-ERA5 (L4 minus ERA5) equals L3 and therefore has no arm of its own.
+V6_ABLATION_ARMS: dict[str, V6Arm] = {
+    arm.arm_id: arm
+    for arm in (
+        _v6_arm("L1", "v6_l1_locked", "ladder", set(V6_SPECTRAL_INDEX), "masked_l1"),
+        _v6_arm("L2", "v6_l2_locked", "ladder", {*V6_SPECTRAL_INDEX, *V6_MORPHOLOGY}, "masked_l1"),
+        _v6_arm(
+            "L3",
+            "v6_l3_locked",
+            "ladder",
+            {*V6_SPECTRAL_INDEX, *V6_MORPHOLOGY, *V6_SHADOW},
+            "masked_l1",
+        ),
+        _v6_arm("L4", "v6_l4_locked", "ladder", _V6_FULL, "masked_l1"),
+        _v6_arm("L5", "v6_l5_locked", "ladder", _V6_FULL, "thermal_aware"),
+        _v6_arm("LOO-M", "v6_loo_morph_locked", "loo", _V6_FULL - set(V6_MORPHOLOGY), "masked_l1"),
+        _v6_arm("LOO-S", "v6_loo_shadow_locked", "loo", _V6_FULL - set(V6_SHADOW), "masked_l1"),
+        _v6_arm(
+            "NO-NDVI-NDWI",
+            "v6_no_ndvi_ndwi_locked",
+            "input",
+            _V6_FULL - {"ndvi", "ndwi_mcfeeters"},
+            "masked_l1",
+        ),
+        _v6_arm(
+            "NO-RED-NIR-IDX",
+            "v6_no_red_nir_index_locked",
+            "input",
+            _V6_FULL - {"B04", "B08", "ndvi", "ndwi_mcfeeters", "ndbi", "s2_broadband_albedo"},
+            "masked_l1",
+        ),
+    )
+}
+
+# Cumulative v6 ladder rungs L1–L4 (the RF v6 baseline fits one forest each).
+V6_LADDER_STAGE_CHANNELS: dict[int, tuple[str, ...]] = {
+    rung: V6_ABLATION_ARMS[f"L{rung}"].channels for rung in (1, 2, 3, 4)
+}
+
+V6_ABLATION_LOCKED_CONFIG_NAMES: tuple[str, ...] = tuple(
+    arm.config_name for arm in V6_ABLATION_ARMS.values()
+)
+
 ABLATION_LOCKED_CONFIG_NAMES: tuple[str, ...] = (
     "stage2_locked",
     "stage3_locked",
@@ -153,11 +274,24 @@ def selection_from_config(cfg: DictConfig) -> ActiveChannelSelection:
     )
 
 
-def feature_order_for(selection: ActiveChannelSelection) -> str:
-    """Return the contract feature-order label for a resolved selection."""
+def feature_order_for(selection: ActiveChannelSelection, schema_version: int | None = None) -> str:
+    """Return the contract feature-order label for a resolved selection.
+
+    With ``schema_version`` set to the v6 schema, a proper subset resolves to
+    ``v6_named_subset`` and must keep the v6 registry order. Without it (or
+    for the V3 schema) the V3 labels apply unchanged.
+    """
     v6 = feature_schema(FEATURE_SCHEMA_VERSION_V6)
     if selection.names == v6.names and selection.indices == tuple(range(v6.n_channels)):
         return "v6_registry"
+    if schema_version == FEATURE_SCHEMA_VERSION_V6:
+        if list(selection.indices) != sorted(selection.indices) or selection.names != tuple(
+            v6.names[i] for i in selection.indices
+        ):
+            raise ValueError(
+                f"v6 channel subset is not in v6 registry order: {list(selection.names)}"
+            )
+        return "v6_named_subset"
     prefix = FEATURE_CHANNEL_NAMES[: selection.n_active]
     if selection.names == prefix and selection.indices == tuple(range(selection.n_active)):
         return "v3_first_c"
@@ -221,11 +355,70 @@ def resolve_schema_selection(
     return ActiveChannelSelection(names=tuple(names_list), indices=indices)
 
 
+def assert_scaler_matches_selection(
+    scaler_names: Sequence[str],
+    *,
+    schema_names: Sequence[str],
+    schema_version: int,
+    selection: ActiveChannelSelection,
+) -> None:
+    """Raise unless the published scaler roster matches the schema and the selection.
+
+    Guards the model-input slice: the scaler channels must equal the schema
+    roster (same names, same order) and every selected index must point at the
+    selected name in that roster.
+    """
+    actual = tuple(scaler_names)
+    expected = tuple(schema_names)
+    if actual != expected:
+        missing = [n for n in expected if n not in actual]
+        extra = [n for n in actual if n not in expected]
+        first_diff = next(
+            (i for i, (a, e) in enumerate(zip(actual, expected, strict=False)) if a != e),
+            min(len(actual), len(expected)),
+        )
+        raise ValueError(
+            f"scaler channel names differ from feature schema v{schema_version}: "
+            f"missing={missing} extra={extra} first_difference_position={first_diff}; "
+            f"expected schema names={list(expected)}; actual scaler names={list(actual)}"
+        )
+    not_in_scaler = [n for n in selection.names if n not in actual]
+    if not_in_scaler:
+        raise ValueError(
+            f"selected channels not in the scaler (schema v{schema_version}): {not_in_scaler}"
+        )
+    if len(selection.indices) != len(selection.names):
+        raise ValueError(
+            f"selection has {len(selection.names)} names but {len(selection.indices)} indices"
+        )
+    mapped: list[str | None] = []
+    for index in selection.indices:
+        mapped.append(actual[index] if 0 <= index < len(actual) else None)
+    if tuple(mapped) != selection.names:
+        raise ValueError(
+            f"selection indices do not map to the selected names (schema v{schema_version}): "
+            f"expected names={list(selection.names)}; "
+            f"indices {list(selection.indices)} map to {mapped} "
+            f"(None = index out of range for {len(actual)} scaler channels)"
+        )
+
+
 __all__ = [
+    "assert_scaler_matches_selection",
     "ABLATION_ISOLATION_CHANNELS",
     "ABLATION_LOCKED_CONFIG_NAMES",
     "ABLATION_STAGE_CHANNELS",
     "ActiveChannelSelection",
+    "V6Arm",
+    "V6_ABLATION_ARMS",
+    "V6_ABLATION_LOCKED_CONFIG_NAMES",
+    "V6_ERA5",
+    "V6_FAMILIES",
+    "V6_LADDER_STAGE_CHANNELS",
+    "V6_MORPHOLOGY",
+    "V6_SHADOW",
+    "V6_SPECTRAL_INDEX",
+    "v6_registry_order",
     "N_FEATURE_CHANNELS",
     "feature_order_for",
     "resolve_active_channels",

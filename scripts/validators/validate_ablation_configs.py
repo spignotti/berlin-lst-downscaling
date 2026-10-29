@@ -4,7 +4,8 @@
 GCS-free. Verifies each locked cumulative stage and each isolation profile
 resolves, passes the ablation lock, selects the expected V3 channel subset
 (including non-prefix shadow sets), and that :class:`RealLSTTask` accepts a
-batch under that width and loss. Exit 0 on GO.
+batch under that width and loss. Also checks the v6 ablation arms and the v6 run
+matrix (offline). Exit 0 on GO.
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ from berlin_lst_downscaling.modeling.channels import (
     ABLATION_ISOLATION_CHANNELS,
     ABLATION_LOCKED_CONFIG_NAMES,
     ABLATION_STAGE_CHANNELS,
+    V6_ABLATION_ARMS,
+    feature_order_for,
+    schema_version_from_config,
     selection_from_config,
 )
 from berlin_lst_downscaling.modeling.contracts import (
@@ -41,19 +45,25 @@ from berlin_lst_downscaling.modeling.metrics import (
 )
 from berlin_lst_downscaling.modeling.patches import RealSample, collate_real_batch
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask
+from berlin_lst_downscaling.modeling.v6_ablation_matrix import (
+    load_v6_matrix,
+    plan_runs,
+    plan_totals,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = str(_REPO_ROOT / "configs" / "modeling")
+_MATRIX_PATH = _REPO_ROOT / "configs" / "ablation" / "v6_matrix.yaml"
 
 
-def _compose(config_name: str):
+def _compose(config_name: str, overrides: list[str] | None = None):
     with initialize_config_dir(config_dir=_CONFIG_DIR, version_base=None):
-        return compose(config_name=config_name)
+        return compose(config_name=config_name, overrides=overrides or [])
 
 
-def _fake_sample(patch_id: str = "smoke:0") -> RealSample:
-    features = np.arange(28 * REAL_PATCH_PX * REAL_PATCH_PX, dtype=np.float32).reshape(
-        28, REAL_PATCH_PX, REAL_PATCH_PX
+def _fake_sample(patch_id: str = "smoke:0", n_channels: int = 28) -> RealSample:
+    features = np.arange(n_channels * REAL_PATCH_PX * REAL_PATCH_PX, dtype=np.float32).reshape(
+        n_channels, REAL_PATCH_PX, REAL_PATCH_PX
     )
     prior = np.zeros((1, REAL_PATCH_PX, REAL_PATCH_PX), dtype=np.float32)
     target = np.full((1, REAL_PATCH_CELLS, REAL_PATCH_CELLS), 290.0, dtype=np.float32)
@@ -180,6 +190,82 @@ def _check_stage(config_name: str) -> list[str]:
     return failures
 
 
+def _guard_v6(cfg, config_name: str) -> None:
+    guard_modeling_config(cfg, config_name)
+    contract_invariants(cfg)
+    assert_ablation_lock(cfg)
+
+
+def _check_v6_arm(arm_id: str) -> list[str]:
+    arm = V6_ABLATION_ARMS[arm_id]
+    name = arm.config_name
+    cfg = _compose(name)
+    try:
+        _guard_v6(cfg, name)
+    except Exception as exc:  # noqa: BLE001 — report every guard failure
+        return [f"{name}: guard failed: {exc}"]
+    failures: list[str] = []
+    selection = selection_from_config(cfg)
+    if selection.names != arm.channels:
+        return [f"{name}: channels {list(selection.names)} != expected {list(arm.channels)}"]
+    expected_order = "v6_registry" if arm_id in ("L4", "L5") else "v6_named_subset"
+    if feature_order_for(selection, schema_version_from_config(cfg)) != expected_order:
+        failures.append(f"{name}: feature order is not {expected_order}")
+    if str(cfg.contract.feature_order) != expected_order:
+        failures.append(f"{name}: contract.feature_order is not {expected_order}")
+    batch = collate_real_batch(
+        [_fake_sample(n_channels=22), _fake_sample("smoke:1", n_channels=22)],
+        n_active_channels=selection.n_active,
+        channel_indices=selection.indices,
+    )
+    if tuple(batch.features.shape) != (2, selection.n_active, REAL_PATCH_PX, REAL_PATCH_PX):
+        failures.append(f"{name}: collated feature shape {tuple(batch.features.shape)}")
+    task = RealLSTTask(
+        n_active_channels=selection.n_active,
+        base_width=32,
+        depth=4,
+        residual_prior=True,
+        loss_name=arm.loss,
+    )
+    task.eval()
+    with torch.inference_mode():
+        pooled = pool_10m_to_100m(task(batch))
+        if arm.loss == "thermal_aware":
+            loss = thermal_aware_loss(pooled, batch.target_100m, batch.mask_100m)
+        else:
+            loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
+    if not torch.isfinite(loss):
+        failures.append(f"{name}: non-finite {arm.loss} loss")
+    return failures
+
+
+def _check_v6_matrix() -> tuple[list[str], str]:
+    failures: list[str] = []
+    matrix = load_v6_matrix(_MATRIX_PATH)
+    config_files = {p.stem for p in Path(_CONFIG_DIR).glob("v6_*_locked.yaml")}
+    matrix_configs = {V6_ABLATION_ARMS[arm_id].config_name for arm_id in matrix.arms}
+    if config_files != matrix_configs:
+        failures.append(
+            f"v6 matrix/config mismatch: only in configs={sorted(config_files - matrix_configs)} "
+            f"only in matrix={sorted(matrix_configs - config_files)}"
+        )
+    roots: dict[str, set[str]] = {}
+    for run in plan_runs(matrix):
+        overrides = [f"seed={run.seed}", f"trainer.max_epochs={run.max_epochs}"]
+        cfg = _compose(run.config_name, overrides)
+        try:
+            _guard_v6(cfg, run.config_name)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{run.config_name} {overrides}: {exc}")
+            continue
+        seen = roots.setdefault(run.arm_id, set())
+        if str(cfg.output_root) in seen:
+            failures.append(f"{run.config_name}: output_root repeats across seeds")
+        seen.add(str(cfg.output_root))
+    runs, hours, usd = plan_totals(matrix)
+    return failures, f"v6 matrix runs={runs} est_gpu_h={hours:.1f} est_usd={usd:.1f}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args(argv)
@@ -187,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
     for config_name in ABLATION_LOCKED_CONFIG_NAMES:
         failures.extend(_check_stage(config_name))
+
+    for arm_id in V6_ABLATION_ARMS:
+        failures.extend(_check_v6_arm(arm_id))
+    matrix_failures, matrix_summary = _check_v6_matrix()
+    failures.extend(matrix_failures)
 
     # Stage-1 first-C path must stay untouched by named-subset wiring.
     stage1 = _compose("stage1_locked")
@@ -220,7 +311,10 @@ def main(argv: list[str] | None = None) -> int:
     summary += ", " + ", ".join(
         f"isolate-{name}=C{len(names)}" for name, names in ABLATION_ISOLATION_CHANNELS.items()
     )
-    print(f"ablation config smoke GO — {summary}")
+    summary += ", " + ", ".join(
+        f"{arm_id}=C{len(arm.channels)}" for arm_id, arm in V6_ABLATION_ARMS.items()
+    )
+    print(f"ablation config smoke GO — {summary}; {matrix_summary}")
     return 0
 
 

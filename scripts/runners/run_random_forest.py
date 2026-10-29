@@ -40,12 +40,22 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from sklearn.ensemble import RandomForestRegressor
 
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
+from berlin_lst_downscaling.modeling.channels import (
+    ActiveChannelSelection,
+    schema_version_from_config,
+)
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
     RealSourceConfig,
+    assert_scaler_spec_matches,
     load_patch_refs,
 )
 from berlin_lst_downscaling.modeling.random_forest import (
@@ -78,6 +88,30 @@ _logger = logging.getLogger(__name__)
 _EVAL_SPLITS = ("validation", "test")
 _REPLAY_ROWS = 2048
 _PROBE_SCALARS = ("patch_id", "split", "filled_feature_pixels")
+
+# The v3 chain (features/v6, schema 5) every v6 RF run must consume exactly.
+_V6_CHAIN_ROOTS = {
+    "data_release_id": "training/v3",
+    "features_root": "gs://berlin-lst-training-data/features/v6",
+    "training_root": "gs://berlin-lst-training-data/training/v3",
+    "patch_index_root": "gs://berlin-lst-training-data/training/patch-index/v3",
+    "ard_root": "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10",
+}
+
+
+def _check_schema_roots(cfg: DictConfig, schema_version: int) -> None:
+    """Fail closed when schema 5 is not bound to the exact v3 data chain."""
+    if schema_version not in (FEATURE_SCHEMA_VERSION, FEATURE_SCHEMA_VERSION_V6):
+        raise ValueError(f"unsupported feature schema version {schema_version!r}")
+    if schema_version != FEATURE_SCHEMA_VERSION_V6:
+        return
+    drift = {
+        key: (cfg.get(key), expected)
+        for key, expected in _V6_CHAIN_ROOTS.items()
+        if cfg.get(key) != expected
+    }
+    if drift:
+        raise ValueError(f"schema 5 RF requires the v3 data chain; mismatched roots: {drift}")
 
 
 def _source_config(cfg: DictConfig) -> RealSourceConfig:
@@ -124,7 +158,12 @@ def main(cfg: DictConfig) -> int:
     splits = tuple(str(s) for s in (cfg.get("splits") or _EVAL_SPLITS))
     if not splits or any(split not in _EVAL_SPLITS for split in splits):
         raise ValueError(f"splits must be a non-empty subset of {list(_EVAL_SPLITS)}")
-    stages: list[StageSelection] = [resolve_stage_selection(int(s)) for s in cfg.get("stages", ())]
+    schema_version = schema_version_from_config(cfg)
+    _check_schema_roots(cfg, schema_version)
+    stages: list[StageSelection] = [
+        resolve_stage_selection(int(s), schema_version) for s in cfg.get("stages", ())
+    ]
+    n_feature_channels = feature_schema(schema_version).n_channels
     if not stages:
         raise ValueError("at least one stage is required")
     spec = ForestSpec.from_config(cfg)
@@ -168,6 +207,11 @@ def main(cfg: DictConfig) -> int:
                 "forest": spec.payload(),
                 "seed": seed,
                 "max_cells": max_cells,
+                **(
+                    {"feature_schema_version": schema_version}
+                    if schema_version != FEATURE_SCHEMA_VERSION
+                    else {}
+                ),
                 "stage_channels": {str(stage.stage): list(stage.names) for stage in stages},
             },
         ) as experiment,
@@ -210,11 +254,24 @@ def main(cfg: DictConfig) -> int:
             for split in splits
         }
         reader = RealPatchReader(source)
+        if schema_version == FEATURE_SCHEMA_VERSION_V6:
+            for stage in stages:
+                assert_scaler_spec_matches(
+                    reader.scaler,
+                    schema_version=schema_version,
+                    selection=ActiveChannelSelection(names=stage.names, indices=stage.indices),
+                )
 
         Path(output_root).mkdir(parents=True, exist_ok=True)
         Path(output_root, CONFIG_FILE).write_text(OmegaConf.to_yaml(cfg), encoding="utf-8")
 
-        pool = collect_train_pool(reader, train_refs, max_cells=max_cells, seed=seed)
+        pool = collect_train_pool(
+            reader,
+            train_refs,
+            max_cells=max_cells,
+            seed=seed,
+            n_feature_channels=n_feature_channels,
+        )
         if pool.selected_cells == 0:
             raise RuntimeError("the train pool selected no cell")
         rows_path = f"{output_root}/{TRAIN_ROWS_FILE}"
@@ -241,7 +298,9 @@ def main(cfg: DictConfig) -> int:
         for stage in stages:
             model = spec.build()
             fit_started = time.monotonic()
-            matrix = stage_matrix(pool.features, pool.prior_100m, stage)
+            matrix = stage_matrix(
+                pool.features, pool.prior_100m, stage, n_feature_channels=n_feature_channels
+            )
             model.fit(matrix, pool.residual_k)
             fit_seconds = time.monotonic() - fit_started
             model_path = f"{output_root}/{model_file_name(stage.stage)}"
@@ -302,7 +361,13 @@ def main(cfg: DictConfig) -> int:
             summaries = {}
             for split in splits:
                 cache = caches[split]
-                records = score_stage(cache, model, stage, aggregation=source.aggregation)
+                records = score_stage(
+                    cache,
+                    model,
+                    stage,
+                    aggregation=source.aggregation,
+                    n_feature_channels=n_feature_channels,
+                )
                 summaries[split] = summarize_records(
                     records,
                     requested=cache.requested_patches,
@@ -310,7 +375,11 @@ def main(cfg: DictConfig) -> int:
                 )
                 stage_results[stage.stage].patches.extend(records)
                 stage_probes.setdefault(stage.stage, {})[split] = probe_residuals(
-                    cache, model, stage, _probe_indices(cache, probe_count)
+                    cache,
+                    model,
+                    stage,
+                    _probe_indices(cache, probe_count),
+                    n_feature_channels=n_feature_channels,
                 )
                 summary = summaries[split]
                 log_event(
@@ -371,6 +440,7 @@ def main(cfg: DictConfig) -> int:
             ),
             runtime_seconds=time.monotonic() - started,
             git_revision=git_revision_for(output_root, run_id),
+            feature_schema_version=schema_version,
         )
         uri = write_report(report, f"{output_root}/random_forest_report.json")
         payload = report.to_payload()

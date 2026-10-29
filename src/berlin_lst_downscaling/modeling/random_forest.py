@@ -50,14 +50,20 @@ import torch
 from omegaconf import DictConfig
 from sklearn.ensemble import RandomForestRegressor
 
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
+)
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.data.training.report import now_iso
 from berlin_lst_downscaling.modeling.aggregation import AGGREGATION_ARITHMETIC, AggregationMethod
 from berlin_lst_downscaling.modeling.baseline import PRIOR_RULE, PatchRecord, SplitSummary
 from berlin_lst_downscaling.modeling.channels import (
     ABLATION_STAGE_CHANNELS,
+    V6_LADDER_STAGE_CHANNELS,
     feature_order_for,
     resolve_active_channels,
+    resolve_schema_selection,
 )
 from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
@@ -211,8 +217,35 @@ class StageSelection:
         return len(self.names)
 
 
-def resolve_stage_selection(stage: int) -> StageSelection:
-    """Resolve a stage number through the published ablation channel ladder."""
+def resolve_stage_selection(
+    stage: int, schema_version: int = FEATURE_SCHEMA_VERSION
+) -> StageSelection:
+    """Resolve a stage number through the published ablation channel ladder.
+
+    Schema 3 uses the V3 Tag-11 ladder; schema 5 uses the v6 ladder rungs L1-L4.
+    """
+    if schema_version == FEATURE_SCHEMA_VERSION_V6:
+        v6_channels = V6_LADDER_STAGE_CHANNELS.get(stage)
+        if v6_channels is None:
+            raise ValueError(
+                f"stage must be one of {sorted(V6_LADDER_STAGE_CHANNELS)}, got {stage!r}"
+            )
+        v6_selection = resolve_schema_selection(
+            schema_version,
+            n_active_channels=len(v6_channels),
+            active_channel_names=v6_channels,
+        )
+        return StageSelection(
+            stage=stage,
+            names=v6_selection.names,
+            indices=v6_selection.indices,
+            feature_order=feature_order_for(v6_selection, schema_version),
+        )
+    if schema_version != FEATURE_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported feature schema version {schema_version!r}; "
+            f"expected {FEATURE_SCHEMA_VERSION} or {FEATURE_SCHEMA_VERSION_V6}"
+        )
     channels = ABLATION_STAGE_CHANNELS.get(stage)
     if channels is None:
         raise ValueError(f"stage must be one of {sorted(ABLATION_STAGE_CHANNELS)}, got {stage!r}")
@@ -270,9 +303,15 @@ def reconstruct_10m_prediction(prior_100m: np.ndarray, residual_10m: np.ndarray)
     return (prior_10m + residual_10m)[None, None]
 
 
-def stage_matrix(features: np.ndarray, prior: np.ndarray, stage: StageSelection) -> np.ndarray:
+def stage_matrix(
+    features: np.ndarray,
+    prior: np.ndarray,
+    stage: StageSelection,
+    *,
+    n_feature_channels: int = N_FEATURE_CHANNELS,
+) -> np.ndarray:
     """Select active channel columns and append the physical Kelvin prior."""
-    if features.ndim != 2 or features.shape[1] != N_FEATURE_CHANNELS:
+    if features.ndim != 2 or features.shape[1] != n_feature_channels:
         raise ValueError("invalid training feature matrix")
     if prior.shape != (len(features),):
         raise ValueError("prior row count differs from features")
@@ -281,14 +320,19 @@ def stage_matrix(features: np.ndarray, prior: np.ndarray, stage: StageSelection)
     )
 
 
-def stage_inputs(features: np.ndarray, stage: StageSelection) -> np.ndarray:
-    """Return the stage channel subset of an ``(..., 28, H, W)`` feature array.
+def stage_inputs(
+    features: np.ndarray,
+    stage: StageSelection,
+    *,
+    n_feature_channels: int = N_FEATURE_CHANNELS,
+) -> np.ndarray:
+    """Return the stage channel subset of an ``(..., C, H, W)`` feature array.
 
     Channel selection happens after scaling, on model input only, exactly as
     the ablation configs select their channels.
     """
-    if features.ndim < 3 or features.shape[-3] != N_FEATURE_CHANNELS:
-        raise ValueError(f"expected {N_FEATURE_CHANNELS} feature channels, got {features.shape}")
+    if features.ndim < 3 or features.shape[-3] != n_feature_channels:
+        raise ValueError(f"expected {n_feature_channels} feature channels, got {features.shape}")
     indices = np.asarray(stage.indices, dtype=np.intp)
     return np.ascontiguousarray(features[..., indices, :, :], dtype=np.float32)
 
@@ -298,12 +342,19 @@ def predict_10m(
     features: np.ndarray,
     prior_100m: np.ndarray,
     stage: StageSelection,
+    *,
+    n_feature_channels: int = N_FEATURE_CHANNELS,
 ) -> np.ndarray:
     """Predict each 10 m pixel from its active channels and physical prior."""
-    if features.shape != (N_FEATURE_CHANNELS, REAL_PATCH_PX, REAL_PATCH_PX):
+    if features.shape != (n_feature_channels, REAL_PATCH_PX, REAL_PATCH_PX):
         raise ValueError("invalid native feature shape")
     prior = np.repeat(np.repeat(prior_100m, POOL_FACTOR, axis=0), POOL_FACTOR, axis=1)
-    matrix = stage_matrix(features.reshape(N_FEATURE_CHANNELS, -1).T, prior.ravel(), stage)
+    matrix = stage_matrix(
+        features.reshape(n_feature_channels, -1).T,
+        prior.ravel(),
+        stage,
+        n_feature_channels=n_feature_channels,
+    )
     residual = np.asarray(model.predict(matrix), dtype=np.float32)
     if not np.isfinite(residual).all():
         raise ValueError("forest returned non-finite residuals")
@@ -326,7 +377,7 @@ class TrainPool:
     """The selected training rows, one per eligible train cell observation."""
 
     keys: list[tuple[str, int, int, int]]
-    features: np.ndarray  # (n, 28) float32, pooled 100 m channels
+    features: np.ndarray  # (n, C) float32, pooled 100 m channels
     prior_100m: np.ndarray  # (n,) float32
     residual_k: np.ndarray  # (n,) float32
     candidate_cells: int
@@ -381,6 +432,7 @@ def collect_train_pool(
     *,
     max_cells: int,
     seed: int,
+    n_feature_channels: int = N_FEATURE_CHANNELS,
 ) -> TrainPool:
     """Select the seeded reservoir of training rows over the train patches.
 
@@ -395,7 +447,7 @@ def collect_train_pool(
     # the fallback for a drifted index that admits overlapping windows.
     dedupe: set[tuple[str, int, int]] | None = set() if audit["overlapping_windows"] else None
     rng = np.random.default_rng(seed)
-    features = np.empty((max_cells, N_FEATURE_CHANNELS), dtype=np.float32)
+    features = np.empty((max_cells, n_feature_channels), dtype=np.float32)
     prior_100m = np.empty(max_cells, dtype=np.float32)
     residual_k = np.empty(max_cells, dtype=np.float32)
     slots: list[tuple[str, int, int, int] | None] = [None] * max_cells
@@ -418,6 +470,11 @@ def collect_train_pool(
         sample = reader.read_patch(ref)
         if sample is None:
             continue
+        if sample.features.shape[0] != n_feature_channels:
+            raise ValueError(
+                f"patch {ref.patch_id}: expected {n_feature_channels} feature channels, "
+                f"got {sample.features.shape[0]}"
+            )
         read_patches += 1
         pooled, prior_cells, residual_cells = _patch_cells(sample)
         drs, dcs = np.nonzero(sample.mask_100m[0])
@@ -567,6 +624,7 @@ def score_stage(
     stage: StageSelection,
     *,
     aggregation: AggregationMethod = AGGREGATION_ARITHMETIC,
+    n_feature_channels: int = N_FEATURE_CHANNELS,
 ) -> list[PatchRecord]:
     """Score one stage over a cached split through the shared 10 m pooling path."""
     records: list[PatchRecord] = []
@@ -582,7 +640,9 @@ def score_stage(
                 total=len(cache.patch_ids),
             )
         features = np.load(cache.feature_files[i], allow_pickle=False)
-        residual = predict_10m(model, features, cache.prior_100m[i], stage)
+        residual = predict_10m(
+            model, features, cache.prior_100m[i], stage, n_feature_channels=n_feature_channels
+        )
         prediction = torch.from_numpy(reconstruct_10m_prediction(cache.prior_100m[i], residual))
         target = torch.from_numpy(cache.target_100m[i][None, None])
         mask = torch.from_numpy(cache.mask_100m[i][None, None])
@@ -624,12 +684,16 @@ def probe_residuals(
     model: RandomForestRegressor,
     stage: StageSelection,
     indices: Sequence[int],
+    *,
+    n_feature_channels: int = N_FEATURE_CHANNELS,
 ) -> dict[int, np.ndarray]:
     """Return the predicted residual of each probe patch of a cached split."""
     out: dict[int, np.ndarray] = {}
     for i in indices:
         features = np.load(cache.feature_files[i], allow_pickle=False)
-        out[i] = predict_10m(model, features, cache.prior_100m[i], stage)
+        out[i] = predict_10m(
+            model, features, cache.prior_100m[i], stage, n_feature_channels=n_feature_channels
+        )
     return out
 
 
@@ -756,9 +820,10 @@ class RandomForestReport:
     resource_usage: dict[str, int]
     git_revision: str
     written_at: str
+    feature_schema_version: int = FEATURE_SCHEMA_VERSION
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "method": METHOD,
             "target_rule": TARGET_RULE,
             "inference_rule": INFERENCE_RULE,
@@ -779,6 +844,10 @@ class RandomForestReport:
             "git_revision": self.git_revision,
             "written_at": self.written_at,
         }
+        # v1 payloads stay byte-identical: the field appears only for schema 5.
+        if self.feature_schema_version != FEATURE_SCHEMA_VERSION:
+            payload["feature_schema_version"] = self.feature_schema_version
+        return payload
 
 
 def build_report(
@@ -797,6 +866,7 @@ def build_report(
     runtime_seconds: float,
     cache_bytes: int,
     git_revision: str,
+    feature_schema_version: int = FEATURE_SCHEMA_VERSION,
 ) -> RandomForestReport:
     """Assemble the writable artifact from the run's evidence."""
     return RandomForestReport(
@@ -841,6 +911,7 @@ def build_report(
         },
         git_revision=git_revision,
         written_at=now_iso(),
+        feature_schema_version=feature_schema_version,
     )
 
 

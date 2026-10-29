@@ -1,0 +1,24 @@
+# @package _global_
+# Naive prior-expand baseline on the v3 data chain (training/v3, features/v6), full run: every indexed patch of the requested
+# splits. Explicit, expensive invocation — not run by CI.
+#
+# The output root is local to the machine that runs it. Do not point it at a
+# canonical release or retained QA root; a baseline artifact is a run output.
+defaults:
+  - _base
+  - _self_
+
+splits: ["train", "validation", "test"]
+max_patches_per_split: null   # unbounded: every indexed patch of the split
+scene_ids: []
+
+output_root: "data/runs/baseline-real-v6"
+
+data_release_id: "training/v3"
+features_root: "gs://berlin-lst-training-data/features/v6"
+patch_index_root: "gs://berlin-lst-training-data/training/patch-index/v3"
+training_root: "gs://berlin-lst-training-data/training/v3"
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
+
+data:
+  feature_schema_version: 5      # features/v6, 22 channels

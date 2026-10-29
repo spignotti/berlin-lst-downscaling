@@ -1,0 +1,57 @@
+# @package _global_
+# Shared base of the v6 ablation lock (feature schema 5, training/v3). It is
+# not runnable on its own: its name is not in the allowed config set, so
+# guard_modeling_config rejects it. The arm files (v6_*_locked.yaml) add the
+# arm id, channels, loss, cache budget, and output root.
+#
+# Everything below is pinned by assert_ablation_lock except ``seed`` and
+# ``trainer.max_epochs``, which are parameters with defaults: override them
+# per run (``seed=1 trainer.max_epochs=40``). Both are recorded in the run.
+defaults:
+  - _base
+  - _self_
+
+ablation_lock: true
+ablation_release: "v6"
+ablation_arm: null            # set by each arm file
+stage1_residual_prior: true
+
+seed: 0                       # parameter (default 0); overridable, recorded
+
+contract:
+  feature_order: "v6_named_subset"   # arm files set the final label
+
+data_release_id: "training/v3"
+features_root: "gs://berlin-lst-training-data/features/v6"
+training_root: "gs://berlin-lst-training-data/training/v3"
+patch_index_root: "gs://berlin-lst-training-data/training/patch-index/v3"
+ard_root: "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
+aggregation: arithmetic
+
+data:
+  kind: real
+  feature_schema_version: 5
+  mode: stream
+  max_patches_per_split: null
+  shuffle_train: true
+  batch_size: 4
+  num_workers: 0
+  pin_memory: false
+  scene_ids: []
+  splits: ["train", "validation"]
+  cache_root: null
+
+model:
+  depth: 4
+  base_width: 32
+
+trainer:
+  max_epochs: 20              # parameter (default 20); overridable, recorded
+  learning_rate: 1.0e-3
+  weight_decay: 0.0
+  precision: "16-mixed"
+  accelerator: "gpu"
+  devices: 1
+
+wandb:
+  mode: "online"

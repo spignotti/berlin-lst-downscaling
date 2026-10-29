@@ -47,11 +47,13 @@ import pyarrow.parquet as pq
 import rasterio
 import torch
 from odc.geo.geobox import GeoBox
+from omegaconf import DictConfig, OmegaConf
 from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNEL_NAMES,
+    FEATURE_SCHEMA_VERSION,
     FEATURE_SCHEMA_VERSION_V6,
     feature_schema,
 )
@@ -80,6 +82,12 @@ from berlin_lst_downscaling.modeling.aggregation import (
     AggregationMethod,
     pool_block_means_from_accumulators,
     validate_aggregation_method,
+)
+from berlin_lst_downscaling.modeling.channels import (
+    ActiveChannelSelection,
+    assert_scaler_matches_selection,
+    schema_version_from_config,
+    selection_from_config,
 )
 from berlin_lst_downscaling.modeling.contracts import (
     N_FEATURE_CHANNELS,
@@ -200,6 +208,48 @@ class ScalerSpec:
                 vals = (vals - ch.mean) / ch.std
             band[finite] = vals
         return bands
+
+
+def assert_scaler_spec_matches(
+    scaler: ScalerSpec,
+    *,
+    schema_version: int,
+    selection: ActiveChannelSelection,
+    canopy_cover_threshold_m: float | None = None,
+) -> None:
+    """Raise unless ``scaler`` agrees with the feature schema and the channel selection."""
+    entry_names = tuple(c.name for c in scaler.channels)
+    if entry_names != scaler.channel_order or any(
+        c.index != i for i, c in enumerate(scaler.channels)
+    ):
+        raise ValueError(
+            "scaler per-channel entries disagree with channel_order: "
+            f"channel_order={list(scaler.channel_order)}; "
+            f"entries={[(c.index, c.name) for c in scaler.channels]}"
+        )
+    if schema_version == FEATURE_SCHEMA_VERSION:
+        schema = feature_schema(schema_version)
+    else:
+        schema = feature_schema(schema_version, canopy_cover_threshold_m=canopy_cover_threshold_m)
+    assert_scaler_matches_selection(
+        scaler.channel_order,
+        schema_names=schema.names,
+        schema_version=schema_version,
+        selection=selection,
+    )
+
+
+def assert_scaler_matches_config(cfg: DictConfig, scaler: ScalerSpec) -> None:
+    """Run :func:`assert_scaler_spec_matches` with the selection a modeling config resolves to."""
+    raw_threshold = OmegaConf.select(cfg, "data.canopy_cover_threshold_m")
+    if raw_threshold is None:
+        raw_threshold = OmegaConf.select(cfg, "canopy_cover_threshold_m")
+    assert_scaler_spec_matches(
+        scaler,
+        schema_version=schema_version_from_config(cfg),
+        selection=selection_from_config(cfg),
+        canopy_cover_threshold_m=None if raw_threshold is None else float(raw_threshold),
+    )
 
 
 # ── loading ───────────────────────────────────────────────────────────
@@ -852,6 +902,8 @@ __all__ = [
     "ScalerChannel",
     "ScalerSpec",
     "ScenePrior",
+    "assert_scaler_matches_config",
+    "assert_scaler_spec_matches",
     "collate_real_batch",
     "load_landsat_uris",
     "load_patch_refs",

@@ -52,6 +52,11 @@ ard_root: null
 # Determinism: fixed seed + deterministic kernels. Recorded at run level;
 # byte identity is still environment/hardware/library dependent.
 seed: 0
+early_stopping:          # optional; admitted only on the v6 ablation configs
+  enabled: false
+  patience: 10
+  min_delta: 0.0
+evaluate_test: true      # full runs score 2025 test once; false only on v6 arms (pilot/timing)
 stage1_efficiency_cache_max_bytes: 0
 
 # ── data ──────────────────────────────────────────────────────────────

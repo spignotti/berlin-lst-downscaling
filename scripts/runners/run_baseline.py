@@ -31,6 +31,7 @@ from uuid import uuid4
 import hydra
 from omegaconf import DictConfig
 
+from berlin_lst_downscaling.data.features.contracts import FEATURE_SCHEMA_VERSION_V6
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
 from berlin_lst_downscaling.modeling.baseline import (
@@ -40,7 +41,15 @@ from berlin_lst_downscaling.modeling.baseline import (
     load_refs,
     write_report,
 )
-from berlin_lst_downscaling.modeling.patches import RealPatchReader, RealSourceConfig
+from berlin_lst_downscaling.modeling.channels import (
+    resolve_schema_selection,
+    schema_version_from_config,
+)
+from berlin_lst_downscaling.modeling.patches import (
+    RealPatchReader,
+    RealSourceConfig,
+    assert_scaler_spec_matches,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -90,6 +99,13 @@ def main(cfg: DictConfig) -> int:
             max_patches_per_split=None if max_patches is None else int(max_patches),
         )
         reader = RealPatchReader(source)
+        schema_version = schema_version_from_config(cfg)
+        if schema_version == FEATURE_SCHEMA_VERSION_V6:
+            assert_scaler_spec_matches(
+                reader.scaler,
+                schema_version=schema_version,
+                selection=resolve_schema_selection(schema_version, n_active_channels=None),
+            )
         requested = Counter(ref.split for ref in refs)
         records, summaries = evaluate_baseline(reader, refs, requested_per_split=dict(requested))
 

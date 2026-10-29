@@ -1,0 +1,39 @@
+# @package _global_
+# v6 ablation arm L3: L2 + shadows (ladder rung 3). LOO-ERA5 (L4 minus ERA5) equals this
+# channel set, so it has no config of its own.
+# C=18, loss masked_l1. Channels are listed in v6 registry order.
+# Parameters: seed and trainer.max_epochs (see _v6_ablation_base.yaml).
+defaults:
+  - _v6_ablation_base
+  - _self_
+
+ablation_arm: "L3"
+
+contract:
+  loss: "masked_l1"
+  feature_order: "v6_named_subset"
+
+data:
+  n_active_channels: 18
+  active_channel_names:
+    - B02
+    - B03
+    - B04
+    - B08
+    - B11
+    - B12
+    - ndvi
+    - ndwi_mcfeeters
+    - ndbi
+    - s2_broadband_albedo
+    - building_height_mean
+    - building_coverage_ratio
+    - vegetation_height_mean
+    - canopy_cover_fraction
+    - imperviousness
+    - svf
+    - shadow_building
+    - shadow_vegetation
+  cache_max_bytes: 23192823399    # >= 12 GiB * 18/10
+
+output_root: "data/runs/modeling-ablation-v6-l3/seed-${seed}"

@@ -1,0 +1,30 @@
+# @package _global_
+# v6 ablation arm L1: spectral + indices only (ladder rung 1).
+# C=10, loss masked_l1. Channels are listed in v6 registry order.
+# Parameters: seed and trainer.max_epochs (see _v6_ablation_base.yaml).
+defaults:
+  - _v6_ablation_base
+  - _self_
+
+ablation_arm: "L1"
+
+contract:
+  loss: "masked_l1"
+  feature_order: "v6_named_subset"
+
+data:
+  n_active_channels: 10
+  active_channel_names:
+    - B02
+    - B03
+    - B04
+    - B08
+    - B11
+    - B12
+    - ndvi
+    - ndwi_mcfeeters
+    - ndbi
+    - s2_broadband_albedo
+  cache_max_bytes: 12884901888    # >= 12 GiB * 10/10
+
+output_root: "data/runs/modeling-ablation-v6-l1/seed-${seed}"

@@ -1,0 +1,36 @@
+# @package _global_
+# v6 ablation arm LOO-M: leave-one-out: L4 without morphology.
+# C=16, loss masked_l1. Channels are listed in v6 registry order.
+# Parameters: seed and trainer.max_epochs (see _v6_ablation_base.yaml).
+defaults:
+  - _v6_ablation_base
+  - _self_
+
+ablation_arm: "LOO-M"
+
+contract:
+  loss: "masked_l1"
+  feature_order: "v6_named_subset"
+
+data:
+  n_active_channels: 16
+  active_channel_names:
+    - B02
+    - B03
+    - B04
+    - B08
+    - B11
+    - B12
+    - ndvi
+    - ndwi_mcfeeters
+    - ndbi
+    - s2_broadband_albedo
+    - t2m_scene
+    - ssrd_scene
+    - wind_speed_10m_scene
+    - tp_0_72h
+    - shadow_building
+    - shadow_vegetation
+  cache_max_bytes: 20615843021    # >= 12 GiB * 16/10
+
+output_root: "data/runs/modeling-ablation-v6-loo-morph/seed-${seed}"

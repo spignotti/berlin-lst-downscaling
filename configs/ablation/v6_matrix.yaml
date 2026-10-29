@@ -1,0 +1,18 @@
+# Matrix frozen by the owner: 9 arms x seeds 0, 1, 2 = 27 runs.
+# LOO-ERA5 equals L3 and has no entry.
+arms:
+  L1: {seeds: [0, 1, 2], max_epochs: 20}
+  L2: {seeds: [0, 1, 2], max_epochs: 20}
+  L3: {seeds: [0, 1, 2], max_epochs: 20}
+  L4: {seeds: [0, 1, 2], max_epochs: 20}
+  L5: {seeds: [0, 1, 2], max_epochs: 20}
+  LOO-M: {seeds: [0, 1, 2], max_epochs: 20}
+  LOO-S: {seeds: [0, 1, 2], max_epochs: 20}
+  NO-NDVI-NDWI: {seeds: [0, 1, 2], max_epochs: 20}
+  NO-RED-NIR-IDX: {seeds: [0, 1, 2], max_epochs: 20}
+
+# PLACEHOLDERS until the timing smoke measures them: not measured, and not a
+# verified rate. Run hours = fixed overhead + max_epochs * hours per epoch.
+hours_per_epoch_estimate: 0.12
+fixed_overhead_hours_estimate: 0.1
+usd_per_hour: 1.00  # placeholder
