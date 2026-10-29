@@ -156,3 +156,105 @@ def test_missing_rate_is_refused(launcher: ModuleType, monkeypatch: pytest.Monke
     monkeypatch.setattr(sys, "argv", _argv("v6-l4", rate=False))
     with pytest.raises(SystemExit, match="hourly-rate-usd"):
         launcher.main()
+
+
+def _out(launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys, *extra: str) -> str:
+    monkeypatch.setattr(sys, "argv", _argv("v6-l4", *extra))
+    assert launcher.main() == 0
+    return capsys.readouterr().out
+
+
+def test_skip_test_composes_and_passes_guards(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _out(launcher, monkeypatch, capsys, "--max-epochs", "2", "--skip-test")
+    assert "evaluate_test=false" in out
+    assert "test pass      : skipped" in out
+
+
+def test_early_stopping_is_off_by_default(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _out(launcher, monkeypatch, capsys, "--max-epochs", "40")
+    assert "early_stopping" not in out.split("hydra overrides:")[1]
+    assert "evaluate_test" not in out.split("hydra overrides:")[1]
+    assert "early stopping : off" in out
+    assert "test pass      : scored" in out
+
+
+def _submit_env(launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, *extra: str) -> dict:
+    captured: dict[str, object] = {}
+
+    def _fake_submit(client: object, **kwargs: object) -> str:
+        captured.update(kwargs)
+        return "projects/p/locations/r/customJobs/1"
+
+    monkeypatch.setattr(launcher, "_client", lambda region: object())
+    monkeypatch.setattr(launcher, "_submit", _fake_submit)
+    monkeypatch.setattr(
+        launcher,
+        "_poll_until_terminal",
+        lambda *a, **k: (launcher.JobState.JOB_STATE_SUCCEEDED, False),
+    )
+    argv = _argv("v6-l4", *extra)
+    argv.remove("--preflight")
+    monkeypatch.setattr(sys, "argv", argv)
+    assert launcher.main() == 0
+    return dict(captured["env"])  # type: ignore[arg-type]
+
+
+def test_early_stopping_reaches_overrides_and_env(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flags = ("--early-stopping-patience", "5", "--early-stopping-min-delta", "0.01")
+    out = _out(launcher, monkeypatch, capsys, *flags)
+    assert "early_stopping.enabled=true early_stopping.patience=5" in out
+    assert "early_stopping.min_delta=0.01" in out
+    env = _submit_env(launcher, monkeypatch, *flags, "--skip-test")
+    assert env["VERTEX_EARLY_STOPPING_PATIENCE"] == "5"
+    assert env["VERTEX_EARLY_STOPPING_MIN_DELTA"] == "0.01"
+    assert env["VERTEX_SKIP_TEST"] == "1"
+
+
+def test_default_env_has_epoch_metrics_uri_and_no_es_or_skip(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _submit_env(launcher, monkeypatch)
+    assert env["VERTEX_EPOCH_METRICS_URI"].endswith("/unit-seed0-ep20/epoch_metrics.json")
+    assert not {"VERTEX_EARLY_STOPPING_PATIENCE", "VERTEX_EARLY_STOPPING_MIN_DELTA"} & set(env)
+    assert "VERTEX_SKIP_TEST" not in env
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--early-stopping-patience", "5"],
+        ["--early-stopping-min-delta", "0.1"],
+        ["--skip-test"],
+    ],
+)
+def test_non_v6_mode_rejects_new_flags(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, flag: list[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv("stage4", *flag))
+    with pytest.raises(SystemExit, match="only accepted by the v6 modes"):
+        launcher.main()
+
+
+@pytest.mark.parametrize(
+    ("flag", "match"),
+    [
+        (["--early-stopping-min-delta", "0.1"], "requires --early-stopping-patience"),
+        (["--early-stopping-patience", "0"], "must be >= 1"),
+        (
+            ["--early-stopping-patience", "3", "--early-stopping-min-delta", "-1"],
+            "finite and >= 0",
+        ),
+    ],
+)
+def test_invalid_early_stopping_flags_rejected(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, flag: list[str], match: str
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv("v6-l4", *flag))
+    with pytest.raises(SystemExit, match=match):
+        launcher.main()

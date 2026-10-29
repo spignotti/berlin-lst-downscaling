@@ -355,7 +355,56 @@ def resolve_schema_selection(
     return ActiveChannelSelection(names=tuple(names_list), indices=indices)
 
 
+def assert_scaler_matches_selection(
+    scaler_names: Sequence[str],
+    *,
+    schema_names: Sequence[str],
+    schema_version: int,
+    selection: ActiveChannelSelection,
+) -> None:
+    """Raise unless the published scaler roster matches the schema and the selection.
+
+    Guards the model-input slice: the scaler channels must equal the schema
+    roster (same names, same order) and every selected index must point at the
+    selected name in that roster.
+    """
+    actual = tuple(scaler_names)
+    expected = tuple(schema_names)
+    if actual != expected:
+        missing = [n for n in expected if n not in actual]
+        extra = [n for n in actual if n not in expected]
+        first_diff = next(
+            (i for i, (a, e) in enumerate(zip(actual, expected, strict=False)) if a != e),
+            min(len(actual), len(expected)),
+        )
+        raise ValueError(
+            f"scaler channel names differ from feature schema v{schema_version}: "
+            f"missing={missing} extra={extra} first_difference_position={first_diff}; "
+            f"expected schema names={list(expected)}; actual scaler names={list(actual)}"
+        )
+    not_in_scaler = [n for n in selection.names if n not in actual]
+    if not_in_scaler:
+        raise ValueError(
+            f"selected channels not in the scaler (schema v{schema_version}): {not_in_scaler}"
+        )
+    if len(selection.indices) != len(selection.names):
+        raise ValueError(
+            f"selection has {len(selection.names)} names but {len(selection.indices)} indices"
+        )
+    mapped: list[str | None] = []
+    for index in selection.indices:
+        mapped.append(actual[index] if 0 <= index < len(actual) else None)
+    if tuple(mapped) != selection.names:
+        raise ValueError(
+            f"selection indices do not map to the selected names (schema v{schema_version}): "
+            f"expected names={list(selection.names)}; "
+            f"indices {list(selection.indices)} map to {mapped} "
+            f"(None = index out of range for {len(actual)} scaler channels)"
+        )
+
+
 __all__ = [
+    "assert_scaler_matches_selection",
     "ABLATION_ISOLATION_CHANNELS",
     "ABLATION_LOCKED_CONFIG_NAMES",
     "ABLATION_STAGE_CHANNELS",

@@ -71,6 +71,42 @@ def _run_block(context: dict, source_sha: str) -> dict:
     }
 
 
+def full_run_status(epochs: object, summary: dict | None) -> tuple[bool, bool]:
+    """Return ``(epochs_complete, test_skipped)`` for a full-profile run.
+
+    An early-stopped run is complete when the curve ends at the recorded
+    ``stopped_epoch``. A skipped test pass is accepted only when the summary
+    records ``evaluate_test=false`` in its resolved config; the two must agree.
+    A summary without ``evaluate_test`` counts as ``evaluate_test=true``.
+    """
+    summary = summary or {}
+    resolved = summary.get("resolved_config")
+    evaluate_test = resolved.get("evaluate_test", True) if isinstance(resolved, dict) else True
+    test_skipped = summary.get("test") == {"skipped": True}
+    if test_skipped and evaluate_test is not False:
+        raise ValueError("test pass skipped but evaluate_test=false is not recorded")
+    if evaluate_test is False and not test_skipped:
+        raise ValueError("evaluate_test=false is recorded but the test pass is not marked skipped")
+    stopped = summary.get("stopped_epoch")
+    max_epochs = int(summary.get("max_epochs", -1))
+    if stopped is not None:
+        early = summary.get("early_stopping")
+        if (
+            isinstance(stopped, bool)
+            or not isinstance(stopped, int)
+            or not 1 <= stopped <= max_epochs
+            or not isinstance(early, dict)
+            or early.get("enabled") is not True
+        ):
+            raise ValueError(
+                f"stopped_epoch={stopped!r} needs early_stopping.enabled=true and "
+                f"1 <= stopped_epoch <= max_epochs ({max_epochs})"
+            )
+    expected = max_epochs if stopped is None else stopped
+    epochs_complete = isinstance(epochs, list) and bool(summary) and len(epochs) == expected
+    return epochs_complete, test_skipped
+
+
 def build_record(
     run_root: Path,
     *,
@@ -134,16 +170,18 @@ def build_record(
         summary = _read_json(run_root / "full_summary.json")
         test_scope = _read_json(run_root / "test_scope.json")
         record["profile"] = "full"
+        epochs_complete, test_skipped = full_run_status(epochs, summary)
         record["full"] = {
             "epoch_metrics": epochs if isinstance(epochs, list) else [],
             "summary": summary or {},
             "test_scope": test_scope or {},
-            # A full run is only decidable when every requested epoch ran and
-            # the selected checkpoint plus its test scope were retained.
-            "epochs_complete": isinstance(epochs, list)
-            and bool(summary)
-            and len(epochs) == int((summary or {}).get("max_epochs", -1)),
+            # A full run is only decidable when every requested epoch ran (or
+            # the recorded early stop was reached) and the selected checkpoint
+            # plus its test scope were retained.
+            "epochs_complete": epochs_complete,
         }
+        if isinstance(summary, dict) and "evaluate_test" in summary:
+            record["full"]["test_skipped"] = test_skipped
         if checkpoint is not None:
             record["checkpoint"] = checkpoint
     elif profile == "verification":
@@ -252,6 +290,18 @@ def _upload_create_only(uri: str, payload: bytes) -> None:
     blob.upload_from_string(payload, content_type="application/json", if_generation_match=0)
 
 
+def _upload_epoch_metrics(run_root: Path, uri: str, *, required: bool) -> None:
+    """Upload ``epoch_metrics.json`` create-only, before the evidence manifest."""
+    path = run_root / "epoch_metrics.json"
+    if not path.is_file():
+        if required:
+            raise SystemExit(f"ERROR: epoch metrics not found: {path}")
+        print(f"note: {path} not found; epoch curve not uploaded")
+        return
+    _upload_create_only(uri, path.read_bytes())
+    print(f"epoch metrics uploaded: {uri}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-root", required=True, type=Path)
@@ -280,7 +330,26 @@ def main() -> None:
         default=None,
         help="gs:// destination for --checkpoint-path (required with it)",
     )
+    parser.add_argument(
+        "--epoch-metrics-uri",
+        default=None,
+        help="gs:// destination for run-root/epoch_metrics.json (create-only)",
+    )
+    parser.add_argument(
+        "--epoch-metrics-only",
+        action="store_true",
+        help="upload only the epoch curve (failed runs); requires --epoch-metrics-uri",
+    )
     args = parser.parse_args()
+
+    if args.epoch_metrics_only and not args.epoch_metrics_uri:
+        raise SystemExit("ERROR: --epoch-metrics-only requires --epoch-metrics-uri")
+    if args.epoch_metrics_uri:
+        _upload_epoch_metrics(
+            args.run_root, args.epoch_metrics_uri, required=not args.epoch_metrics_only
+        )
+        if args.epoch_metrics_only:
+            return
 
     checkpoint = None
     if args.checkpoint_path is not None:

@@ -17,7 +17,11 @@
 # Optional: INFISICAL_SECRET_PATH (default "/"), VERTEX_OUTPUT_ROOT,
 #   VERTEX_CONFIG_NAME (default "vertex_smoke"), VERTEX_PROFILE (default "smoke"),
 #   VERTEX_SEED and VERTEX_MAX_EPOCHS (v6 ablation modes; appended as the Hydra
-#   overrides seed=... and trainer.max_epochs=... when non-empty)
+#   overrides seed=... and trainer.max_epochs=... when non-empty),
+#   VERTEX_EARLY_STOPPING_PATIENCE and VERTEX_EARLY_STOPPING_MIN_DELTA (v6;
+#   early_stopping.enabled=true, early_stopping.patience=..., early_stopping.min_delta=...),
+#   VERTEX_SKIP_TEST=1 (v6; evaluate_test=false), VERTEX_EPOCH_METRICS_URI (v6;
+#   gs:// destination for the epoch curve, uploaded create-only also on failure)
 set -euo pipefail
 
 : "${VERTEX_RUN_LABEL:?VERTEX_RUN_LABEL is required}"
@@ -116,6 +120,15 @@ else
   if [[ -n "${VERTEX_MAX_EPOCHS:-}" ]]; then
     run_command+=("trainer.max_epochs=$VERTEX_MAX_EPOCHS")
   fi
+  if [[ -n "${VERTEX_EARLY_STOPPING_PATIENCE:-}" ]]; then
+    run_command+=("early_stopping.enabled=true" "early_stopping.patience=$VERTEX_EARLY_STOPPING_PATIENCE")
+  fi
+  if [[ -n "${VERTEX_EARLY_STOPPING_MIN_DELTA:-}" ]]; then
+    run_command+=("early_stopping.min_delta=$VERTEX_EARLY_STOPPING_MIN_DELTA")
+  fi
+  if [[ "${VERTEX_SKIP_TEST:-}" == "1" ]]; then
+    run_command+=("evaluate_test=false")
+  fi
 fi
 
 rc=0
@@ -127,6 +140,17 @@ rc=${PIPESTATUS[0]}
 set -e
 
 if [[ "$rc" -ne 0 && "$PROFILE" != "efficiency" && "$PROFILE" != "verification" ]]; then
+  if [[ "$PROFILE" == "full" && -n "${VERTEX_EPOCH_METRICS_URI:-}" && -f "$OUTPUT_ROOT/epoch_metrics.json" ]]; then
+    uv run python scripts/operators/vertex_evidence.py \
+      --run-root "$OUTPUT_ROOT" \
+      --evidence-uri "$VERTEX_EVIDENCE_URI" \
+      --run-label "$VERTEX_RUN_LABEL" \
+      --source-sha "$VERTEX_SOURCE_SHA" \
+      --image-digest "$VERTEX_IMAGE_DIGEST" \
+      --profile "$PROFILE" \
+      --epoch-metrics-uri "$VERTEX_EPOCH_METRICS_URI" \
+      --epoch-metrics-only || echo "epoch metrics upload failed; keeping rc=$rc"
+  fi
   echo "vertex $PROFILE run failed (rc=$rc); no evidence uploaded"
   exit "$rc"
 fi
@@ -153,6 +177,11 @@ elif [[ "$PROFILE" == "efficiency" && "$rc" -eq 0 && ( "$VERTEX_EFFICIENCY_ROLE"
   else
     ckpt_args=(--checkpoint-path "${ckpts[0]}" --checkpoint-uri "${VERTEX_EVIDENCE_URI%/*}/best.ckpt")
   fi
+fi
+
+epoch_args=()
+if [[ "$PROFILE" == "full" && -n "${VERTEX_EPOCH_METRICS_URI:-}" ]]; then
+  epoch_args=(--epoch-metrics-uri "$VERTEX_EPOCH_METRICS_URI")
 fi
 
 if [[ "$PROFILE" == "efficiency" ]]; then
@@ -186,6 +215,7 @@ else
     --image-digest "$VERTEX_IMAGE_DIGEST" \
     --profile "$PROFILE" \
     --result-file "$RESULT_FILE" \
+    "${epoch_args[@]}" \
     "${ckpt_args[@]}"
 fi
 

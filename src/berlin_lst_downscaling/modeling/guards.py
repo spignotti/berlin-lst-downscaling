@@ -10,7 +10,9 @@ bounds.
 
 from __future__ import annotations
 
+import math
 import os
+from dataclasses import dataclass
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
@@ -176,6 +178,67 @@ def assert_ablation_lock(cfg: DictConfig) -> None:
         raise ValueError(f"ablation_release={release!r} is not a known ablation release")
 
 
+@dataclass(frozen=True)
+class EarlyStoppingSpec:
+    """Validated ``early_stopping`` block (admitted on the v6 ablation configs only)."""
+
+    enabled: bool
+    patience: int
+    min_delta: float
+
+    def payload(self) -> dict[str, object]:
+        return {"enabled": self.enabled, "patience": self.patience, "min_delta": self.min_delta}
+
+
+def early_stopping_from_config(cfg: DictConfig) -> EarlyStoppingSpec:
+    """Read and type-check ``early_stopping``; a missing block means disabled."""
+    block = cfg.get("early_stopping")
+    if block is None:
+        return EarlyStoppingSpec(False, 10, 0.0)
+    enabled = block.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"early_stopping.enabled must be a bool, got {enabled!r}")
+    patience = block.get("patience", 10)
+    if not _is_plain_int(patience) or patience < 1:
+        raise ValueError(f"early_stopping.patience must be an int >= 1, got {patience!r}")
+    min_delta = block.get("min_delta", 0.0)
+    if (
+        isinstance(min_delta, bool)
+        or not isinstance(min_delta, (int, float))
+        or not math.isfinite(min_delta)
+        or min_delta < 0
+    ):
+        raise ValueError(
+            f"early_stopping.min_delta must be a finite number >= 0, got {min_delta!r}"
+        )
+    return EarlyStoppingSpec(enabled, int(patience), float(min_delta))
+
+
+def evaluate_test_from_config(cfg: DictConfig) -> bool:
+    """Read ``evaluate_test``; missing means the 2025 test split is scored once."""
+    value = cfg.get("evaluate_test", True)
+    if not isinstance(value, bool):
+        raise ValueError(f"evaluate_test must be a bool, got {value!r}")
+    return value
+
+
+def _early_stop_eval_problems(cfg: DictConfig) -> list[str]:
+    problems: list[str] = []
+    try:
+        spec = early_stopping_from_config(cfg)
+    except ValueError as exc:
+        problems.append(str(exc))
+    else:
+        if spec.enabled:
+            problems.append("early_stopping.enabled=true (v1 locks stay frozen)")
+    try:
+        if not evaluate_test_from_config(cfg):
+            problems.append("evaluate_test=false (v1 locks stay frozen)")
+    except ValueError as exc:
+        problems.append(str(exc))
+    return problems
+
+
 def _assert_ablation_lock_v1(cfg: DictConfig) -> None:
     """Fail closed unless the config is a Tag-11 ablation under the Stage-1 lock."""
     problems: list[str] = []
@@ -214,6 +277,7 @@ def _assert_ablation_lock_v1(cfg: DictConfig) -> None:
             problems.append(f"{key}={actual!r} (expected {expected!r})")
     if list(cfg.data.get("splits") or []) != ["train", "validation"]:
         problems.append("ablation data.splits must be exactly ['train', 'validation']")
+    problems.extend(_early_stop_eval_problems(cfg))
     if stage_ok and not isolation_ok and isinstance(stage, int):
         _check_ablation_channels(
             problems,
@@ -320,6 +384,11 @@ def _assert_ablation_lock_v6(cfg: DictConfig) -> None:
     max_epochs = OmegaConf.select(cfg, "trainer.max_epochs")
     if not _is_plain_int(max_epochs) or max_epochs < 1:
         problems.append(f"trainer.max_epochs={max_epochs!r} (expected an int >= 1)")
+    try:
+        early_stopping_from_config(cfg)
+        evaluate_test_from_config(cfg)
+    except ValueError as exc:
+        problems.append(str(exc))
     if arm is not None:
         _check_ablation_channels(
             problems,
@@ -994,6 +1063,16 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "ablation_lock is the Tag-11 ablation marker (issue #57) but is set on "
             f"config {config_name!r}; refusing to run"
         )
+    v6_config = config_name in V6_ABLATION_LOCKED_CONFIG_NAMES
+    if early_stopping_from_config(cfg).enabled and not v6_config:
+        raise ValueError(
+            "early_stopping.enabled=true is only admitted on the v6 ablation configs; "
+            "v1 locks stay frozen"
+        )
+    if not evaluate_test_from_config(cfg) and not v6_config:
+        raise ValueError(
+            "evaluate_test=false is only admitted on the v6 ablation configs; v1 locks stay frozen"
+        )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
         assert_stage1_lock(cfg)
         assert_stage1_full_bounds(cfg)
@@ -1024,6 +1103,9 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
 
 
 __all__ = [
+    "EarlyStoppingSpec",
+    "early_stopping_from_config",
+    "evaluate_test_from_config",
     "assert_aggregation_arithmetic_for_locked",
     "assert_ablation_lock",
     "assert_efficiency_fit_runtime",

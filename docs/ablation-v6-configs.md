@@ -60,10 +60,13 @@ expectations).
 
 ## Run matrix
 
-`configs/ablation/v6_matrix.yaml` lists seeds and epochs per arm plus the
-planning estimates (hours per run, USD per hour). The defaults are pending the
-owner's matrix decision; edit the file to change arms, seeds, or epochs. List
-the planned runs and the estimated totals without submitting anything:
+`configs/ablation/v6_matrix.yaml` lists seeds and epochs per arm. The owner
+froze the matrix: 9 arms x seeds 0, 1, 2 = 27 runs (LOO-ERA5 equals L3 and has
+no entry). The planning estimates are PLACEHOLDERS until the timing smoke
+measures them (not measured, not a verified rate): `hours_per_epoch_estimate`
+(0.12), `fixed_overhead_hours_estimate` (0.1) and `usd_per_hour` (1.00). The
+estimate per run is `fixed_overhead + max_epochs * hours_per_epoch`. List the
+planned runs and the estimated totals without submitting anything:
 
 ```
 uv run python scripts/validators/plan_v6_ablation.py
@@ -72,10 +75,37 @@ uv run python scripts/validators/plan_v6_ablation.py
 `scripts/validators/validate_ablation_configs.py` composes every planned run
 and checks the lock, including distinct output roots per seed.
 
+## Early stopping, test pass, epoch curve
+
+- `early_stopping: {enabled: false, patience: 10, min_delta: 0.0}` sits in
+  `configs/modeling/_base.yaml`, so every config resolves to off. When enabled
+  (v6 arms only; the v1 locks and every other config reject it), Lightning
+  `EarlyStopping` monitors `validation/mae_100m` (mode min), the same masked
+  100 m validation MAE the checkpoint is selected on. The v6 lock checks only
+  types and ranges (patience int >= 1, min_delta >= 0). v6 runs record the
+  block in `run_identity.json`, in `run_start`, and in `full_summary.json`,
+  together with `stopped_epoch` (1-based like `epoch_metrics.json`; null when
+  training did not stop early). v1 identity payloads carry no `seed` or
+  `early_stopping` key.
+- `evaluate_test: true` is the default. `evaluate_test=false` (v6 arms only)
+  builds no test data module and writes `"test": {"skipped": true}`; the Vertex
+  evidence accepts a skipped test only when the summary records
+  `evaluate_test=false`. Use it for pilot and timing runs.
+- Before training, the real path (and the v6 random forest and naive baseline
+  runners) checks that the published scaler's channel names equal the feature
+  schema roster and that the arm's selected indices map back to its names.
+- v6 Vertex runs upload `epoch_metrics.json` create-only next to the evidence
+  record (`VERTEX_EPOCH_METRICS_URI`), also when the fit fails.
+  `scripts/operators/read_epoch_curve.py <evidence-or-epoch-metrics>` prints
+  epoch, train and validation MAE and marks the best epoch; it never reads test
+  metrics.
+
 ## Launcher
 
 The Vertex launcher has one mode per arm (`v6-l1` ... `v6-no-red-nir-index`)
-plus `--seed` and `--max-epochs` (v6 modes only; defaults 0 and 20). The
+plus `--seed` and `--max-epochs` (v6 modes only; defaults 0 and 20), plus
+`--early-stopping-patience N` (enables early stopping), `--early-stopping-min-delta X`
+and `--skip-test` (sets `evaluate_test=false`), all off by default. The
 effective run label is `<run-label>-seed<seed>-ep<epochs>`. Example with
 placeholders:
 

@@ -1034,6 +1034,23 @@ def main() -> int:
     )
     parser.add_argument("--seed", type=int, default=None, help="v6 modes only (default 0)")
     parser.add_argument("--max-epochs", type=int, default=None, help="v6 modes only (default 20)")
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=None,
+        help="v6 modes only; enables early stopping on validation/mae_100m (default off)",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=None,
+        help="v6 modes only; requires --early-stopping-patience",
+    )
+    parser.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="v6 modes only; do not score the 2025 test split (pilot/timing runs)",
+    )
     parser.add_argument("--efficiency-role", choices=("baseline", "cache", "diagnostic", "final"))
     parser.add_argument("--efficiency-workers", type=int, choices=(0, 2, 4), default=2)
     parser.add_argument(
@@ -1119,6 +1136,21 @@ def main() -> int:
         raise SystemExit(
             f"ERROR: --seed and --max-epochs are only accepted by the v6 modes, not {args.mode!r}"
         )
+    es_patience = args.early_stopping_patience
+    es_min_delta = args.early_stopping_min_delta
+    if not is_v6 and (es_patience is not None or es_min_delta is not None or args.skip_test):
+        raise SystemExit(
+            "ERROR: --early-stopping-patience, --early-stopping-min-delta and --skip-test "
+            f"are only accepted by the v6 modes, not {args.mode!r}"
+        )
+    if es_min_delta is not None and es_patience is None:
+        raise SystemExit("ERROR: --early-stopping-min-delta requires --early-stopping-patience")
+    if es_patience is not None and es_patience < 1:
+        raise SystemExit(f"ERROR: --early-stopping-patience must be >= 1, got {es_patience}")
+    if es_min_delta is not None and (not math.isfinite(es_min_delta) or es_min_delta < 0):
+        raise SystemExit(
+            f"ERROR: --early-stopping-min-delta must be finite and >= 0, got {es_min_delta}"
+        )
     seed = V6_DEFAULT_SEED if args.seed is None else args.seed
     max_epochs = V6_DEFAULT_MAX_EPOCHS if args.max_epochs is None else args.max_epochs
     run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_v6 else args.run_label
@@ -1132,6 +1164,12 @@ def main() -> int:
         if is_v6
         else []
     )
+    if es_patience is not None:
+        hydra_overrides += ["early_stopping.enabled=true", f"early_stopping.patience={es_patience}"]
+        if es_min_delta is not None:
+            hydra_overrides.append(f"early_stopping.min_delta={es_min_delta}")
+    if args.skip_test:
+        hydra_overrides.append("evaluate_test=false")
     if args.timeout_seconds is not None:
         timeout_seconds = args.timeout_seconds
     elif args.mode in _FULL_TEMPORAL_MODES:
@@ -1345,6 +1383,13 @@ def main() -> int:
     ]
     if is_v6:
         env.extend([("VERTEX_SEED", str(seed)), ("VERTEX_MAX_EPOCHS", str(max_epochs))])
+        if es_patience is not None:
+            env.append(("VERTEX_EARLY_STOPPING_PATIENCE", str(es_patience)))
+            if es_min_delta is not None:
+                env.append(("VERTEX_EARLY_STOPPING_MIN_DELTA", str(es_min_delta)))
+        if args.skip_test:
+            env.append(("VERTEX_SKIP_TEST", "1"))
+        env.append(("VERTEX_EPOCH_METRICS_URI", f"{run_prefix}/epoch_metrics.json"))
     if args.mode == "efficiency":
         env.extend(
             [
@@ -1404,6 +1449,15 @@ def main() -> int:
         )
     if is_v6:
         print(f"  seed/epochs    : {seed} / {max_epochs}")
+        print(
+            "  early stopping : "
+            + (
+                "off"
+                if es_patience is None
+                else f"patience {es_patience} min_delta {es_min_delta or 0.0}"
+            )
+        )
+        print(f"  test pass      : {'skipped' if args.skip_test else 'scored'}")
         print(f"  hydra overrides: {' '.join(hydra_overrides)}")
     print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")

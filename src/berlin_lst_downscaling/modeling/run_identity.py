@@ -23,6 +23,7 @@ from berlin_lst_downscaling.data.training.paths import (
     scaler_json,
 )
 from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
+from berlin_lst_downscaling.modeling.guards import early_stopping_from_config
 from berlin_lst_downscaling.modeling.patches import RealSourceConfig, patch_index_fingerprints
 
 _logger = logging.getLogger(__name__)
@@ -57,9 +58,13 @@ class RunIdentity:
     patch_index_source_release_root: str | None
     aggregation: str
     seed: int | None = None
+    early_stopping: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
+        for key in ("seed", "early_stopping"):
+            if payload[key] is None:
+                del payload[key]
         if self.training_content_fingerprint is not None:
             payload["training_content_fingerprint"] = self.training_content_fingerprint.to_payload()
         if self.patch_index_content_fingerprint is not None:
@@ -211,6 +216,7 @@ def resolve_run_identity(
     image = os.environ.get("VERTEX_IMAGE_DIGEST")
     image = image.strip() if image else None
 
+    is_v6 = cfg.get("ablation_release") == "v6"
     return RunIdentity(
         git_commit=_git_commit_from_context(output_root, pipeline, run_id),
         vertex_source_sha=vertex_sha,
@@ -224,7 +230,8 @@ def resolve_run_identity(
         patch_index_content_fingerprint=index_fp,
         patch_index_source_release_root=index_source,
         aggregation=aggregation,
-        seed=_seed_from_config(cfg),
+        seed=_seed_from_config(cfg) if is_v6 else None,
+        early_stopping=early_stopping_from_config(cfg).payload() if is_v6 else None,
     )
 
 

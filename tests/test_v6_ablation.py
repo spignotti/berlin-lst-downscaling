@@ -31,6 +31,7 @@ from berlin_lst_downscaling.modeling.v6_ablation_matrix import (
     parse_v6_matrix,
     plan_runs,
     plan_totals,
+    run_hours_estimate,
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -232,14 +233,40 @@ def test_non_lock_v6_proper_subset_is_rejected(
 
 def test_default_matrix_totals() -> None:
     matrix = load_v6_matrix(_MATRIX)
-    assert len(plan_runs(matrix)) == 17
+    planned = plan_runs(matrix)
+    assert len(planned) == 27
+    assert {a: sorted(r.seed for r in planned if r.arm_id == a) for a in V6_ABLATION_ARMS} == {
+        a: [0, 1, 2] for a in V6_ABLATION_ARMS
+    }
     runs, hours, usd = plan_totals(matrix)
-    assert (runs, math.isclose(hours, 42.5), math.isclose(usd, 42.5)) == (17, True, True)
+    assert (runs, math.isclose(hours, 67.5), math.isclose(usd, 67.5)) == (27, True, True)
+
+
+def test_epoch_aware_totals() -> None:
+    raw = _raw()
+    raw["arms"]["L1"] = {"seeds": [0, 1], "max_epochs": 10}
+    raw["arms"]["L2"] = {"seeds": [0], "max_epochs": 30}
+    raw["hours_per_epoch_estimate"] = 0.5
+    raw["fixed_overhead_hours_estimate"] = 1.0
+    matrix = parse_v6_matrix(raw)
+    by_arm = {r.arm_id: run_hours_estimate(matrix, r) for r in plan_runs(matrix)}
+    assert math.isclose(by_arm["L1"], 1.0 + 10 * 0.5)
+    assert math.isclose(by_arm["L2"], 1.0 + 30 * 0.5)
+    # 2 x L1 (6.0) + L2 (16.0) + 7 other arms x (1.0 + 20 * 0.5 = 11.0)
+    runs, hours, usd = plan_totals(matrix)
+    assert runs == 10
+    assert math.isclose(hours, 2 * 6.0 + 16.0 + 7 * 11.0)
+    assert math.isclose(usd, hours)
 
 
 def _raw() -> dict:
     arms = {a: {"seeds": [0], "max_epochs": 20} for a in V6_ABLATION_ARMS}
-    return {"arms": arms, "hours_per_run_estimate": 2.5, "usd_per_hour": 1.0}
+    return {
+        "arms": arms,
+        "hours_per_epoch_estimate": 0.12,
+        "fixed_overhead_hours_estimate": 0.1,
+        "usd_per_hour": 1.0,
+    }
 
 
 def test_valid_raw_matrix_parses() -> None:
@@ -286,7 +313,36 @@ def test_bad_estimates_rejected(value: object) -> None:
         parse_v6_matrix(raw)
 
 
-def test_plan_helper_lists_17_runs(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("fixed_overhead_hours_estimate", -0.1),
+        ("fixed_overhead_hours_estimate", float("nan")),
+        ("hours_per_epoch_estimate", 0),
+    ],
+)
+def test_bad_epoch_estimates_rejected(key: str, value: float) -> None:
+    raw = _raw()
+    raw[key] = value
+    with pytest.raises(ValueError, match=key):
+        parse_v6_matrix(raw)
+
+
+@pytest.mark.parametrize("key", ["hours_per_epoch_estimate", "fixed_overhead_hours_estimate"])
+def test_missing_epoch_estimate_key_rejected(key: str) -> None:
+    raw = _raw()
+    del raw[key]
+    with pytest.raises(ValueError, match=key):
+        parse_v6_matrix(raw)
+
+
+def test_zero_overhead_allowed() -> None:
+    raw = _raw()
+    raw["fixed_overhead_hours_estimate"] = 0
+    assert parse_v6_matrix(raw).fixed_overhead_hours_estimate == 0.0
+
+
+def test_plan_helper_lists_27_runs(capsys: pytest.CaptureFixture[str]) -> None:
     spec = importlib.util.spec_from_file_location(
         "plan_v6_ablation", _ROOT / "scripts" / "validators" / "plan_v6_ablation.py"
     )
@@ -295,5 +351,9 @@ def test_plan_helper_lists_17_runs(capsys: pytest.CaptureFixture[str]) -> None:
     spec.loader.exec_module(module)
     assert module.main([]) == 0
     out = capsys.readouterr().out
-    assert "TOTAL runs=17 est_gpu_hours=42.5 est_usd=42.5" in out
-    assert out.count("arm=") == 17
+    assert (
+        "TOTAL runs=27 est_gpu_hours=67.5 est_usd=67.5 (placeholder estimates: "
+        "hours_per_epoch=0.12 fixed_overhead=0.10; nothing submitted)"
+    ) in out
+    assert out.count("arm=") == 27
+    assert "est_hours=2.50" in out

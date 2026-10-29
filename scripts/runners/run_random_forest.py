@@ -47,11 +47,15 @@ from berlin_lst_downscaling.data.features.contracts import (
 )
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
-from berlin_lst_downscaling.modeling.channels import schema_version_from_config
+from berlin_lst_downscaling.modeling.channels import (
+    ActiveChannelSelection,
+    schema_version_from_config,
+)
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
     RealSourceConfig,
+    assert_scaler_spec_matches,
     load_patch_refs,
 )
 from berlin_lst_downscaling.modeling.random_forest import (
@@ -250,6 +254,13 @@ def main(cfg: DictConfig) -> int:
             for split in splits
         }
         reader = RealPatchReader(source)
+        if schema_version == FEATURE_SCHEMA_VERSION_V6:
+            for stage in stages:
+                assert_scaler_spec_matches(
+                    reader.scaler,
+                    schema_version=schema_version,
+                    selection=ActiveChannelSelection(names=stage.names, indices=stage.indices),
+                )
 
         Path(output_root).mkdir(parents=True, exist_ok=True)
         Path(output_root, CONFIG_FILE).write_text(OmegaConf.to_yaml(cfg), encoding="utf-8")

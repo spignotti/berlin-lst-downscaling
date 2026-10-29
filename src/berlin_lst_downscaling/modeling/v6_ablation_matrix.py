@@ -25,7 +25,8 @@ class V6ArmPlan:
 @dataclass(frozen=True)
 class V6Matrix:
     arms: dict[str, V6ArmPlan]
-    hours_per_run_estimate: float
+    hours_per_epoch_estimate: float
+    fixed_overhead_hours_estimate: float
     usd_per_hour: float
 
 
@@ -51,6 +52,15 @@ def _positive_float(value: object, label: str) -> float:
     number = float(value)
     if not math.isfinite(number) or number <= 0:
         raise ValueError(f"{label} must be a positive finite number, got {value!r}")
+    return number
+
+
+def _non_negative_float(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number, got {value!r}")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{label} must be a non-negative finite number, got {value!r}")
     return number
 
 
@@ -82,8 +92,11 @@ def parse_v6_matrix(raw: object) -> V6Matrix:
         arms[arm_id] = V6ArmPlan(seeds=seeds, max_epochs=epochs)
     return V6Matrix(
         arms=arms,
-        hours_per_run_estimate=_positive_float(
-            raw.get("hours_per_run_estimate"), "hours_per_run_estimate"
+        hours_per_epoch_estimate=_positive_float(
+            raw.get("hours_per_epoch_estimate"), "hours_per_epoch_estimate"
+        ),
+        fixed_overhead_hours_estimate=_non_negative_float(
+            raw.get("fixed_overhead_hours_estimate"), "fixed_overhead_hours_estimate"
         ),
         usd_per_hour=_positive_float(raw.get("usd_per_hour"), "usd_per_hour"),
     )
@@ -106,11 +119,16 @@ def plan_runs(matrix: V6Matrix) -> list[PlannedRun]:
     ]
 
 
+def run_hours_estimate(matrix: V6Matrix, run: PlannedRun) -> float:
+    """Estimated GPU hours for one run: fixed overhead plus epochs times the per-epoch rate."""
+    return matrix.fixed_overhead_hours_estimate + run.max_epochs * matrix.hours_per_epoch_estimate
+
+
 def plan_totals(matrix: V6Matrix) -> tuple[int, float, float]:
     """Return (runs, estimated GPU hours, estimated USD)."""
-    runs = len(plan_runs(matrix))
-    hours = runs * matrix.hours_per_run_estimate
-    return runs, hours, hours * matrix.usd_per_hour
+    planned = plan_runs(matrix)
+    hours = sum(run_hours_estimate(matrix, run) for run in planned)
+    return len(planned), hours, hours * matrix.usd_per_hour
 
 
 __all__ = [
@@ -121,4 +139,5 @@ __all__ = [
     "parse_v6_matrix",
     "plan_runs",
     "plan_totals",
+    "run_hours_estimate",
 ]

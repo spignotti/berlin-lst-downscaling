@@ -31,16 +31,20 @@ from typing import Literal, cast
 
 import torch
 from lightning.pytorch import LightningModule, Trainer, seed_everything
-from lightning.pytorch.callbacks import Callback, ModelCheckpoint
+from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
+from berlin_lst_downscaling.data.features.contracts import FEATURE_SCHEMA_VERSION_V6
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.modeling.aggregation import (
     AggregationMethod,
     resolve_aggregation_method,
 )
-from berlin_lst_downscaling.modeling.channels import selection_from_config
+from berlin_lst_downscaling.modeling.channels import (
+    schema_version_from_config,
+    selection_from_config,
+)
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
@@ -55,11 +59,15 @@ from berlin_lst_downscaling.modeling.guards import (
     assert_stage1_runtime,
     assert_vertex_smoke_bounds,
     contract_invariants,
+    early_stopping_from_config,
+    evaluate_test_from_config,
     guard_modeling_config,
 )
 from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
 from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
+    assert_scaler_matches_config,
+    load_scaler,
     patch_index_fingerprints,
 )
 from berlin_lst_downscaling.modeling.real_task import (
@@ -547,6 +555,9 @@ def _fit_contract_lifecycle(
 
     is_probe = bool(cfg.get("stage1_probe", False))
     is_full = bool(cfg.get("stage1_full", False)) or bool(cfg.get("ablation_lock", False))
+    is_v6 = cfg.get("ablation_release") == "v6"
+    es = early_stopping_from_config(cfg)
+    evaluate_test = evaluate_test_from_config(cfg)
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     loss_name = str(OmegaConf.select(cfg, "contract.loss") or "masked_l1")
     tessera_enabled = bool(OmegaConf.select(cfg, "data.tessera_enabled") or False)
@@ -689,6 +700,16 @@ def _fit_contract_lifecycle(
     callbacks: list[Callback] = [checkpoint_callback]
     if recorder is not None:
         callbacks.append(recorder)
+    early_stop: EarlyStopping | None = None
+    if es.enabled:
+        early_stop = EarlyStopping(
+            monitor=monitored,
+            mode="min",
+            patience=es.patience,
+            min_delta=es.min_delta,
+            check_on_train_epoch_end=False,
+        )
+        callbacks.append(early_stop)
 
     trainer = Trainer(
         max_epochs=int(cfg.trainer.max_epochs),
@@ -727,6 +748,9 @@ def _fit_contract_lifecycle(
         "run_identity": run_identity.to_payload(),
         **source_metadata,
     }
+    if is_v6:
+        metadata["early_stopping"] = es.payload()
+        metadata["evaluate_test"] = evaluate_test
     log_event(_logger, logging.INFO, "run_start", **metadata)
 
     success = False
@@ -797,8 +821,10 @@ def _fit_contract_lifecycle(
         # frozen. The test read is a separate test-only module; its score is
         # never fed to the fit, callbacks, or checkpoint selection.
         test_result: dict[str, object] | None = None
-        if is_full and isinstance(data_module, RealPatchDataModule):
+        if is_full and evaluate_test and isinstance(data_module, RealPatchDataModule):
             test_result = _score_test_once(cfg, data_module.source, reloaded, output_root)
+        elif is_full and not evaluate_test:
+            test_result = {"skipped": True}
 
         if recorder is not None:
             summary = {
@@ -827,6 +853,14 @@ def _fit_contract_lifecycle(
                     "run_id": getattr(experiment, "id", None),
                     "url": getattr(experiment, "url", None),
                 }
+            if is_v6:
+                summary["early_stopping"] = es.payload()
+                summary["evaluate_test"] = evaluate_test
+                summary["stopped_epoch"] = (
+                    early_stop.stopped_epoch + 1
+                    if early_stop is not None and early_stop.stopped_epoch > 0
+                    else None
+                )
             if test_result is not None:
                 summary["test"] = test_result
             summary_name = "full_summary.json" if is_full else "probe_summary.json"
@@ -959,6 +993,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         if cache_budget <= 0:
             raise RuntimeError("a cache path requires a positive cache budget")
     selection = selection_from_config(cfg)
+    if schema_version_from_config(cfg) == FEATURE_SCHEMA_VERSION_V6:
+        assert_scaler_matches_config(cfg, load_scaler(source.training_root))
     data_module = RealPatchDataModule(
         source,
         batch_size=int(cfg.data.batch_size),
