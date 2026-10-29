@@ -106,6 +106,23 @@ gcloud builds submit --project=berlin-lst-training \
   --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
 ```
 
+Run `scripts/operators/check_build_context.sh` before every `gcloud builds
+submit`. It compares `gcloud meta list-files-for-upload .` with the tracked
+files under `src/`, `scripts/`, and `configs/` plus `pyproject.toml`, `uv.lock`,
+and `Dockerfile.vertex`, and exits non-zero listing any file that would not be
+uploaded. It needs no authentication.
+
+The upload filter is the committed root `.gcloudignore`. Without it, gcloud
+derives the filter from `.gitignore`, but it does not apply git's rule that a
+pattern with a slash in the middle is anchored to the repo root: `data/ard/`
+(meant for the local data directory) also matched
+`src/berlin_lst_downscaling/data/ard/`, and the image failed on Vertex with
+`ModuleNotFoundError: No module named 'berlin_lst_downscaling.data.ard'`. Every
+path pattern in `.gcloudignore` therefore starts with `/`, and it never includes
+`.gitignore`. `Dockerfile.vertex` also imports the entrypoint modules at build
+time, so an incomplete package fails the build instead of the job, and
+`tests/test_build_context.py` pins the ignore files and the package layout.
+
 GPU-verified image digests:
 - #38 acceptance smoke: `sha256:99af01061fac56967317d2d468c9dd3f13173e48052517434113dc0829b636ea`
 - #53 cheap-runtime smoke (cache + 16-mixed, SHA `8bd094b`): `sha256:8772b5c8a6349448e820404c75008c59f9df8b63aa1099088e7deffeee90d887`
