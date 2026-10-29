@@ -25,6 +25,7 @@ import json
 import logging
 import math
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -32,6 +33,7 @@ from typing import Literal, cast
 import torch
 from lightning.pytorch import LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks.early_stopping import EarlyStoppingReason
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
@@ -535,6 +537,37 @@ def _score_test_once(
     }
 
 
+def _early_stop_epoch(
+    early_stop: EarlyStopping | None,
+    callback_metrics: Mapping[str, object],
+    monitored: str,
+    current_epoch: int,
+) -> int | None:
+    """Return the 1-based patience-stop epoch, or None; raise on a non-finite monitor."""
+    if early_stop is None:
+        return None
+    reason = early_stop.stopping_reason
+    raw = callback_metrics.get(monitored)
+    value = float(cast(float, raw)) if raw is not None else None
+    if reason == EarlyStoppingReason.NON_FINITE_METRIC or (
+        value is not None and not math.isfinite(value)
+    ):
+        epoch = (
+            early_stop.stopped_epoch + 1
+            if reason != EarlyStoppingReason.NOT_STOPPED
+            else current_epoch
+        )
+        raise RuntimeError(
+            f"non-finite {monitored} at epoch {epoch} (value={value}); "
+            "early stopping must not record it as a stop"
+        )
+    if reason == EarlyStoppingReason.PATIENCE_EXHAUSTED:
+        return early_stop.stopped_epoch + 1
+    if reason == EarlyStoppingReason.NOT_STOPPED:
+        return None
+    raise RuntimeError(f"unexpected early stopping reason {reason!r} for {monitored}")
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -758,6 +791,9 @@ def _fit_contract_lifecycle(
     best_metric = 0.0
     try:
         trainer.fit(task, datamodule=data_module)
+        stopped_epoch = _early_stop_epoch(
+            early_stop, trainer.callback_metrics, monitored, trainer.current_epoch
+        )
 
         best_checkpoint = checkpoint_callback.best_model_path
         if not best_checkpoint or not Path(best_checkpoint).is_file():
@@ -856,11 +892,7 @@ def _fit_contract_lifecycle(
             if is_v6:
                 summary["early_stopping"] = es.payload()
                 summary["evaluate_test"] = evaluate_test
-                summary["stopped_epoch"] = (
-                    early_stop.stopped_epoch + 1
-                    if early_stop is not None and early_stop.stopped_epoch > 0
-                    else None
-                )
+                summary["stopped_epoch"] = stopped_epoch
             if test_result is not None:
                 summary["test"] = test_result
             summary_name = "full_summary.json" if is_full else "probe_summary.json"

@@ -170,6 +170,16 @@ def test_skip_test_composes_and_passes_guards(
     out = _out(launcher, monkeypatch, capsys, "--max-epochs", "2", "--skip-test")
     assert "evaluate_test=false" in out
     assert "test pass      : skipped" in out
+    assert "run label      : unit-seed0-ep2-notest" in out
+    assert "data/runs/v6-l4/unit-seed0-ep2-notest/seed-0" in out
+
+
+def test_run_label_has_no_notest_suffix_without_skip_test(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _out(launcher, monkeypatch, capsys, "--max-epochs", "2")
+    assert "run label      : unit-seed0-ep2\n" in out
+    assert "notest" not in out
 
 
 def test_early_stopping_is_off_by_default(

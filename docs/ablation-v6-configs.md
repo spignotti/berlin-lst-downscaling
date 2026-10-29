@@ -84,13 +84,21 @@ and checks the lock, including distinct output roots per seed.
   100 m validation MAE the checkpoint is selected on. The v6 lock checks only
   types and ranges (patience int >= 1, min_delta >= 0). v6 runs record the
   block in `run_identity.json`, in `run_start`, and in `full_summary.json`,
-  together with `stopped_epoch` (1-based like `epoch_metrics.json`; null when
-  training did not stop early). v1 identity payloads carry no `seed` or
+  together with `stopped_epoch` (1-based like `epoch_metrics.json`: the epoch
+  of a patience stop, null when training ran to `max_epochs`). A non-finite `validation/mae_100m` with early
+  stopping enabled fails the run (`RuntimeError` with epoch and value, no
+  summary, non-zero exit, no evidence); it is never recorded as an early stop.
+  v1 identity payloads carry no `seed` or
   `early_stopping` key.
 - `evaluate_test: true` is the default. `evaluate_test=false` (v6 arms only)
   builds no test data module and writes `"test": {"skipped": true}`; the Vertex
   evidence accepts a skipped test only when the summary records
   `evaluate_test=false`. Use it for pilot and timing runs.
+  `--skip-test` launcher runs get `-notest` in the run label and output path
+  and record `evaluate_test: false`; they are pilot/timing runs only and never
+  enter the final arm comparison. `scripts/validators/plan_v6_ablation.py` and
+  the matrix set no `evaluate_test` override, so planned runs score the test
+  split (default true).
 - Before training, the real path (and the v6 random forest and naive baseline
   runners) checks that the published scaler's channel names equal the feature
   schema roster and that the arm's selected indices map back to its names.
@@ -106,7 +114,8 @@ The Vertex launcher has one mode per arm (`v6-l1` ... `v6-no-red-nir-index`)
 plus `--seed` and `--max-epochs` (v6 modes only; defaults 0 and 20), plus
 `--early-stopping-patience N` (enables early stopping), `--early-stopping-min-delta X`
 and `--skip-test` (sets `evaluate_test=false`), all off by default. The
-effective run label is `<run-label>-seed<seed>-ep<epochs>`. Example with
+effective run label is `<run-label>-seed<seed>-ep<epochs>` (plus `-notest`
+with `--skip-test`). Example with
 placeholders:
 
 ```

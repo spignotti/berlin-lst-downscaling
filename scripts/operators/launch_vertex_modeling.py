@@ -1154,6 +1154,8 @@ def main() -> int:
     seed = V6_DEFAULT_SEED if args.seed is None else args.seed
     max_epochs = V6_DEFAULT_MAX_EPOCHS if args.max_epochs is None else args.max_epochs
     run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_v6 else args.run_label
+    if is_v6 and args.skip_test:
+        run_label += "-notest"
     job_output_root = (
         f"data/runs/{args.mode}/{run_label}/seed-{seed}"
         if is_v6
