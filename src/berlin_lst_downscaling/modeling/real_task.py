@@ -1,7 +1,7 @@
 """Real contract-conforming Lightning path (WB3, issue #18).
 
-The model predicts at 10 m from the first C channels of the frozen V3
-28-channel order (C = 28 reads the full stack) plus the separate
+The model predicts at 10 m from the configured channels of the feature stack
+(schema width: V3 28, v6 22; default the first C of the frozen V3 order) plus the separate
 ``lst_prior`` channel. Training compares the exact 10x10 pooled
 prediction against the native 100 m Landsat target under
 ``training_eligible@100m`` and selects checkpoints on the cell-weighted
@@ -32,6 +32,10 @@ from lightning.pytorch import LightningDataModule, LightningModule
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
+from berlin_lst_downscaling.data.features.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    feature_schema,
+)
 from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_X,
     CANON_GRID_ORIGIN_Y,
@@ -237,8 +241,15 @@ class RealPatchDataModule(LightningDataModule):
         pin_memory: bool = False,
         cache_root: Path | None = None,
         cache_max_bytes: int = 0,
+        feature_schema_version: int = FEATURE_SCHEMA_VERSION,
     ) -> None:
         super().__init__()
+        stack_channels = feature_schema(feature_schema_version).n_channels
+        if not 1 <= n_active_channels <= stack_channels:
+            raise ValueError(
+                f"n_active_channels {n_active_channels} outside 1-{stack_channels} "
+                f"for feature schema {feature_schema_version}"
+            )
         if mode not in ("eager", "stream"):
             raise ValueError(f"data mode {mode!r} is not one of 'eager', 'stream'")
         if shuffle_train and mode != "stream":
@@ -255,6 +266,13 @@ class RealPatchDataModule(LightningDataModule):
                     f"channel_indices length {len(resolved_indices)} != "
                     f"n_active_channels {n_active_channels}"
                 )
+        if any(not 0 <= i < stack_channels for i in resolved_indices):
+            raise ValueError(
+                f"channel_indices {resolved_indices} out of range for the "
+                f"{stack_channels}-channel stack (feature schema {feature_schema_version})"
+            )
+        self.feature_schema_version = feature_schema_version
+        self.stack_channels = stack_channels
         self.source = source
         self.batch_size = batch_size
         self.n_active_channels = n_active_channels
@@ -393,6 +411,11 @@ class RealPatchDataModule(LightningDataModule):
         scaler_digest = hashlib.sha256(
             json.dumps(scaler_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        if len(reader.scaler.channel_order) != self.stack_channels:
+            raise RuntimeError(
+                f"scaler has {len(reader.scaler.channel_order)} channels but feature schema "
+                f"{self.feature_schema_version} expects {self.stack_channels}"
+            )
         channel_order = [reader.scaler.channel_order[i] for i in self.channel_indices]
         provenance: dict[str, object] = {
             "source_roots": asdict(self.source),
@@ -416,6 +439,12 @@ class RealPatchDataModule(LightningDataModule):
             "skipped_refs": scope["skipped_refs"],
         }
 
+        if self.feature_schema_version != FEATURE_SCHEMA_VERSION:
+            provenance["feature_stack"] = {
+                "schema_version": self.feature_schema_version,
+                "stack_channels": self.stack_channels,
+            }
+
         def source_samples():
             for ref in ordered_refs:
                 sample = reader.read_patch(ref)
@@ -432,6 +461,7 @@ class RealPatchDataModule(LightningDataModule):
             provenance=provenance,
             max_bytes=self.cache_max_bytes,
             channel_indices=self.channel_indices,
+            stack_channels=self.stack_channels,
         )
         self.cache_build_seconds = time.perf_counter() - cache_started
         PatchCache(self.cache_root, provenance)
@@ -575,7 +605,7 @@ class RealPatchDataModule(LightningDataModule):
         shuffle = self.shuffle_train and split == "train"
         # Cached tensors are already channel-selected; re-applying V3 indices
         # would be wrong for non-contiguous ablation subsets. Live readers still
-        # yield the full 28-band stack and need the configured indices.
+        # yield the full schema-width stack (V3 28, v6 22) and need the configured indices.
         if isinstance(dataset, CachedRealPatchDataset):
             collate_fn = partial(collate_real_batch, n_active_channels=self.n_active_channels)
         else:

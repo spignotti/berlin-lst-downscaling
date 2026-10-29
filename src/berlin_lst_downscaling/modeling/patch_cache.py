@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from berlin_lst_downscaling.modeling.contracts import (
+    N_FEATURE_CHANNELS,
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
     RealSampleMeta,
@@ -36,10 +37,28 @@ def _feature_shape(count: int, channels: int) -> tuple[int, ...]:
     return count, channels, REAL_PATCH_PX, REAL_PATCH_PX
 
 
-def estimate_cache_bytes(count: int, channels: int) -> int:
+def _stack_channels(provenance: dict[str, object]) -> int:
+    """Return the source stack width recorded in provenance (V3 records nothing: 28)."""
+    stack = provenance.get("feature_stack")
+    if stack is None:
+        return N_FEATURE_CHANNELS
+    if not isinstance(stack, dict):
+        raise ValueError("provenance feature_stack must be a dict")
+    schema_version = stack.get("schema_version")
+    width = stack.get("stack_channels")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise ValueError("provenance feature_stack.schema_version must be an int")
+    if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+        raise ValueError("provenance feature_stack.stack_channels must be a positive int")
+    return width
+
+
+def estimate_cache_bytes(
+    count: int, channels: int, *, stack_channels: int = N_FEATURE_CHANNELS
+) -> int:
     """Return exact array payload bytes plus bounded NPY-header allowance."""
-    if count <= 0 or not 1 <= channels <= 28:
-        raise ValueError("cache requires positive count and 1–28 active channels")
+    if count <= 0 or not 1 <= channels <= stack_channels:
+        raise ValueError(f"cache requires positive count and 1–{stack_channels} active channels")
     n = count
     per_sample = (
         channels * REAL_PATCH_PX * REAL_PATCH_PX * 4
@@ -69,16 +88,31 @@ class PatchCache:
         self._metadata = self.manifest.get("metadata", [])
         if not self.patch_ids or len(self.patch_ids) != len(self._metadata):
             raise RuntimeError("patch cache manifest has inconsistent patch IDs and metadata")
+        try:
+            stack = _stack_channels(provenance)
+        except ValueError as exc:
+            raise RuntimeError(f"patch cache provenance is invalid: {exc}") from exc
         active_channels = self.manifest.get("active_channels")
         channel_order = provenance.get("channel_order")
         if (
             isinstance(active_channels, bool)
             or not isinstance(active_channels, int)
-            or not 1 <= active_channels <= 28
+            or not 1 <= active_channels <= stack
             or not isinstance(channel_order, list | tuple)
             or len(channel_order) != active_channels
         ):
             raise RuntimeError("patch cache active channel count does not match provenance")
+        channel_indices = self.manifest.get("channel_indices")
+        if (
+            not isinstance(channel_indices, list)
+            or len(channel_indices) != active_channels
+            or any(isinstance(i, bool) or not isinstance(i, int) for i in channel_indices)
+            or len(set(channel_indices)) != len(channel_indices)
+            or any(not 0 <= i < stack for i in channel_indices)
+        ):
+            raise RuntimeError(
+                f"patch cache channel_indices are invalid for the {stack}-channel stack"
+            )
         if self.manifest.get("patch_ids_sha256") != _json_digest(list(self.patch_ids)):
             raise RuntimeError("patch cache patch-ID digest is invalid")
         if any(
@@ -140,8 +174,19 @@ def build_patch_cache(
     provenance: dict[str, object],
     max_bytes: int,
     channel_indices: Iterable[int] | None = None,
+    stack_channels: int = N_FEATURE_CHANNELS,
 ) -> dict[str, object]:
     """Write a cache and publish its manifest last; partial roots never open."""
+    if (
+        isinstance(stack_channels, bool)
+        or not isinstance(stack_channels, int)
+        or stack_channels < 1
+    ):
+        raise ValueError("stack_channels must be a positive int")
+    if _stack_channels(provenance) != stack_channels:
+        raise ValueError(
+            f"provenance feature_stack does not record the {stack_channels}-channel stack"
+        )
     if root.exists():
         raise FileExistsError(f"cache root already exists: {root}")
     if len(set(patch_ids)) != len(patch_ids) or not patch_ids:
@@ -157,12 +202,14 @@ def build_patch_cache(
             raise ValueError(
                 f"channel_indices length {len(indices)} != active_channels {active_channels}"
             )
-        if any(i < 0 or i >= 28 for i in indices):
-            raise ValueError(f"channel_indices out of range for V3 stack: {indices}")
+        if any(i < 0 or i >= stack_channels for i in indices):
+            raise ValueError(
+                f"channel_indices out of range for the {stack_channels}-channel stack: {indices}"
+            )
         if len(set(indices)) != len(indices):
             raise ValueError("channel_indices must be unique")
     index_array = np.asarray(indices, dtype=np.intp)
-    estimate = estimate_cache_bytes(len(patch_ids), active_channels)
+    estimate = estimate_cache_bytes(len(patch_ids), active_channels, stack_channels=stack_channels)
     if estimate > max_bytes:
         raise ValueError(f"estimated cache size {estimate} exceeds max_bytes {max_bytes}")
     if not provenance:
@@ -212,7 +259,7 @@ def build_patch_cache(
             raise RuntimeError(
                 f"source order drift at row {index}: {sample.meta.patch_id!r} != {expected_id!r}"
             )
-        if sample.features.shape != (28, REAL_PATCH_PX, REAL_PATCH_PX):
+        if sample.features.shape != (stack_channels, REAL_PATCH_PX, REAL_PATCH_PX):
             raise RuntimeError(
                 f"source feature shape mismatch for {expected_id}: {sample.features.shape}"
             )

@@ -402,6 +402,7 @@ def _write_minimal_patch_cache(tmp_path: Path, *, aggregation: str) -> Path:
         "patch_ids_sha256": _json_digest(["p0"]),
         "metadata": [meta],
         "active_channels": ch,
+        "channel_indices": [0],
         "shapes": shapes,
         "dtypes": {"features": "float32", "prior": "float32", "target": "float32", "mask": "bool"},
         "array_bytes": array_bytes,

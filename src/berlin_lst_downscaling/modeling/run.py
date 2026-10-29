@@ -501,6 +501,7 @@ def _score_test_once(
         n_active_channels=selection.n_active,
         channel_indices=selection.indices,
         splits=("test",),
+        feature_schema_version=schema_version_from_config(cfg),
     )
     test_module.setup()
     scope = test_module.stats()
@@ -1043,6 +1044,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         pin_memory=bool(cfg.data.get("pin_memory", False)),
         cache_root=cache_root,
         cache_max_bytes=cache_budget,
+        feature_schema_version=schema_version_from_config(cfg),
     )
     return _fit_contract_lifecycle(
         cfg,
