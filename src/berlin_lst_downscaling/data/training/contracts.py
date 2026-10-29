@@ -24,12 +24,14 @@ change invalidates the published artifacts via the ledger's
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from hashlib import sha256
 
 from berlin_lst_downscaling.data.features.contracts import (
     FEATURE_CHANNEL_NAMES,
     FEATURE_CHANNELS,
     FEATURE_SCHEMA_VERSION,
+    FEATURE_SCHEMA_VERSION_V6,
     FeatureSchema,
     feature_schema,
 )
@@ -221,6 +223,41 @@ def training_policy_hash(
     return sha256(payload.encode()).hexdigest()[:16]
 
 
+def v6_training_policy_hash(v3_config_hash: str) -> str:
+    """Return the training/v3 policy hash for a v6 ledger hash.
+
+    This is the computation the training/v3 publisher and the patch-index/v3
+    builder use; readers must call it rather than re-deriving the arguments.
+    """
+    return training_policy_hash(
+        v3_config_hash=v3_config_hash,
+        feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
+        schema=feature_schema(FEATURE_SCHEMA_VERSION_V6),
+    )
+
+
+def expected_training_policy_hash(scaler_payload: Mapping[str, object]) -> str:
+    """Return the policy hash a published ``scaler.json`` must carry.
+
+    The 28-channel order maps to the pinned training/v1/v2 hash. The v6
+    22-channel order maps to :func:`v6_training_policy_hash` of the
+    scaler's own ``v3_config_hash`` (the v6 ledger hash); a missing field
+    or any other channel order raises.
+    """
+    raw_order = scaler_payload.get("channel_order") or ()
+    if not isinstance(raw_order, list | tuple):
+        raise RuntimeError(f"scaler channel_order is not a list: {raw_order!r}")
+    order = tuple(str(name) for name in raw_order)
+    if order == FEATURE_CHANNEL_NAMES:
+        return training_policy_hash()
+    if order == feature_schema(FEATURE_SCHEMA_VERSION_V6).names:
+        v6_hash = scaler_payload.get("v3_config_hash")
+        if not v6_hash:
+            raise RuntimeError("v6 scaler carries no v3_config_hash")
+        return v6_training_policy_hash(str(v6_hash))
+    raise RuntimeError(f"scaler channel order drift: {order}")
+
+
 def _training_policy_hash_v6(
     schema: FeatureSchema,
     *,
@@ -280,6 +317,8 @@ __all__ = [
     "SUPPORT_PIXELS",
     "TRAINING_SCHEMA_VERSION",
     "cell_id",
+    "expected_training_policy_hash",
     "split_for_year",
     "training_policy_hash",
+    "v6_training_policy_hash",
 ]

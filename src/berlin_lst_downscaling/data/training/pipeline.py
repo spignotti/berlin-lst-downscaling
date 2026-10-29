@@ -48,6 +48,7 @@ from berlin_lst_downscaling.data.training.contracts import (
     NO_ELIGIBLE_CELLS_REASON,
     split_for_year,
     training_policy_hash,
+    v6_training_policy_hash,
 )
 from berlin_lst_downscaling.data.training.eligibility import (
     compute_eligibility,
@@ -111,11 +112,7 @@ def run_training_data(cfg, *, run_id: str | None = None) -> TrainingRunReport:
             expected_scene_count=int(expected_count) if expected_count is not None else None,
             scene_ids=scene_ids,
         )
-        policy_hash = training_policy_hash(
-            v3_config_hash=_v6_hash,
-            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
-            schema=_schema,
-        )
+        policy_hash = v6_training_policy_hash(_v6_hash)
     else:
         policy_hash = training_policy_hash(v3_config_hash=EXPECTED_V3_CONFIG_HASH)
         _verify_v3_release(

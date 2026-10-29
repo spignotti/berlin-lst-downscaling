@@ -108,6 +108,30 @@ and checks the lock, including distinct output roots per seed.
   epoch, train and validation MAE and marks the best epoch; it never reads test
   metrics.
 
+## Read preflight (mandatory)
+
+Before any VM or Vertex v6 run (arms, random forest, naive baseline), run the
+read-only preflight for the exact config with the operator's ADC:
+
+```
+uv run python scripts/validators/preflight_v6_reads.py --config-name <v6 config> --limit 8
+```
+
+It composes the config and runs `load_scaler`, a scaler/channel-selection check
+(per arm, per random-forest stage, or the full v6 roster for the naive
+baseline), and `load_patch_refs` for train and validation only.
+It never requests the test split, reads no patch raster, writes nothing, and
+prints only hashes and counts. It must end with `PASS`; any error stops the
+launch. It is not run in CI.
+
+The training/v3 policy hash (`193fa9b23943a839`) is not the v1/v2 hash: it is
+`v6_training_policy_hash(<scaler.json v3_config_hash>)` in
+`data/training/contracts.py`, the computation the training/v3 publisher and the
+patch-index/v3 builder use. The readers derive the expected hash from the
+training root's `scaler.json` through `expected_training_policy_hash`, so the
+patch index's `source_policy_hash` and the run identity's
+`training_policy_hash` must match it.
+
 ## Launcher
 
 The Vertex launcher has one mode per arm (`v6-l1` ... `v6-no-red-nir-index`)

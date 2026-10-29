@@ -52,9 +52,7 @@ from rasterio.windows import Window
 
 from berlin_lst_downscaling.common.grid import canon_grid_10m
 from berlin_lst_downscaling.data.features.contracts import (
-    FEATURE_CHANNEL_NAMES,
     FEATURE_SCHEMA_VERSION,
-    FEATURE_SCHEMA_VERSION_V6,
     feature_schema,
 )
 from berlin_lst_downscaling.data.features.paths import feature_cog
@@ -64,8 +62,8 @@ from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_X,
     CANON_GRID_ORIGIN_Y,
     CELL_SIZE_M,
+    expected_training_policy_hash,
     split_for_year,
-    training_policy_hash,
 )
 from berlin_lst_downscaling.data.training.patch_index import (
     PATCH_CELLS,
@@ -269,15 +267,11 @@ def load_scaler(training_root: str) -> ScalerSpec:
     payload = json.loads(read_bytes(uri))
     order = tuple(str(n) for n in payload.get("channel_order", ()))
     policy_hash = str(payload.get("policy_hash", ""))
-    v6_names = feature_schema(FEATURE_SCHEMA_VERSION_V6).names
-    if order == FEATURE_CHANNEL_NAMES:
-        expected = training_policy_hash()
-        expected_n = len(FEATURE_CHANNEL_NAMES)
-    elif order == v6_names:
-        expected = training_policy_hash(schema=feature_schema(FEATURE_SCHEMA_VERSION_V6))
-        expected_n = len(v6_names)
-    else:
-        raise RuntimeError(f"scaler channel order drift at {uri}: {order}")
+    try:
+        expected = expected_training_policy_hash(payload)
+    except RuntimeError as exc:
+        raise RuntimeError(f"{exc} at {uri}") from exc
+    expected_n = len(order)
     if policy_hash != expected:
         raise RuntimeError(
             f"scaler policy hash {policy_hash!r} != current training policy {expected!r} "
@@ -333,7 +327,9 @@ def load_patch_refs(
     the index's deterministic ``(scene_id, row, col)`` order.
     """
     fingerprints = patch_index_fingerprints(cfg.patch_index_root)
-    expected = training_policy_hash()
+    # The index must derive from this training root, whose scaler carries
+    # the release policy hash (v1/v2 pinned, v3 from the v6 ledger hash).
+    expected = load_scaler(cfg.training_root).policy_hash
     if fingerprints["source_policy_hash"] != expected:
         raise RuntimeError(
             f"patch index source policy hash {fingerprints['source_policy_hash']!r} != "
