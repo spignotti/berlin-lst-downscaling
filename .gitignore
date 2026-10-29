@@ -26,18 +26,18 @@ __pycache__/
 # Pipeline temporary processing files
 # Python
 # W&B run artifacts (local cache)
-data/ard/
-data/diag/
-data/dynamic/
-data/ecostress/
-data/LoD2/
-data/logs/
-data/smoke/
-data/static/
-data/tmp/
-data/runs/.stage1-efficiency-control/
-data/runs/.stage1-verification-control/
-data/runs/random-forest/
+/data/ard/
+/data/diag/
+/data/dynamic/
+/data/ecostress/
+/data/LoD2/
+/data/logs/
+/data/smoke/
+/data/static/
+/data/tmp/
+/data/runs/.stage1-efficiency-control/
+/data/runs/.stage1-verification-control/
+/data/runs/random-forest/
 logs/
 node_modules/
 outputs/
