@@ -19,6 +19,9 @@ Usage
     uv run python scripts/runners/run_random_forest.py --config-name random_forest_full \\
         output_root=data/runs/random-forest/<run-id>
 
+    # Validation only (test 2025 is never loaded or scored)
+    uv run python scripts/runners/run_random_forest.py --config-name random_forest_v6_val_full
+
 Requires ADC for the read-only GCS sources. Exits non-zero when the train pool
 is empty, the per-split accounting does not close, a serialized-forest replay
 differs, or no valid cell is evaluated (fail closed).
@@ -86,6 +89,7 @@ from berlin_lst_downscaling.modeling.random_forest import (
 _logger = logging.getLogger(__name__)
 
 _EVAL_SPLITS = ("validation", "test")
+_VAL_ONLY_SPLITS = ("validation",)
 _REPLAY_ROWS = 2048
 _PROBE_SCALARS = ("patch_id", "split", "filled_feature_pixels")
 
@@ -141,6 +145,19 @@ def _take_first(refs: list[PatchRef], limit: object) -> list[PatchRef]:
     return refs[:count]
 
 
+def _resolve_splits(raw: object) -> tuple[str, ...]:
+    """Return the eval splits: validation+test (default) or validation only."""
+    if raw is None:
+        return _EVAL_SPLITS
+    splits = tuple(str(s) for s in raw)  # type: ignore[attr-defined]
+    if splits not in (_EVAL_SPLITS, _VAL_ONLY_SPLITS):
+        raise ValueError(
+            f"splits must be exactly {list(_EVAL_SPLITS)} or {list(_VAL_ONLY_SPLITS)}, "
+            f"got {list(splits)}"
+        )
+    return splits
+
+
 def _probe_indices(cache: EvalSplit, per_split: int) -> list[int]:
     """Return the deterministic probe positions of one cached split."""
     return list(range(min(per_split, len(cache.patch_ids))))
@@ -155,9 +172,8 @@ def main(cfg: DictConfig) -> int:
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
-    splits = tuple(str(s) for s in (cfg.get("splits") or _EVAL_SPLITS))
-    if not splits or any(split not in _EVAL_SPLITS for split in splits):
-        raise ValueError(f"splits must be a non-empty subset of {list(_EVAL_SPLITS)}")
+    splits = _resolve_splits(cfg.get("splits"))
+    skip_test = "test" not in splits
     schema_version = schema_version_from_config(cfg)
     _check_schema_roots(cfg, schema_version)
     stages: list[StageSelection] = [
@@ -182,8 +198,6 @@ def main(cfg: DictConfig) -> int:
         raise ValueError("seed must be 0 and the reservoir cap must be <= 500000")
     if [stage.stage for stage in stages] != [1, 2, 3, 4]:
         raise ValueError("RF requires exactly stages 1, 2, 3, 4")
-    if splits != _EVAL_SPLITS:
-        raise ValueError("RF requires validation and test splits in that order")
     if profile == "full" and (
         max_train_patches is not None or max_patches is not None or max_cells != 500_000
     ):
@@ -199,7 +213,7 @@ def main(cfg: DictConfig) -> int:
             project=str(cfg.wandb.project),
             mode="offline",
             dir=str(Path(output_root, "logs", "random_forest")),
-            name=f"rf-{profile}-{run_id}",
+            name=f"rf-{profile}-notest-{run_id}" if skip_test else f"rf-{profile}-{run_id}",
             job_type="random_forest",
             config={
                 "git_commit": git_revision_for(output_root, run_id),
@@ -224,6 +238,7 @@ def main(cfg: DictConfig) -> int:
             output_root=output_root,
             config_name=str(config_name),
             splits=list(splits),
+            skip_test=skip_test,
             stages=[stage.stage for stage in stages],
             seed=seed,
             max_cells=max_cells,
@@ -424,6 +439,7 @@ def main(cfg: DictConfig) -> int:
                 "train_patches": len(train_refs),
                 "max_train_patches": max_train_patches,
                 "max_patches_per_split": max_patches,
+                **({"test_split": "skipped"} if skip_test else {}),
             },
             pool=pool,
             max_cells=max_cells,

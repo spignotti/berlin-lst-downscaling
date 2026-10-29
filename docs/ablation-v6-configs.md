@@ -160,3 +160,33 @@ images do not contain.
 `baseline_v6_full.yaml` run the random-forest and naive baselines on the same
 v3 chain. The random forest fits L1-L4 from the v6 arm registry with unchanged
 protocol constants.
+
+### Validation-only baselines (test 2025 stays closed)
+
+Test 2025 stays closed until the whole ablation matrix is frozen. Until then
+run the baselines only through their validation-only variants; they fit on
+train, score validation 2024, and never load a test patch ref or read a test
+patch:
+
+| Baseline | Config | VM launcher | Output root |
+| --- | --- | --- | --- |
+| RF smoke | `random_forest_v6_val_smoke` | `run-random-forest-vm.sh v6-val-smoke <branch> <rate>` | `data/runs/random-forest-v6-notest/<id>` |
+| RF full | `random_forest_v6_val_full` | `run-random-forest-vm.sh v6-val-full <branch> <rate>` | `data/runs/random-forest-v6-notest/<id>` |
+| Naive | `baseline_v6_val` | `run-baseline-vm.sh <branch> baseline_v6_val` | `data/runs/baseline-v6-notest/<id>` |
+
+```
+uv run python scripts/validators/preflight_v6_reads.py --config-name random_forest_v6_val_full --limit 8
+scripts/runners/vm/run-random-forest-vm.sh v6-val-full <branch> <hourly-rate-usd>
+scripts/runners/vm/run-baseline-vm.sh <branch> baseline_v6_val
+```
+
+The RF runner accepts exactly `splits: ["validation", "test"]` or
+`["validation"]`. A validation-only run is named `rf-<profile>-notest-<id>` in
+W&B and its report records `scope.test_split: "skipped"`;
+`validate_random_forest.py` then requires validation only and rejects any test
+split in the report. The naive launcher evaluates `validation` only for
+`baseline_v6_val` (the config itself lists train and validation).
+
+`random_forest_v6_full`, `random_forest_v6_smoke`, `baseline_v6_full` and the
+launcher modes `v6-smoke`, `v6-full`, `baseline_v6_full` open test 2025. Do
+not run them before the matrix is frozen.
