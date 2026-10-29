@@ -30,10 +30,6 @@ import rasterio
 
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.ard.publish_guard import assert_patch_index_output_root
-from berlin_lst_downscaling.data.features.contracts import (
-    FEATURE_SCHEMA_VERSION_V6,
-    feature_schema,
-)
 from berlin_lst_downscaling.data.io import (
     atomic_write,
     exists,
@@ -48,6 +44,7 @@ from berlin_lst_downscaling.data.training.contracts import (
     NO_ELIGIBLE_CELLS_REASON,
     cell_id,
     training_policy_hash,
+    v6_training_policy_hash,
 )
 from berlin_lst_downscaling.data.training.paths import (
     manifest_parquet,
@@ -330,11 +327,7 @@ def _verify_source_release(source_root: str) -> str:
         v6_hash = scaler.get("v3_config_hash")
         if not v6_hash:
             raise RuntimeError("training/v3 scaler carries no v3_config_hash")
-        expected = training_policy_hash(
-            v3_config_hash=str(v6_hash),
-            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
-            schema=feature_schema(FEATURE_SCHEMA_VERSION_V6),
-        )
+        expected = v6_training_policy_hash(str(v6_hash))
     else:
         expected = training_policy_hash()
     if policy_hash != expected:

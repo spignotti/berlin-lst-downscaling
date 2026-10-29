@@ -14,7 +14,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.common.util import sha256_bytes
 from berlin_lst_downscaling.data.io import exists, read_bytes, run_context_path
-from berlin_lst_downscaling.data.training.contracts import training_policy_hash
+from berlin_lst_downscaling.data.training.contracts import (
+    expected_training_policy_hash,
+    training_policy_hash,
+)
 from berlin_lst_downscaling.data.training.paths import (
     manifest_parquet,
     patch_index_completion,
@@ -154,6 +157,17 @@ def _training_policy_from_root(training_root: str | None) -> str:
     if not training_root:
         return training_policy_hash()
     marker_uri = release_completion(training_root)
+    scaler_uri = scaler_json(training_root)
+    if exists(scaler_uri):
+        expected = expected_training_policy_hash(json.loads(read_bytes(scaler_uri)))
+        if exists(marker_uri):
+            published = str(json.loads(read_bytes(marker_uri)).get("policy_hash") or "").strip()
+            if published and published != expected:
+                raise ValueError(
+                    f"training release {training_root!r} policy_hash {published!r} != "
+                    f"{expected!r} recomputed from its scaler"
+                )
+        return expected
     if not exists(marker_uri):
         return training_policy_hash()
     try:

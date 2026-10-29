@@ -87,10 +87,6 @@ from berlin_lst_downscaling.data.eda.rules import (
     season_of_month,
 )
 from berlin_lst_downscaling.data.eda.scan import scan_scene
-from berlin_lst_downscaling.data.features.contracts import (
-    FEATURE_SCHEMA_VERSION_V6,
-    feature_schema,
-)
 from berlin_lst_downscaling.data.io import (
     RunLogSession,
     atomic_upload,
@@ -102,6 +98,7 @@ from berlin_lst_downscaling.data.training.contracts import (
     EXPECTED_V3_CONFIG_HASH,
     NO_ELIGIBLE_CELLS_REASON,
     training_policy_hash,
+    v6_training_policy_hash,
 )
 from berlin_lst_downscaling.data.training.paths import eligibility_provenance
 
@@ -549,11 +546,7 @@ def _expected_policy_for(training_root: str, scaler: dict) -> str:
         v6_hash = scaler.get("v3_config_hash")
         if not v6_hash:
             raise RuntimeError("training/v3 scaler carries no v3_config_hash")
-        return training_policy_hash(
-            v3_config_hash=str(v6_hash),
-            feature_schema_version=FEATURE_SCHEMA_VERSION_V6,
-            schema=feature_schema(FEATURE_SCHEMA_VERSION_V6),
-        )
+        return v6_training_policy_hash(str(v6_hash))
     return training_policy_hash()
 
 
