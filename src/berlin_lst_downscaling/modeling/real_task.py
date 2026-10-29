@@ -1,8 +1,8 @@
 """Real contract-conforming Lightning path (WB3, issue #18).
 
-The model predicts at 10 m from the first C channels of the frozen V3
-28-channel order (C = 28 reads the full stack) plus the separate
-``lst_prior`` channel. Training compares the exact 10x10 pooled
+The model predicts at 10 m from C selected channels of the release's full
+stack (28 for V3, 22 for v6; C = the stack width reads all of it) plus the
+separate ``lst_prior`` channel. Training compares the exact 10x10 pooled
 prediction against the native 100 m Landsat target under
 ``training_eligible@100m`` and selects checkpoints on the cell-weighted
 masked MAE. SSIM at 100 m is logged as a secondary diagnostic only.
@@ -393,6 +393,12 @@ class RealPatchDataModule(LightningDataModule):
         scaler_digest = hashlib.sha256(
             json.dumps(scaler_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        source_channels = len(reader.scaler.channel_order)
+        if len(reader.scaler.channels) != source_channels:
+            raise RuntimeError(
+                f"scaler channel entries ({len(reader.scaler.channels)}) disagree with "
+                f"channel_order ({source_channels}); refusing to size the cache"
+            )
         channel_order = [reader.scaler.channel_order[i] for i in self.channel_indices]
         provenance: dict[str, object] = {
             "source_roots": asdict(self.source),
@@ -400,6 +406,7 @@ class RealPatchDataModule(LightningDataModule):
             "scaler_digest": scaler_digest,
             "channel_order": channel_order,
             "channel_indices": list(self.channel_indices),
+            "source_channels": source_channels,
             "geometry": {
                 "crs": "EPSG:25833",
                 "origin_x": CANON_GRID_ORIGIN_X,
@@ -429,6 +436,7 @@ class RealPatchDataModule(LightningDataModule):
             source_samples(),
             patch_ids=patch_ids,
             active_channels=self.n_active_channels,
+            source_channels=source_channels,
             provenance=provenance,
             max_bytes=self.cache_max_bytes,
             channel_indices=self.channel_indices,
@@ -575,7 +583,8 @@ class RealPatchDataModule(LightningDataModule):
         shuffle = self.shuffle_train and split == "train"
         # Cached tensors are already channel-selected; re-applying V3 indices
         # would be wrong for non-contiguous ablation subsets. Live readers still
-        # yield the full 28-band stack and need the configured indices.
+        # yield the release's full stack (28 for V3, 22 for v6) and need the
+        # configured indices.
         if isinstance(dataset, CachedRealPatchDataset):
             collate_fn = partial(collate_real_batch, n_active_channels=self.n_active_channels)
         else:
