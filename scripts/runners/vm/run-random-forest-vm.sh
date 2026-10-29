@@ -2,6 +2,9 @@
 # Run a committed RF smoke or full baseline, validate, secure artifacts, and stop.
 # Usage: run-random-forest-vm.sh <smoke|full|v6-smoke|v6-full> <branch> <hourly-rate-usd>
 # Full mode requires operator inspection of smoke memory/throughput first.
+# Opt-in validation-only run (v6-smoke / v6-full only): EVAL_SPLITS=validation
+# adds "splits=[validation] evaluate_test=false"; the 2025 test split is never
+# requested. Unset or "validation,test" keeps the default validation+test run.
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
@@ -15,6 +18,21 @@ case "$MODE" in
   v6-smoke) CONFIG="random_forest_v6_smoke"; RUN_SECONDS=1800; TOTAL_SECONDS=3600 ;;
   v6-full) CONFIG="random_forest_v6_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
   *) echo "Usage: $0 <smoke|full|v6-smoke|v6-full> <branch> <hourly-rate-usd>" >&2; exit 1 ;;
+esac
+EVAL_SPLITS="${EVAL_SPLITS:-validation,test}"
+EVAL_OVERRIDES=""
+RUN_SUFFIX=""
+case "$EVAL_SPLITS" in
+  validation,test) ;;
+  validation)
+    if [[ "$MODE" != v6-* ]]; then
+      echo "ERROR: EVAL_SPLITS=validation is only allowed for v6-smoke and v6-full." >&2
+      exit 1
+    fi
+    EVAL_OVERRIDES=" splits=[validation] evaluate_test=false"
+    RUN_SUFFIX="-notest"
+    ;;
+  *) echo "ERROR: EVAL_SPLITS must be unset, validation,test or validation." >&2; exit 1 ;;
 esac
 if [[ ! "$HOURLY_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]] \
   || ! awk -v rate="$HOURLY_RATE" 'BEGIN { exit !(rate > 0 && rate * 8 <= 10) }'; then
@@ -51,6 +69,7 @@ ssh_cmd() {
 }
 
 PIPELINE_LABEL="Random Forest $MODE (stages 1–4)"
+if [[ -n "$EVAL_OVERRIDES" ]]; then PIPELINE_LABEL="$PIPELINE_LABEL, validation only"; fi
 # shellcheck disable=SC2034  # launcher contract field (see vm-runner-common.sh)
 MARKER_CONFIG="$CONFIG"
 POLL_MAX_SECONDS=$((RUN_SECONDS + 900))
@@ -60,7 +79,7 @@ if [[ "$(_vm_field 'machineType.basename()')" != "$VM_MACHINE" ]]; then
   echo "ERROR: unexpected machine type; re-check cost and memory bounds." >&2
   exit 1
 fi
-vm_init_run "random-forest-$MODE"
+vm_init_run "random-forest-$MODE$RUN_SUFFIX"
 RUN_DIR="random-forest"
 if [[ "$MODE" == v6-* ]]; then RUN_DIR="random-forest-v6"; fi
 OUTPUT_REL="data/runs/$RUN_DIR/$WRAP_RUN_ID"
@@ -74,7 +93,7 @@ MARKER="$LOG_DIR/marker.json"
 STATUS_FILE="$LOG_DIR/exit_status"
 REMOTE_LOG="$LOG_DIR/nohup.log"
 REMOTE_PID_FILE="$LOG_DIR/pid"
-REMOTE_CMD="set -f; OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s ${RUN_SECONDS}s uv run python scripts/runners/run_random_forest.py --config-name $CONFIG output_root=$OUTPUT_REL"
+REMOTE_CMD="set -f; OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s ${RUN_SECONDS}s uv run python scripts/runners/run_random_forest.py --config-name $CONFIG output_root=$OUTPUT_REL$EVAL_OVERRIDES"
 
 echo "$PIPELINE_LABEL | run=$WRAP_RUN_ID | maximum compute exposure: $(awk -v r="$HOURLY_RATE" 'BEGIN { printf "%.2f USD", r * 8 }')"
 vm_start_and_wait_ssh
@@ -98,7 +117,7 @@ if (( AVAILABLE < 60 )); then
   exit 1
 fi
 if (( RUN_SECONDS > AVAILABLE )); then RUN_SECONDS=$AVAILABLE; fi
-REMOTE_CMD="set -f; OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s ${RUN_SECONDS}s uv run python scripts/runners/run_random_forest.py --config-name $CONFIG output_root=$OUTPUT_REL"
+REMOTE_CMD="set -f; OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s ${RUN_SECONDS}s uv run python scripts/runners/run_random_forest.py --config-name $CONFIG output_root=$OUTPUT_REL$EVAL_OVERRIDES"
 vm_write_marker "$CONFIG"
 vm_launch_detached
 vm_poll
@@ -144,6 +163,17 @@ fi
 tar -xzf "$LOCAL_DIR/artifact.tgz" -C "$LOCAL_DIR"
 printf '%s\n' "$REMOTE_SHA" > "$LOCAL_DIR/artifact.sha256"
 leave_running=0
+
+# Validation-only evidence gate: no test split anywhere, validation scored.
+if [[ -n "$EVAL_OVERRIDES" && "$VALIDATION_RC" -eq 0 ]]; then
+  if ! jq -e '.scope.evaluate_test == false
+      and ([.stages[] | (.splits | keys) == ["validation"]] | all)
+      and ([.stages[] | .splits.validation.valid_cells > 0] | all)' \
+    "$LOCAL_DIR/random_forest_report.json" >/dev/null; then
+    echo "ERROR: validation-only evidence gate failed on random_forest_report.json." >&2
+    VALIDATION_RC=1
+  fi
+fi
 
 if [[ "$VALIDATION_RC" -eq 0 ]]; then
   ssh_cmd "rm -rf '$REMOTE_OUTPUT' && rm -f '$ARCHIVE'"

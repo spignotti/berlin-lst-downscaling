@@ -17,6 +17,10 @@ Usage
     # Full: every indexed patch of the requested splits; explicit invocation
     uv run python scripts/runners/run_baseline.py --config-name baseline_full
 
+    # v6 validation only: the 2025 test split is never requested or scored
+    uv run python scripts/runners/run_baseline.py --config-name baseline_v6_full \\
+        splits=[validation] evaluate_test=false
+
 Requires ADC for the read-only GCS sources. Exits non-zero when a split's
 accounting does not close (evaluated + exclusions != requested) or the
 artifact cannot be written.
@@ -45,6 +49,7 @@ from berlin_lst_downscaling.modeling.channels import (
     resolve_schema_selection,
     schema_version_from_config,
 )
+from berlin_lst_downscaling.modeling.guards import evaluate_test_from_config
 from berlin_lst_downscaling.modeling.patches import (
     RealPatchReader,
     RealSourceConfig,
@@ -69,13 +74,29 @@ def _source_config(cfg: DictConfig) -> RealSourceConfig:
     )
 
 
+def _resolve_splits(cfg: DictConfig, schema_version: int) -> tuple[str, ...]:
+    """Parse the requested splits; evaluate_test=false drops the test split (v6 only)."""
+    splits = tuple(str(s) for s in (cfg.get("splits") or ["train", "validation", "test"]))
+    if evaluate_test_from_config(cfg):
+        return splits
+    if schema_version != FEATURE_SCHEMA_VERSION_V6:
+        raise ValueError("evaluate_test=false is only admitted for the v6 baseline")
+    if not splits or "test" in splits or "validation" not in splits:
+        raise ValueError(
+            f"evaluate_test=false requires validation and no test split, got {list(splits)}"
+        )
+    return splits
+
+
 @hydra.main(config_path="../../configs/modeling", config_name="baseline_full", version_base=None)
 def main(cfg: DictConfig) -> int:
     """Evaluate the naive baseline and persist its artifact and run log."""
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
-    splits = tuple(str(s) for s in (cfg.get("splits") or ["train", "validation", "test"]))
+    schema_version = schema_version_from_config(cfg)
+    evaluate_test = evaluate_test_from_config(cfg)
+    splits = _resolve_splits(cfg, schema_version)
     scene_ids = tuple(str(s) for s in (cfg.get("scene_ids") or [])) or None
     max_patches = cfg.get("max_patches_per_split")
 
@@ -88,6 +109,7 @@ def main(cfg: DictConfig) -> int:
             output_root=output_root,
             config_name=cfg.get("_hydra", {}).get("job", {}).get("config_name", "baseline_full"),
             splits=list(splits),
+            evaluate_test=evaluate_test,
             scene_ids=list(scene_ids or []),
             max_patches_per_split=max_patches,
         )
@@ -99,7 +121,6 @@ def main(cfg: DictConfig) -> int:
             max_patches_per_split=None if max_patches is None else int(max_patches),
         )
         reader = RealPatchReader(source)
-        schema_version = schema_version_from_config(cfg)
         if schema_version == FEATURE_SCHEMA_VERSION_V6:
             assert_scaler_spec_matches(
                 reader.scaler,
@@ -115,6 +136,7 @@ def main(cfg: DictConfig) -> int:
             summaries=summaries,
             exclusions=dict(reader.exclusions),
             git_revision=git_revision_for(output_root, run_id),
+            evaluate_test=evaluate_test,
         )
         uri = write_report(report, f"{output_root.rstrip('/')}/baseline_report.json")
 

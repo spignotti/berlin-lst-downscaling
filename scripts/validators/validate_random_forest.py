@@ -13,7 +13,9 @@
 
 Read-only probe over a written ``random_forest_report.json`` plus the run's
 model/rows/probe artifacts and the published sources. It re-derives, with its
-own code and mirrored geometry constants:
+own code and mirrored geometry constants. A report with
+``scope.evaluate_test: false`` is validation-only: it must contain no test
+evidence and complete validation coverage (a missing flag means test is scored):
 
 - provenance: the report fingerprints equal the published index completion
   marker, whose ``patches_total`` equals the index row count;
@@ -667,9 +669,33 @@ def _prediction_100m(
     return _pool_temperature_10m_to_100m(native[None], method)
 
 
+def _expected_eval_splits(report: dict) -> tuple[str, ...]:
+    """Return the splits the report must evaluate; a missing flag is a legacy test run."""
+    flag = report.get("scope", {}).get("evaluate_test", True)
+    if not isinstance(flag, bool):
+        raise ValueError(f"scope.evaluate_test must be a bool, got {flag!r}")
+    return ("validation", "test") if flag else ("validation",)
+
+
 def _check_protocol(report: dict, index_rows: list[dict], errors: list[str]) -> None:
     """Reject weakened full runs and split/year drift before model loading."""
     scope = report.get("scope", {})
+    try:
+        expected_splits = _expected_eval_splits(report)
+    except ValueError as exc:
+        errors.append(str(exc))
+        expected_splits = ("validation", "test")
+    if expected_splits == ("validation",):
+        for stage, payload in report.get("stages", {}).items():
+            tested = "test" in payload.get("splits", {}) or any(
+                str(r.get("split")) == "test" for r in payload.get("patches", [])
+            )
+            if tested:
+                errors.append(f"stage {stage}: evaluate_test=false but test evidence is present")
+            if "validation" not in payload.get("splits", {}):
+                errors.append(f"stage {stage}: validation split is missing")
+        if "test" in scope.get("eval_splits", {}):
+            errors.append("evaluate_test=false but scope.eval_splits contains test")
     profile = scope.get("profile")
     if profile not in ("full", "smoke"):
         errors.append("scope.profile must be full or smoke")
@@ -712,9 +738,9 @@ def _check_protocol(report: dict, index_rows: list[dict], errors: list[str]) -> 
         errors.append("full run must request every published train patch")
     stages = report.get("stages", {})
     for stage, payload in stages.items():
-        if set(payload.get("splits", {})) != set(_SPLIT_YEARS):
-            errors.append(f"full stage {stage} must evaluate validation and test")
-        for split in _SPLIT_YEARS:
+        if set(payload.get("splits", {})) != set(expected_splits):
+            errors.append(f"full stage {stage} must evaluate {list(expected_splits)}")
+        for split in expected_splits:
             count = len(_split_index_ids(index_rows, split))
             if payload.get("splits", {}).get(split, {}).get("requested_patches") != count:
                 errors.append(f"full stage {stage} {split}: incomplete requested coverage")

@@ -105,6 +105,7 @@ class BaselineReport:
     fingerprints: dict[str, str]
     git_revision: str
     written_at: str
+    evaluate_test: bool = True
 
     def to_payload(self) -> dict:
         return {
@@ -122,6 +123,7 @@ class BaselineReport:
             "fingerprints": self.fingerprints,
             "git_revision": self.git_revision,
             "written_at": self.written_at,
+            "evaluate_test": self.evaluate_test,
         }
 
 
@@ -235,6 +237,7 @@ def build_report(
     summaries: dict[str, SplitSummary],
     exclusions: dict[str, int],
     git_revision: str,
+    evaluate_test: bool = True,
 ) -> BaselineReport:
     """Assemble the writable artifact from the evaluated records."""
     return BaselineReport(
@@ -258,6 +261,7 @@ def build_report(
         fingerprints=patch_index_fingerprints(cfg.patch_index_root),
         git_revision=git_revision,
         written_at=now_iso(),
+        evaluate_test=evaluate_test,
     )
 
 

@@ -160,3 +160,41 @@ images do not contain.
 `baseline_v6_full.yaml` run the random-forest and naive baselines on the same
 v3 chain. The random forest fits L1-L4 from the v6 arm registry with unchanged
 protocol constants.
+
+### Validation-only baselines (`evaluate_test=false`)
+
+The 2025 test split stays closed until the v6 ablation matrix is frozen. Until
+then the v6 baselines run on validation (2024) only. The switch is the existing
+`evaluate_test` key (default `true`, so the final scoring with test is
+unchanged). `evaluate_test=false` is admitted only on the v6 (schema 5) RF and
+naive configs:
+
+- RF: `splits=[validation] evaluate_test=false`. Refs are loaded for
+  `("train", "validation")` only, and the report records
+  `scope.evaluate_test: false`. Every protocol constant is unchanged.
+- Naive: `splits=[validation] evaluate_test=false`. The split list must not
+  contain `test`, and the report records `evaluate_test: false`.
+
+Both validators accept such a report only if it holds no test split or record.
+The full RF profile must still cover every published validation patch. A
+report flagged `evaluate_test: true` (or without the key) keeps the current
+checks, so a full RF report without test is rejected.
+
+On the VM, set `EVAL_SPLITS=validation` (default: validation and test). This
+works only for the v6 configs. The run label gets `-notest`, the evidence gates
+check only the validation split, and nothing about test is printed:
+
+```
+EVAL_SPLITS=validation scripts/runners/vm/run-random-forest-vm.sh v6-smoke <branch> <hourly-rate-usd>
+EVAL_SPLITS=validation scripts/runners/vm/run-baseline-vm.sh <branch> baseline_v6_full
+EVAL_SPLITS=validation scripts/runners/vm/run-random-forest-vm.sh v6-full <branch> <hourly-rate-usd>
+```
+
+Locally:
+
+```
+uv run python scripts/runners/run_random_forest.py --config-name random_forest_v6_smoke \
+    splits=[validation] evaluate_test=false
+uv run python scripts/runners/run_baseline.py --config-name baseline_v6_full \
+    splits=[validation] evaluate_test=false output_root=data/runs/baseline-real-v6/<run-id>
+```

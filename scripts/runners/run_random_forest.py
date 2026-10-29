@@ -19,6 +19,10 @@ Usage
     uv run python scripts/runners/run_random_forest.py --config-name random_forest_full \\
         output_root=data/runs/random-forest/<run-id>
 
+    # v6 validation only: the 2025 test split is never requested, read or scored
+    uv run python scripts/runners/run_random_forest.py --config-name random_forest_v6_full \\
+        output_root=data/runs/random-forest/<run-id> splits=[validation] evaluate_test=false
+
 Requires ADC for the read-only GCS sources. Exits non-zero when the train pool
 is empty, the per-split accounting does not close, a serialized-forest replay
 differs, or no valid cell is evaluated (fail closed).
@@ -51,6 +55,7 @@ from berlin_lst_downscaling.modeling.channels import (
     ActiveChannelSelection,
     schema_version_from_config,
 )
+from berlin_lst_downscaling.modeling.guards import evaluate_test_from_config
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
@@ -114,6 +119,27 @@ def _check_schema_roots(cfg: DictConfig, schema_version: int) -> None:
         raise ValueError(f"schema 5 RF requires the v3 data chain; mismatched roots: {drift}")
 
 
+def _resolve_eval_splits(cfg: DictConfig, schema_version: int) -> tuple[str, ...]:
+    """Return the evaluated splits; evaluate_test=false admits validation only (v6)."""
+    splits = tuple(str(s) for s in (cfg.get("splits") or _EVAL_SPLITS))
+    if not splits or any(split not in _EVAL_SPLITS for split in splits):
+        raise ValueError(f"splits must be a non-empty subset of {list(_EVAL_SPLITS)}")
+    if evaluate_test_from_config(cfg):
+        if splits != _EVAL_SPLITS:
+            raise ValueError("RF requires validation and test splits in that order")
+        return splits
+    if schema_version != FEATURE_SCHEMA_VERSION_V6:
+        raise ValueError("evaluate_test=false is only admitted for the v6 RF")
+    if splits != ("validation",):
+        raise ValueError("evaluate_test=false requires splits=[validation] exactly")
+    return splits
+
+
+def _load_scoped_refs(source: RealSourceConfig, splits: tuple[str, ...]) -> list[PatchRef]:
+    """Load the train refs plus only the requested evaluation splits."""
+    return load_patch_refs(source, splits=("train", *splits))
+
+
 def _source_config(cfg: DictConfig) -> RealSourceConfig:
     """Build the published-source config from the resolved Hydra config."""
     required = ("patch_index_root", "training_root", "features_root", "ard_root")
@@ -155,11 +181,10 @@ def main(cfg: DictConfig) -> int:
     run_id = uuid4().hex[:8]
     output_root = str(cfg.output_root)
     level = getattr(logging, str(cfg.get("logging_level", "INFO")).upper(), logging.INFO)
-    splits = tuple(str(s) for s in (cfg.get("splits") or _EVAL_SPLITS))
-    if not splits or any(split not in _EVAL_SPLITS for split in splits):
-        raise ValueError(f"splits must be a non-empty subset of {list(_EVAL_SPLITS)}")
     schema_version = schema_version_from_config(cfg)
     _check_schema_roots(cfg, schema_version)
+    splits = _resolve_eval_splits(cfg, schema_version)
+    evaluate_test = evaluate_test_from_config(cfg)
     stages: list[StageSelection] = [
         resolve_stage_selection(int(s), schema_version) for s in cfg.get("stages", ())
     ]
@@ -182,8 +207,6 @@ def main(cfg: DictConfig) -> int:
         raise ValueError("seed must be 0 and the reservoir cap must be <= 500000")
     if [stage.stage for stage in stages] != [1, 2, 3, 4]:
         raise ValueError("RF requires exactly stages 1, 2, 3, 4")
-    if splits != _EVAL_SPLITS:
-        raise ValueError("RF requires validation and test splits in that order")
     if profile == "full" and (
         max_train_patches is not None or max_patches is not None or max_cells != 500_000
     ):
@@ -207,6 +230,7 @@ def main(cfg: DictConfig) -> int:
                 "forest": spec.payload(),
                 "seed": seed,
                 "max_cells": max_cells,
+                "evaluate_test": evaluate_test,
                 **(
                     {"feature_schema_version": schema_version}
                     if schema_version != FEATURE_SCHEMA_VERSION
@@ -224,6 +248,7 @@ def main(cfg: DictConfig) -> int:
             output_root=output_root,
             config_name=str(config_name),
             splits=list(splits),
+            evaluate_test=evaluate_test,
             stages=[stage.stage for stage in stages],
             seed=seed,
             max_cells=max_cells,
@@ -234,7 +259,7 @@ def main(cfg: DictConfig) -> int:
             n_jobs=spec.n_jobs,
         )
         source = _source_config(cfg)
-        refs = load_patch_refs(source, splits=("train", *splits))
+        refs = _load_scoped_refs(source, splits)
         for ref in refs:
             valid_year = (
                 ref.split == "train"
@@ -419,6 +444,7 @@ def main(cfg: DictConfig) -> int:
                 },
                 "eval_splits": {split: len(eval_refs[split]) for split in splits},
                 "profile": profile,
+                "evaluate_test": evaluate_test,
                 "max_cells": max_cells,
                 "seed": seed,
                 "train_patches": len(train_refs),

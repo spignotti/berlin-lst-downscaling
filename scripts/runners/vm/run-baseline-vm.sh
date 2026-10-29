@@ -22,6 +22,10 @@
 #
 # Usage (run from the repository root, like the sibling launchers):
 #   run-baseline-vm.sh [branch] [baseline_full|baseline_v6_full]
+#
+# Opt-in validation-only run (baseline_v6_full only): EVAL_SPLITS=validation
+# passes "splits=[validation] evaluate_test=false"; the 2025 test split is never
+# requested, scored or printed. Unset or "validation,test" keeps the default.
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
@@ -33,7 +37,28 @@ case "$BASELINE_CONFIG" in
   baseline_full|baseline_v6_full) ;;
   *) echo "Usage: $0 [branch] [baseline_full|baseline_v6_full]" >&2; exit 1 ;;
 esac
+EVAL_SPLITS="${EVAL_SPLITS:-validation,test}"
+case "$EVAL_SPLITS" in
+  validation,test) WITH_TEST=1 ;;
+  validation)
+    if [[ "$BASELINE_CONFIG" != "baseline_v6_full" ]]; then
+      echo "ERROR: EVAL_SPLITS=validation is only allowed for baseline_v6_full." >&2
+      exit 1
+    fi
+    WITH_TEST=0
+    ;;
+  *) echo "ERROR: EVAL_SPLITS must be unset, validation,test or validation." >&2; exit 1 ;;
+esac
 PIPELINE_LABEL="Full naive baseline (validation+test)"
+SPLIT_OVERRIDES="splits=[validation,test]"
+SCOPE_NOTE="Validation/test only"
+SUCCESS_NOTE="validation/test"
+if [[ "$WITH_TEST" -eq 0 ]]; then
+  PIPELINE_LABEL="Full naive baseline (validation only)"
+  SPLIT_OVERRIDES="splits=[validation] evaluate_test=false"
+  SCOPE_NOTE="Validation only"
+  SUCCESS_NOTE="validation-only"
+fi
 MARKER_CONFIG="$BASELINE_CONFIG"
 POLL_MAX_SECONDS=7200
 # Independent-validator coverage: patches recomputed per split, with the block
@@ -45,6 +70,7 @@ TMP_BASE="${TMPDIR:-$REPO_ROOT/.tmp}"
 
 RUN_TAG="baseline-full"
 if [[ "$BASELINE_CONFIG" == "baseline_v6_full" ]]; then RUN_TAG="baseline-v6-full"; fi
+if [[ "$WITH_TEST" -eq 0 ]]; then RUN_TAG="$RUN_TAG-notest"; fi
 vm_init_run "$RUN_TAG"
 
 OUTPUT_REL="data/runs/$RUN_TAG/$WRAP_RUN_ID"
@@ -53,10 +79,10 @@ REMOTE_REPORT="$REMOTE_OUTPUT/baseline_report.json"
 LOCAL_DIR="${TMP_BASE%/}/vm/$RUN_TAG/$WRAP_RUN_ID"
 # `set -f` (noglob) keeps the Hydra list override safe inside the detached
 # shell. No single quote may appear in REMOTE_CMD (see vm_launch_detached).
-REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name $BASELINE_CONFIG splits=[validation,test] output_root=$OUTPUT_REL"
+REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name $BASELINE_CONFIG $SPLIT_OVERRIDES output_root=$OUTPUT_REL"
 
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
-echo "  Validation/test only; output root: $OUTPUT_REL"
+echo "  $SCOPE_NOTE; output root: $OUTPUT_REL"
 
 # ── start VM + deploy ────────────────────────────────────────────────
 vm_start_and_wait_ssh
@@ -111,7 +137,13 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   REPORT_REV=$(jq -r '.git_revision' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   REPORT_EXCLUSIONS=$(jq -r '.exclusions | [.[]] | add // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   VALID_CELLS_VALIDATION=$(jq -r '.splits.validation.valid_cells // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo 0)
-  VALID_CELLS_TEST=$(jq -r '.splits.test.valid_cells // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo 0)
+  VALID_CELLS_TEST=0
+  REPORT_EVALUATE_TEST=INVALID
+  if [[ "$WITH_TEST" -ne 0 ]]; then
+    VALID_CELLS_TEST=$(jq -r '.splits.test.valid_cells // 0' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo 0)
+  else
+    REPORT_EVALUATE_TEST=$(jq -r '.evaluate_test' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
+  fi
 
   echo "Report: method=$REPORT_METHOD | splits=$REPORT_SPLITS | git_revision=$REPORT_REV"
   jq -r '.splits | to_entries[] | "  \(.key): patches \(.value.evaluated_patches)/\(.value.requested_patches) | cells \(.value.valid_cells) | MAE \(.value.mae) | SSIM \(.value.ssim)"' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || true
@@ -123,18 +155,33 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   # (the validator accepts a bounded report, so this gate must reject one),
   # the exact split set, the deployed SHA, and positive valid cells per split.
   FULL_COVERAGE=1
-  if printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection test: full' \
-    && printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection validation: full'; then
-    FULL_COVERAGE=0
-  fi
-  if [[ "$VALIDATION_RC" -eq 0 \
-    && "$FULL_COVERAGE" -eq 0 \
-    && "$REPORT_METHOD" == "naive_prior_expand" \
-    && "$REPORT_SPLITS" == "test,validation" \
-    && "$REPORT_REV" == "$DEPLOYED_SHA" \
-    && "$VALID_CELLS_VALIDATION" -gt 0 \
-    && "$VALID_CELLS_TEST" -gt 0 ]]; then
-    EVIDENCE_OK=0
+  if [[ "$WITH_TEST" -eq 0 ]]; then
+    if printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection validation: full'; then
+      FULL_COVERAGE=0
+    fi
+    if [[ "$VALIDATION_RC" -eq 0 \
+      && "$FULL_COVERAGE" -eq 0 \
+      && "$REPORT_METHOD" == "naive_prior_expand" \
+      && "$REPORT_SPLITS" == "validation" \
+      && "$REPORT_EVALUATE_TEST" == "false" \
+      && "$REPORT_REV" == "$DEPLOYED_SHA" \
+      && "$VALID_CELLS_VALIDATION" -gt 0 ]]; then
+      EVIDENCE_OK=0
+    fi
+  else
+    if printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection test: full' \
+      && printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection validation: full'; then
+      FULL_COVERAGE=0
+    fi
+    if [[ "$VALIDATION_RC" -eq 0 \
+      && "$FULL_COVERAGE" -eq 0 \
+      && "$REPORT_METHOD" == "naive_prior_expand" \
+      && "$REPORT_SPLITS" == "test,validation" \
+      && "$REPORT_REV" == "$DEPLOYED_SHA" \
+      && "$VALID_CELLS_VALIDATION" -gt 0 \
+      && "$VALID_CELLS_TEST" -gt 0 ]]; then
+      EVIDENCE_OK=0
+    fi
   fi
 fi
 
@@ -145,7 +192,7 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   fi
   vm_stop
   if [[ "$EVIDENCE_OK" -eq 0 ]]; then
-    echo "SUCCESS: full validation/test baseline completed, independently validated, and secured."
+    echo "SUCCESS: full $SUCCESS_NOTE baseline completed, independently validated, and secured."
     echo "  Run ID:       $WRAP_RUN_ID"
     echo "  Deployed SHA: $DEPLOYED_SHA"
     echo "  Artifact:     $LOCAL_DIR"

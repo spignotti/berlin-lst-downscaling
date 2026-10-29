@@ -346,6 +346,23 @@ def _recompute_patch(
     return int(selected.size), float(selected.sum()), _support_count(mask)
 
 
+def _check_eval_scope(report: dict, errors: list[str]) -> None:
+    """Reject a validation-only report (evaluate_test=false) that holds test evidence."""
+    flag = report.get("evaluate_test", True)
+    if not isinstance(flag, bool):
+        errors.append(f"evaluate_test must be a bool, got {flag!r}")
+        return
+    if flag:
+        return
+    if "test" in report.get("splits", {}):
+        errors.append("evaluate_test=false but the report has a test split")
+    if any(str(r.get("split")) == "test" for r in report.get("patches", [])):
+        errors.append("evaluate_test=false but the report has test patch records")
+    if "validation" not in report.get("splits", {}):
+        errors.append("evaluate_test=false requires the validation split")
+    print("  evaluate_test: false (validation only)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a baseline report.")
     parser.add_argument("--report", required=True, help="path to baseline_report.json")
@@ -357,6 +374,7 @@ def main() -> int:
 
     errors: list[str] = []
     report = _read_json(args.report)
+    _check_eval_scope(report, errors)
     try:
         aggregation = resolve_report_aggregation(report)
     except ValueError as exc:
