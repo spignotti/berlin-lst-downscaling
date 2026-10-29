@@ -23,6 +23,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 - `ablation-stage-configs.md` — frozen comparison configs for the ablation
   stages and isolation runs.
 - `ablation-v6-configs.md` — v6 ablation arms, run matrix, and launcher modes.
+- `stage5-loss-audit.md` — audit of the Stage-5 thermal-aware loss (term
+  scales, SSIM support, fp32 numerics) before the v6 L5 arm.
 
 ## Frozen evidence
 

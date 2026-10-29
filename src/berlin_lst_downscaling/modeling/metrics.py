@@ -230,6 +230,7 @@ def _uniform_ssim_map(
     target_100m: Tensor,
     *,
     clamp_predictions: bool,
+    reference: Tensor,
 ) -> Tensor:
     low, high = SSIM_DATA_RANGE
     data_range = high - low
@@ -245,18 +246,25 @@ def _uniform_ssim_map(
     kernel = torch.ones(
         (channel, 1, SSIM_WINDOW, SSIM_WINDOW), dtype=preds.dtype, device=preds.device
     ) / float(SSIM_WINDOW * SSIM_WINDOW)
-    mu_pred = F.conv2d(preds, kernel, groups=channel)
-    mu_target = F.conv2d(target, kernel, groups=channel)
+    # The shift is exact in real arithmetic; it only avoids fp32 cancellation at Kelvin scale.
+    preds_c = preds - reference
+    target_c = target - reference
+    mu_pred_c = F.conv2d(preds_c, kernel, groups=channel)
+    mu_target_c = F.conv2d(target_c, kernel, groups=channel)
+    mu_pred = mu_pred_c + reference
+    mu_target = mu_target_c + reference
     mu_pred_sq = mu_pred.pow(2)
     mu_target_sq = mu_target.pow(2)
     mu_pred_target = mu_pred * mu_target
     sigma_pred_sq = torch.clamp(
-        F.conv2d(preds * preds, kernel, groups=channel) - mu_pred_sq, min=0.0
+        F.conv2d(preds_c * preds_c, kernel, groups=channel) - mu_pred_c.pow(2), min=0.0
     )
     sigma_target_sq = torch.clamp(
-        F.conv2d(target * target, kernel, groups=channel) - mu_target_sq, min=0.0
+        F.conv2d(target_c * target_c, kernel, groups=channel) - mu_target_c.pow(2), min=0.0
     )
-    sigma_pred_target = F.conv2d(preds * target, kernel, groups=channel) - mu_pred_target
+    sigma_pred_target = F.conv2d(preds_c * target_c, kernel, groups=channel) - (
+        mu_pred_c * mu_target_c
+    )
     upper = 2.0 * sigma_pred_target + c2
     lower = sigma_pred_sq + sigma_target_sq + c2
     return ((2.0 * mu_pred_target + c1) * upper) / ((mu_pred_sq + mu_target_sq + c1) * lower)
@@ -287,7 +295,17 @@ def masked_ssim_stats(
     with torch.autocast(device_type=device.type, enabled=False):
         safe_pred = torch.where(valid, prediction_100m, torch.zeros_like(prediction_100m)).float()
         safe_target = torch.where(valid, target_100m, torch.zeros_like(target_100m)).float()
-        ssim_map = _uniform_ssim_map(safe_pred, safe_target, clamp_predictions=clamp_predictions)
+        valid_count = valid.sum(dim=(2, 3), keepdim=True).clamp(min=1).to(safe_target.dtype)
+        clamped_target = torch.clamp(safe_target, min=SSIM_DATA_RANGE[0], max=SSIM_DATA_RANGE[1])
+        reference = (
+            torch.where(valid, clamped_target, torch.zeros_like(clamped_target)).sum(
+                dim=(2, 3), keepdim=True
+            )
+            / valid_count
+        ).detach()
+        ssim_map = _uniform_ssim_map(
+            safe_pred, safe_target, clamp_predictions=clamp_predictions, reference=reference
+        )
     supported = F.avg_pool2d(valid.to(ssim_map.dtype), kernel_size=SSIM_WINDOW, stride=1) == 1.0
     per_count = supported.flatten(1).sum(dim=1)
     active = per_count > 0
@@ -296,7 +314,7 @@ def masked_ssim_stats(
     values = ssim_map[supported]
     if not bool(torch.isfinite(values).all()):
         raise ValueError("a supported SSIM window carries a non-finite value")
-    per_sum = (ssim_map * supported.to(dtype=ssim_map.dtype)).flatten(1).sum(dim=1)
+    per_sum = torch.where(supported, ssim_map, torch.zeros_like(ssim_map)).flatten(1).sum(dim=1)
     total = per_sum[active].sum()
     count = per_count[active].sum().to(dtype=ssim_map.dtype)
     return total, count
