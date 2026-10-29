@@ -36,10 +36,14 @@ def _feature_shape(count: int, channels: int) -> tuple[int, ...]:
     return count, channels, REAL_PATCH_PX, REAL_PATCH_PX
 
 
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
 def estimate_cache_bytes(count: int, channels: int) -> int:
     """Return exact array payload bytes plus bounded NPY-header allowance."""
-    if count <= 0 or not 1 <= channels <= 28:
-        raise ValueError("cache requires positive count and 1–28 active channels")
+    if count <= 0 or not _is_positive_int(channels):
+        raise ValueError("cache requires a positive count and a positive active channel count")
     n = count
     per_sample = (
         channels * REAL_PATCH_PX * REAL_PATCH_PX * 4
@@ -71,10 +75,11 @@ class PatchCache:
             raise RuntimeError("patch cache manifest has inconsistent patch IDs and metadata")
         active_channels = self.manifest.get("active_channels")
         channel_order = provenance.get("channel_order")
+        source_channels = provenance.get("source_channels", active_channels)
         if (
-            isinstance(active_channels, bool)
-            or not isinstance(active_channels, int)
-            or not 1 <= active_channels <= 28
+            not _is_positive_int(active_channels)
+            or not _is_positive_int(source_channels)
+            or active_channels > source_channels
             or not isinstance(channel_order, list | tuple)
             or len(channel_order) != active_channels
         ):
@@ -137,15 +142,32 @@ def build_patch_cache(
     *,
     patch_ids: list[str],
     active_channels: int,
+    source_channels: int,
     provenance: dict[str, object],
     max_bytes: int,
     channel_indices: Iterable[int] | None = None,
 ) -> dict[str, object]:
-    """Write a cache and publish its manifest last; partial roots never open."""
+    """Write a cache and publish its manifest last; partial roots never open.
+
+    ``source_channels`` is the full stack width every source sample must have
+    (28 for the published V3 release, 22 for v6); it is recorded in the
+    provenance so a cache built for another width never reopens.
+    """
     if root.exists():
         raise FileExistsError(f"cache root already exists: {root}")
     if len(set(patch_ids)) != len(patch_ids) or not patch_ids:
         raise ValueError("patch_ids must be non-empty and unique")
+    if not _is_positive_int(source_channels):
+        raise ValueError(f"source_channels must be a positive int, got {source_channels!r}")
+    if not _is_positive_int(active_channels) or active_channels > source_channels:
+        raise ValueError(
+            f"active_channels must be in [1, {source_channels}], got {active_channels!r}"
+        )
+    if provenance.get("source_channels") != source_channels:
+        raise ValueError(
+            f"provenance source_channels {provenance.get('source_channels')!r} "
+            f"!= source_channels {source_channels}"
+        )
     channel_order = provenance.get("channel_order")
     if not isinstance(channel_order, list | tuple) or len(channel_order) != active_channels:
         raise ValueError("provenance channel_order must match active_channels")
@@ -157,8 +179,10 @@ def build_patch_cache(
             raise ValueError(
                 f"channel_indices length {len(indices)} != active_channels {active_channels}"
             )
-        if any(i < 0 or i >= 28 for i in indices):
-            raise ValueError(f"channel_indices out of range for V3 stack: {indices}")
+        if any(i < 0 or i >= source_channels for i in indices):
+            raise ValueError(
+                f"channel_indices out of range for a {source_channels}-channel stack: {indices}"
+            )
         if len(set(indices)) != len(indices):
             raise ValueError("channel_indices must be unique")
     index_array = np.asarray(indices, dtype=np.intp)
@@ -212,9 +236,11 @@ def build_patch_cache(
             raise RuntimeError(
                 f"source order drift at row {index}: {sample.meta.patch_id!r} != {expected_id!r}"
             )
-        if sample.features.shape != (28, REAL_PATCH_PX, REAL_PATCH_PX):
+        expected_shape = (source_channels, REAL_PATCH_PX, REAL_PATCH_PX)
+        if sample.features.shape != expected_shape:
             raise RuntimeError(
-                f"source feature shape mismatch for {expected_id}: {sample.features.shape}"
+                f"source feature shape mismatch for {expected_id}: "
+                f"{sample.features.shape}, expected {expected_shape}"
             )
         if sample.features.dtype != np.dtype("float32"):
             raise RuntimeError(f"source feature dtype mismatch for {expected_id}")
