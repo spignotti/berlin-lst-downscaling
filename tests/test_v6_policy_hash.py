@@ -41,9 +41,10 @@ def _scaler(names: tuple[str, ...], *, policy_hash: str, v3_config_hash: str | N
         "policy_hash": policy_hash,
         "channels": [
             {
-                "channel_index": i,
+                "channel_index": i + 1,
                 "channel_name": name,
                 "transform": scaler_transform_for(name, schema),
+                "count": 0,
                 "mean": 0.0,
                 "std": 1.0,
             }

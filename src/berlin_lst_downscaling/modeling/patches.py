@@ -63,6 +63,7 @@ from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_Y,
     CELL_SIZE_M,
     expected_training_policy_hash,
+    scaler_channel_index,
     split_for_year,
 )
 from berlin_lst_downscaling.data.training.patch_index import (
@@ -168,7 +169,7 @@ class PatchRef:
 class ScalerChannel:
     """Per-channel scaler statistics as published in ``scaler.json``."""
 
-    index: int
+    index: int  # published 1-based band number (``scaler_channel_index``)
     name: str
     transform: str
     mean: float | None
@@ -218,7 +219,7 @@ def assert_scaler_spec_matches(
     """Raise unless ``scaler`` agrees with the feature schema and the channel selection."""
     entry_names = tuple(c.name for c in scaler.channels)
     if entry_names != scaler.channel_order or any(
-        c.index != i for i, c in enumerate(scaler.channels)
+        c.index != scaler_channel_index(i) for i, c in enumerate(scaler.channels)
     ):
         raise ValueError(
             "scaler per-channel entries disagree with channel_order: "

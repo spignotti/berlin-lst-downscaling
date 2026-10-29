@@ -148,6 +148,16 @@ def scaler_transform_for(channel_name: str, schema: FeatureSchema | None = None)
     return "zscore"
 
 
+# scaler.json ``channel_index`` is the 1-based raster band number of the
+# channel in the feature COG (published training/v1..v3).
+SCALER_CHANNEL_INDEX_BASE = 1
+
+
+def scaler_channel_index(position: int) -> int:
+    """Return the published ``channel_index`` for a 0-based roster position."""
+    return position + SCALER_CHANNEL_INDEX_BASE
+
+
 # ── policy hash ───────────────────────────────────────────────────────
 
 

@@ -34,7 +34,10 @@ from berlin_lst_downscaling.data.features.contracts import (
 )
 from berlin_lst_downscaling.data.features.paths import feature_cog
 from berlin_lst_downscaling.data.qa.stage1_raw import _window_offset
-from berlin_lst_downscaling.data.training.contracts import scaler_transform_for
+from berlin_lst_downscaling.data.training.contracts import (
+    scaler_channel_index,
+    scaler_transform_for,
+)
 from berlin_lst_downscaling.data.training.paths import eligibility_cog
 from berlin_lst_downscaling.data.training.report import SceneTrainingResult
 
@@ -160,7 +163,7 @@ def fit_scaler(
     for i, spec in enumerate(channels_spec):
         transform = _transform_for(spec.name, resolved)
         entry: dict = {
-            "channel_index": i + 1,
+            "channel_index": scaler_channel_index(i),
             "channel_name": spec.name,
             "transform": transform,
             "count": acc[i].count,
