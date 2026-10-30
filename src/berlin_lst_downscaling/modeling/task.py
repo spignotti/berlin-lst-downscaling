@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 import torch
 from lightning.pytorch import LightningModule
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import Tensor
 from torch.nn import functional as F
 
@@ -26,6 +27,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     MaskedLoss,
     validate_batch,
 )
+from berlin_lst_downscaling.modeling.lr_schedule import log_current_lr, optimizer_config
 from berlin_lst_downscaling.modeling.unet import UNet
 
 
@@ -62,8 +64,10 @@ class LSTRegressionTask(LightningModule):
         learning_rate: float = 1e-3,
         weight_decay: float = 0.0,
         loss_factory: Callable[[], MaskedLoss] = _default_loss,
+        lr_schedule: dict[str, object] | None = None,
     ) -> None:
         super().__init__()
+        self.lr_schedule = lr_schedule
         # The model is built from serializable config so ``load_from_checkpoint``
         # can reconstruct it; only the loss factory is excluded from hparams.
         self.model = UNet(in_channels=n_active_channels, base_width=base_width, depth=depth)
@@ -93,11 +97,14 @@ class LSTRegressionTask(LightningModule):
         output = self(batch)
         return self.loss(output, batch.target, batch.mask)
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def on_train_epoch_start(self) -> None:
+        log_current_lr(self)
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
         optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
         )
-        return optimizer
+        return optimizer_config(optimizer, self.lr_schedule)
 
 
 __all__ = ["LSTRegressionTask"]

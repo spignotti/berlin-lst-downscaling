@@ -94,6 +94,10 @@ trainer:
   precision: "32-true"
   accelerator: "auto"     # cpu | gpu | mps | auto
   devices: "auto"         # auto, an int, or a device list
+  lr_schedule:
+    name: "constant"        # "constant" (default, = today's behaviour) | "cosine"
+    warmup_epochs: 2         # used only when name == "cosine"
+    eta_min: 0.0             # final LR floor, absolute value
 
 # ── output ────────────────────────────────────────────────────────────
 # Local output root (smoke: data/smoke/modeling). GCS output is out of

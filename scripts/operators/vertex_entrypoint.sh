@@ -18,6 +18,7 @@
 #   VERTEX_CONFIG_NAME (default "vertex_smoke"), VERTEX_PROFILE (default "smoke"),
 #   VERTEX_SEED and VERTEX_MAX_EPOCHS (v6 ablation modes; appended as the Hydra
 #   overrides seed=... and trainer.max_epochs=... when non-empty),
+#   VERTEX_LR_SCHEDULE (v6; trainer.lr_schedule.name=..., set only for cosine),
 #   VERTEX_EARLY_STOPPING_PATIENCE and VERTEX_EARLY_STOPPING_MIN_DELTA (v6;
 #   early_stopping.enabled=true, early_stopping.patience=..., early_stopping.min_delta=...),
 #   VERTEX_SKIP_TEST=1 (v6; evaluate_test=false), VERTEX_EPOCH_METRICS_URI (v6;
@@ -119,6 +120,9 @@ else
   fi
   if [[ -n "${VERTEX_MAX_EPOCHS:-}" ]]; then
     run_command+=("trainer.max_epochs=$VERTEX_MAX_EPOCHS")
+  fi
+  if [[ -n "${VERTEX_LR_SCHEDULE:-}" ]]; then
+    run_command+=("trainer.lr_schedule.name=$VERTEX_LR_SCHEDULE")
   fi
   if [[ -n "${VERTEX_EARLY_STOPPING_PATIENCE:-}" ]]; then
     run_command+=("early_stopping.enabled=true" "early_stopping.patience=$VERTEX_EARLY_STOPPING_PATIENCE")
