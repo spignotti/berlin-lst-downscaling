@@ -71,6 +71,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
 )
+from berlin_lst_downscaling.modeling.evaluation_exports import score_patch_ssim_variants
 from berlin_lst_downscaling.modeling.metrics import (
     masked_abs_error_sums,
     masked_ssim_stats,
@@ -682,6 +683,7 @@ def score_stage(
                 filled_feature_pixels=cache.filled_feature_pixels[i],
                 scene_id=cache.scene_ids[i],
                 scene_date=cache.scene_dates[i],
+                **asdict(score_patch_ssim_variants(pooled, target, mask)),
             )
         )
     return records

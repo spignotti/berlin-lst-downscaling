@@ -519,6 +519,7 @@ def main(cfg: DictConfig) -> int:
                     / patch_export_filename(split, prefix=f"eval_stage{stage.stage}"),
                     identity=identity,
                     split=split,
+                    ssim_range=ssim_range,
                 )
         return 0
 

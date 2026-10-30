@@ -1,8 +1,12 @@
 """Per-patch evaluation export (Parquet sidecar) for validation and test.
 
 One row per evaluated patch with the additive sums the scene bootstrap needs
-(absolute-error sum, valid cells, SSIM sum and windows). The export is a pure
-sidecar: it never changes a metric, a checkpoint choice, or a report field.
+(absolute-error sum, valid cells, SSIM sum and windows). ``ssim_sum``,
+``ssim_windows`` and the derived ``ssim_100m`` use the fixed train-derived SSIM
+data range of the committed artifact (its provenance is written to the footer).
+``ssim_100m_L250`` (legacy L = 250 K) and ``ssim_100m_Lpatch`` (per-patch
+target range) are diagnostic columns only. The export is a pure sidecar: it
+never changes a metric, a checkpoint choice, or a report field.
 
 Importing this module does not import torch or the training orchestration;
 the tensor scoring helper imports the metric functions lazily.
@@ -14,7 +18,7 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
     from berlin_lst_downscaling.modeling.contracts import RealSampleMeta
+    from berlin_lst_downscaling.modeling.ssim_range import SsimDataRange
 
 PATCH_EXPORT_SCHEMA_VERSION = 1
 PATCH_EXPORT_METADATA_KEY = b"patch_export"
@@ -44,6 +49,11 @@ PATCH_EXPORT_SCHEMA: pa.Schema = pa.schema(
         pa.field("valid_cells", pa.int64(), nullable=False),
         pa.field("ssim_sum", pa.float64(), nullable=False),
         pa.field("ssim_windows", pa.int64(), nullable=False),
+        pa.field("ssim_100m", pa.float64(), nullable=True),
+        pa.field("ssim_100m_L250", pa.float64(), nullable=True),
+        pa.field("ssim_100m_Lpatch", pa.float64(), nullable=True),
+        pa.field("ssim_windows_Lpatch", pa.int64(), nullable=False),
+        pa.field("ssim_Lpatch_zero_range_patches", pa.int64(), nullable=False),
         pa.field("filled_feature_pixels", pa.int64(), nullable=True),
     ]
 )
@@ -57,6 +67,10 @@ _REQUIRED_KEYS = (
     "valid_cells",
     "ssim_sum",
     "ssim_windows",
+    "ssim_100m_L250",
+    "ssim_100m_Lpatch",
+    "ssim_windows_Lpatch",
+    "ssim_Lpatch_zero_range_patches",
 )
 
 
@@ -75,12 +89,53 @@ def patch_export_filename(split: str, *, prefix: str = "eval") -> str:
     return f"{prefix}_{split}_patches.parquet"
 
 
+@dataclass(frozen=True)
+class PatchSsimVariants:
+    """Diagnostic SSIM means of one patch (legacy L = 250 K and per-patch L)."""
+
+    ssim_100m_L250: float | None
+    ssim_100m_Lpatch: float | None
+    ssim_windows_Lpatch: int
+    ssim_Lpatch_zero_range_patches: int
+
+
+def score_patch_ssim_variants(
+    prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
+) -> PatchSsimVariants:
+    """Return the diagnostic L250 and per-patch-range SSIM means of one patch."""
+    from berlin_lst_downscaling.modeling.metrics import (
+        SSIM_LEGACY_DATA_RANGE_K,
+        masked_ssim_stats,
+        masked_ssim_stats_patch_range,
+    )
+
+    legacy_sum, legacy_count = masked_ssim_stats(
+        prediction_100m,
+        target_100m,
+        mask_100m,
+        clamp_predictions=False,
+        data_range_k=SSIM_LEGACY_DATA_RANGE_K,
+    )
+    patch_sum, patch_count, zero_range = masked_ssim_stats_patch_range(
+        prediction_100m, target_100m, mask_100m
+    )
+    legacy_windows = int(legacy_count)
+    patch_windows = int(patch_count)
+    return PatchSsimVariants(
+        ssim_100m_L250=float(legacy_sum) / legacy_windows if legacy_windows > 0 else None,
+        ssim_100m_Lpatch=float(patch_sum) / patch_windows if patch_windows > 0 else None,
+        ssim_windows_Lpatch=patch_windows,
+        ssim_Lpatch_zero_range_patches=int(zero_range),
+    )
+
+
 def score_batch_patches(
     prediction_100m: Tensor,
     target_100m: Tensor,
     mask_100m: Tensor,
     metadata: Sequence[RealSampleMeta],
     *,
+    data_range_k: float,
     clamp_predictions: bool = False,
 ) -> list[dict[str, object]]:
     """Return one additive-sum row per sample of an already pooled 100 m batch."""
@@ -95,8 +150,9 @@ def score_batch_patches(
         pred, target, mask = prediction_100m[sl], target_100m[sl], mask_100m[sl]
         error_sum, count = masked_abs_error_sums(pred, target, mask)
         ssim_sum, ssim_count = masked_ssim_stats(
-            pred, target, mask, clamp_predictions=clamp_predictions
+            pred, target, mask, clamp_predictions=clamp_predictions, data_range_k=data_range_k
         )
+        variants = score_patch_ssim_variants(pred, target, mask)
         rows.append(
             {
                 "patch_id": meta.patch_id,
@@ -108,6 +164,7 @@ def score_batch_patches(
                 "ssim_sum": float(ssim_sum),
                 "ssim_windows": int(ssim_count),
                 "filled_feature_pixels": meta.filled_feature_pixels,
+                **asdict(variants),
             }
         )
     return rows
@@ -145,6 +202,10 @@ def _finite(value: object, name: str, patch_id: str) -> float:
     return out
 
 
+def _finite_or_none(value: object, name: str, patch_id: str) -> float | None:
+    return None if value is None else _finite(value, name, patch_id)
+
+
 def _nonempty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a nonempty string")
@@ -157,6 +218,7 @@ def write_patch_export(
     *,
     identity: EvaluationIdentity,
     split: str,
+    ssim_range: SsimDataRange,
 ) -> Path:
     """Validate ``records`` and write them atomically as the patch-export Parquet."""
     _nonempty(identity.arm, "identity.arm")
@@ -191,6 +253,21 @@ def write_patch_export(
             raise ValueError(f"{patch_id}: valid_cells must be > 0")
         if ssim_windows == 0 and ssim_sum != 0.0:
             raise ValueError(f"{patch_id}: ssim_windows == 0 requires ssim_sum == 0")
+        ssim_100m = ssim_sum / ssim_windows if ssim_windows > 0 else None
+        ssim_l250 = _finite_or_none(record["ssim_100m_L250"], "ssim_100m_L250", patch_id)
+        ssim_lpatch = _finite_or_none(record["ssim_100m_Lpatch"], "ssim_100m_Lpatch", patch_id)
+        windows_lpatch = _count(record["ssim_windows_Lpatch"], "ssim_windows_Lpatch", patch_id)
+        zero_range = _count(
+            record["ssim_Lpatch_zero_range_patches"], "ssim_Lpatch_zero_range_patches", patch_id
+        )
+        if (ssim_l250 is None) != (ssim_windows == 0):
+            raise ValueError(
+                f"{patch_id}: ssim_100m_L250 must be null exactly when ssim_windows == 0"
+            )
+        if (ssim_lpatch is None) != (windows_lpatch == 0):
+            raise ValueError(
+                f"{patch_id}: ssim_100m_Lpatch must be null exactly when ssim_windows_Lpatch == 0"
+            )
         filled_raw = record.get("filled_feature_pixels")
         filled = (
             None if filled_raw is None else _count(filled_raw, "filled_feature_pixels", patch_id)
@@ -213,6 +290,11 @@ def write_patch_export(
                 "valid_cells": valid_cells,
                 "ssim_sum": ssim_sum,
                 "ssim_windows": ssim_windows,
+                "ssim_100m": ssim_100m,
+                "ssim_100m_L250": ssim_l250,
+                "ssim_100m_Lpatch": ssim_lpatch,
+                "ssim_windows_Lpatch": windows_lpatch,
+                "ssim_Lpatch_zero_range_patches": zero_range,
                 "filled_feature_pixels": filled,
             }
         )
@@ -226,6 +308,7 @@ def write_patch_export(
             "seed": identity.seed,
             "run_id": identity.run_id,
             "checkpoint": identity.checkpoint,
+            "ssim_data_range": ssim_range.payload(),
         },
         sort_keys=True,
     ).encode("utf-8")
@@ -249,7 +332,9 @@ __all__ = [
     "PATCH_EXPORT_SCHEMA",
     "PATCH_EXPORT_SCHEMA_VERSION",
     "EvaluationIdentity",
+    "PatchSsimVariants",
     "patch_export_filename",
     "score_batch_patches",
+    "score_patch_ssim_variants",
     "write_patch_export",
 ]

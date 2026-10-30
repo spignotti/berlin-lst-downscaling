@@ -500,6 +500,7 @@ def _score_test_once(
     output_root: Path,
     *,
     export_identity: EvaluationIdentity,
+    ssim_range: SsimDataRange,
 ) -> dict[str, object]:
     """Score the 2025 test split once with the frozen selected checkpoint.
 
@@ -546,13 +547,20 @@ def _score_test_once(
             pooled = pool_10m_to_100m(prediction, method, batch.mask_100m)
             metric.update(pooled, batch.target_100m, batch.mask_100m)
             patch_rows.extend(
-                score_batch_patches(pooled, batch.target_100m, batch.mask_100m, batch.metadata)
+                score_batch_patches(
+                    pooled,
+                    batch.target_100m,
+                    batch.mask_100m,
+                    batch.metadata,
+                    data_range_k=ssim_range.data_range_k,
+                )
             )
     write_patch_export(
         patch_rows,
         output_root / patch_export_filename("test"),
         identity=export_identity,
         split="test",
+        ssim_range=ssim_range,
     )
 
     patches = scope.get("patches_per_split", {})
@@ -917,7 +925,11 @@ def _fit_contract_lifecycle(
                 recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
                 validation_rows.extend(
                     score_batch_patches(
-                        pooled_prediction, batch.target_100m, batch.mask_100m, batch.metadata
+                        pooled_prediction,
+                        batch.target_100m,
+                        batch.mask_100m,
+                        batch.metadata,
+                        data_range_k=ssim_range.data_range_k,
                     )
                 )
                 if residual_prior:
@@ -944,6 +956,7 @@ def _fit_contract_lifecycle(
             output_root / patch_export_filename("validation"),
             identity=export_identity,
             split="validation",
+            ssim_range=ssim_range,
         )
 
         # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
@@ -958,6 +971,7 @@ def _fit_contract_lifecycle(
                 reloaded,
                 output_root,
                 export_identity=export_identity,
+                ssim_range=ssim_range,
             )
         elif is_full and not evaluate_test:
             test_result = {"skipped": True}

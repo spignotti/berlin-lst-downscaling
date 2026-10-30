@@ -3,7 +3,10 @@
 Inputs are per-patch export Parquet files (schema_version 1), one file per run
 (arm, seed, run_id) and split. Patch sums are pooled within scenes, averaged
 over three seeds per arm, differenced per scene (A - B), and the scene is the
-only resampling unit. Only NumPy and PyArrow are used; nothing here evaluates
+only resampling unit. ``ssim_sum`` and ``ssim_windows`` are the main SSIM
+under the fixed artifact data range; ``metric="ssim_100m"`` pools exactly those
+sums and counts. The diagnostic L250 and per-patch-range columns are ignored.
+Only NumPy and PyArrow are used; nothing here evaluates
 a model or reads data products.
 """
 

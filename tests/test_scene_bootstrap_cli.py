@@ -164,3 +164,22 @@ def test_no_forbidden_imports(path: Path) -> None:
                  "berlin_lst_downscaling.data", "google", "gcsfs", "fsspec")  # fmt: skip
     for name in _imports(path):
         assert not any(name == f or name.startswith(f + ".") for f in forbidden), name
+
+
+def test_ssim_cli_uses_main_fixed_range_metric(
+    cli: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from test_scene_bootstrap import _writer_arm
+
+    world = make_world(8)
+    a = _writer_arm(tmp_path, "A", world, main=0.6, l250=0.1, lpatch=0.05)
+    b = _writer_arm(tmp_path, "B", world, main=0.4, l250=0.9, lpatch=None)
+    rc = cli.main(
+        _argv([str(p) for p in a], [str(p) for p in b], tmp_path / "ssim", "--metric", "ssim_100m")
+    )
+    assert rc == 0
+    doc = json.loads((tmp_path / "ssim.json").read_text())
+    assert doc["metric"] == "ssim_100m"
+    assert doc["point_estimate"] == pytest.approx(0.2)

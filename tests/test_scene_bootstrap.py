@@ -826,3 +826,79 @@ def test_bootstrap_matches_explicit_linear_percentile_reference(
     if small_batches:
         full = diff[np.random.default_rng(seed).integers(0, n, size=(n_boot, n))].mean(axis=1)
         assert np.array_equal(full, reps)
+
+
+# ------------------------------------------------- writer exports with SSIM variants
+
+
+def _writer_arm(
+    tmp_path: Path,
+    arm: str,
+    patches: list[Patch],
+    *,
+    main: float,
+    l250: float,
+    lpatch: float | None,
+) -> list[Path]:
+    from berlin_lst_downscaling.modeling.evaluation_exports import (
+        EvaluationIdentity,
+        write_patch_export,
+    )
+    from berlin_lst_downscaling.modeling.ssim_range import test_override_ssim_data_range
+
+    paths: list[Path] = []
+    for seed in (0, 1, 2):
+        records = [
+            {
+                "patch_id": pid,
+                "scene_id": scene,
+                "scene_date": date,
+                "split": "validation",
+                "abs_error_sum": float(cells),
+                "valid_cells": cells,
+                "ssim_sum": main * wins,
+                "ssim_windows": wins,
+                "ssim_100m_L250": l250,
+                "ssim_100m_Lpatch": lpatch,
+                "ssim_windows_Lpatch": 0 if lpatch is None else wins,
+                "ssim_Lpatch_zero_range_patches": 1 if lpatch is None else 0,
+                "filled_feature_pixels": None,
+            }
+            for pid, scene, date, cells, wins in patches
+        ]
+        identity = EvaluationIdentity(arm=arm, seed=seed, run_id=f"{arm}-run{seed}", checkpoint="b")
+        paths.append(
+            write_patch_export(
+                records,
+                tmp_path / f"{arm}{seed}.parquet",
+                identity=identity,
+                split="validation",
+                ssim_range=test_override_ssim_data_range(40.0),
+            )
+        )
+    return paths
+
+
+def test_ssim_bootstrap_uses_main_fixed_range_sums(tmp_path: Path, world: list[Patch]) -> None:
+    a = sb.load_patch_exports(
+        _writer_arm(tmp_path, "A", world, main=0.6, l250=0.1, lpatch=0.05), split="validation"
+    )
+    b = sb.load_patch_exports(
+        _writer_arm(tmp_path, "B", world, main=0.4, l250=0.9, lpatch=0.95), split="validation"
+    )
+    res = sb.compare_arms(a, b, metric="ssim_100m", n_bootstrap=200)
+    assert res.metric == "ssim_100m"
+    assert res.point_estimate == pytest.approx(0.2)
+    assert res.ci_low == pytest.approx(0.2) and res.ci_high == pytest.approx(0.2)
+    assert res.frac_a_better == 1.0
+
+
+def test_ssim_bootstrap_ignores_null_lpatch_diagnostic(tmp_path: Path, world: list[Patch]) -> None:
+    a = sb.load_patch_exports(
+        _writer_arm(tmp_path, "A", world, main=0.6, l250=0.3, lpatch=None), split="validation"
+    )
+    b = sb.load_patch_exports(
+        _writer_arm(tmp_path, "B", world, main=0.4, l250=0.3, lpatch=0.2), split="validation"
+    )
+    res = sb.compare_arms(a, b, metric="ssim_100m", n_bootstrap=200)
+    assert res.point_estimate == pytest.approx(0.2)

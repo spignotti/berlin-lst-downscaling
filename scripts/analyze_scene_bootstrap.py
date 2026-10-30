@@ -24,7 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--arm-a", nargs=3, type=Path, required=True, metavar="FILE")
     p.add_argument("--arm-b", nargs=3, type=Path, required=True, metavar="FILE")
     p.add_argument("--split", choices=("validation",), default="validation")
-    p.add_argument("--metric", choices=("mae_100m", "ssim_100m"), default="mae_100m")
+    p.add_argument(
+        "--metric",
+        choices=("mae_100m", "ssim_100m"),
+        default="mae_100m",
+        help="mae_100m, or ssim_100m (SSIM under the fixed artifact data range)",
+    )
     p.add_argument("--n-bootstrap", type=int, default=10_000)
     p.add_argument("--rng-seed", type=int, default=0)
     p.add_argument("--allow-scene-mismatch", action="store_true")

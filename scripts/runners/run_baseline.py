@@ -188,6 +188,7 @@ def main(cfg: DictConfig) -> int:
                 Path(output_root) / patch_export_filename(split),
                 identity=identity,
                 split=split,
+                ssim_range=ssim_range,
             )
             print(f"  Patch export [{split}]: {export_path}")
         return 0
