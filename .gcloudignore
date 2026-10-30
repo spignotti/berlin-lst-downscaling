@@ -1,0 +1,48 @@
+# Cloud Build upload filter for `gcloud builds submit` (Dockerfile.vertex).
+#
+# Without this file gcloud derives the filter from .gitignore, but it does not
+# anchor patterns that contain a slash to the repo root the way git does:
+# `data/ard/` also dropped src/berlin_lst_downscaling/data/ard/. Every path
+# pattern here therefore starts with `/`. Bare names are reserved for files that
+# must never ship from any directory. Never include .gitignore here.
+# Check with scripts/operators/check_build_context.sh before submitting.
+
+# Git metadata, CI, local tooling
+/.git
+/.github/
+/.venv/
+/.nox/
+/.opencode*
+/.herdr/
+/.claude/
+/.code-review-graph/
+/.scratch/
+/.tmp/
+/.runs/
+/node_modules/
+/package-lock.json
+
+# Credentials
+.env
+.env.*
+!.env.example
+
+# Local data, logs, and run artifacts
+/data/
+/logs/
+/outputs/
+/wandb/
+
+# Not needed in the image
+/docs/
+/tests/
+/*.md
+
+# Caches and build leftovers
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.log
+.DS_Store
+.pytest_cache/
+.ruff_cache/

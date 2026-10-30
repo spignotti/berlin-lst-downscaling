@@ -51,6 +51,12 @@ COPY scripts ./scripts
 COPY configs ./configs
 RUN uv sync --frozen --no-dev
 
+# Fail the build when the build context dropped part of the package (a gcloud
+# upload filter once silently removed data/ard and data/dynamic). Imports only;
+# needs no GPU, network, or credentials.
+RUN python -c "import berlin_lst_downscaling.data.ard.publish_guard, berlin_lst_downscaling.data.dynamic, berlin_lst_downscaling.data.selection, berlin_lst_downscaling.data.training.patch_index, berlin_lst_downscaling.modeling.run" \
+    && python -c "import runpy; runpy.run_path('scripts/runners/run_modeling.py', run_name='build_smoke'); runpy.run_path('scripts/operators/vertex_evidence.py', run_name='build_smoke')"
+
 # Writable surface for the non-root runtime user. Hydra writes its own log to
 # the process working directory (`/app`), and checkpoints, run logs,
 # data_scope.json, and the W&B save dir live under the run's local output root
