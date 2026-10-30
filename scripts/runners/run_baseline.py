@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from dataclasses import asdict
+from pathlib import Path
 from uuid import uuid4
 
 import hydra
@@ -35,6 +37,7 @@ from berlin_lst_downscaling.data.features.contracts import FEATURE_SCHEMA_VERSIO
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_method
 from berlin_lst_downscaling.modeling.baseline import (
+    METHOD,
     build_report,
     evaluate_baseline,
     git_revision_for,
@@ -45,6 +48,11 @@ from berlin_lst_downscaling.modeling.baseline import (
 from berlin_lst_downscaling.modeling.channels import (
     resolve_schema_selection,
     schema_version_from_config,
+)
+from berlin_lst_downscaling.modeling.evaluation_exports import (
+    EvaluationIdentity,
+    patch_export_filename,
+    write_patch_export,
 )
 from berlin_lst_downscaling.modeling.patches import (
     RealPatchReader,
@@ -163,6 +171,26 @@ def main(cfg: DictConfig) -> int:
         if not any(summary.valid_cells > 0 for summary in summaries.values()):
             print("  FAIL: no valid cell evaluated in any split")
             raise SystemExit(1)
+
+        # Per-patch sidecar for the splits this run already evaluated; no new reads.
+        seed_raw = cfg.get("seed")
+        identity = EvaluationIdentity(
+            arm=METHOD,
+            seed=None if seed_raw is None else int(seed_raw),
+            run_id=run_id,
+            checkpoint=None,
+        )
+        for split in ("validation", "test"):
+            if split not in summaries or summaries[split].evaluated_patches == 0:
+                continue
+            export_path = write_patch_export(
+                [asdict(r) for r in records if r.split == split],
+                Path(output_root) / patch_export_filename(split),
+                identity=identity,
+                split=split,
+                ssim_range=ssim_range,
+            )
+            print(f"  Patch export [{split}]: {export_path}")
         return 0
 
 

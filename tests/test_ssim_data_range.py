@@ -688,6 +688,8 @@ def test_rf_score_stage_uses_passed_range_and_never_reloads(
         filled_feature_pixels=[0, 0],
         exclusions={},
         seconds=0.0,
+        scene_ids=["s1", "s2"],
+        scene_dates=["2024-05-01", None],
     )
     stage = rf.StageSelection(stage=1, names=(), indices=(), feature_order="x")
     records = rf.score_stage(cache, None, stage, ssim_range=test_override_ssim_data_range(23.0))  # type: ignore[arg-type]

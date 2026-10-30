@@ -48,6 +48,12 @@ from berlin_lst_downscaling.modeling.channels import (
     selection_from_config,
 )
 from berlin_lst_downscaling.modeling.contracts import validate_real_batch
+from berlin_lst_downscaling.modeling.evaluation_exports import (
+    EvaluationIdentity,
+    patch_export_filename,
+    score_batch_patches,
+    write_patch_export,
+)
 from berlin_lst_downscaling.modeling.guards import (
     STAGE1_PROBE_CONFIG_NAME,
     assert_ablation_lock,
@@ -492,6 +498,9 @@ def _score_test_once(
     source: RealSourceConfig,
     reloaded: RealLSTTask,
     output_root: Path,
+    *,
+    export_identity: EvaluationIdentity,
+    ssim_range: SsimDataRange,
 ) -> dict[str, object]:
     """Score the 2025 test split once with the frozen selected checkpoint.
 
@@ -522,6 +531,8 @@ def _score_test_once(
     )
 
     metric = MaskedMAE()
+    method = resolve_aggregation_method(cfg.get("aggregation"))
+    patch_rows: list[dict[str, object]] = []
     with torch.inference_mode():
         for batch in test_module.test_dataloader():
             validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
@@ -533,12 +544,24 @@ def _score_test_once(
                 )
             if not torch.isfinite(prediction).all():
                 raise RuntimeError("test pass produced non-finite predictions")
-            method = resolve_aggregation_method(cfg.get("aggregation"))
-            metric.update(
-                pool_10m_to_100m(prediction, method, batch.mask_100m),
-                batch.target_100m,
-                batch.mask_100m,
+            pooled = pool_10m_to_100m(prediction, method, batch.mask_100m)
+            metric.update(pooled, batch.target_100m, batch.mask_100m)
+            patch_rows.extend(
+                score_batch_patches(
+                    pooled,
+                    batch.target_100m,
+                    batch.mask_100m,
+                    batch.metadata,
+                    data_range_k=ssim_range.data_range_k,
+                )
             )
+    write_patch_export(
+        patch_rows,
+        output_root / patch_export_filename("test"),
+        identity=export_identity,
+        split="test",
+        ssim_range=ssim_range,
+    )
 
     patches = scope.get("patches_per_split", {})
     return {
@@ -548,6 +571,31 @@ def _score_test_once(
         "patches": int(patches.get("test", 0)) if isinstance(patches, dict) else 0,
         "scope_uri": str(output_root / "test_scope.json"),
     }
+
+
+def _export_arm(cfg: DictConfig, tessera_enabled: bool) -> str:
+    """Name the evaluated arm for the per-patch export identity."""
+    arm = OmegaConf.select(cfg, "ablation_arm")
+    if isinstance(arm, str) and arm.strip():
+        return arm
+    try:
+        from hydra.core.hydra_config import HydraConfig
+
+        name = HydraConfig.get().job.config_name if HydraConfig.initialized() else None
+    except (ImportError, ValueError):  # no Hydra job context; fall through to the default
+        name = None
+    if name:
+        return str(name)
+    return "tessera" if tessera_enabled else "real_lst"
+
+
+def _relative_checkpoint(best_checkpoint: str, output_root: Path) -> str:
+    """Return the checkpoint path relative to ``output_root``, else its file name."""
+    path = Path(best_checkpoint)
+    try:
+        return path.resolve().relative_to(output_root.resolve()).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _early_stop_epoch(
@@ -837,6 +885,13 @@ def _fit_contract_lifecycle(
         if checkpoint_callback.best_model_score is None:
             raise RuntimeError("best checkpoint produced no monitored score")
         best_metric = float(checkpoint_callback.best_model_score)
+        export_identity = EvaluationIdentity(
+            arm=_export_arm(cfg, tessera_enabled),
+            seed=seed,
+            run_id=run_id,
+            checkpoint=_relative_checkpoint(best_checkpoint, output_root),
+        )
+        validation_rows: list[dict[str, object]] = []
 
         # Recoverable selected model state: reload the best checkpoint, verify
         # it predicts on the contract shape, and recompute the selection metric
@@ -868,6 +923,15 @@ def _fit_contract_lifecycle(
                     raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
                 pooled_prediction = pool_10m_to_100m(prediction, aggregation, batch.mask_100m)
                 recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
+                validation_rows.extend(
+                    score_batch_patches(
+                        pooled_prediction,
+                        batch.target_100m,
+                        batch.mask_100m,
+                        batch.metadata,
+                        data_range_k=ssim_range.data_range_k,
+                    )
+                )
                 if residual_prior:
                     prior_k = reconstruct_prior_kelvin(batch.lst_prior)
                     pooled_prior = pool_10m_to_100m(prior_k, aggregation, batch.mask_100m)
@@ -887,6 +951,13 @@ def _fit_contract_lifecycle(
             if correction_cells <= 0:
                 raise RuntimeError("no valid validation cell for the residual correction check")
             correction_mean = correction_abs_sum / correction_cells
+        write_patch_export(
+            validation_rows,
+            output_root / patch_export_filename("validation"),
+            identity=export_identity,
+            split="validation",
+            ssim_range=ssim_range,
+        )
 
         # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
         # only after the selected checkpoint and its validation reload are
@@ -894,7 +965,14 @@ def _fit_contract_lifecycle(
         # never fed to the fit, callbacks, or checkpoint selection.
         test_result: dict[str, object] | None = None
         if is_full and evaluate_test and isinstance(data_module, RealPatchDataModule):
-            test_result = _score_test_once(cfg, data_module.source, reloaded, output_root)
+            test_result = _score_test_once(
+                cfg,
+                data_module.source,
+                reloaded,
+                output_root,
+                export_identity=export_identity,
+                ssim_range=ssim_range,
+            )
         elif is_full and not evaluate_test:
             test_result = {"skipped": True}
 

@@ -32,6 +32,7 @@ import torch
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.data.training.report import now_iso
 from berlin_lst_downscaling.modeling.aggregation import AggregationMethod
+from berlin_lst_downscaling.modeling.evaluation_exports import score_patch_ssim_variants
 from berlin_lst_downscaling.modeling.metrics import (
     masked_abs_error_sums,
     masked_ssim_stats,
@@ -72,6 +73,12 @@ class PatchRecord:
     ssim_sum: float
     ssim_windows: int
     filled_feature_pixels: int
+    scene_id: str | None = None
+    scene_date: str | None = None
+    ssim_100m_L250: float | None = field(kw_only=True)
+    ssim_100m_Lpatch: float | None = field(kw_only=True)
+    ssim_windows_Lpatch: int = field(kw_only=True)
+    ssim_Lpatch_zero_range_patches: int = field(kw_only=True)
 
 
 @dataclass
@@ -246,6 +253,9 @@ def _score_patch(
         ssim_sum=float(ssim_sum),
         ssim_windows=int(ssim_count),
         filled_feature_pixels=sample.meta.filled_feature_pixels,
+        scene_id=sample.meta.scene_id,
+        scene_date=sample.meta.scene_date,
+        **asdict(score_patch_ssim_variants(prediction_100m, target, mask)),
     )
 
 
