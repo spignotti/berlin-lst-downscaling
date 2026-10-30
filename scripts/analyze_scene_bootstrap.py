@@ -23,8 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--arm-a", nargs=3, type=Path, required=True, metavar="FILE")
     p.add_argument("--arm-b", nargs=3, type=Path, required=True, metavar="FILE")
-    p.add_argument("--split", choices=("validation", "test"), default="validation")
-    p.add_argument("--i-know-test-is-frozen", action="store_true")
+    p.add_argument("--split", choices=("validation",), default="validation")
     p.add_argument("--metric", choices=("mae_100m", "ssim_100m"), default="mae_100m")
     p.add_argument("--n-bootstrap", type=int, default=10_000)
     p.add_argument("--rng-seed", type=int, default=0)
@@ -36,12 +35,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.split == "test" and not args.i_know_test_is_frozen:
-        print(
-            "error: --split test reads frozen test exports; pass --i-know-test-is-frozen",
-            file=sys.stderr,
-        )
-        return 2
     inputs = [*args.arm_a, *args.arm_b]
     prefix: Path = args.output_prefix
     outs = {

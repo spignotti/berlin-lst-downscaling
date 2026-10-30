@@ -182,6 +182,8 @@ def write_patch_export(
         if record["split"] != split:
             raise ValueError(f"{patch_id}: row split {record['split']!r} != export split {split!r}")
         abs_error_sum = _finite(record["abs_error_sum"], "abs_error_sum", patch_id)
+        if abs_error_sum < 0:
+            raise ValueError(f"{patch_id}: abs_error_sum must be >= 0")
         ssim_sum = _finite(record["ssim_sum"], "ssim_sum", patch_id)
         valid_cells = _count(record["valid_cells"], "valid_cells", patch_id)
         ssim_windows = _count(record["ssim_windows"], "ssim_windows", patch_id)

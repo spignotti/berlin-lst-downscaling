@@ -149,6 +149,7 @@ def test_null_seed_and_checkpoint(tmp_path: Path) -> None:
         ([_row("a"), _row("a")], "validation", _identity()),
         ([_row("a", abs_error_sum=float("nan"))], "validation", _identity()),
         ([_row("a", ssim_sum=float("inf"))], "validation", _identity()),
+        ([_row("a", abs_error_sum=-0.5)], "validation", _identity()),
         ([_row("a", valid_cells=-1)], "validation", _identity()),
         ([_row("a", ssim_windows=-2)], "validation", _identity()),
         ([_row("a", valid_cells=240.5)], "validation", _identity()),
@@ -172,6 +173,18 @@ def test_writer_rejects_invalid(
         write_patch_export(records, target, identity=identity, split=split)
     assert not target.exists()
     assert not list(tmp_path.glob("*"))
+
+
+def test_invalid_write_leaves_existing_export_unchanged(tmp_path: Path) -> None:
+    target = tmp_path / "out.parquet"
+    write_patch_export([_row("a")], target, identity=_identity(), split="validation")
+    before = target.read_bytes()
+    with pytest.raises(ValueError):
+        write_patch_export(
+            [_row("a", abs_error_sum=-1.0)], target, identity=_identity(), split="validation"
+        )
+    assert target.read_bytes() == before
+    assert [p.name for p in tmp_path.glob("*")] == ["out.parquet"]
 
 
 def test_writer_accepts_zero_ssim_windows_with_zero_sum(tmp_path: Path) -> None:
@@ -508,6 +521,12 @@ def test_validation_reload_writes_one_export_and_test_is_never_scored(
         raise AssertionError("_score_test_once must not run")
 
     monkeypatch.setattr(run_module, "_score_test_once", _forbidden)
+    for module_cls in (
+        run_module.RealPatchDataModule,
+        run_module.ContractSyntheticDataModule,
+        run_module.SyntheticDataModule,
+    ):
+        monkeypatch.setattr(module_cls, "test_dataloader", _forbidden)
     cfg = _smoke_cfg(compose_modeling, tmp_path, ["evaluate_test=false"])
     result = run_module.run_contract_synthetic_training(cfg, run_id="exp-1")
     out = Path(cfg.output_root)

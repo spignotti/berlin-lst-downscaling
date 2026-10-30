@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import json
 from pathlib import Path
 from types import ModuleType
 
@@ -15,6 +14,8 @@ from test_scene_bootstrap import (
     make_world,
     write_export,
 )
+
+from berlin_lst_downscaling.analysis import scene_bootstrap as sb
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _ROOT / "scripts" / "analyze_scene_bootstrap.py"
@@ -65,14 +66,14 @@ def test_defaults_to_validation(cli: ModuleType) -> None:
     assert args.metric == "mae_100m"
     assert args.n_bootstrap == 10_000
     assert args.rng_seed == 0
-    assert not args.i_know_test_is_frozen
+    assert not hasattr(args, "i_know_test_is_frozen")
 
 
-def test_test_split_without_ack_fails_before_input_access(
-    cli: ModuleType,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+@pytest.mark.parametrize(
+    "extra", [["--split", "test"], ["--split", "test", "--i-know-test-is-frozen"]]
+)
+def test_test_split_rejected_before_input_access(
+    cli: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: list[str]
 ) -> None:
     def boom(*_a: object, **_k: object) -> None:
         raise AssertionError("input accessed")
@@ -80,23 +81,31 @@ def test_test_split_without_ack_fails_before_input_access(
     monkeypatch.setattr(cli, "load_patch_exports", boom)
     monkeypatch.setattr("builtins.open", boom)
     names = ["nope1", "nope2", "nope3"]
-    rc = cli.main(_argv(names, names, tmp_path / "o", "--split", "test"))
-    assert rc != 0
-    assert "--i-know-test-is-frozen" in capsys.readouterr().err
-
-
-def test_acknowledged_test_split_reads_exports(cli: ModuleType, tmp_path: Path) -> None:
-    a, b = _write_arms(tmp_path, "test")
-    rc = cli.main(_argv(a, b, tmp_path / "out", "--split", "test", "--i-know-test-is-frozen"))
-    assert rc == 0
-    assert json.loads((tmp_path / "out.json").read_text())["split"] == "test"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(_argv(names, names, tmp_path / "o", *extra))
+    assert exc.value.code == 2
 
 
 def test_validation_rejects_test_export(
-    cli: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    cli: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    a, b = _write_arms(tmp_path, "test")
-    rc = cli.main(_argv(a, b, tmp_path / "out"))
+    world = make_world(8)
+    fn = effect_fn(dict.fromkeys(range(8), -1.0))
+    files = {"A": [], "B": []}
+    for arm in files:
+        for seed in (0, 1, 2):
+            t = export_table(arm, seed, "validation", world, fn)
+            path = write_export(tmp_path / f"{arm}{seed}.parquet", t, footer_split="test")
+            files[arm].append(str(path))
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("row data must not be read")
+
+    monkeypatch.setattr(sb.pq, "read_table", boom)
+    rc = cli.main(_argv(files["A"], files["B"], tmp_path / "out"))
     assert rc == 1
     assert "footer split" in capsys.readouterr().err
     assert not (tmp_path / "out.json").exists()

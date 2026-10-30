@@ -196,17 +196,22 @@ def test_conflicting_dates_raise() -> None:
 
 
 def test_bootstrap_reproducible_and_order_independent(world: list[Patch]) -> None:
-    eff = {i: -2.0 + (0.5 if i % 2 else -0.5) for i in range(20)}
-    fn = effect_fn(eff, noise=0.01)
+    def fn(arm: str, seed: int, si: int, patch: Patch) -> tuple[float, float]:
+        k = int(patch[0][-1])
+        mae = 1.0 + 0.0713 * si + 0.0317 * k + 0.0123 * seed + (0.3171 if arm == "A" else 0.0)
+        return mae, 0.41 + 0.0137 * k + 0.0051 * seed + (0.0219 * si if arm == "A" else 0.0)
+
     a, b = build_arm("A", world, fn), build_arm("B", world, fn)
     r1 = sb.compare_arms(a, b, n_bootstrap=500, rng_seed=7)
     r2 = sb.compare_arms(a, b, n_bootstrap=500, rng_seed=7)
-    assert (r1.ci_low, r1.ci_high) == (r2.ci_low, r2.ci_high)
-    perm = np.random.default_rng(0).permutation(a.num_rows)
-    r3 = sb.compare_arms(a.take(perm), b.take(perm[::-1] % b.num_rows), n_bootstrap=500, rng_seed=7)
-    assert r3.point_estimate == pytest.approx(r1.point_estimate)
-    assert r3.ci_low == pytest.approx(r1.ci_low)
-    assert r3.ci_high == pytest.approx(r1.ci_high)
+    assert r1 == r2
+    perm_a = np.random.default_rng(0).permutation(a.num_rows)
+    perm_b = np.random.default_rng(1).permutation(b.num_rows)
+    r3 = sb.compare_arms(a.take(perm_a), b.take(perm_b), n_bootstrap=500, rng_seed=7)
+    assert r3.point_estimate == r1.point_estimate
+    assert (r3.ci_low, r3.ci_high) == (r1.ci_low, r1.ci_high)
+    assert r3.scenes == r1.scenes
+    assert r3.seed_diagnostics == r1.seed_diagnostics
     r4 = sb.compare_arms(a, b, n_bootstrap=500, rng_seed=8)
     assert (r4.ci_low, r4.ci_high) != (r1.ci_low, r1.ci_high)
 
@@ -360,11 +365,69 @@ def test_allow_mismatch_empty_intersection_raises(world: list[Patch]) -> None:
         sb.compare_arms(a, b, n_bootstrap=10, allow_scene_mismatch=True)
 
 
-def test_patch_cells_mismatch_raises_even_with_flag(world: list[Patch]) -> None:
+@pytest.mark.parametrize("field", ["valid_cells", "ssim_windows"])
+@pytest.mark.parametrize("allow", [False, True])
+def test_patch_support_mismatch_raises_even_with_flag(
+    world: list[Patch], field: str, allow: bool
+) -> None:
     a = build_arm("A", world, flat(1.0))
-    changed = [(p, s, d, c + 1, w) for p, s, d, c, w in world]
+    if field == "valid_cells":
+        changed = [(p, s, d, c + 1, w) for p, s, d, c, w in world]
+    else:
+        changed = [(p, s, d, c, w + 1) for p, s, d, c, w in world]
     b = build_arm("B", changed, flat(1.0))
-    with pytest.raises(sb.SceneBootstrapError, match="valid_cells"):
+    with pytest.raises(sb.SceneBootstrapError, match=field):
+        sb.compare_arms(a, b, n_bootstrap=10, allow_scene_mismatch=allow)
+
+
+def _set_cells(table: pa.Table, row: int, **values: object) -> pa.Table:
+    for col, value in values.items():
+        field = table.schema.field(col)
+        vals = table.column(col).to_pylist()
+        vals[row] = value
+        table = table.set_column(
+            table.schema.get_field_index(col), field, pa.array(vals, type=field.type)
+        )
+    return table
+
+
+def _retype(table: pa.Table, col: str, typ: pa.DataType) -> pa.Table:
+    return table.set_column(
+        table.schema.get_field_index(col),
+        pa.field(col, typ),
+        table.column(col).cast(typ),
+    )
+
+
+@pytest.mark.parametrize("allow", [False, True])
+def test_patch_scene_conflict_raises_even_with_mismatch_allowed(
+    world: list[Patch], allow: bool
+) -> None:
+    fn = flat(1.0)
+    a = build_arm("A", world, fn)
+    b = build_arm("B", world, fn)
+    pid, _scene, _d, _c, _w = world[0]
+    other = next(p for p in world if p[1] != world[0][1])
+    row = len(world)  # first patch of seed 1
+    a = _set_cells(a, row, scene_id=other[1], scene_date=other[2])
+    with pytest.raises(sb.SceneBootstrapError, match=pid):
+        sb.compare_arms(a, b, n_bootstrap=10, allow_scene_mismatch=allow)
+
+
+def test_cross_arm_scene_date_conflict_raises_even_with_flag(world: list[Patch]) -> None:
+    fn = flat(1.0)
+    a = build_arm("A", world, fn)
+    b = build_arm("B", world, fn)
+    dates = [
+        "2030-01-01" if s == "scene00" else d
+        for s, d in zip(
+            b.column("scene_id").to_pylist(), b.column("scene_date").to_pylist(), strict=True
+        )
+    ]
+    b = b.set_column(
+        b.schema.get_field_index("scene_date"), SCHEMA.field("scene_date"), pa.array(dates)
+    )
+    with pytest.raises(sb.SceneBootstrapError, match="conflicting dates"):
         sb.compare_arms(a, b, n_bootstrap=10, allow_scene_mismatch=True)
 
 
@@ -459,8 +522,8 @@ def test_load_rejects_invalid_rows(tmp_path: Path, world: list[Patch]) -> None:
 def test_footer_split_mismatch_rejected_before_reading_table(
     tmp_path: Path, world: list[Patch], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    t = export_table("A", 0, "validation", world, flat(1.0))
-    path = write_export(tmp_path / "t.parquet", t, footer_split="test")
+    t = export_table("A", 0, "test", world, flat(1.0))
+    path = write_export(tmp_path / "t.parquet", t)
 
     def boom(*_a: object, **_k: object) -> None:
         raise AssertionError("table must not be read")
@@ -534,3 +597,232 @@ def test_json_and_markdown_outputs(tmp_path: Path, world: list[Patch]) -> None:
         "SD (ddof=1)",
     ):
         assert token in md
+
+
+# ------------------------------------------------------- validation of inputs
+
+
+@pytest.mark.parametrize(
+    ("col", "value", "typ", "field"),
+    [
+        ("abs_error_sum", float("nan"), None, "abs_error_sum"),
+        ("abs_error_sum", float("inf"), None, "abs_error_sum"),
+        ("ssim_sum", float("nan"), None, "ssim_sum"),
+        ("ssim_sum", float("-inf"), None, "ssim_sum"),
+        ("abs_error_sum", -0.5, None, "abs_error_sum"),
+        ("valid_cells", 0, None, "valid_cells"),
+        ("valid_cells", -1, None, "valid_cells"),
+        ("valid_cells", 3.5, pa.float64(), "valid_cells"),
+        ("valid_cells", 3.0, pa.float64(), "valid_cells"),
+        ("valid_cells", None, None, "valid_cells"),
+        ("ssim_windows", -1, None, "ssim_windows"),
+        ("ssim_windows", 2.5, pa.float64(), "ssim_windows"),
+        ("ssim_windows", None, None, "ssim_windows"),
+        ("abs_error_sum", None, None, "abs_error_sum"),
+    ],
+)
+@pytest.mark.parametrize("which", ["A", "B"])
+def test_compare_rejects_invalid_direct_table_values(
+    world: list[Patch], col: str, value: object, typ: pa.DataType | None, field: str, which: str
+) -> None:
+    tables = {"A": build_arm("A", world, flat(1.0)), "B": build_arm("B", world, flat(1.0))}
+    t = tables[which]
+    if typ is not None:
+        t = _retype(t, col, typ)
+    tables[which] = _set_cells(t, 0, **{col: value})
+    with pytest.raises(sb.SceneBootstrapError, match=field):
+        sb.compare_arms(tables["A"], tables["B"], n_bootstrap=10)
+
+
+def test_compare_rejects_nonzero_ssim_with_zero_windows(world: list[Patch]) -> None:
+    a = _set_cells(build_arm("A", world, flat(1.0)), 0, ssim_windows=0)
+    with pytest.raises(sb.SceneBootstrapError, match="ssim_windows == 0"):
+        sb.compare_arms(a, build_arm("B", world, flat(1.0)), n_bootstrap=10)
+
+
+@pytest.mark.parametrize("col", ["patch_id", "scene_id", "arm", "run_id"])
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_compare_rejects_empty_identifiers(world: list[Patch], col: str, bad: str) -> None:
+    a = build_arm("A", world, flat(1.0))
+    if col in ("arm", "run_id"):
+        n = a.num_rows
+        a = a.set_column(
+            a.schema.get_field_index(col), SCHEMA.field(col), pa.array([bad] * n, pa.string())
+        )
+    else:
+        a = _set_cells(a, 0, **{col: bad})
+    with pytest.raises(sb.SceneBootstrapError, match=col):
+        sb.compare_arms(a, build_arm("B", world, flat(1.0)), n_bootstrap=10)
+
+
+def test_compare_rejects_test_tables(world: list[Patch]) -> None:
+    a = build_arm("A", world, flat(1.0), split="test")
+    b = build_arm("B", world, flat(1.0), split="test")
+    with pytest.raises(sb.SceneBootstrapError, match="validation"):
+        sb.compare_arms(a, b, n_bootstrap=10)
+
+
+def test_nonvalidation_split_rejected_before_path_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("path must not be accessed")
+
+    for target in ("_check_path",):
+        monkeypatch.setattr(sb, target, boom)
+    monkeypatch.setattr(sb.pq, "read_schema", boom)
+    monkeypatch.setattr(sb.pq, "read_table", boom)
+    with pytest.raises(sb.SceneBootstrapError, match="validation"):
+        sb.load_patch_exports([Path("x")], split="test")
+
+
+@pytest.mark.parametrize("empty_arm", ["A", "B"])
+def test_compare_rejects_empty_arm(world: list[Patch], empty_arm: str) -> None:
+    tables = {"A": build_arm("A", world, flat(1.0)), "B": build_arm("B", world, flat(1.0))}
+    tables[empty_arm] = tables[empty_arm].slice(0, 0)
+    with pytest.raises(sb.SceneBootstrapError, match="no rows"):
+        sb.compare_arms(tables["A"], tables["B"], n_bootstrap=10)
+
+
+def test_single_scene_single_patch_degenerate_interval() -> None:
+    patches: list[Patch] = [("p1", "scene00", "2024-06-01", 50, 10)]
+
+    def fn(arm: str, seed: int, si: int, patch: Patch) -> tuple[float, float]:
+        return (3.0, 0.8) if arm == "A" else (5.0, 0.5)
+
+    a, b = build_arm("A", patches, fn), build_arm("B", patches, fn)
+    for metric, known in (("mae_100m", -2.0), ("ssim_100m", 0.3)):
+        res = sb.compare_arms(a, b, metric=metric, n_bootstrap=100)  # type: ignore[arg-type]
+        assert len(res.scenes) == 1 and res.scenes[0].n_patches == 1
+        for v in (res.point_estimate, res.ci_low, res.ci_high):
+            assert math.isfinite(v)
+            assert v == pytest.approx(known)
+
+
+def _agg_rows(**overrides: list) -> pa.Table:
+    cols: dict[str, list] = {
+        "arm": ["A"],
+        "seed": [0],
+        "run_id": ["r"],
+        "checkpoint": [None],
+        "split": ["validation"],
+        "scene_id": ["s"],
+        "patch_id": ["p"],
+        "scene_date": [None],
+        "abs_error_sum": [3.0],
+        "valid_cells": [3],
+        "ssim_sum": [1.0],
+        "ssim_windows": [2],
+    }
+    cols.update(overrides)
+    return pa.table(cols)
+
+
+def test_aggregate_empty_table_preserves_schema() -> None:
+    empty = _agg_rows().slice(0, 0)
+    out = sb.aggregate_scenes(empty)
+    assert out.num_rows == 0
+    assert dict(zip(out.schema.names, map(str, out.schema.types), strict=True)) == {
+        "arm": "string",
+        "seed": "int64",
+        "run_id": "string",
+        "checkpoint": "string",
+        "split": "string",
+        "scene_id": "string",
+        "scene_date": "string",
+        "abs_error_sum": "double",
+        "n_cells": "int64",
+        "mae_100m": "double",
+        "ssim_sum": "double",
+        "ssim_windows": "int64",
+        "ssim_100m": "double",
+        "n_patches": "int64",
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "field"),
+    [
+        ({"abs_error_sum": [float("nan")]}, "abs_error_sum"),
+        ({"abs_error_sum": [float("inf")]}, "abs_error_sum"),
+        ({"abs_error_sum": [-1.0]}, "abs_error_sum"),
+        ({"ssim_sum": [float("nan")]}, "ssim_sum"),
+        ({"abs_error_sum": [None]}, "abs_error_sum"),
+        ({"valid_cells": [0]}, "valid_cells"),
+        ({"valid_cells": [3.0]}, "valid_cells"),
+        ({"valid_cells": [None]}, "valid_cells"),
+        ({"ssim_windows": [-1]}, "ssim_windows"),
+        ({"ssim_windows": [1.5]}, "ssim_windows"),
+        ({"ssim_windows": [0]}, "ssim_windows == 0"),
+        ({"patch_id": [" "]}, "patch_id"),
+        ({"scene_id": [""]}, "scene_id"),
+        ({"arm": [None]}, "arm"),
+    ],
+)
+def test_aggregate_rejects_invalid_metric_values(overrides: dict, field: str) -> None:
+    with pytest.raises(sb.SceneBootstrapError, match=field):
+        sb.aggregate_scenes(_agg_rows(**overrides))
+
+
+def test_nonfinite_aggregates_raise() -> None:
+    # two finite patch sums whose pooled scene sum overflows
+    big = _agg_rows(
+        patch_id=["p", "q"],
+        arm=["A", "A"],
+        seed=[0, 0],
+        run_id=["r", "r"],
+        checkpoint=[None, None],
+        split=["validation"] * 2,
+        scene_id=["s", "s"],
+        scene_date=[None, None],
+        abs_error_sum=[1e308, 1e308],
+        valid_cells=[1, 1],
+        ssim_sum=[0.0, 0.0],
+        ssim_windows=[0, 0],
+    )
+    with pytest.raises(sb.SceneBootstrapError, match="not finite"):
+        sb.aggregate_scenes(big)
+
+    two: list[Patch] = [("p1", "scene00", None, 1, 1), ("p2", "scene00", None, 1, 1)]
+    a = build_arm("A", two, lambda *_: (1e308, 0.5))
+    b = build_arm("B", two, flat(1.0))
+    with pytest.raises(sb.SceneBootstrapError, match="not finite"):
+        sb.compare_arms(a, b, n_bootstrap=10)
+    # per-run scene metrics are finite but their sum over three seeds overflows
+    one: list[Patch] = [("p1", "scene00", None, 1, 1)]
+    a = build_arm("A", one, lambda *_: (1.7e308, 0.5))
+    b = build_arm("B", one, flat(1.0))
+    with pytest.raises(sb.SceneBootstrapError, match="not finite"):
+        sb.compare_arms(a, b, n_bootstrap=10)
+
+
+@pytest.mark.parametrize("small_batches", [False, True])
+def test_bootstrap_matches_explicit_linear_percentile_reference(
+    monkeypatch: pytest.MonkeyPatch, small_batches: bool
+) -> None:
+    n, n_boot, seed = 4, 1000, 11
+    patches: list[Patch] = [(f"p{i}", f"scene{i:02d}", None, 20, 5) for i in range(n)]
+    known = {0: -1.0, 1: -2.5, 2: 0.5, 3: -4.0}
+
+    def fn(arm: str, s: int, si: int, patch: Patch) -> tuple[float, float]:
+        return (10.0 + known[si] if arm == "A" else 10.0), 0.5
+
+    a, b = build_arm("A", patches, fn), build_arm("B", patches, fn)
+    if small_batches:
+        monkeypatch.setattr(sb, "_BATCH_INDICES", n * 3)
+    res = sb.compare_arms(a, b, n_bootstrap=n_boot, rng_seed=seed)
+    diff = np.array([sc.diff for sc in res.scenes])
+    assert diff == pytest.approx([known[i] for i in range(n)])
+    rng = np.random.default_rng(seed)
+    step = 3 if small_batches else n_boot
+    reps = np.concatenate(
+        [
+            diff[rng.integers(0, n, size=(min(step, n_boot - k), n))].mean(axis=1)
+            for k in range(0, n_boot, step)
+        ]
+    )
+    lo, hi = np.quantile(reps, [0.025, 0.975], method="linear")
+    assert res.point_estimate == pytest.approx(float(diff.mean()))
+    assert res.ci_low == lo
+    assert res.ci_high == hi
+    if small_batches:
+        full = diff[np.random.default_rng(seed).integers(0, n, size=(n_boot, n))].mean(axis=1)
+        assert np.array_equal(full, reps)

@@ -64,6 +64,54 @@ class SceneBootstrapError(ValueError):
     """Raised for any invalid input or contract violation in this module."""
 
 
+_ID_FIELDS = ("arm", "run_id", "patch_id", "scene_id", "split")
+
+
+def _is_int(v: object) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _is_real(v: object) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool)
+
+
+def _validate_rows(name: str, cols: Mapping[str, Sequence[Any]]) -> None:
+    """Validate per-row identifiers and metric inputs of a patch table."""
+    pids = cols["patch_id"]
+    for field in _ID_FIELDS:
+        for i, v in enumerate(cols[field]):
+            if not isinstance(v, str) or not v.strip():
+                raise SceneBootstrapError(
+                    f"{name}: {field} must be a nonempty string (patch {pids[i]!r}, got {v!r})"
+                )
+    for i, pid in enumerate(pids):
+        for field in ("abs_error_sum", "ssim_sum"):
+            v = cols[field][i]
+            if not _is_real(v) or not math.isfinite(v):
+                raise SceneBootstrapError(
+                    f"{name}: {field} must be a finite real number (patch {pid!r}, got {v!r})"
+                )
+        if cols["abs_error_sum"][i] < 0:
+            raise SceneBootstrapError(f"{name}: abs_error_sum must be non-negative (patch {pid!r})")
+        cells = cols["valid_cells"][i]
+        if not _is_int(cells) or cells <= 0:
+            raise SceneBootstrapError(
+                f"{name}: valid_cells must be an int > 0 (patch {pid!r}, got {cells!r})"
+            )
+        wins = cols["ssim_windows"][i]
+        if not _is_int(wins) or wins < 0:
+            raise SceneBootstrapError(
+                f"{name}: ssim_windows must be an int >= 0 (patch {pid!r}, got {wins!r})"
+            )
+        if wins == 0 and cols["ssim_sum"][i] != 0:
+            raise SceneBootstrapError(
+                f"{name}: ssim_windows == 0 requires ssim_sum == 0 (patch {pid!r})"
+            )
+
+
+_ROW_FIELDS = (*_ID_FIELDS, "abs_error_sum", "ssim_sum", "valid_cells", "ssim_windows")
+
+
 @dataclass(frozen=True)
 class ArmIdentity:
     arm: str
@@ -197,6 +245,7 @@ def _validate_table(path: Path, table: pa.Table, footer: dict[str, Any], split: 
     ):
         if windows == 0 and ssim_sum != 0:
             raise SceneBootstrapError(f"{path}: ssim_windows == 0 requires ssim_sum == 0")
+    _validate_rows(str(path), {n: table.column(n).to_pylist() for n in _ROW_FIELDS})
     patch_ids = table.column("patch_id").to_pylist()
     if len(set(patch_ids)) != len(patch_ids):
         raise SceneBootstrapError(f"{path}: patch_id is not unique within the file")
@@ -217,7 +266,11 @@ def _normalized_schema() -> pa.Schema:
 
 
 def load_patch_exports(paths: Sequence[Path], *, split: str) -> pa.Table:
-    """Load explicit per-patch export files for one split, validating each."""
+    """Load explicit per-patch export files for the validation split, validating each."""
+    if split != "validation":
+        raise SceneBootstrapError(
+            f"split {split!r} rejected: the analyzer is validation-only (test split is frozen)"
+        )
     if not paths:
         raise SceneBootstrapError("no patch export files given")
     resolved: list[Path] = []
@@ -255,6 +308,16 @@ def aggregate_scenes(rows: pa.Table) -> pa.Table:
     cells = rows.column("valid_cells").to_pylist()
     ssim_s = rows.column("ssim_sum").to_pylist()
     wins = rows.column("ssim_windows").to_pylist()
+    _validate_rows(
+        "aggregate_scenes",
+        {
+            **cols,
+            "abs_error_sum": abs_s,
+            "valid_cells": cells,
+            "ssim_sum": ssim_s,
+            "ssim_windows": wins,
+        },
+    )
     groups: dict[tuple, dict[str, Any]] = {}
     for i in range(rows.num_rows):
         key = tuple(cols[k][i] for k in keys)
@@ -289,15 +352,19 @@ def aggregate_scenes(rows: pa.Table) -> pa.Table:
     }
     for key in sorted(groups, key=lambda k: tuple(str(x) for x in k)):
         g = groups[key]
+        if not (math.isfinite(g["abs"]) and math.isfinite(g["ssim"])):
+            raise SceneBootstrapError(f"scene {key[-1]!r}: pooled sums are not finite (overflow)")
+        mae = g["abs"] / g["cells"]
+        ssim = g["ssim"] / g["wins"] if g["wins"] else None
         for name, value in zip(keys, key, strict=True):
             out[name].append(value)
         out["scene_date"].append(g["date"])
         out["abs_error_sum"].append(g["abs"])
         out["n_cells"].append(g["cells"])
-        out["mae_100m"].append(g["abs"] / g["cells"])
+        out["mae_100m"].append(mae)
         out["ssim_sum"].append(g["ssim"])
         out["ssim_windows"].append(g["wins"])
-        out["ssim_100m"].append(g["ssim"] / g["wins"] if g["wins"] else None)
+        out["ssim_100m"].append(ssim)
         out["n_patches"].append(len(g["patches"]))
     schema = pa.schema(
         [
@@ -375,12 +442,17 @@ def _arm_runs(table: pa.Table, name: str) -> list[_Run]:
         raise SceneBootstrapError(
             f"{name}: expected exactly one split, got {sorted(splits, key=str)}"
         )
+    if splits != {"validation"}:
+        raise SceneBootstrapError(
+            f"{name}: only the validation split is accepted, got {sorted(splits, key=str)}"
+        )
     if None in set(c["seed"]):
         raise SceneBootstrapError(f"{name}: null seeds are not allowed")
     if set(c["seed"]) != set(SEEDS):
         raise SceneBootstrapError(
             f"{name}: seeds must be exactly {list(SEEDS)}, got {sorted(set(c['seed']))}"
         )
+    _validate_rows(name, {n: c[n] for n in _ROW_FIELDS})
     arm = next(iter(arms))
     split = next(iter(splits))
     by_seed: dict[int, dict[tuple, list[int]]] = {}
@@ -463,7 +535,11 @@ def compare_arms(
                     f"(run {run.label})"
                 )
             ref[pid] = (cells, wins)
-            ref_scene.setdefault(pid, scene)
+            if ref_scene.setdefault(pid, scene) != scene:
+                raise SceneBootstrapError(
+                    f"patch {pid!r} maps to scenes {ref_scene[pid]!r} and {scene!r} "
+                    f"(run {run.label})"
+                )
     dates: dict[str, str] = {}
     for run in runs:
         for scene, date in run.dates.items():
@@ -502,18 +578,22 @@ def compare_arms(
     num_idx, den_idx = (3, 1) if metric == "mae_100m" else (4, 2)
     keep_set = set(keep)
 
-    def per_scene(run: _Run) -> tuple[dict[str, float], dict[str, int]]:
+    def run_sums(run: _Run) -> tuple[dict[str, float], dict[str, int]]:
         num: dict[str, float] = dict.fromkeys(keep, 0.0)
         den: dict[str, int] = dict.fromkeys(keep, 0)
-        for rec in run.patches.values():
+        for pid in sorted(run.patches):
+            rec = run.patches[pid]
             if rec[0] in keep_set:
                 num[rec[0]] += float(rec[num_idx])
                 den[rec[0]] += int(rec[den_idx])
+        if not all(math.isfinite(v) for v in num.values()):
+            raise SceneBootstrapError(
+                f"run {run.label}: pooled {metric} sums are not finite (overflow)"
+            )
         return num, den
 
-    unsupported = sorted(s for s in keep if per_scene(runs[0])[1][s] == 0)
-    for run in runs[1:]:
-        unsupported = sorted(set(unsupported) | {s for s, d in per_scene(run)[1].items() if d == 0})
+    sums = {run.label: run_sums(run) for run in runs}
+    unsupported = sorted({s for _n, d in sums.values() for s, v in d.items() if v == 0})
     if unsupported:
         raise SceneBootstrapError(
             f"retained scenes without {metric} support (zero windows): {_fmt(unsupported)}"
@@ -521,14 +601,23 @@ def compare_arms(
 
     def arm_scene_mean(rs: list[_Run]) -> np.ndarray:
         acc = np.zeros(len(keep), dtype=np.float64)
-        for run in rs:
-            num, den = per_scene(run)
-            acc += np.array([num[s] / den[s] for s in keep], dtype=np.float64)
-        return acc / len(rs)
+        with np.errstate(over="ignore", invalid="ignore"):
+            for run in rs:
+                num, den = sums[run.label]
+                acc += np.array([num[s] / den[s] for s in keep], dtype=np.float64)
+            return acc / len(rs)
 
-    mean_a = arm_scene_mean(runs_a)
-    mean_b = arm_scene_mean(runs_b)
-    diff = mean_a - mean_b
+    def require_finite(values: np.ndarray, what: str) -> None:
+        if not np.isfinite(values).all():
+            raise SceneBootstrapError(f"{what} is not finite (overflow)")
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean_a = arm_scene_mean(runs_a)
+        mean_b = arm_scene_mean(runs_b)
+        diff = mean_a - mean_b
+    require_finite(mean_a, "scene metric of arm A")
+    require_finite(mean_b, "scene metric of arm B")
+    require_finite(diff, "scene difference")
     n = len(keep)
 
     rng = np.random.default_rng(rng_seed)
@@ -538,9 +627,14 @@ def compare_arms(
     while done < n_bootstrap:
         b = min(batch, n_bootstrap - done)
         idx = rng.integers(0, n, size=(b, n))
-        reps[done : done + b] = diff[idx].mean(axis=1)
+        with np.errstate(over="ignore", invalid="ignore"):
+            reps[done : done + b] = diff[idx].mean(axis=1)
         done += b
-    lo, hi = np.quantile(reps, [0.025, 0.975], method="linear")
+    require_finite(reps, "bootstrap replicate")
+    with np.errstate(over="ignore", invalid="ignore"):
+        lo, hi = np.quantile(reps, [0.025, 0.975], method="linear")
+        point = diff.mean()
+    require_finite(np.array([lo, hi, point]), "confidence interval or point estimate")
 
     lower_better = metric == "mae_100m"
     a_better = (diff < 0) if lower_better else (diff > 0)
@@ -569,26 +663,34 @@ def compare_arms(
     def seed_metrics(rs: list[_Run]) -> list[float]:
         out = []
         for run in rs:
-            tot_n = tot_d = 0.0
-            for rec in run.patches.values():
-                if rec[0] in keep_set:
-                    tot_n += float(rec[num_idx])
-                    tot_d += float(rec[den_idx])
+            num, den = sums[run.label]
+            tot_n = sum(num[s] for s in keep)
+            tot_d = sum(den[s] for s in keep)
             out.append(tot_n / tot_d)
         return out
 
     sm_a, sm_b = seed_metrics(runs_a), seed_metrics(runs_b)
     sdiffs = [x - y for x, y in zip(sm_a, sm_b, strict=True)]
+    with np.errstate(over="ignore", invalid="ignore"):
+        stats = np.array(
+            [
+                np.mean(sm_a),
+                np.mean(sm_b),
+                np.std(sm_a, ddof=1),
+                np.std(sm_b, ddof=1),
+            ]
+        )
+    require_finite(np.array([*sm_a, *sm_b, *sdiffs, *stats]), "seed diagnostic")
     n_pos = sum(d > 0 for d in sdiffs)
     n_neg = sum(d < 0 for d in sdiffs)
     n_zero = sum(d == 0 for d in sdiffs)
     diag = SeedDiagnostics(
         metric_a=tuple(sm_a),
         metric_b=tuple(sm_b),
-        mean_a=float(np.mean(sm_a)),
-        mean_b=float(np.mean(sm_b)),
-        sd_a=float(np.std(sm_a, ddof=1)),
-        sd_b=float(np.std(sm_b, ddof=1)),
+        mean_a=float(stats[0]),
+        mean_b=float(stats[1]),
+        sd_a=float(stats[2]),
+        sd_b=float(stats[3]),
         diffs=tuple(sdiffs),
         n_positive=n_pos,
         n_negative=n_neg,
@@ -615,7 +717,7 @@ def compare_arms(
         dropped_scenes=tuple(dropped),
         n_bootstrap=n_bootstrap,
         rng_seed=rng_seed,
-        point_estimate=float(diff.mean()),
+        point_estimate=float(point),
         ci_low=float(lo),
         ci_high=float(hi),
         frac_a_better=float(a_better.mean()),

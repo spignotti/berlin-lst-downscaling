@@ -47,7 +47,7 @@ The ablation compares 9 arms with 3 seeds each. The comparison of two arms uses 
 
 **Estimand.** Per run and scene, patch sums are pooled (sum of absolute errors divided by the sum of valid cells for MAE; sum of SSIM values divided by the sum of SSIM windows for SSIM), never averaged as patch means. Per arm, the three seed runs are averaged per scene. The primary estimate is the equal-scene-weight mean of the paired difference d_s = A - B over scenes.
 
-**Resampling.** The unit is the scene. Scenes are resampled with replacement (B = 10 000, fixed `numpy.random.default_rng` seed, scene ids sorted) and the 95 % interval is the percentile interval of the replicate means. Patches are not the unit because neighbouring patches within a scene share atmosphere and surface state and are spatially autocorrelated, so treating them as independent would understate uncertainty. Seeds are never resampled.
+**Resampling.** The unit is the scene. Scenes are resampled with replacement (B = 10 000, fixed `numpy.random.default_rng` seed, scene ids sorted) and the 95 % interval is the percentile interval of the replicate means (endpoints are the 2.5 % and 97.5 % quantiles from NumPy `np.quantile(..., method="linear")`). Patches are not the unit because neighbouring patches within a scene share atmosphere and surface state and are spatially autocorrelated, so treating them as independent would understate uncertainty. Seeds are never resampled.
 
 **Seed summaries.** Per-seed pooled overall metrics (mean, SD with ddof = 1, per-seed difference, sign consistency such as "3/3 same sign") are reported as diagnostics only. They differ from the primary estimand, which weights scenes equally. No seed-level significance test is performed: with n = 3 the smallest two-sided sign-flip p-value is 0.25.
 
@@ -57,7 +57,7 @@ The ablation compares 9 arms with 3 seeds each. The comparison of two arms uses 
 
 **Multiplicity.** `holm_adjust` applies the Holm correction to a declared family of comparisons against one reference arm. The module does not produce bootstrap p-values yet; this is optional future work.
 
-**Validation first.** The CLI defaults to `--split validation`. Reading existing test exports requires `--i-know-test-is-frozen`; the tool only reads explicit local export files and never launches an evaluation.
+**Validation first.** The analyzer is validation-only: the CLI accepts only `--split validation` and rejects test-labelled exports. The tool only reads explicit local export files and never launches an evaluation.
 
 **Export schema (schema_version 1).** One Parquet file per run and split, columns: `schema_version` int32, `arm` string, `seed` int64 (nullable), `run_id` string, `checkpoint` string (nullable), `patch_id` string, `scene_id` string, `scene_date` string (nullable, YYYY-MM-DD), `split` string, `abs_error_sum` float64, `valid_cells` int64, `ssim_sum` float64, `ssim_windows` int64, `filled_feature_pixels` int64 (nullable). The footer key `patch_export` holds JSON with `schema_version`, `split`, `arm`, `seed`, `run_id`, `checkpoint`. File names: `eval_validation_patches.parquet`, `eval_test_patches.parquet`, and `eval_stage{n}_<split>_patches.parquet` for the random-forest runs.
 
