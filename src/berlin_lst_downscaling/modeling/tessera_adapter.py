@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import Tensor, nn
 
 from berlin_lst_downscaling.data.features.contracts import (
@@ -27,6 +28,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     feature_schema,
 )
 from berlin_lst_downscaling.modeling.contracts import RealBatch, validate_real_batch
+from berlin_lst_downscaling.modeling.lr_schedule import optimizer_config
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask
 from berlin_lst_downscaling.modeling.ssim_range import resolve_task_ssim_data_range
 from berlin_lst_downscaling.modeling.unet import UNet
@@ -171,6 +173,7 @@ class TesseraRealLSTTask(RealLSTTask):
         n_active_channels: int | None = None,
         ssim_data_range_k: float | None = None,
         ssim_data_range: dict[str, Any] | None = None,
+        lr_schedule: dict[str, object] | None = None,
     ) -> None:
         # Resolved here as well so this signature's save_hyperparameters below
         # records the values, not None.
@@ -193,6 +196,7 @@ class TesseraRealLSTTask(RealLSTTask):
             aggregation=aggregation,  # type: ignore[arg-type]
             ssim_data_range_k=ssim_data_range_k,
             ssim_data_range=ssim_data_range,
+            lr_schedule=lr_schedule,
         )
         # The parent built UNet(kept+adapter+1) for kept+adapted+prior: keep
         # it, add the learnable 1×1, and validate kept width at the boundary.
@@ -244,13 +248,14 @@ class TesseraRealLSTTask(RealLSTTask):
 
         return reconstruct_prior_kelvin(batch.lst_prior).float() + delta.float()
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
+    def configure_optimizers(self) -> OptimizerLRScheduler:
         """Optimize the U-Net AND the learnable 1×1 adapter jointly."""
-        return torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             list(self.model.parameters()) + list(self.adapter.parameters()),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
+        return optimizer_config(optimizer, self.lr_schedule)
 
 
 __all__ = [

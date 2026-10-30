@@ -71,6 +71,7 @@ from berlin_lst_downscaling.modeling.guards import (
     evaluate_test_from_config,
     guard_modeling_config,
 )
+from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
 from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
 from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
@@ -191,6 +192,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     path and only as ``"success"`` after the reload validation passes.
     """
     seed = int(cfg.seed)
+    lr_spec = lr_schedule_from_config(cfg)
     seed_everything(seed)
 
     data_module = SyntheticDataModule(
@@ -209,6 +211,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         depth=int(cfg.model.depth),
         learning_rate=float(cfg.trainer.learning_rate),
         weight_decay=float(cfg.trainer.weight_decay),
+        lr_schedule=lr_spec.payload(),
     )
 
     output_root = Path(str(cfg.output_root))
@@ -252,6 +255,7 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
             "byte identity is environment/hardware/library dependent; "
             "synthetic data is a lifecycle fixture, not a model of LST"
         ),
+        "lr_schedule": lr_spec.payload(),
     }
     log_event(_logger, logging.INFO, "run_start", **metadata)
 
@@ -659,6 +663,7 @@ def _fit_contract_lifecycle(
     Only the data module and the source-specific metadata differ.
     """
     seed = int(cfg.seed)
+    lr_spec = lr_schedule_from_config(cfg)
     seed_everything(seed)
     aggregation = resolve_aggregation_method(cfg.get("aggregation"))
 
@@ -701,6 +706,7 @@ def _fit_contract_lifecycle(
             aggregation=aggregation,
             ssim_data_range_k=ssim_range.data_range_k,
             ssim_data_range=ssim_range.payload(),
+            lr_schedule=lr_spec.payload(),
         )
     else:
         task = RealLSTTask(
@@ -715,6 +721,7 @@ def _fit_contract_lifecycle(
             aggregation=aggregation,
             ssim_data_range_k=ssim_range.data_range_k,
             ssim_data_range=ssim_range.payload(),
+            lr_schedule=lr_spec.payload(),
         )
 
     output_root = Path(str(cfg.output_root))
@@ -863,6 +870,7 @@ def _fit_contract_lifecycle(
         "reproducibility": reproducibility,
         "run_identity": run_identity.to_payload(),
         "ssim_data_range": ssim_range.payload(),
+        "lr_schedule": lr_spec.payload(),
         **source_metadata,
     }
     if is_v6:
@@ -996,6 +1004,7 @@ def _fit_contract_lifecycle(
                 "residual_correction_mean_abs_k": correction_mean,
                 "resolved_config": OmegaConf.to_container(cfg, resolve=True),
                 "ssim_data_range": ssim_range.payload(),
+                "lr_schedule": lr_spec.payload(),
             }
             if is_probe or is_full:
                 experiment = wandb_logger.experiment

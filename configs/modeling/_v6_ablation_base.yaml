@@ -4,9 +4,10 @@
 # guard_modeling_config rejects it. The arm files (v6_*_locked.yaml) add the
 # arm id, channels, loss, cache budget, and output root.
 #
-# Everything below is pinned by assert_ablation_lock except ``seed`` and
-# ``trainer.max_epochs``, which are parameters with defaults: override them
-# per run (``seed=1 trainer.max_epochs=40``). Both are recorded in the run.
+# Everything below is pinned by assert_ablation_lock except ``seed``,
+# ``trainer.max_epochs`` and ``trainer.lr_schedule.name``, which are parameters
+# with defaults: override them per run (``seed=1 trainer.max_epochs=40
+# trainer.lr_schedule.name=cosine``). All are recorded in the run.
 defaults:
   - _base
   - _self_
@@ -52,6 +53,13 @@ trainer:
   precision: "16-mixed"
   accelerator: "gpu"
   devices: 1
+  # The one shared LR-schedule switch: ``trainer.lr_schedule.name`` is a run
+  # parameter (constant|cosine). warmup_epochs and eta_min are pinned by
+  # assert_ablation_lock. Arm files must not set this block.
+  lr_schedule:
+    name: "constant"
+    warmup_epochs: 2
+    eta_min: 0.0
 
 wandb:
   mode: "online"

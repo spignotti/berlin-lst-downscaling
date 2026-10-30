@@ -1035,6 +1035,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=None, help="v6 modes only (default 0)")
     parser.add_argument("--max-epochs", type=int, default=None, help="v6 modes only (default 20)")
     parser.add_argument(
+        "--lr-schedule",
+        choices=("constant", "cosine"),
+        default=None,
+        help="v6 modes only (default constant)",
+    )
+    parser.add_argument(
         "--early-stopping-patience",
         type=int,
         default=None,
@@ -1136,6 +1142,11 @@ def main() -> int:
         raise SystemExit(
             f"ERROR: --seed and --max-epochs are only accepted by the v6 modes, not {args.mode!r}"
         )
+    if not is_v6 and args.lr_schedule is not None:
+        raise SystemExit(
+            f"ERROR: --lr-schedule is only accepted by the v6 modes, not {args.mode!r}"
+        )
+    lr_schedule = "constant" if args.lr_schedule is None else args.lr_schedule
     es_patience = args.early_stopping_patience
     es_min_delta = args.early_stopping_min_delta
     if not is_v6 and (es_patience is not None or es_min_delta is not None or args.skip_test):
@@ -1154,6 +1165,8 @@ def main() -> int:
     seed = V6_DEFAULT_SEED if args.seed is None else args.seed
     max_epochs = V6_DEFAULT_MAX_EPOCHS if args.max_epochs is None else args.max_epochs
     run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_v6 else args.run_label
+    if is_v6 and lr_schedule == "cosine":
+        run_label += "-cos"
     if is_v6 and args.skip_test:
         run_label += "-notest"
     job_output_root = (
@@ -1166,6 +1179,8 @@ def main() -> int:
         if is_v6
         else []
     )
+    if is_v6:
+        hydra_overrides.append(f"trainer.lr_schedule.name={lr_schedule}")
     if es_patience is not None:
         hydra_overrides += ["early_stopping.enabled=true", f"early_stopping.patience={es_patience}"]
         if es_min_delta is not None:
@@ -1385,6 +1400,8 @@ def main() -> int:
     ]
     if is_v6:
         env.extend([("VERTEX_SEED", str(seed)), ("VERTEX_MAX_EPOCHS", str(max_epochs))])
+        if lr_schedule == "cosine":
+            env.append(("VERTEX_LR_SCHEDULE", lr_schedule))
         if es_patience is not None:
             env.append(("VERTEX_EARLY_STOPPING_PATIENCE", str(es_patience)))
             if es_min_delta is not None:
@@ -1451,6 +1468,14 @@ def main() -> int:
         )
     if is_v6:
         print(f"  seed/epochs    : {seed} / {max_epochs}")
+        print(
+            "  lr schedule    : "
+            + (
+                "constant"
+                if lr_schedule == "constant"
+                else f"cosine (warmup 2, eta_min 0.0, per epoch, T_max={max_epochs})"
+            )
+        )
         print(
             "  early stopping : "
             + (

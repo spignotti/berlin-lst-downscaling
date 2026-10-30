@@ -359,6 +359,61 @@ polling, so a disconnected client reconnects with `--status <resource-name>`
 instead of resubmitting. Cancel a runaway job with
 `gcloud ai custom-jobs cancel <resource-name> --region=europe-west3`.
 
+### Optional LR schedule (cosine with linear warmup)
+
+The v6 ablation modes (`--mode v6-l1` … `v6-no-red-nir-index`) accept
+`--lr-schedule {constant,cosine}` (default `constant`). The trainer block is:
+
+```yaml
+trainer:
+  lr_schedule: {name: constant, warmup_epochs: 2, eta_min: 0.0}
+```
+
+With `base = trainer.learning_rate`, `W = warmup_epochs`, `T_max = trainer.max_epochs`
+and `e` the 0-based epoch index, the learning rate of epoch `e` is:
+
+- warmup, `e < W`: `base * (e + 1) / W`
+- cosine, `e >= W`: `eta_min + (base - eta_min) * 0.5 * (1 + cos(pi * (e - W) / (T_max - W)))`
+
+The schedule is stepped per epoch. `T_max` is `trainer.max_epochs`; the warmup is
+counted inside `max_epochs`, so `max_epochs` must exceed `warmup_epochs`.
+
+- `constant` is the default and is a bare AdamW with no scheduler object
+  (bit-identical to earlier runs).
+- Early stopping may be combined with cosine; `T_max` stays `max_epochs`.
+- The v6 lock pins `warmup_epochs=2` and `eta_min=0.0` and admits only the name
+  `constant|cosine`. The switch is one value per matrix (`lr_schedule` in
+  `configs/ablation/v6_matrix.yaml`); per-arm entries must not carry it, and no
+  `v6_*_locked.yaml` sets `trainer.lr_schedule`.
+- v1 locks (stage1..stage5, isolate) reject `cosine`.
+- The learning rate is logged per epoch as `lr`. The schedule is recorded in the
+  checkpoint hparams, `full_summary.json` / `probe_summary.json` (`lr_schedule`),
+  and the evidence record (`full.lr_schedule`, `probe.lr_schedule`; a summary
+  without the field is read as `constant`).
+- A cosine run label gets a `-cos` suffix (`<label>-seed<N>-ep<E>-cos[-notest]`)
+  so it can never overwrite a constant-schedule output. The job env carries
+  `VERTEX_LR_SCHEDULE=cosine` only for cosine runs, and the entrypoint turns it
+  into `trainer.lr_schedule.name=cosine`.
+
+#### Confirmation run (launch-ready, not started)
+
+L4, seed 0, 40 epochs, cosine, validation only (`--skip-test`), early stopping
+off. Run with `--preflight` first, then again without it.
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode v6-l4 --seed 0 --max-epochs 40 --lr-schedule cosine --skip-test \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<digest> \
+  --source-sha <clean-commit> --run-label <label> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 1.00 --preflight
+```
+
+The resulting run label is `<label>-seed0-ep40-cos-notest`.
+
 ## Bounds and cost
 
 - Machine: one on-demand `n1-standard-4` + one `NVIDIA_TESLA_T4` in
