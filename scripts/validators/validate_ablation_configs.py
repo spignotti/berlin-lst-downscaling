@@ -371,8 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     for config_name in ABLATION_LOCKED_CONFIG_NAMES:
         failures.extend(_check_stage(config_name))
 
-    for arm_id in V6_ABLATION_ARMS:
-        failures.extend(_check_v6_arm(arm_id, args.cache_mode))
+    for arm_id, arm in V6_ABLATION_ARMS.items():
+        arm_failures = _check_v6_arm(arm_id, args.cache_mode)
+        failures.extend(arm_failures)
+        status = "FAIL" if arm_failures else "PASS"
+        print(f"v6 arm {arm_id} ({arm.config_name}) cache_mode={args.cache_mode}: {status}")
     matrix_failures, matrix_summary = _check_v6_matrix()
     failures.extend(matrix_failures)
 
