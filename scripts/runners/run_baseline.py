@@ -39,6 +39,7 @@ from berlin_lst_downscaling.modeling.baseline import (
     evaluate_baseline,
     git_revision_for,
     load_refs,
+    resolve_report_ssim_data_range,
     write_report,
 )
 from berlin_lst_downscaling.modeling.channels import (
@@ -50,6 +51,7 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     assert_scaler_spec_matches,
 )
+from berlin_lst_downscaling.modeling.ssim_range import SsimDataRange
 
 _logger = logging.getLogger(__name__)
 
@@ -67,6 +69,12 @@ def _source_config(cfg: DictConfig) -> RealSourceConfig:
         ard_root=str(cfg.ard_root),
         aggregation=resolve_aggregation_method(cfg.get("aggregation")),
     )
+
+
+def _resolve_source_and_ssim(cfg: DictConfig) -> tuple[RealSourceConfig, SsimDataRange]:
+    """Build the source and load the SSIM data range once, before any data read."""
+    source = _source_config(cfg)
+    return source, resolve_report_ssim_data_range(source)
 
 
 @hydra.main(config_path="../../configs/modeling", config_name="baseline_full", version_base=None)
@@ -91,7 +99,15 @@ def main(cfg: DictConfig) -> int:
             scene_ids=list(scene_ids or []),
             max_patches_per_split=max_patches,
         )
-        source = _source_config(cfg)
+        source, ssim_range = _resolve_source_and_ssim(cfg)
+        log_event(
+            _logger,
+            logging.INFO,
+            "ssim_data_range",
+            data_range_k=ssim_range.data_range_k,
+            version=ssim_range.version,
+            artifact_sha256=ssim_range.artifact_sha256,
+        )
         refs = load_refs(
             source,
             splits=splits,
@@ -107,7 +123,9 @@ def main(cfg: DictConfig) -> int:
                 selection=resolve_schema_selection(schema_version, n_active_channels=None),
             )
         requested = Counter(ref.split for ref in refs)
-        records, summaries = evaluate_baseline(reader, refs, requested_per_split=dict(requested))
+        records, summaries = evaluate_baseline(
+            reader, refs, ssim_range=ssim_range, requested_per_split=dict(requested)
+        )
 
         report = build_report(
             cfg=source,
@@ -115,6 +133,7 @@ def main(cfg: DictConfig) -> int:
             summaries=summaries,
             exclusions=dict(reader.exclusions),
             git_revision=git_revision_for(output_root, run_id),
+            ssim_range=ssim_range,
         )
         uri = write_report(report, f"{output_root.rstrip('/')}/baseline_report.json")
 

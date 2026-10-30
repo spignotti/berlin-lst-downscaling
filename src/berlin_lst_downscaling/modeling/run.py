@@ -652,6 +652,7 @@ def _fit_contract_lifecycle(
             loss_name=loss_name,
             aggregation=aggregation,
             ssim_data_range_k=ssim_range.data_range_k,
+            ssim_data_range=ssim_range.payload(),
         )
     else:
         task = RealLSTTask(
@@ -665,6 +666,7 @@ def _fit_contract_lifecycle(
             loss_name=loss_name,
             aggregation=aggregation,
             ssim_data_range_k=ssim_range.data_range_k,
+            ssim_data_range=ssim_range.payload(),
         )
 
     output_root = Path(str(cfg.output_root))

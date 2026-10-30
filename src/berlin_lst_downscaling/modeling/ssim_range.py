@@ -26,6 +26,7 @@ SSIM_RANGE_P_LOW: float = 0.5
 SSIM_RANGE_P_HIGH: float = 99.5
 SSIM_RANGE_PERCENTILE_METHOD: str = "linear"
 SSIM_RANGE_SPLIT: str = "train"
+SSIM_RANGE_TRAIN_YEARS: tuple[int, ...] = tuple(range(2017, 2024))
 SSIM_RANGE_ARTIFACT_VERSION: str = "v1"
 # Module global, read at call time so tests can monkeypatch it.
 SSIM_DATA_RANGE_ARTIFACT: Path = (
@@ -152,6 +153,7 @@ class SsimDataRange:
     artifact_sha256: str | None
     index_policy_hash: str | None
     source_policy_hash: str | None
+    derived_at: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -164,6 +166,7 @@ class SsimDataRange:
             "artifact_sha256": self.artifact_sha256,
             "index_policy_hash": self.index_policy_hash,
             "source_policy_hash": self.source_policy_hash,
+            "derived_at": self.derived_at,
             "p_low": SSIM_RANGE_P_LOW,
             "p_high": SSIM_RANGE_P_HIGH,
             "percentile_method": SSIM_RANGE_PERCENTILE_METHOD,
@@ -211,6 +214,15 @@ def load_ssim_data_range(
         raise RuntimeError(
             f"SSIM data-range artifact split must be 'train', got {doc.get('split')!r}"
         )
+    years = doc.get("years")
+    if (
+        not isinstance(years, list)
+        or any(not isinstance(y, int) or isinstance(y, bool) for y in years)
+        or years != list(SSIM_RANGE_TRAIN_YEARS)
+    ):
+        raise RuntimeError(
+            f"SSIM data-range artifact years must be {list(SSIM_RANGE_TRAIN_YEARS)}, got {years!r}"
+        )
     for key, expected in (
         ("p_low", SSIM_RANGE_P_LOW),
         ("p_high", SSIM_RANGE_P_HIGH),
@@ -257,6 +269,7 @@ def load_ssim_data_range(
         source_policy_hash=None
         if fp.get("source_policy_hash") is None
         else str(fp["source_policy_hash"]),
+        derived_at=None if doc.get("derived_at") is None else str(doc["derived_at"]),
     )
 
 
@@ -280,6 +293,58 @@ def test_override_ssim_data_range(k: float) -> SsimDataRange:
         index_policy_hash=None,
         source_policy_hash=None,
     )
+
+
+def resolve_task_ssim_data_range(
+    data_range_k: float | None, provenance: Mapping[str, Any] | None
+) -> tuple[float, dict[str, Any]]:
+    """Resolve L and its provenance for a task; re-check the artifact on checkpoint reload."""
+    if provenance is None:
+        if data_range_k is None:
+            r = load_ssim_data_range()
+        else:
+            r = test_override_ssim_data_range(data_range_k)
+        return r.data_range_k, r.payload()
+    source = provenance.get("source")
+    if source == "artifact":
+        current = load_ssim_data_range()
+        saved = provenance.get("artifact_sha256")
+        if current.artifact_sha256 != saved:
+            raise RuntimeError(
+                "checkpoint was trained with a different SSIM data-range artifact: "
+                f"checkpoint sha256={str(saved)[:12]} current sha256="
+                f"{str(current.artifact_sha256)[:12]}"
+            )
+        if data_range_k is not None and abs(data_range_k - current.data_range_k) > _TOLERANCE_K:
+            raise RuntimeError(
+                f"ssim_data_range_k {data_range_k!r} differs from the artifact value "
+                f"{current.data_range_k!r}"
+            )
+        return current.data_range_k, dict(provenance)
+    if source == "test_override":
+        if data_range_k is None or abs(data_range_k - float(provenance["data_range_k"])) > (
+            _TOLERANCE_K
+        ):
+            raise RuntimeError(
+                f"test_override SSIM data range mismatch: got {data_range_k!r}, provenance "
+                f"{provenance.get('data_range_k')!r}"
+            )
+        return float(data_range_k), dict(provenance)
+    raise RuntimeError(f"unknown SSIM data-range provenance source {source!r}")
+
+
+def check_ssim_range_fingerprints(
+    ssim_range: SsimDataRange, fingerprints: Mapping[str, str]
+) -> None:
+    """Raise if an artifact-sourced range was derived on a different patch index."""
+    if ssim_range.source != "artifact":
+        return
+    for key in ("index_policy_hash", "source_policy_hash"):
+        if str(getattr(ssim_range, key)) != str(fingerprints.get(key)):
+            raise RuntimeError(
+                f"SSIM data range {key}={getattr(ssim_range, key)!r} differs from the run "
+                f"patch index {fingerprints.get(key)!r}"
+            )
 
 
 # Not a test: stops pytest from collecting the helper when imported into a test module.
@@ -330,12 +395,33 @@ def artifact_payload(
     }
 
 
-def write_artifact(payload: dict[str, Any], path: Path | str) -> Path:
+def check_artifact_writable(path: Path | str, *, overwrite_filled: bool) -> None:
+    """Refuse to overwrite a filled (or unparseable) artifact without the explicit flag."""
+    target = Path(path)
+    if not target.exists() or overwrite_filled:
+        return
+    try:
+        doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+        filled = isinstance(doc, dict) and doc.get("status") == "filled"
+        parsed = isinstance(doc, dict)
+    except (yaml.YAMLError, OSError, UnicodeDecodeError):
+        filled, parsed = False, False
+    if filled or not parsed:
+        raise FileExistsError(
+            f"SSIM data-range artifact {target} exists and is filled or unreadable; "
+            "pass --overwrite-filled to replace it"
+        )
+
+
+def write_artifact(
+    payload: dict[str, Any], path: Path | str, *, overwrite_filled: bool = False
+) -> Path:
     """Write the artifact as YAML to a local path (never to a remote URI)."""
     # Path("gs://x") collapses to "gs:/x", so check the raw string and that form.
     raw = str(path)
     if "://" in raw or raw.startswith("gs:/"):
         raise ValueError(f"SSIM data-range artifact must be written locally, got {str(path)!r}")
+    check_artifact_writable(path, overwrite_filled=overwrite_filled)
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     header = (
@@ -355,13 +441,17 @@ __all__ = [
     "SSIM_RANGE_P_HIGH",
     "SSIM_RANGE_P_LOW",
     "SSIM_RANGE_SPLIT",
+    "SSIM_RANGE_TRAIN_YEARS",
     "SsimDataRange",
     "SsimRangeSample",
     "SsimRangeStats",
     "artifact_payload",
+    "check_artifact_writable",
+    "check_ssim_range_fingerprints",
     "derive_ssim_data_range",
     "load_ssim_data_range",
     "production_ssim_data_range_k",
+    "resolve_task_ssim_data_range",
     "test_override_ssim_data_range",
     "write_artifact",
 ]

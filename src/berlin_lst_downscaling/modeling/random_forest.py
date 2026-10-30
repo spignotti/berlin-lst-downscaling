@@ -83,7 +83,11 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     patch_index_fingerprints,
 )
-from berlin_lst_downscaling.modeling.ssim_range import load_ssim_data_range
+from berlin_lst_downscaling.modeling.ssim_range import (
+    SsimDataRange,
+    check_ssim_range_fingerprints,
+    load_ssim_data_range,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -619,11 +623,18 @@ def collect_eval_split(
     )
 
 
+def resolve_report_ssim_data_range(cfg: RealSourceConfig) -> SsimDataRange:
+    """Load the SSIM data range once, checked against the run's patch index."""
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
+    return load_ssim_data_range(expected_fingerprints=fingerprints)
+
+
 def score_stage(
     cache: EvalSplit,
     model: RandomForestRegressor,
     stage: StageSelection,
     *,
+    ssim_range: SsimDataRange,
     aggregation: AggregationMethod = AGGREGATION_ARITHMETIC,
     n_feature_channels: int = N_FEATURE_CHANNELS,
 ) -> list[PatchRecord]:
@@ -649,7 +660,9 @@ def score_stage(
         mask = torch.from_numpy(cache.mask_100m[i][None, None])
         pooled = pool_10m_to_100m(prediction, aggregation, mask)
         error_sum, count = masked_abs_error_sums(pooled, target, mask)
-        ssim_sum, ssim_windows = masked_ssim_stats(pooled, target, mask)
+        ssim_sum, ssim_windows = masked_ssim_stats(
+            pooled, target, mask, data_range_k=ssim_range.data_range_k
+        )
         records.append(
             PatchRecord(
                 patch_id=patch_id,
@@ -869,10 +882,12 @@ def build_report(
     runtime_seconds: float,
     cache_bytes: int,
     git_revision: str,
+    ssim_range: SsimDataRange,
     feature_schema_version: int = FEATURE_SCHEMA_VERSION,
 ) -> RandomForestReport:
     """Assemble the writable artifact from the run's evidence."""
     fingerprints = patch_index_fingerprints(cfg.patch_index_root)
+    check_ssim_range_fingerprints(ssim_range, fingerprints)
     return RandomForestReport(
         forest=spec.payload(),
         library_versions=library_versions(),
@@ -906,7 +921,7 @@ def build_report(
             "aggregation": cfg.aggregation,
         },
         fingerprints=fingerprints,
-        ssim_data_range=load_ssim_data_range(expected_fingerprints=fingerprints).payload(),
+        ssim_data_range=ssim_range.payload(),
         resolved_config=resolved_config,
         runtime_seconds=runtime_seconds,
         resource_usage={
@@ -971,6 +986,7 @@ __all__ = [
     "probe_residuals",
     "reconstruct_10m_prediction",
     "resolve_stage_selection",
+    "resolve_report_ssim_data_range",
     "score_stage",
     "stage_inputs",
     "stage_matrix",

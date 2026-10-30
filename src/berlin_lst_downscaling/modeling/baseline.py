@@ -45,7 +45,11 @@ from berlin_lst_downscaling.modeling.patches import (
     load_patch_refs,
     patch_index_fingerprints,
 )
-from berlin_lst_downscaling.modeling.ssim_range import load_ssim_data_range
+from berlin_lst_downscaling.modeling.ssim_range import (
+    SsimDataRange,
+    check_ssim_range_fingerprints,
+    load_ssim_data_range,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -147,10 +151,17 @@ def git_revision_for(output_root: str, run_id: str) -> str:
         return str(json.load(fh).get("git_commit", "unknown"))
 
 
+def resolve_report_ssim_data_range(cfg: RealSourceConfig) -> SsimDataRange:
+    """Load the SSIM data range once, checked against the run's patch index."""
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
+    return load_ssim_data_range(expected_fingerprints=fingerprints)
+
+
 def evaluate_baseline(
     reader: RealPatchReader,
     refs: list[PatchRef],
     *,
+    ssim_range: SsimDataRange,
     requested_per_split: dict[str, int] | None = None,
 ) -> tuple[list[PatchRecord], dict[str, SplitSummary]]:
     """Score the prior-expand baseline over ``refs``, split by split.
@@ -177,7 +188,9 @@ def evaluate_baseline(
             sample = reader.read_patch(ref)
             if sample is None:
                 continue
-            record = _score_patch(sample, aggregation=reader.cfg.aggregation)
+            record = _score_patch(
+                sample, aggregation=reader.cfg.aggregation, data_range_k=ssim_range.data_range_k
+            )
             records.append(record)
             valid_cells += record.valid_cells
             abs_error_sum += record.abs_error_sum
@@ -213,14 +226,18 @@ def evaluate_baseline(
     return records, summaries
 
 
-def _score_patch(sample: RealSample, *, aggregation: AggregationMethod) -> PatchRecord:
+def _score_patch(
+    sample: RealSample, *, aggregation: AggregationMethod, data_range_k: float
+) -> PatchRecord:
     """Score one patch with the shared pooling and metric path."""
     prior_10m = torch.from_numpy(sample.lst_prior_k[None])  # (1, 1, H, W)
     target = torch.from_numpy(sample.target_100m[None])
     mask = torch.from_numpy(sample.mask_100m[None])
     prediction_100m = pool_10m_to_100m(prior_10m, aggregation)
     error_sum, count = masked_abs_error_sums(prediction_100m, target, mask)
-    ssim_sum, ssim_count = masked_ssim_stats(prediction_100m, target, mask)
+    ssim_sum, ssim_count = masked_ssim_stats(
+        prediction_100m, target, mask, data_range_k=data_range_k
+    )
     return PatchRecord(
         patch_id=sample.meta.patch_id,
         split=sample.meta.split,
@@ -239,9 +256,11 @@ def build_report(
     summaries: dict[str, SplitSummary],
     exclusions: dict[str, int],
     git_revision: str,
+    ssim_range: SsimDataRange,
 ) -> BaselineReport:
     """Assemble the writable artifact from the evaluated records."""
     fingerprints = patch_index_fingerprints(cfg.patch_index_root)
+    check_ssim_range_fingerprints(ssim_range, fingerprints)
     return BaselineReport(
         method=METHOD,
         prior_rule=PRIOR_RULE,
@@ -263,7 +282,7 @@ def build_report(
         fingerprints=fingerprints,
         git_revision=git_revision,
         written_at=now_iso(),
-        ssim_data_range=load_ssim_data_range(expected_fingerprints=fingerprints).payload(),
+        ssim_data_range=ssim_range.payload(),
     )
 
 
@@ -309,6 +328,7 @@ __all__ = [
     "SplitSummary",
     "build_report",
     "evaluate_baseline",
+    "resolve_report_ssim_data_range",
     "git_revision_for",
     "load_refs",
     "write_report",

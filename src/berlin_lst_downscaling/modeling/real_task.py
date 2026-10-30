@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import torch
 from lightning.pytorch import LightningDataModule, LightningModule
@@ -70,7 +70,6 @@ from berlin_lst_downscaling.modeling.metrics import (
     masked_ssim_stats_patch_range,
     pool_10m_to_100m,
     prediction_outside_lst_range_counts,
-    resolve_ssim_data_range_k,
     thermal_objective_batch,
 )
 from berlin_lst_downscaling.modeling.patch_cache import PatchCache, build_patch_cache
@@ -83,6 +82,7 @@ from berlin_lst_downscaling.modeling.patches import (
     load_patch_refs,
     patch_index_fingerprints,
 )
+from berlin_lst_downscaling.modeling.ssim_range import resolve_task_ssim_data_range
 from berlin_lst_downscaling.modeling.unet import UNet
 
 _REAL_SPLITS = ("train", "validation", "test")
@@ -638,6 +638,10 @@ class RealLSTTask(LightningModule):
         Fixed SSIM data range L. ``None`` resolves the committed train-derived
         artifact (raises while it is a placeholder); the resolved value is
         saved in the hyperparameters.
+    ssim_data_range:
+        Provenance dict of L (``SsimDataRange.payload()``), saved in the
+        checkpoint. On reload from an artifact-sourced checkpoint the current
+        artifact sha256 must match, otherwise ``RuntimeError``.
     """
 
     def __init__(
@@ -652,11 +656,16 @@ class RealLSTTask(LightningModule):
         loss_name: str = "masked_l1",
         aggregation: AggregationMethod | str = AGGREGATION_ARITHMETIC,
         ssim_data_range_k: float | None = None,
+        ssim_data_range: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        # Reassigned before save_hyperparameters so the resolved L is saved.
-        ssim_data_range_k = resolve_ssim_data_range_k(ssim_data_range_k)
+        # Reassigned before save_hyperparameters so the resolved L and its
+        # provenance are saved; a reload re-checks the artifact hash.
+        ssim_data_range_k, ssim_data_range = resolve_task_ssim_data_range(
+            ssim_data_range_k, ssim_data_range
+        )
         self.ssim_data_range_k = ssim_data_range_k
+        self.ssim_data_range = ssim_data_range
         if loss_name not in ("masked_l1", "thermal_aware"):
             raise ValueError(f"loss_name must be 'masked_l1' or 'thermal_aware', got {loss_name!r}")
         self.model = UNet(in_channels=n_active_channels + 1, base_width=base_width, depth=depth)

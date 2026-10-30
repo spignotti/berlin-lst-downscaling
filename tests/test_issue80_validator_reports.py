@@ -69,6 +69,7 @@ def test_baseline_report_builder_stores_aggregation_under_source() -> None:
         summaries={},
         exclusions={},
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     assert "aggregation" not in payload
     assert payload["source"]["aggregation"] == "t4"
@@ -106,6 +107,7 @@ def test_rf_report_builder_stores_aggregation_under_source() -> None:
         runtime_seconds=1.0,
         cache_bytes=0,
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     assert resolve_report_aggregation(payload) == "t4"
 
@@ -151,6 +153,7 @@ def test_rf_vs_naive_comparison_rejects_mismatched_methods() -> None:
         runtime_seconds=0.0,
         cache_bytes=0,
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     naive_payload = build_baseline_report(
         cfg=RealSourceConfig(
@@ -164,6 +167,7 @@ def test_rf_vs_naive_comparison_rejects_mismatched_methods() -> None:
         summaries={},
         exclusions={},
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     assert resolve_report_aggregation(rf_payload) == "t4"
     assert resolve_report_aggregation(naive_payload) == "arithmetic"

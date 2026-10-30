@@ -25,6 +25,7 @@ from typing import Any
 
 from hydra import compose, initialize_config_dir
 
+from berlin_lst_downscaling.data.io.gdal_gcs import ensure_gdal_gcs_auth
 from berlin_lst_downscaling.data.training.report import now_iso
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
@@ -39,6 +40,7 @@ from berlin_lst_downscaling.modeling.ssim_range import (
     SsimRangeSample,
     SsimRangeStats,
     artifact_payload,
+    check_artifact_writable,
     derive_ssim_data_range,
     write_artifact,
 )
@@ -103,13 +105,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-name", default="v6_l5_locked", help="modeling config")
     parser.add_argument("--out", default=str(SSIM_DATA_RANGE_ARTIFACT), help="local YAML path")
+    parser.add_argument(
+        "--overwrite-filled",
+        action="store_true",
+        help="allow replacing an existing filled artifact",
+    )
     args = parser.parse_args(argv)
     if "://" in args.out:
         parser.error("--out must be a local path (never gs://)")
+    check_artifact_writable(Path(args.out), overwrite_filled=args.overwrite_filled)
 
     with initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base=None):
         cfg = compose(config_name=args.config_name)
     source = real_source_config(cfg)
+    if ensure_gdal_gcs_auth() is not None:
+        print("GDAL GCS: using Application Default Credentials")
     stats, exclusions, n_refs, fingerprints = derive_from_source(source)
     payload = artifact_payload(
         stats,
@@ -122,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         exclusions=exclusions,
         n_refs_requested=n_refs,
     )
-    out = write_artifact(payload, Path(args.out))
+    out = write_artifact(payload, Path(args.out), overwrite_filled=args.overwrite_filled)
     print(f"wrote {out}")
     print(
         f"L = {stats.data_range_k:.4f} K (p0.5 {stats.low_k:.4f}, p99.5 {stats.high_k:.4f}); "

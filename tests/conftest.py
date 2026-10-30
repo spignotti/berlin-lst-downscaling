@@ -33,6 +33,8 @@ def write_filled_ssim_artifact(path, *, fingerprints=None):  # noqa: ANN001, ANN
         "status": "filled",
         "quantity": "ssim_data_range",
         "split": "train",
+        "years": list(range(2017, 2024)),
+        "derived_at": "2026-01-01T00:00:00+00:00",
         "p_low": 0.5,
         "p_high": 99.5,
         "percentile_method": "linear",
