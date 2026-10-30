@@ -31,6 +31,7 @@ from typing import Any, cast
 
 import torch
 from lightning.pytorch import LightningDataModule, LightningModule
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
@@ -53,6 +54,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     RealBatch,
     validate_real_batch,
 )
+from berlin_lst_downscaling.modeling.lr_schedule import log_current_lr, optimizer_config
 from berlin_lst_downscaling.modeling.metrics import (
     METRIC_ONLY_SSIM_KEYS,
     SSIM_LEGACY_DATA_RANGE_K,
@@ -761,8 +763,10 @@ class RealLSTTask(LightningModule):
         aggregation: AggregationMethod | str = AGGREGATION_ARITHMETIC,
         ssim_data_range_k: float | None = None,
         ssim_data_range: dict[str, Any] | None = None,
+        lr_schedule: dict[str, object] | None = None,
     ) -> None:
         super().__init__()
+        self.lr_schedule = lr_schedule
         # Reassigned before save_hyperparameters so the resolved L and its
         # provenance are saved; a reload re-checks the artifact hash.
         ssim_data_range_k, ssim_data_range = resolve_task_ssim_data_range(
@@ -985,12 +989,16 @@ class RealLSTTask(LightningModule):
         if self.record_probe_metrics:
             self.log("validation/valid_cells", self.val_valid_cells, on_step=False, on_epoch=True)
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.AdamW(
+    def on_train_epoch_start(self) -> None:
+        log_current_lr(self)
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.learning_rate,
             weight_decay=self.weight_decay,
         )
+        return optimizer_config(optimizer, self.lr_schedule)
 
 
 __all__ = ["RealLSTTask", "RealPatchDataModule", "reconstruct_prior_kelvin"]

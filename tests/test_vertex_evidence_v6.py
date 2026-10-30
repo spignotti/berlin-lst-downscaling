@@ -306,3 +306,46 @@ def test_artifact_uploads_are_timed_before_the_evidence_upload(
     assert set(uploader) == {"epoch_curve_upload", "checkpoint_hash_upload"}
     assert all(seconds >= 0 for seconds in uploader.values())
     assert "evidence_upload" not in uploader
+
+
+def _full_record(evidence: ModuleType, tmp_path: Path, summary: dict) -> dict:
+    (tmp_path / "epoch_metrics.json").write_text(json.dumps([{}] * 20))
+    (tmp_path / "full_summary.json").write_text(json.dumps(summary))
+    return evidence.build_record(
+        tmp_path,
+        run_label="l",
+        source_sha="s",
+        image_digest="d",
+        result_file=None,
+        profile="full",
+    )
+
+
+def test_summary_without_lr_schedule_is_recorded_as_constant(
+    evidence: ModuleType, tmp_path: Path
+) -> None:
+    record = _full_record(evidence, tmp_path, {"max_epochs": 20, "test": {"mae_100m": 1.0}})
+    assert record["full"]["lr_schedule"] == {"name": "constant"}
+    assert record["full"]["epochs_complete"] is True
+
+
+def test_cosine_lr_schedule_is_recorded(evidence: ModuleType, tmp_path: Path) -> None:
+    schedule = {
+        "name": "cosine",
+        "warmup_epochs": 2,
+        "eta_min": 0.0,
+        "interval": "epoch",
+        "t_max": 20,
+    }
+    record = _full_record(
+        evidence, tmp_path, {"max_epochs": 20, "test": {"mae_100m": 1.0}, "lr_schedule": schedule}
+    )
+    assert record["full"]["lr_schedule"] == schedule
+
+
+@pytest.mark.parametrize("bad", [{"name": "linear"}, "cosine", {}, 3])
+def test_bad_lr_schedule_in_summary_raises(
+    evidence: ModuleType, tmp_path: Path, bad: object
+) -> None:
+    with pytest.raises(ValueError, match="lr_schedule"):
+        _full_record(evidence, tmp_path, {"max_epochs": 20, "lr_schedule": bad})

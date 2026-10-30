@@ -415,3 +415,27 @@ def test_eager_cached_setup_reads_each_patch_once(
     module.setup("fit")
     assert sorted(readers[0].reads) == ["t0", "t1", "v0"]
     assert len(list(module.train_dataloader())) == 1
+
+
+def test_scene_date_survives_cache_round_trip(tmp_path: Path) -> None:
+    sample = _sample("p0", N_V6, 0)
+    sample.meta.scene_date = "2018-07-04"
+    indices = tuple(range(N_V6))
+    _build(tmp_path / "cache", [sample], N_V6, indices)
+    cache = PatchCache(tmp_path / "cache", _provenance(N_V6, indices))
+    assert cache[0].meta.scene_date == "2018-07-04"
+    assert_samples_equal(sample, cache[0], len(indices), channel_indices=indices)
+
+
+def test_legacy_cache_metadata_without_scene_date_loads(tmp_path: Path) -> None:
+    samples = [_sample("p0", N_V6, 0)]
+    indices = tuple(range(N_V6))
+    _build(tmp_path / "cache", samples, N_V6, indices)
+    manifest_path = tmp_path / "cache" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for row in manifest["metadata"]:
+        row.pop("scene_date")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    cache = PatchCache(tmp_path / "cache", _provenance(N_V6, indices))
+    assert cache[0].meta.scene_date is None
+    assert_samples_equal(samples[0], cache[0], len(indices), channel_indices=indices)

@@ -37,6 +37,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_PX,
 )
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
+from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
 
 _ALLOWED_CONTRACT_LOSSES = frozenset({"masked_l1", "thermal_aware"})
 _ALLOWED_FEATURE_ORDERS = frozenset(
@@ -259,6 +260,11 @@ def _early_stop_eval_problems(cfg: DictConfig) -> list[str]:
             problems.append("evaluate_test=false (v1 locks stay frozen)")
     except ValueError as exc:
         problems.append(str(exc))
+    try:
+        if lr_schedule_from_config(cfg).name == "cosine":
+            problems.append("trainer.lr_schedule.name='cosine' (v1 locks stay frozen)")
+    except ValueError as exc:
+        problems.append(str(exc))
     return problems
 
 
@@ -344,6 +350,8 @@ _V6_ARD_ROOT = "gs://berlin-lst-training-data/ard/full/2017-2026-s2-mosaic-v10"
 
 # Exact pins of the v6 ablation lock. ``seed`` and ``trainer.max_epochs`` are
 # parameters (validated separately), everything else must match exactly.
+# ``trainer.lr_schedule.name`` (constant|cosine) is a run parameter too; its
+# ``warmup_epochs`` and ``eta_min`` are pinned in _assert_ablation_lock_v6.
 _V6_LOCK_EXPECTED: dict[str, object] = {
     "data.kind": "real",
     "data.mode": "stream",
@@ -412,6 +420,19 @@ def _assert_ablation_lock_v6(cfg: DictConfig) -> None:
         evaluate_test_from_config(cfg)
     except ValueError as exc:
         problems.append(str(exc))
+    if OmegaConf.select(cfg, "trainer.lr_schedule") is None:
+        problems.append("trainer.lr_schedule block is missing")
+    else:
+        try:
+            lr_schedule_from_config(cfg)
+        except ValueError as exc:
+            problems.append(str(exc))
+        warmup = OmegaConf.select(cfg, "trainer.lr_schedule.warmup_epochs")
+        if not _is_plain_int(warmup) or warmup != 2:
+            problems.append(f"trainer.lr_schedule.warmup_epochs={warmup!r} (expected 2)")
+        eta_min = OmegaConf.select(cfg, "trainer.lr_schedule.eta_min")
+        if isinstance(eta_min, bool) or not isinstance(eta_min, (int, float)) or eta_min != 0.0:
+            problems.append(f"trainer.lr_schedule.eta_min={eta_min!r} (expected 0.0)")
     if arm is not None:
         _check_ablation_channels(
             problems,
@@ -1096,6 +1117,18 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     if not evaluate_test_from_config(cfg) and not v6_config:
         raise ValueError(
             "evaluate_test=false is only admitted on the v6 ablation configs; v1 locks stay frozen"
+        )
+    if lr_schedule_from_config(cfg).name == "cosine" and config_name in {
+        STAGE1_LOCKED_CONFIG_NAME,
+        STAGE1_PROBE_CONFIG_NAME,
+        STAGE1_PROBE_LR3_CONFIG_NAME,
+        STAGE1_EFFICIENCY_CONFIG_NAME,
+        STAGE1_VERIFICATION_CONFIG_NAME,
+        *ABLATION_LOCKED_CONFIG_NAMES,
+    }:
+        raise ValueError(
+            f"trainer.lr_schedule.name='cosine' is not admitted on config {config_name!r}; "
+            "v1 locks stay frozen"
         )
     if config_name == STAGE1_LOCKED_CONFIG_NAME:
         assert_stage1_lock(cfg)

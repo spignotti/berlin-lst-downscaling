@@ -1,5 +1,8 @@
 # Matrix frozen by the owner: 9 arms x seeds 0, 1, 2 = 27 runs.
 # LOO-ERA5 equals L3 and has no entry.
+# Shared LR-schedule switch for all 27 runs (constant | cosine); per-arm entries
+# must not carry it. The v6 lock pins warmup_epochs=2 and eta_min=0.0.
+lr_schedule: constant
 arms:
   L1: {seeds: [0, 1, 2], max_epochs: 20}
   L2: {seeds: [0, 1, 2], max_epochs: 20}

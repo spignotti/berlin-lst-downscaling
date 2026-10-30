@@ -71,6 +71,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
 )
+from berlin_lst_downscaling.modeling.evaluation_exports import score_patch_ssim_variants
 from berlin_lst_downscaling.modeling.metrics import (
     masked_abs_error_sums,
     masked_ssim_stats,
@@ -569,6 +570,8 @@ class EvalSplit:
     filled_feature_pixels: list[int]
     exclusions: dict[str, int]
     seconds: float
+    scene_ids: list[str]  # aligned with patch_ids
+    scene_dates: list[str | None]  # aligned with patch_ids
 
 
 def collect_eval_split(
@@ -583,6 +586,8 @@ def collect_eval_split(
     mask: list[np.ndarray] = []
     patch_ids: list[str] = []
     filled: list[int] = []
+    scene_ids: list[str] = []
+    scene_dates: list[str | None] = []
     before = Counter(reader.exclusions)
     started = time.monotonic()
     for position, ref in enumerate(refs):
@@ -607,6 +612,8 @@ def collect_eval_split(
         mask.append(sample.mask_100m[0])
         patch_ids.append(sample.meta.patch_id)
         filled.append(sample.meta.filled_feature_pixels)
+        scene_ids.append(sample.meta.scene_id)
+        scene_dates.append(sample.meta.scene_date)
     if not patch_ids:
         raise ValueError(f"split {split!r} evaluated no patch")
     return EvalSplit(
@@ -620,6 +627,8 @@ def collect_eval_split(
         filled_feature_pixels=filled,
         exclusions={k: v for k, v in (Counter(reader.exclusions) - before).items()},
         seconds=time.monotonic() - started,
+        scene_ids=scene_ids,
+        scene_dates=scene_dates,
     )
 
 
@@ -672,6 +681,9 @@ def score_stage(
                 ssim_sum=float(ssim_sum),
                 ssim_windows=int(ssim_windows),
                 filled_feature_pixels=cache.filled_feature_pixels[i],
+                scene_id=cache.scene_ids[i],
+                scene_date=cache.scene_dates[i],
+                **asdict(score_patch_ssim_variants(pooled, target, mask)),
             )
         )
     return records

@@ -184,6 +184,18 @@ def _run_block(context: dict, source_sha: str) -> dict:
     }
 
 
+def lr_schedule_from_summary(summary: dict | None) -> dict:
+    """Return the recorded LR schedule; a summary without the field is constant."""
+    recorded = (summary or {}).get("lr_schedule")
+    if recorded is None:
+        return {"name": "constant"}
+    if not isinstance(recorded, dict) or recorded.get("name") not in ("constant", "cosine"):
+        raise ValueError(
+            f"summary lr_schedule must be a dict with name constant|cosine: {recorded!r}"
+        )
+    return recorded
+
+
 def full_run_status(epochs: object, summary: dict | None) -> tuple[bool, bool]:
     """Return ``(epochs_complete, test_skipped)`` for a full-profile run.
 
@@ -273,6 +285,7 @@ def build_record(
         record["probe"] = {
             "epoch_metrics": epochs if isinstance(epochs, list) else [],
             "summary": summary or {},
+            "lr_schedule": lr_schedule_from_summary(summary),
             # A probe is only a valid learning signal if every requested epoch
             # ran; surface a short run explicitly rather than as a pass.
             "epochs_complete": isinstance(epochs, list)
@@ -288,6 +301,7 @@ def build_record(
         record["full"] = {
             "epoch_metrics": epochs if isinstance(epochs, list) else [],
             "summary": summary or {},
+            "lr_schedule": lr_schedule_from_summary(summary),
             "test_scope": test_scope or {},
             # A full run is only decidable when every requested epoch ran (or
             # the recorded early stop was reached) and the selected checkpoint

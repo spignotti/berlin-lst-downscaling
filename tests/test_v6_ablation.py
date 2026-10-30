@@ -273,6 +273,33 @@ def test_valid_raw_matrix_parses() -> None:
     assert len(plan_runs(parse_v6_matrix(_raw()))) == 9
 
 
+def test_matrix_lr_schedule_defaults_to_constant_and_reaches_runs() -> None:
+    assert parse_v6_matrix(_raw()).lr_schedule == "constant"
+    raw = _raw()
+    raw["lr_schedule"] = "cosine"
+    runs = plan_runs(parse_v6_matrix(raw))
+    assert {r.lr_schedule for r in runs} == {"cosine"}
+
+
+@pytest.mark.parametrize("value", ["linear", "", None, True])
+def test_bad_matrix_lr_schedule_rejected(value: object) -> None:
+    raw = _raw()
+    raw["lr_schedule"] = value
+    with pytest.raises(ValueError, match="lr_schedule"):
+        parse_v6_matrix(raw)
+
+
+def test_per_arm_lr_schedule_rejected() -> None:
+    raw = _raw()
+    raw["arms"]["L2"]["lr_schedule"] = "cosine"
+    with pytest.raises(ValueError, match="matrix-level"):
+        parse_v6_matrix(raw)
+
+
+def test_shipped_matrix_is_constant() -> None:
+    assert load_v6_matrix(_MATRIX).lr_schedule == "constant"
+
+
 def test_missing_arm_rejected() -> None:
     raw = _raw()
     del raw["arms"]["L1"]
