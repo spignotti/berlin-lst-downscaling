@@ -349,3 +349,37 @@ def test_bad_lr_schedule_in_summary_raises(
 ) -> None:
     with pytest.raises(ValueError, match="lr_schedule"):
         _full_record(evidence, tmp_path, {"max_epochs": 20, "lr_schedule": bad})
+
+
+def test_prebuilt_cache_keys_are_copied_into_scope_and_data_prep(
+    evidence: ModuleType, tmp_path: Path
+) -> None:
+    scope = {
+        "mode": "stream",
+        "cache_build_seconds": 0.0,
+        "patch_cache_source": "prebuilt",
+        "patch_cache_prefix": "gs://b/patch-cache/v1/abc",
+        "patch_cache_key": "abc",
+        "prebuilt_download_seconds": 3.0,
+        "prebuilt_verify_seconds": 1.0,
+        "prebuilt_load_seconds": 0.5,
+        "prebuilt_bytes": 100,
+        "prebuilt_shards": 4,
+    }
+    (tmp_path / "data_scope.json").write_text(json.dumps(scope))
+    _write_modeling_log(tmp_path, [])
+    record = _record(evidence, tmp_path)
+    for key, value in scope.items():
+        if key.startswith(("patch_cache", "prebuilt")):
+            assert record["data_scope"][key] == value
+            assert record["phase_timings"]["data_prep"][key] == value
+    assert (
+        "patch_cache_source"
+        not in _record_without_cache(evidence, tmp_path / "plain")["data_scope"]
+    )
+
+
+def _record_without_cache(evidence: ModuleType, run_root: Path) -> dict:
+    run_root.mkdir()
+    (run_root / "data_scope.json").write_text(json.dumps({"mode": "eager"}))
+    return _record(evidence, run_root)

@@ -325,3 +325,54 @@ def test_cosine_with_max_epochs_not_above_warmup_fails_before_submit(
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises((SystemExit, ValueError)):
         launcher.main()
+
+
+def test_default_adds_no_patch_cache_override_or_env(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _out(launcher, monkeypatch, capsys)
+    assert "patch_cache" not in out.split("hydra overrides:")[1]
+    assert "patch cache    : job-local build" in out
+    env = _submit_env(launcher, monkeypatch)
+    assert not {"VERTEX_PATCH_CACHE_SOURCE", "VERTEX_PATCH_CACHE_FALLBACK"} & set(env)
+
+
+def test_prebuilt_adds_override_env_and_passes_guards(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _out(launcher, monkeypatch, capsys, "--patch-cache", "prebuilt")
+    overrides = out.split("hydra overrides:")[1].split()
+    assert "+data.patch_cache.source=prebuilt" in overrides
+    assert not any("allow_job_local_fallback" in item for item in overrides)
+    assert "patch cache    : prebuilt\n" in out
+    env = _submit_env(launcher, monkeypatch, "--patch-cache", "prebuilt")
+    assert env["VERTEX_PATCH_CACHE_SOURCE"] == "prebuilt"
+    assert "VERTEX_PATCH_CACHE_FALLBACK" not in env
+
+
+def test_prebuilt_fallback_flag_reaches_override_and_env(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flags = ("--patch-cache", "prebuilt", "--allow-job-local-fallback")
+    out = _out(launcher, monkeypatch, capsys, *flags)
+    assert "+data.patch_cache.allow_job_local_fallback=true" in out
+    assert "prebuilt (job-local fallback allowed)" in out
+    env = _submit_env(launcher, monkeypatch, *flags)
+    assert env["VERTEX_PATCH_CACHE_SOURCE"] == "prebuilt"
+    assert env["VERTEX_PATCH_CACHE_FALLBACK"] == "1"
+
+
+def test_fallback_without_prebuilt_is_refused(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv("v6-l4", "--allow-job-local-fallback"))
+    with pytest.raises(SystemExit, match="requires --patch-cache prebuilt"):
+        launcher.main()
+
+
+def test_non_v6_mode_rejects_prebuilt_patch_cache(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv("stage4", "--patch-cache", "prebuilt"))
+    with pytest.raises(SystemExit, match="--patch-cache is only accepted by the v6 modes"):
+        launcher.main()

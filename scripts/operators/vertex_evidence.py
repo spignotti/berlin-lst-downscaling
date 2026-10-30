@@ -38,6 +38,17 @@ _RESULT_TAIL_LINES = 20
 
 _logger = logging.getLogger(__name__)
 
+_PATCH_CACHE_SCOPE_KEYS = (
+    "patch_cache_source",
+    "patch_cache_prefix",
+    "patch_cache_key",
+    "prebuilt_download_seconds",
+    "prebuilt_verify_seconds",
+    "prebuilt_load_seconds",
+    "prebuilt_bytes",
+    "prebuilt_shards",
+)
+
 _UNOBSERVABLE_PHASES = {
     "provision_to_container": "Vertex provisioning precedes the container; not observable inside",
     "platform_teardown": "Vertex teardown follows the container exit; not observable inside it",
@@ -109,6 +120,7 @@ def build_phase_timings(
                 "cache_build_seconds",
                 "cache_build_workers",
                 "cache_reused",
+                *_PATCH_CACHE_SCOPE_KEYS,
             )
             if key in scope
         },
@@ -276,6 +288,8 @@ def build_record(
             "partial_mask_patches_per_split": scope.get("partial_mask_patches_per_split"),
             "exclusions": scope.get("exclusions"),
             "patch_ids": scope.get("patch_ids"),
+            **{key: scope[key] for key in _PATCH_CACHE_SCOPE_KEYS if key in scope},
+            "prebuilt_build_provenance": scope.get("prebuilt_build_provenance"),
         },
     }
     if profile in ("probe", "probe-residual"):

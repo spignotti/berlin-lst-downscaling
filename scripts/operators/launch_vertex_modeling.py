@@ -1057,6 +1057,21 @@ def main() -> int:
         action="store_true",
         help="v6 modes only; do not score the 2025 test split (pilot/timing runs)",
     )
+    parser.add_argument(
+        "--patch-cache",
+        choices=("job_local", "prebuilt"),
+        default="job_local",
+        help=(
+            "v6 modes only; prebuilt downloads the verified versioned patch cache from "
+            "the patch-cache prefix instead of building it in the job (default job_local)"
+        ),
+    )
+    parser.add_argument(
+        "--allow-job-local-fallback",
+        action="store_true",
+        help="requires --patch-cache prebuilt; build job-locally (with a warning) if the "
+        "prebuilt cache is missing or fails verification",
+    )
     parser.add_argument("--efficiency-role", choices=("baseline", "cache", "diagnostic", "final"))
     parser.add_argument("--efficiency-workers", type=int, choices=(0, 2, 4), default=2)
     parser.add_argument(
@@ -1154,6 +1169,12 @@ def main() -> int:
             "ERROR: --early-stopping-patience, --early-stopping-min-delta and --skip-test "
             f"are only accepted by the v6 modes, not {args.mode!r}"
         )
+    if not is_v6 and args.patch_cache != "job_local":
+        raise SystemExit(
+            f"ERROR: --patch-cache is only accepted by the v6 modes, not {args.mode!r}"
+        )
+    if args.allow_job_local_fallback and args.patch_cache != "prebuilt":
+        raise SystemExit("ERROR: --allow-job-local-fallback requires --patch-cache prebuilt")
     if es_min_delta is not None and es_patience is None:
         raise SystemExit("ERROR: --early-stopping-min-delta requires --early-stopping-patience")
     if es_patience is not None and es_patience < 1:
@@ -1187,6 +1208,10 @@ def main() -> int:
             hydra_overrides.append(f"early_stopping.min_delta={es_min_delta}")
     if args.skip_test:
         hydra_overrides.append("evaluate_test=false")
+    if args.patch_cache == "prebuilt":
+        hydra_overrides.append("+data.patch_cache.source=prebuilt")
+        if args.allow_job_local_fallback:
+            hydra_overrides.append("+data.patch_cache.allow_job_local_fallback=true")
     if args.timeout_seconds is not None:
         timeout_seconds = args.timeout_seconds
     elif args.mode in _FULL_TEMPORAL_MODES:
@@ -1408,6 +1433,10 @@ def main() -> int:
                 env.append(("VERTEX_EARLY_STOPPING_MIN_DELTA", str(es_min_delta)))
         if args.skip_test:
             env.append(("VERTEX_SKIP_TEST", "1"))
+        if args.patch_cache == "prebuilt":
+            env.append(("VERTEX_PATCH_CACHE_SOURCE", "prebuilt"))
+            if args.allow_job_local_fallback:
+                env.append(("VERTEX_PATCH_CACHE_FALLBACK", "1"))
         env.append(("VERTEX_EPOCH_METRICS_URI", f"{run_prefix}/epoch_metrics.json"))
     if args.mode == "efficiency":
         env.extend(
@@ -1485,6 +1514,15 @@ def main() -> int:
             )
         )
         print(f"  test pass      : {'skipped' if args.skip_test else 'scored'}")
+        print(
+            "  patch cache    : "
+            + (
+                "job-local build"
+                if args.patch_cache == "job_local"
+                else "prebuilt"
+                + (" (job-local fallback allowed)" if args.allow_job_local_fallback else "")
+            )
+        )
         print(f"  hydra overrides: {' '.join(hydra_overrides)}")
     print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")

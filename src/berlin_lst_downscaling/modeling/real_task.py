@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 import threading
 import time
 from collections import Counter
@@ -35,6 +36,7 @@ from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_X,
     CANON_GRID_ORIGIN_Y,
@@ -91,6 +93,13 @@ from berlin_lst_downscaling.modeling.patches import (
     collate_real_batch,
     load_patch_refs,
     patch_index_fingerprints,
+)
+from berlin_lst_downscaling.modeling.prebuilt_cache import (
+    PrebuiltCacheError,
+    fetch_prebuilt_cache,
+    prebuilt_key,
+    prebuilt_key_components,
+    prebuilt_prefix,
 )
 from berlin_lst_downscaling.modeling.ssim_range import resolve_task_ssim_data_range
 from berlin_lst_downscaling.modeling.timing import timed_phase
@@ -256,9 +265,25 @@ class RealPatchDataModule(LightningDataModule):
         cache_max_bytes: int = 0,
         cache_build_workers: int = 1,
         reuse_ready_cache: bool = False,
+        cache_source: str = "job_local",
+        prebuilt_uri_root: str | None = None,
+        allow_job_local_fallback: bool = False,
+        prebuilt_download_workers: int = 8,
+        prebuilt_download_retries: int = 3,
     ) -> None:
         super().__init__()
         self.reuse_ready_cache = reuse_ready_cache
+        if cache_source not in ("job_local", "prebuilt"):
+            raise ValueError(f"cache_source {cache_source!r} is not one of 'job_local', 'prebuilt'")
+        if cache_source == "prebuilt" and (cache_root is None or not prebuilt_uri_root):
+            raise ValueError("cache_source 'prebuilt' requires cache_root and prebuilt_uri_root")
+        if prebuilt_download_workers < 1 or prebuilt_download_retries < 1:
+            raise ValueError("prebuilt download workers and retries must be >= 1")
+        self.cache_source = cache_source
+        self.prebuilt_uri_root = prebuilt_uri_root
+        self.allow_job_local_fallback = allow_job_local_fallback
+        self.prebuilt_download_workers = prebuilt_download_workers
+        self.prebuilt_download_retries = prebuilt_download_retries
         self.cache_build_workers = validate_read_workers(cache_build_workers)
         if mode not in ("eager", "stream"):
             raise ValueError(f"data mode {mode!r} is not one of 'eager', 'stream'")
@@ -301,6 +326,15 @@ class RealPatchDataModule(LightningDataModule):
         self.source_setup_seconds = 0.0
         self.admission_seconds = 0.0
         self.cache_reused = False
+        self.patch_cache_source: str | None = None
+        self.patch_cache_prefix: str | None = None
+        self.patch_cache_key: str | None = None
+        self.prebuilt_download_seconds: float | None = None
+        self.prebuilt_verify_seconds: float | None = None
+        self.prebuilt_load_seconds: float | None = None
+        self.prebuilt_bytes: int | None = None
+        self.prebuilt_shards: int | None = None
+        self.prebuilt_build_provenance: dict[str, object] | None = None
         self.reader: RealPatchReader | None = None
         self._admitted: dict[str, list[PatchRef]] = {}
         self._requested: dict[str, list[PatchRef]] = {split: [] for split in self.splits}
@@ -412,7 +446,11 @@ class RealPatchDataModule(LightningDataModule):
         if self.cache_root is not None:
             # The cache build reads every admitted patch once; an eager
             # pre-collation would read the features a second time.
-            self._build_cache()
+            if self.cache_source == "prebuilt":
+                self._materialize_prebuilt()
+            else:
+                self._build_cache()
+                self.patch_cache_source = "job_local"
             return
         for split, admitted in self._admitted.items():
             if self.mode == "eager":
@@ -420,17 +458,20 @@ class RealPatchDataModule(LightningDataModule):
             else:
                 self._datasets[split] = RealPatchDataset(self.source, admitted)
 
-    def _build_cache(self) -> None:
-        """Build an ordered cache from admitted refs and replace split datasets."""
-        if self.cache_root is None or self.reader is None:
-            raise RuntimeError("cache build requires a configured path and initialized reader")
-        reader = self.reader
+    def _cache_patch_order(self) -> list[PatchRef]:
+        """Admitted refs in cache row order: train rows, then validation rows."""
         if set(self.splits) != {"train", "validation"}:
             raise ValueError("job-local cache requires exactly train and validation splits")
         ordered_refs = [ref for split in ("train", "validation") for ref in self._admitted[split]]
         if not ordered_refs:
             raise RuntimeError("cannot build an empty job-local cache")
-        patch_ids = [ref.patch_id for ref in ordered_refs]
+        return ordered_refs
+
+    def _cache_provenance(self, ordered_refs: list[PatchRef]) -> tuple[dict[str, object], int]:
+        """Return the cache provenance and the source channel width."""
+        if self.reader is None:
+            raise RuntimeError("cache provenance requires an initialized reader")
+        reader = self.reader
         scope = self.stats()
         scaler_record = asdict(reader.scaler)
         scaler_digest = hashlib.sha256(
@@ -465,6 +506,39 @@ class RealPatchDataModule(LightningDataModule):
             "admitted_patch_ids": scope["patch_ids"],
             "skipped_refs": scope["skipped_refs"],
         }
+        return provenance, source_channels
+
+    def cache_provenance(self) -> dict[str, object]:
+        """The provenance the cache of this (set up) module is keyed on."""
+        return self._cache_provenance(self._cache_patch_order())[0]
+
+    def prebuilt_components(self) -> dict[str, object]:
+        """Key components of the prebuilt cache this (set up) module resolves to."""
+        if self.reader is None:
+            raise RuntimeError("setup() must run before prebuilt_components()")
+        return prebuilt_key_components(
+            self.cache_provenance(),
+            source_channel_order=list(self.reader.scaler.channel_order),
+            splits=("train", "validation"),
+        )
+
+    def _install_cached_datasets(self, cache_root: Path, provenance: dict[str, object]) -> None:
+        offset = 0
+        for split in ("train", "validation"):
+            refs = self._admitted[split]
+            self._datasets[split] = CachedRealPatchDataset(
+                cache_root, provenance, range(offset, offset + len(refs))
+            )
+            offset += len(refs)
+
+    def _build_cache(self) -> None:
+        """Build an ordered cache from admitted refs and replace split datasets."""
+        if self.cache_root is None or self.reader is None:
+            raise RuntimeError("cache build requires a configured path and initialized reader")
+        reader = self.reader
+        ordered_refs = self._cache_patch_order()
+        patch_ids = [ref.patch_id for ref in ordered_refs]
+        provenance, source_channels = self._cache_provenance(ordered_refs)
 
         cache_root = self.cache_root
         ready = (cache_root / "manifest.json").is_file()
@@ -495,14 +569,63 @@ class RealPatchDataModule(LightningDataModule):
                 self._write_cache(cache_root, reader, ordered_refs, source_channels, provenance)
             self.cache_build_seconds = time.perf_counter() - cache_started
         PatchCache(cache_root, provenance)
+        self._install_cached_datasets(cache_root, provenance)
 
-        offset = 0
-        for split in ("train", "validation"):
-            refs = self._admitted[split]
-            self._datasets[split] = CachedRealPatchDataset(
-                cache_root, provenance, range(offset, offset + len(refs))
+    def _materialize_prebuilt(self) -> None:
+        """Fetch the versioned prebuilt cache and install it as the split datasets."""
+        if self.cache_root is None or self.reader is None or self.prebuilt_uri_root is None:
+            raise RuntimeError("prebuilt cache requires cache_root, uri root and a reader")
+        cache_root = self.cache_root
+        ordered_refs = self._cache_patch_order()
+        patch_ids = [ref.patch_id for ref in ordered_refs]
+        provenance, _ = self._cache_provenance(ordered_refs)
+        components = self.prebuilt_components()
+        prefix = prebuilt_prefix(self.prebuilt_uri_root, components)
+        self.patch_cache_prefix = prefix
+        self.patch_cache_key = prebuilt_key(components)
+        if cache_root.exists():
+            raise RuntimeError(
+                f"cache root {cache_root} already exists; "
+                "refusing to fetch a prebuilt cache into it"
             )
-            offset += len(refs)
+        try:
+            fetched = fetch_prebuilt_cache(
+                prefix,
+                cache_root,
+                expected_components=components,
+                max_workers=self.prebuilt_download_workers,
+                retries=self.prebuilt_download_retries,
+            )
+            self.prebuilt_download_seconds = cast(float, fetched["prebuilt_download_seconds"])
+            self.prebuilt_verify_seconds = cast(float, fetched["prebuilt_verify_seconds"])
+            self.prebuilt_bytes = cast(int, fetched["prebuilt_bytes"])
+            self.prebuilt_shards = cast(int, fetched["prebuilt_shards"])
+            self.prebuilt_build_provenance = cast(
+                dict[str, object], fetched["prebuilt_build_provenance"]
+            )
+            with timed_phase("prebuilt_load", logger=logger, patch_count=len(patch_ids)):
+                load_started = time.perf_counter()
+                self._verify_ready_cache(cache_root, provenance, patch_ids)
+                self._install_cached_datasets(cache_root, provenance)
+                self.prebuilt_load_seconds = time.perf_counter() - load_started
+        except (PrebuiltCacheError, RuntimeError) as exc:
+            if not self.allow_job_local_fallback:
+                raise
+            log_event(
+                logger,
+                logging.WARNING,
+                "patch_cache_prebuilt_fallback",
+                prefix=prefix,
+                reason=str(exc),
+                field=getattr(exc, "field", None),
+            )
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
+            self._datasets.clear()
+            self._build_cache()
+            self.patch_cache_source = "job_local_fallback"
+            return
+        self.patch_cache_source = "prebuilt"
 
     def _verify_ready_cache(
         self, cache_root: Path, provenance: dict[str, object], patch_ids: list[str]
@@ -580,6 +703,15 @@ class RealPatchDataModule(LightningDataModule):
             "cache_build_seconds": self.cache_build_seconds,
             "cache_build_workers": self.cache_build_workers,
             "cache_reused": self.cache_reused,
+            "patch_cache_source": self.patch_cache_source,
+            "patch_cache_prefix": self.patch_cache_prefix,
+            "patch_cache_key": self.patch_cache_key,
+            "prebuilt_download_seconds": self.prebuilt_download_seconds,
+            "prebuilt_verify_seconds": self.prebuilt_verify_seconds,
+            "prebuilt_load_seconds": self.prebuilt_load_seconds,
+            "prebuilt_bytes": self.prebuilt_bytes,
+            "prebuilt_shards": self.prebuilt_shards,
+            "prebuilt_build_provenance": self.prebuilt_build_provenance,
             "batches_per_split": {
                 split: _batch_count(len(refs), self.batch_size)
                 for split, refs in self._admitted.items()

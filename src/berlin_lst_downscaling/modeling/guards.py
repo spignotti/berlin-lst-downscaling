@@ -1054,6 +1054,48 @@ def assert_aggregation_arithmetic_for_locked(cfg: DictConfig, config_name: str |
         )
 
 
+_PATCH_CACHE_KEYS = frozenset(
+    {"source", "uri_root", "allow_job_local_fallback", "download_workers", "download_retries"}
+)
+
+
+def _check_patch_cache(cfg: DictConfig) -> None:
+    """Validate ``data.patch_cache`` when present (the prebuilt-cache selection)."""
+    data_cfg = cfg.get("data")
+    raw = data_cfg.get("patch_cache") if data_cfg is not None else None
+    if raw is None:
+        return
+    container = OmegaConf.to_container(raw, resolve=True) if isinstance(raw, DictConfig) else raw
+    if not isinstance(container, dict):
+        raise ValueError("data.patch_cache must be a mapping")
+    values = {str(key): value for key, value in container.items()}
+    unknown = sorted(set(values) - _PATCH_CACHE_KEYS)
+    if unknown:
+        raise ValueError(f"unknown data.patch_cache key(s) {unknown}")
+    source = values.get("source")
+    if source not in ("job_local", "prebuilt"):
+        raise ValueError(
+            f"data.patch_cache.source must be 'job_local' or 'prebuilt', got {source!r}"
+        )
+    fallback = values.get("allow_job_local_fallback", False)
+    if not isinstance(fallback, bool):
+        raise ValueError(
+            f"data.patch_cache.allow_job_local_fallback must be a bool, got {fallback!r}"
+        )
+    if "uri_root" in values:
+        uri_root = values["uri_root"]
+        if not isinstance(uri_root, str) or not (
+            uri_root.startswith("gs://") or uri_root.startswith("/")
+        ):
+            raise ValueError(
+                f"data.patch_cache.uri_root must be a gs:// URI or absolute path, got {uri_root!r}"
+            )
+    for key in ("download_workers", "download_retries"):
+        value = values.get(key, 1)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"data.patch_cache.{key} must be an int >= 1, got {value!r}")
+
+
 def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     """Run the config-identity guards before any run directory or source read.
 
@@ -1085,6 +1127,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "the J1–J4 efficiency results in docs/stage1-efficiency.md"
         )
     cache_build_workers_from_config(cfg)
+    _check_patch_cache(cfg)
     _residual_prior_configs = {
         STAGE1_LOCKED_CONFIG_NAME,
         STAGE1_PROBE_CONFIG_NAME,

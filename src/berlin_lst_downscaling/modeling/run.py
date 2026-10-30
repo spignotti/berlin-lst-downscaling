@@ -28,7 +28,7 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import torch
 from lightning.pytorch import LightningModule, Trainer, seed_everything
@@ -38,7 +38,7 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.data.features.contracts import FEATURE_SCHEMA_VERSION_V6
-from berlin_lst_downscaling.data.io import log_event, run_context_path
+from berlin_lst_downscaling.data.io import CANONICAL_BUCKET, log_event, run_context_path
 from berlin_lst_downscaling.modeling.aggregation import (
     AggregationMethod,
     resolve_aggregation_method,
@@ -134,6 +134,57 @@ def _resolve_cache_budget(cfg: DictConfig) -> int:
     if isinstance(legacy, bool):
         raise ValueError("stage1_efficiency_cache_max_bytes must be an int")
     return int(legacy or 0)
+
+
+_PATCH_CACHE_KEYS = frozenset(
+    {"source", "uri_root", "allow_job_local_fallback", "download_workers", "download_retries"}
+)
+_DEFAULT_PATCH_CACHE_URI_ROOT = f"{CANONICAL_BUCKET}patch-cache"
+
+
+def _resolve_patch_cache(cfg: DictConfig) -> dict[str, object]:
+    """Return the strictly validated ``data.patch_cache`` settings.
+
+    Absent means a job-local build, the behavior before the prebuilt cache.
+    """
+    data_cfg = cfg.get("data", {})
+    raw = data_cfg.get("patch_cache")
+    resolved: dict[str, object] = {
+        "source": "job_local",
+        "uri_root": _DEFAULT_PATCH_CACHE_URI_ROOT,
+        "allow_job_local_fallback": False,
+        "download_workers": 8,
+        "download_retries": 3,
+    }
+    if raw is None:
+        return resolved
+    container = OmegaConf.to_container(raw, resolve=True) if isinstance(raw, DictConfig) else raw
+    if not isinstance(container, dict):
+        raise ValueError("data.patch_cache must be a mapping")
+    values = {str(key): value for key, value in container.items()}
+    unknown = sorted(set(values) - _PATCH_CACHE_KEYS)
+    if unknown:
+        raise ValueError(f"unknown data.patch_cache key(s) {unknown}")
+    for key, value in values.items():
+        if key == "source":
+            if value not in ("job_local", "prebuilt"):
+                raise ValueError(
+                    f"data.patch_cache.source must be 'job_local' or 'prebuilt', got {value!r}"
+                )
+        elif key == "uri_root":
+            if not isinstance(value, str) or not value.startswith(("gs://", "/")):
+                raise ValueError(
+                    f"data.patch_cache.uri_root must be a gs:// URI or absolute path, got {value!r}"
+                )
+        elif key == "allow_job_local_fallback":
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"data.patch_cache.allow_job_local_fallback must be a bool, got {value!r}"
+                )
+        elif not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"data.patch_cache.{key} must be an int >= 1, got {value!r}")
+        resolved[key] = value
+    return resolved
 
 
 def _resolve_cache_root(cfg: DictConfig, *, output_root: Path) -> Path | None:
@@ -869,6 +920,8 @@ def _fit_contract_lifecycle(
             "exclusions": scope["exclusions"],
             "patch_ids_uri": str(scope_uri),
             "cache_build_workers": scope.get("cache_build_workers"),
+            "patch_cache_source": scope.get("patch_cache_source"),
+            "patch_cache_key": scope.get("patch_cache_key"),
         },
         "git_revision": _git_revision_from_context(
             run_context_path(str(cfg.output_root), "modeling", run_id)
@@ -1098,6 +1151,72 @@ def run_contract_synthetic_training(cfg: DictConfig, run_id: str) -> ModelingRun
     )
 
 
+def build_real_datamodule(
+    cfg: DictConfig,
+    *,
+    cache_root: Path | None,
+    cache_max_bytes: int,
+    **overrides: Any,
+) -> RealPatchDataModule:
+    """Build the real patch data module exactly as a training run does.
+
+    The prebuilt-cache builder reuses this so its reader, scaler, channel
+    selection and cache build are the ones a run would use. ``overrides`` replace
+    constructor keywords (the builder forces ``cache_source="job_local"``).
+    """
+    source = real_source_config(cfg)
+    scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
+    # ``null`` means unbounded (a full run); ``0`` would otherwise be falsy and
+    # silently become unbounded, so reject it explicitly.
+    max_patches = cfg.data.get("max_patches_per_split")
+    if max_patches is not None:
+        if isinstance(max_patches, bool) or int(max_patches) <= 0:
+            raise ValueError(
+                "data.max_patches_per_split must be a positive int or null "
+                f"(unbounded), got {max_patches!r}"
+            )
+        max_patches = int(max_patches)
+    splits = tuple(str(s) for s in (cfg.data.get("splits") or _REAL_SPLITS))
+    probe_cfg = cfg.data.get("probe")
+    probe_scope = (
+        ProbeScope(
+            max_refs_per_split={str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()},
+            max_refs_per_scene=int(probe_cfg.max_refs_per_scene),
+            require_partial_masks=bool(probe_cfg.get("require_partial_masks", False)),
+        )
+        if probe_cfg is not None
+        else None
+    )
+    selection = selection_from_config(cfg)
+    if schema_version_from_config(cfg) == FEATURE_SCHEMA_VERSION_V6:
+        assert_scaler_matches_config(cfg, load_scaler(source.training_root))
+    patch_cache = _resolve_patch_cache(cfg)
+    kwargs: dict[str, Any] = {
+        "batch_size": int(cfg.data.batch_size),
+        "max_patches_per_split": max_patches,
+        "scene_ids": scene_ids or None,
+        "mode": str(cfg.data.get("mode", "eager")),
+        "num_workers": int(cfg.data.get("num_workers", 0)),
+        "shuffle_train": bool(cfg.data.get("shuffle_train", False)),
+        "seed": int(cfg.seed),
+        "n_active_channels": selection.n_active,
+        "channel_indices": selection.indices,
+        "splits": splits,
+        "probe_scope": probe_scope,
+        "pin_memory": bool(cfg.data.get("pin_memory", False)),
+        "cache_root": cache_root,
+        "cache_max_bytes": cache_max_bytes,
+        "cache_build_workers": cache_build_workers_from_config(cfg),
+        "cache_source": patch_cache["source"],
+        "prebuilt_uri_root": patch_cache["uri_root"],
+        "allow_job_local_fallback": patch_cache["allow_job_local_fallback"],
+        "prebuilt_download_workers": patch_cache["download_workers"],
+        "prebuilt_download_retries": patch_cache["download_retries"],
+    }
+    kwargs.update(overrides)
+    return RealPatchDataModule(source, **kwargs)
+
+
 def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     """Execute the contract-conforming real training lifecycle.
 
@@ -1132,29 +1251,6 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
                 "full Stage-1 / ablation fit splits must be exactly "
                 f"('train', 'validation'); got {declared!r}"
             )
-    source = real_source_config(cfg)
-    scene_ids = [str(s) for s in (cfg.data.get("scene_ids") or [])]
-    # ``null`` means unbounded (a full run); ``0`` would otherwise be falsy and
-    # silently become unbounded, so reject it explicitly.
-    max_patches = cfg.data.get("max_patches_per_split")
-    if max_patches is not None:
-        if isinstance(max_patches, bool) or int(max_patches) <= 0:
-            raise ValueError(
-                "data.max_patches_per_split must be a positive int or null "
-                f"(unbounded), got {max_patches!r}"
-            )
-        max_patches = int(max_patches)
-    splits = tuple(str(s) for s in (cfg.data.get("splits") or _REAL_SPLITS))
-    probe_cfg = cfg.data.get("probe")
-    probe_scope = (
-        ProbeScope(
-            max_refs_per_split={str(k): int(v) for k, v in probe_cfg.max_refs_per_split.items()},
-            max_refs_per_scene=int(probe_cfg.max_refs_per_scene),
-            require_partial_masks=bool(probe_cfg.get("require_partial_masks", False)),
-        )
-        if probe_cfg is not None
-        else None
-    )
     output_root_hint = Path(str(cfg.get("output_root", "data/runs/modeling")))
     cache_budget = _resolve_cache_budget(cfg)
     cache_root = _resolve_cache_root(cfg, output_root=output_root_hint)
@@ -1169,27 +1265,8 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
             )
         if cache_budget <= 0:
             raise RuntimeError("a cache path requires a positive cache budget")
-    selection = selection_from_config(cfg)
-    if schema_version_from_config(cfg) == FEATURE_SCHEMA_VERSION_V6:
-        assert_scaler_matches_config(cfg, load_scaler(source.training_root))
-    data_module = RealPatchDataModule(
-        source,
-        batch_size=int(cfg.data.batch_size),
-        max_patches_per_split=max_patches,
-        scene_ids=scene_ids or None,
-        mode=str(cfg.data.get("mode", "eager")),
-        num_workers=int(cfg.data.get("num_workers", 0)),
-        shuffle_train=bool(cfg.data.get("shuffle_train", False)),
-        seed=int(cfg.seed),
-        n_active_channels=selection.n_active,
-        channel_indices=selection.indices,
-        splits=splits,
-        probe_scope=probe_scope,
-        pin_memory=bool(cfg.data.get("pin_memory", False)),
-        cache_root=cache_root,
-        cache_max_bytes=cache_budget,
-        cache_build_workers=cache_build_workers_from_config(cfg),
-    )
+    data_module = build_real_datamodule(cfg, cache_root=cache_root, cache_max_bytes=cache_budget)
+    source = real_source_config(cfg)
     return _fit_contract_lifecycle(
         cfg,
         run_id,

@@ -22,7 +22,10 @@
 #   VERTEX_EARLY_STOPPING_PATIENCE and VERTEX_EARLY_STOPPING_MIN_DELTA (v6;
 #   early_stopping.enabled=true, early_stopping.patience=..., early_stopping.min_delta=...),
 #   VERTEX_SKIP_TEST=1 (v6; evaluate_test=false), VERTEX_EPOCH_METRICS_URI (v6;
-#   gs:// destination for the epoch curve, uploaded create-only also on failure)
+#   gs:// destination for the epoch curve, uploaded create-only also on failure),
+#   VERTEX_PATCH_CACHE_SOURCE ("", job_local or prebuilt; prebuilt appends
+#   +data.patch_cache.source=prebuilt) and VERTEX_PATCH_CACHE_FALLBACK=1 (only with
+#   prebuilt; +data.patch_cache.allow_job_local_fallback=true)
 set -euo pipefail
 
 VERTEX_CONTAINER_STARTED_AT_NS="$(date +%s%N)"
@@ -135,6 +138,21 @@ else
   fi
   if [[ "${VERTEX_SKIP_TEST:-}" == "1" ]]; then
     run_command+=("evaluate_test=false")
+  fi
+  case "${VERTEX_PATCH_CACHE_SOURCE:-}" in
+    ""|job_local) ;;
+    prebuilt) run_command+=("+data.patch_cache.source=prebuilt") ;;
+    *)
+      echo "ERROR: VERTEX_PATCH_CACHE_SOURCE must be job_local or prebuilt, got '${VERTEX_PATCH_CACHE_SOURCE}'" >&2
+      exit 2
+      ;;
+  esac
+  if [[ "${VERTEX_PATCH_CACHE_FALLBACK:-}" == "1" ]]; then
+    if [[ "${VERTEX_PATCH_CACHE_SOURCE:-}" != "prebuilt" ]]; then
+      echo "ERROR: VERTEX_PATCH_CACHE_FALLBACK=1 requires VERTEX_PATCH_CACHE_SOURCE=prebuilt" >&2
+      exit 2
+    fi
+    run_command+=("+data.patch_cache.allow_job_local_fallback=true")
   fi
 fi
 

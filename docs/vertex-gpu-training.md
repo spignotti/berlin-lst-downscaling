@@ -414,6 +414,97 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 
 The resulting run label is `<label>-seed0-ep40-cos-notest`.
 
+### Prebuilt patch cache
+
+By default each v6 job builds its patch cache from the rasters (the threaded
+`cache_build` phase). The prebuilt cache moves that work to the operator machine
+once per cache identity: the job downloads verified shards instead. Selection is
+opt-in (`--patch-cache prebuilt`); the default stays a job-local build, and no
+`configs/*.yaml` carries the setting.
+
+Layout (one prefix per cache identity, holding train and validation together; the
+2025 test split is never cached and no flag can cache it):
+
+```text
+gs://berlin-lst-training-data/patch-cache/v<format>/<key>/
+  prebuilt_manifest.json     # uploaded last; a prefix without it is incomplete
+  shards/<file>-<NNNNN>.bin  # row-aligned byte shards, 512 MiB max each
+```
+
+The artifact is exactly the job-local cache directory (`features.npy`, `prior.npy`,
+`target.npy`, `mask.npy`, `manifest.json`; train rows then validation rows) built
+by the same `RealPatchDataModule` code, cut on row boundaries. Concatenating the
+shards reproduces each file byte for byte; `PatchCache` then runs its existing
+exact provenance check, so a stored cache that differs from the run's resolved
+sources cannot load.
+
+`key` is the first 16 hex characters of the SHA-256 of these components (sorted
+JSON): `cache_format_version`, `patch_cache_version`, `index_policy_hash`,
+`source_policy_hash`, `scaler_digest`, `source_channels`, `source_channel_order`,
+`channel_indices`, `splits` (`["train","validation"]`) and `provenance_sha256` (the
+digest of the full cache provenance: source roots, geometry and per-patch anchors,
+admitted and skipped patches, aggregation, preprocessing version).
+
+Rebuild (a new prefix appears by itself) whenever any component changes: a new patch
+index, a new source release or ARD, a new scaler, a different channel arm, different
+geometry or `max_patches_per_split`/scene bounds, or a new format version. Existing
+prefixes are never overwritten unless `--overwrite` is passed. The key does not pin
+the reader or preprocessing code revision (the manifest records the builder's
+`git_commit`, and runs copy it into `prebuilt_build_provenance`); after a change to
+the patch read or scaling code, bump `preprocessing_version` or rebuild under a new
+format version.
+
+Build and upload on the Mac (needs Application Default Credentials for the upload
+and for reading the `gs://` roots). The first command builds and packs locally, the
+second repeats it and uploads; `--dry-run` prints the key and prefix after the local
+build without packing or uploading.
+
+```bash
+uv run python scripts/operators/build_prebuilt_patch_cache.py \
+  --config-name v6_l4_locked --local-dir "$HOME/berlin-lst-cache-build/v6-l4" --local-only
+uv run python scripts/operators/build_prebuilt_patch_cache.py \
+  --config-name v6_l4_locked --local-dir "$HOME/berlin-lst-cache-build/v6-l4"
+```
+
+Use the locked config of the arm you will run (`v6_l1_locked` ... `v6_l5_locked`,
+`v6_loo_*_locked`, `v6_no_*_locked`) with the same `--override` values the run uses
+if any. `--local-dir` must be a local path and must not exist yet under `cache/`.
+
+Run selection:
+
+```bash
+... launch_vertex_modeling.py --mode v6-l4 ... --patch-cache prebuilt
+... launch_vertex_modeling.py --mode v6-l4 ... --patch-cache prebuilt --allow-job-local-fallback
+```
+
+The launcher appends `+data.patch_cache.source=prebuilt` (and
+`+data.patch_cache.allow_job_local_fallback=true`) to the Hydra overrides and sets
+`VERTEX_PATCH_CACHE_SOURCE=prebuilt` / `VERTEX_PATCH_CACHE_FALLBACK=1`, which the
+entrypoint turns into the same overrides. The run records `patch_cache_source`
+(`job_local`, `prebuilt` or `job_local_fallback`), `patch_cache_prefix`,
+`patch_cache_key` and `prebuilt_{download,verify,load}_seconds`, `prebuilt_bytes`
+and `prebuilt_shards` in `data_scope.json`, the evidence record and
+`phase_timings.data_prep`; the phases `prebuilt_download`, `prebuilt_verify` and
+`prebuilt_load` appear in `phase_timings.phases`.
+
+Failure modes (every one fails closed):
+
+- Missing prefix or no `prebuilt_manifest.json`: `PrebuiltCacheMissing`.
+- Identity mismatch: `PrebuiltCacheMismatch` names the component, before any shard
+  is downloaded.
+- A shard or the assembled file fails its size or SHA-256 check: each shard is
+  retried (default 3 attempts, `prebuilt_cache_shard_retry` warning events), then
+  `PrebuiltCacheChecksumError` names the shard and nothing is left in the cache root.
+- Upload to an existing prefix is refused without `--overwrite`.
+- Without `--allow-job-local-fallback` a failed prebuilt load stops the job and never
+  builds job-locally. With it, the job emits the warning event
+  `patch_cache_prebuilt_fallback` (prefix, reason, field), removes the partial cache
+  root, builds job-locally and records `patch_cache_source=job_local_fallback`.
+
+The container entrypoint changed, so rebuild and push the image with the steps in
+"Build and push the image" before the first prebuilt run, and pin the new digest in
+`--image-uri`.
+
 ## v6 fixed per-run overhead (data prep, post-fit, upload)
 
 Job `v6-l4-v6-n2-timing-20261030` (v6-l4, n1-standard-4 + 1x T4, image from

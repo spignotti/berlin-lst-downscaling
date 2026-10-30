@@ -113,6 +113,28 @@ def read_bytes(uri: UriLike) -> bytes:
     return _resolve_local(loc.uri).read_bytes()
 
 
+def download_to_file(uri: UriLike, local_path: Path | str) -> None:
+    """Stream the object at the URI into a local file (no memory load).
+
+    A missing object raises ``FileNotFoundError``.
+    """
+    loc = _as_loc(uri)
+    if loc.scheme == "gcs":
+        from google.api_core.exceptions import NotFound  # type: ignore[import-untyped]
+
+        bucket_name, key = _parse_gs_uri(loc.uri)
+        blob = _gcs_client().bucket(bucket_name).blob(key)
+        try:
+            blob.download_to_filename(str(local_path))
+        except NotFound as exc:
+            raise FileNotFoundError(loc.uri) from exc
+        return
+    src = _resolve_local(loc.uri)
+    if not src.is_file():
+        raise FileNotFoundError(str(src))
+    shutil.copyfile(src, local_path)
+
+
 def atomic_write(
     uri: UriLike,
     data: bytes | BinaryIO | str,
@@ -263,7 +285,12 @@ def _prune_tmp(tmp_dir: Path, max_age_s: int = 3600) -> None:
 
     now = _time.time()
     for p in tmp_dir.iterdir():
-        if p.is_file() and (now - p.stat().st_mtime) > max_age_s:
+        try:
+            stale = p.is_file() and (now - p.stat().st_mtime) > max_age_s
+        except FileNotFoundError:
+            # A concurrent upload into the same directory renamed its temp file.
+            continue
+        if stale:
             p.unlink(missing_ok=True)
 
 
