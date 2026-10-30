@@ -8,6 +8,10 @@
 # ``trainer.max_epochs`` and ``trainer.lr_schedule.name``, which are parameters
 # with defaults: override them per run (``seed=1 trainer.max_epochs=40
 # trainer.lr_schedule.name=cosine``). All are recorded in the run.
+#
+# ``data.cache_build_workers`` is operational, not a scientific pin: it bounds
+# the reader threads filling the job-local patch cache (1-4; 1 is the serial
+# reference path) and never changes the cached tensors or their order.
 defaults:
   - _base
   - _self_
@@ -41,6 +45,7 @@ data:
   scene_ids: []
   splits: ["train", "validation"]
   cache_root: null
+  cache_build_workers: 4
 
 model:
   depth: 4

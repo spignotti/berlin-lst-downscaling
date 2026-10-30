@@ -66,6 +66,7 @@ from berlin_lst_downscaling.modeling.guards import (
     assert_stage1_probe_lr3,
     assert_stage1_runtime,
     assert_vertex_smoke_bounds,
+    cache_build_workers_from_config,
     contract_invariants,
     early_stopping_from_config,
     evaluate_test_from_config,
@@ -101,6 +102,7 @@ from berlin_lst_downscaling.modeling.synthetic import (
     SyntheticDataModule,
 )
 from berlin_lst_downscaling.modeling.task import LSTRegressionTask
+from berlin_lst_downscaling.modeling.timing import EpochTimingRecorder, timed_phase
 
 _logger = logging.getLogger(__name__)
 
@@ -295,7 +297,8 @@ def run_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
     finally:
         # Record run metadata on every path; a failed run is still a
         # recorded run. Only a fully validated lifecycle is "success".
-        _finalize_wandb(wandb_logger, metadata, success)
+        with timed_phase("wandb_finalize", logger=_logger):
+            _finalize_wandb(wandb_logger, metadata, success)
 
     log_event(
         _logger,
@@ -750,8 +753,9 @@ def _fit_contract_lifecycle(
 
     # Record the read scope before fitting: which patches entered each split and
     # which were dropped, with reasons. Retained beside the run.
-    data_module.setup()
-    scope = data_module.stats()
+    with timed_phase("data_prep", logger=_logger):
+        data_module.setup()
+        scope = data_module.stats()
     # Fail closed on an empty split: a run with no admitted train or validation
     # patch cannot train or select a checkpoint, so it must not proceed.
     raw_counts = scope["patches_per_split"]
@@ -771,23 +775,24 @@ def _fit_contract_lifecycle(
     # fit then starts from.
     residual_identity_mae: float | None = None
     if residual_prior:
-        was_training = task.training
-        task.eval()
-        try:
-            residual_identity_mae = _residual_identity_mae(
-                task, data_module.val_dataloader(), aggregation=aggregation
-            )
-        finally:
-            task.train(was_training)
-        if (
-            not math.isfinite(residual_identity_mae)
-            or residual_identity_mae > RESIDUAL_IDENTITY_TOLERANCE_K
-        ):
-            raise RuntimeError(
-                f"residual identity check failed: pooled zero-init output vs prior arm "
-                f"MAE {residual_identity_mae:.6f} K exceeds "
-                f"{RESIDUAL_IDENTITY_TOLERANCE_K} K"
-            )
+        with timed_phase("residual_identity", logger=_logger):
+            was_training = task.training
+            task.eval()
+            try:
+                residual_identity_mae = _residual_identity_mae(
+                    task, data_module.val_dataloader(), aggregation=aggregation
+                )
+            finally:
+                task.train(was_training)
+            if (
+                not math.isfinite(residual_identity_mae)
+                or residual_identity_mae > RESIDUAL_IDENTITY_TOLERANCE_K
+            ):
+                raise RuntimeError(
+                    f"residual identity check failed: pooled zero-init output vs prior arm "
+                    f"MAE {residual_identity_mae:.6f} K exceeds "
+                    f"{RESIDUAL_IDENTITY_TOLERANCE_K} K"
+                )
 
     scope_uri = output_root / "data_scope.json"
     scope_uri.write_text(json.dumps(scope, indent=2, sort_keys=True), encoding="utf-8")
@@ -820,7 +825,7 @@ def _fit_contract_lifecycle(
     recorder = (
         EpochMetricsRecorder(output_root / "epoch_metrics.json") if is_probe or is_full else None
     )
-    callbacks: list[Callback] = [checkpoint_callback]
+    callbacks: list[Callback] = [checkpoint_callback, EpochTimingRecorder(logger=_logger)]
     if recorder is not None:
         callbacks.append(recorder)
     early_stop: EarlyStopping | None = None
@@ -863,6 +868,7 @@ def _fit_contract_lifecycle(
             "skipped_per_split": scope.get("skipped_per_split", {}),
             "exclusions": scope["exclusions"],
             "patch_ids_uri": str(scope_uri),
+            "cache_build_workers": scope.get("cache_build_workers"),
         },
         "git_revision": _git_revision_from_context(
             run_context_path(str(cfg.output_root), "modeling", run_id)
@@ -882,153 +888,168 @@ def _fit_contract_lifecycle(
     best_checkpoint = ""
     best_metric = 0.0
     try:
-        trainer.fit(task, datamodule=data_module)
-        stopped_epoch = _early_stop_epoch(
-            early_stop, trainer.callback_metrics, monitored, trainer.current_epoch
-        )
+        with timed_phase("fit", logger=_logger):
+            trainer.fit(task, datamodule=data_module)
+        with timed_phase("post_fit", logger=_logger):
+            stopped_epoch = _early_stop_epoch(
+                early_stop, trainer.callback_metrics, monitored, trainer.current_epoch
+            )
 
-        best_checkpoint = checkpoint_callback.best_model_path
-        if not best_checkpoint or not Path(best_checkpoint).is_file():
-            raise RuntimeError(f"no best checkpoint produced at {checkpoint_dir}")
-        if checkpoint_callback.best_model_score is None:
-            raise RuntimeError("best checkpoint produced no monitored score")
-        best_metric = float(checkpoint_callback.best_model_score)
-        export_identity = EvaluationIdentity(
-            arm=_export_arm(cfg, tessera_enabled),
-            seed=seed,
-            run_id=run_id,
-            checkpoint=_relative_checkpoint(best_checkpoint, output_root),
-        )
-        validation_rows: list[dict[str, object]] = []
+            best_checkpoint = checkpoint_callback.best_model_path
+            if not best_checkpoint or not Path(best_checkpoint).is_file():
+                raise RuntimeError(f"no best checkpoint produced at {checkpoint_dir}")
+            if checkpoint_callback.best_model_score is None:
+                raise RuntimeError("best checkpoint produced no monitored score")
+            best_metric = float(checkpoint_callback.best_model_score)
+            export_identity = EvaluationIdentity(
+                arm=_export_arm(cfg, tessera_enabled),
+                seed=seed,
+                run_id=run_id,
+                checkpoint=_relative_checkpoint(best_checkpoint, output_root),
+            )
+            validation_rows: list[dict[str, object]] = []
 
-        # Recoverable selected model state: reload the best checkpoint, verify
-        # it predicts on the contract shape, and recompute the selection metric
-        # over the validation batches in eval mode. The saved score is checked,
-        # not assumed.
-        # Verify on CPU: the validation batches below are CPU tensors, so the
-        # reloaded module must match them regardless of the training device.
-        if tessera_enabled:
-            from berlin_lst_downscaling.modeling.tessera_adapter import TesseraRealLSTTask
+            # Recoverable selected model state: reload the best checkpoint, verify
+            # it predicts on the contract shape, and recompute the selection metric
+            # over the validation batches in eval mode. The saved score is checked,
+            # not assumed.
+            # Verify on CPU: the validation batches below are CPU tensors, so the
+            # reloaded module must match them regardless of the training device.
+            with timed_phase("post_fit_checkpoint_load", logger=_logger):
+                if tessera_enabled:
+                    from berlin_lst_downscaling.modeling.tessera_adapter import TesseraRealLSTTask
 
-            reloaded = TesseraRealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
-        else:
-            reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
-        reloaded.eval()
-        recheck = MaskedMAE()
-        correction_abs_sum = 0.0
-        correction_cells = 0.0
-        with torch.inference_mode():
-            for batch in data_module.val_dataloader():
-                validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
-                prediction = reloaded(batch)
-                expected = (batch.features.shape[0], 1) + tuple(batch.features.shape[2:])
-                if tuple(prediction.shape) != expected:
+                    reloaded = TesseraRealLSTTask.load_from_checkpoint(
+                        best_checkpoint, map_location="cpu"
+                    )
+                else:
+                    reloaded = RealLSTTask.load_from_checkpoint(best_checkpoint, map_location="cpu")
+                reloaded.eval()
+            with timed_phase("post_fit_validation_verify", logger=_logger):
+                recheck = MaskedMAE()
+                correction_abs_sum = 0.0
+                correction_cells = 0.0
+                with torch.inference_mode():
+                    for batch in data_module.val_dataloader():
+                        validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
+                        prediction = reloaded(batch)
+                        expected = (batch.features.shape[0], 1) + tuple(batch.features.shape[2:])
+                        if tuple(prediction.shape) != expected:
+                            raise RuntimeError(
+                                f"reloaded checkpoint prediction shape mismatch: "
+                                f"{tuple(prediction.shape)} != {expected}"
+                            )
+                        if not torch.isfinite(prediction).all():
+                            raise RuntimeError(
+                                "reloaded best checkpoint produced non-finite predictions"
+                            )
+                        pooled_prediction = pool_10m_to_100m(
+                            prediction, aggregation, batch.mask_100m
+                        )
+                        recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
+                        validation_rows.extend(
+                            score_batch_patches(
+                                pooled_prediction,
+                                batch.target_100m,
+                                batch.mask_100m,
+                                batch.metadata,
+                                data_range_k=ssim_range.data_range_k,
+                            )
+                        )
+                        if residual_prior:
+                            prior_k = reconstruct_prior_kelvin(batch.lst_prior)
+                            pooled_prior = pool_10m_to_100m(prior_k, aggregation, batch.mask_100m)
+                            correction = pooled_prediction - pooled_prior
+                            valid = batch.mask_100m.bool()
+                            correction_abs_sum += float(correction[valid].abs().sum())
+                            correction_cells += float(valid.sum())
+                recomputed = float(recheck.compute())
+                tolerance = 1e-3 * max(1.0, abs(best_metric))
+                if abs(recomputed - best_metric) > tolerance:
                     raise RuntimeError(
-                        f"reloaded checkpoint prediction shape mismatch: "
-                        f"{tuple(prediction.shape)} != {expected}"
+                        f"reloaded checkpoint validation MAE {recomputed:.6f} != selected "
+                        f"{best_metric:.6f} (tolerance {tolerance:.6f})"
                     )
-                if not torch.isfinite(prediction).all():
-                    raise RuntimeError("reloaded best checkpoint produced non-finite predictions")
-                pooled_prediction = pool_10m_to_100m(prediction, aggregation, batch.mask_100m)
-                recheck.update(pooled_prediction, batch.target_100m, batch.mask_100m)
-                validation_rows.extend(
-                    score_batch_patches(
-                        pooled_prediction,
-                        batch.target_100m,
-                        batch.mask_100m,
-                        batch.metadata,
-                        data_range_k=ssim_range.data_range_k,
-                    )
-                )
+                correction_mean = None
                 if residual_prior:
-                    prior_k = reconstruct_prior_kelvin(batch.lst_prior)
-                    pooled_prior = pool_10m_to_100m(prior_k, aggregation, batch.mask_100m)
-                    correction = pooled_prediction - pooled_prior
-                    valid = batch.mask_100m.bool()
-                    correction_abs_sum += float(correction[valid].abs().sum())
-                    correction_cells += float(valid.sum())
-        recomputed = float(recheck.compute())
-        tolerance = 1e-3 * max(1.0, abs(best_metric))
-        if abs(recomputed - best_metric) > tolerance:
-            raise RuntimeError(
-                f"reloaded checkpoint validation MAE {recomputed:.6f} != selected "
-                f"{best_metric:.6f} (tolerance {tolerance:.6f})"
-            )
-        correction_mean = None
-        if residual_prior:
-            if correction_cells <= 0:
-                raise RuntimeError("no valid validation cell for the residual correction check")
-            correction_mean = correction_abs_sum / correction_cells
-        write_patch_export(
-            validation_rows,
-            output_root / patch_export_filename("validation"),
-            identity=export_identity,
-            split="validation",
-            ssim_range=ssim_range,
-        )
+                    if correction_cells <= 0:
+                        raise RuntimeError(
+                            "no valid validation cell for the residual correction check"
+                        )
+                    correction_mean = correction_abs_sum / correction_cells
+                write_patch_export(
+                    validation_rows,
+                    output_root / patch_export_filename("validation"),
+                    identity=export_identity,
+                    split="validation",
+                    ssim_range=ssim_range,
+                )
 
-        # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
-        # only after the selected checkpoint and its validation reload are
-        # frozen. The test read is a separate test-only module; its score is
-        # never fed to the fit, callbacks, or checkpoint selection.
-        test_result: dict[str, object] | None = None
-        if is_full and evaluate_test and isinstance(data_module, RealPatchDataModule):
-            test_result = _score_test_once(
-                cfg,
-                data_module.source,
-                reloaded,
-                output_root,
-                export_identity=export_identity,
-                ssim_range=ssim_range,
-            )
-        elif is_full and not evaluate_test:
-            test_result = {"skipped": True}
+            # Full Stage-1 run (issue #53): score the 2025 test split exactly once,
+            # only after the selected checkpoint and its validation reload are
+            # frozen. The test read is a separate test-only module; its score is
+            # never fed to the fit, callbacks, or checkpoint selection.
+            test_result: dict[str, object] | None = None
+            if is_full and evaluate_test and isinstance(data_module, RealPatchDataModule):
+                with timed_phase("post_fit_test_eval", logger=_logger):
+                    test_result = _score_test_once(
+                        cfg,
+                        data_module.source,
+                        reloaded,
+                        output_root,
+                        export_identity=export_identity,
+                        ssim_range=ssim_range,
+                    )
+            elif is_full and not evaluate_test:
+                test_result = {"skipped": True}
 
-        if recorder is not None:
-            summary = {
-                "profile": (
-                    "full"
-                    if is_full
-                    else ("probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME)
-                ),
-                "epochs_completed": len(recorder.epochs),
-                "max_epochs": int(cfg.trainer.max_epochs),
-                "selection_metric": monitored,
-                "best_epoch": _best_epoch_from_path(best_checkpoint),
-                "best_metric": best_metric,
-                "reload_recomputed": recomputed,
-                "validation_abs_error_sum": float(recheck.abs_error_sum),
-                "validation_valid_cells": float(recheck.valid_cells),
-                "residual_prior": residual_prior,
-                "residual_identity_mae_k": residual_identity_mae,
-                "residual_correction_mean_abs_k": correction_mean,
-                "resolved_config": OmegaConf.to_container(cfg, resolve=True),
-                "ssim_data_range": ssim_range.payload(),
-                "lr_schedule": lr_spec.payload(),
-            }
-            if is_probe or is_full:
-                experiment = wandb_logger.experiment
-                summary["wandb"] = {
-                    "project": str(cfg.wandb.project),
-                    "run_id": getattr(experiment, "id", None),
-                    "url": getattr(experiment, "url", None),
-                }
-            if is_v6:
-                summary["early_stopping"] = es.payload()
-                summary["evaluate_test"] = evaluate_test
-                summary["stopped_epoch"] = stopped_epoch
-            if test_result is not None:
-                summary["test"] = test_result
-            summary_name = "full_summary.json" if is_full else "probe_summary.json"
-            (output_root / summary_name).write_text(
-                json.dumps(summary, indent=2, sort_keys=True, default=str), encoding="utf-8"
-            )
+            with timed_phase("post_fit_summary", logger=_logger):
+                if recorder is not None:
+                    summary = {
+                        "profile": (
+                            "full"
+                            if is_full
+                            else ("probe-residual" if residual_prior else STAGE1_PROBE_CONFIG_NAME)
+                        ),
+                        "epochs_completed": len(recorder.epochs),
+                        "max_epochs": int(cfg.trainer.max_epochs),
+                        "selection_metric": monitored,
+                        "best_epoch": _best_epoch_from_path(best_checkpoint),
+                        "best_metric": best_metric,
+                        "reload_recomputed": recomputed,
+                        "validation_abs_error_sum": float(recheck.abs_error_sum),
+                        "validation_valid_cells": float(recheck.valid_cells),
+                        "residual_prior": residual_prior,
+                        "residual_identity_mae_k": residual_identity_mae,
+                        "residual_correction_mean_abs_k": correction_mean,
+                        "resolved_config": OmegaConf.to_container(cfg, resolve=True),
+                        "ssim_data_range": ssim_range.payload(),
+                        "lr_schedule": lr_spec.payload(),
+                    }
+                    if is_probe or is_full:
+                        experiment = wandb_logger.experiment
+                        summary["wandb"] = {
+                            "project": str(cfg.wandb.project),
+                            "run_id": getattr(experiment, "id", None),
+                            "url": getattr(experiment, "url", None),
+                        }
+                    if is_v6:
+                        summary["early_stopping"] = es.payload()
+                        summary["evaluate_test"] = evaluate_test
+                        summary["stopped_epoch"] = stopped_epoch
+                    if test_result is not None:
+                        summary["test"] = test_result
+                    summary_name = "full_summary.json" if is_full else "probe_summary.json"
+                    (output_root / summary_name).write_text(
+                        json.dumps(summary, indent=2, sort_keys=True, default=str), encoding="utf-8"
+                    )
 
         success = True
     except BaseException:
         raise
     finally:
-        _finalize_wandb(wandb_logger, metadata, success)
+        with timed_phase("wandb_finalize", logger=_logger):
+            _finalize_wandb(wandb_logger, metadata, success)
 
     log_event(
         _logger,
@@ -1167,6 +1188,7 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
         pin_memory=bool(cfg.data.get("pin_memory", False)),
         cache_root=cache_root,
         cache_max_bytes=cache_budget,
+        cache_build_workers=cache_build_workers_from_config(cfg),
     )
     return _fit_contract_lifecycle(
         cfg,

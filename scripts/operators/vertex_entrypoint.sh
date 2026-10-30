@@ -25,6 +25,9 @@
 #   gs:// destination for the epoch curve, uploaded create-only also on failure)
 set -euo pipefail
 
+VERTEX_CONTAINER_STARTED_AT_NS="$(date +%s%N)"
+export VERTEX_CONTAINER_STARTED_AT_NS
+
 : "${VERTEX_RUN_LABEL:?VERTEX_RUN_LABEL is required}"
 : "${VERTEX_SOURCE_SHA:?VERTEX_SOURCE_SHA is required}"
 : "${VERTEX_IMAGE_DIGEST:?VERTEX_IMAGE_DIGEST is required}"
