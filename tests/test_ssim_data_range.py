@@ -522,6 +522,8 @@ def test_resolve_run_ssim_data_range_override_rules() -> None:
         },
     )
     assert from_artifact.source == "artifact" and from_artifact.data_range_k == 40.0
+    with pytest.raises(RuntimeError, match="fingerprints; none were given"):
+        resolve_run_ssim_data_range(plain, expected_fingerprints=None)
 
 
 # 11. checkpoint provenance and reload check
@@ -919,7 +921,7 @@ def test_next_artifact_version(tmp_path: Path) -> None:
 def test_committed_artifact_version_and_fingerprints() -> None:
     doc = yaml.safe_load(_COMMITTED.read_text(encoding="utf-8"))
     assert doc["version"] == "v1" == ssim_range.SSIM_RANGE_ARTIFACT_VERSION
-    assert ssim_range.SSIM_DATA_RANGE_ARTIFACT == ssim_range.SSIM_DATA_RANGE_DIR / "v1.yaml"
+    assert _COMMITTED == ssim_range.SSIM_DATA_RANGE_DIR / "v1.yaml"
     fp = doc["patch_index_fingerprints"]
     assert fp["index_policy_hash"] and fp["source_policy_hash"]
     assert load_ssim_data_range(_COMMITTED, expected_fingerprints=fp).version == "v1"

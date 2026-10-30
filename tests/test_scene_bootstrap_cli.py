@@ -183,3 +183,45 @@ def test_ssim_cli_uses_main_fixed_range_metric(
     doc = json.loads((tmp_path / "ssim.json").read_text())
     assert doc["metric"] == "ssim_100m"
     assert doc["point_estimate"] == pytest.approx(0.2)
+
+
+def test_cli_single_reference_file_for_arm_b(
+    cli: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    import pyarrow as pa
+    from test_scene_bootstrap import SCHEMA
+
+    world = make_world(8)
+    fn = effect_fn(dict.fromkeys(range(8), -1.0))
+    a = [
+        str(write_export(tmp_path / f"A{s}.parquet", export_table("A", s, "validation", world, fn)))
+        for s in (0, 1, 2)
+    ]
+    ref = export_table("naive_prior_expand", 0, "validation", world, fn)
+    ref = ref.set_column(
+        ref.schema.get_field_index("seed"),
+        SCHEMA.field("seed"),
+        pa.array([None] * ref.num_rows, type=pa.int64()),
+    )
+    b = [str(write_export(tmp_path / "ref.parquet", ref))]
+    rc = cli.main(_argv(a, b, tmp_path / "ref_out"))
+    assert rc == 0
+    doc = json.loads((tmp_path / "ref_out.json").read_text())
+    assert doc["replicated_reference"] is True
+    assert "Replicated reference:" in (tmp_path / "ref_out.md").read_text()
+    capsys.readouterr()
+
+
+def test_cli_two_files_per_arm_exit_code_2(cli: ModuleType, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(_argv(["a", "b"], ["c", "d", "e"], tmp_path / "o"))
+    assert exc.value.code == 2
+
+
+def test_cli_metric_choices_include_l250(cli: ModuleType) -> None:
+    args = cli.build_parser().parse_args(
+        ["--arm-a", "a", "--arm-b", "b", "--output-prefix", "o", "--metric", "ssim_100m_L250"]
+    )
+    assert args.metric == "ssim_100m_L250"

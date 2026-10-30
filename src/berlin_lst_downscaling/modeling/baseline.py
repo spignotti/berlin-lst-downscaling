@@ -150,9 +150,7 @@ def record_payload(record: PatchRecord) -> dict[str, Any]:
     }
 
 
-def split_summary_payload(
-    summary: SplitSummary, records: Sequence[PatchRecord]
-) -> dict[str, Any]:
+def split_summary_payload(summary: SplitSummary, records: Sequence[PatchRecord]) -> dict[str, Any]:
     """Return a split summary payload with the shared report SSIM keys.
 
     ``records`` are the patches of that split. ``mae`` and ``ssim`` stay for

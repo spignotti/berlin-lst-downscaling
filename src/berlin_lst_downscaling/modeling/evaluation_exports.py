@@ -189,6 +189,13 @@ def score_batch_patches(
     return rows
 
 
+def _num(record: Mapping[str, object], key: str) -> float:
+    value = record[key]
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValueError(f"{record.get('patch_id')!r}: {key} must be a number, got {value!r}")
+    return float(value)
+
+
 def pooled_ssim_metrics(
     records: Iterable[Mapping[str, object]],
 ) -> dict[str, float | int | None]:
@@ -199,31 +206,38 @@ def pooled_ssim_metrics(
     SSIM). ``ssim_100m_Lpatch`` is a diagnostic. A mean is ``None`` when its
     window denominator is 0.
     """
-    sum_main = 0.0
-    win_main = 0
-    sum_l250 = 0.0
-    sum_lpatch = 0.0
-    win_lpatch = 0
-    zero_range = 0
+    sum_main = sum_l250 = sum_lpatch = 0.0
+    win_main = win_lpatch = zero_range = 0
     for record in records:
-        windows = int(record["ssim_windows"])  # type: ignore[call-overload]
-        sum_main += float(record["ssim_sum"])  # type: ignore[arg-type]
+        windows = int(_num(record, "ssim_windows"))
+        sum_main += _num(record, "ssim_sum")
         win_main += windows
-        l250 = record["ssim_100m_L250"]
-        if l250 is not None:
-            sum_l250 += float(l250) * windows  # type: ignore[arg-type]
-        w_lp = int(record["ssim_windows_Lpatch"])  # type: ignore[call-overload]
-        lpatch = record["ssim_100m_Lpatch"]
-        if lpatch is not None:
-            sum_lpatch += float(lpatch) * w_lp  # type: ignore[arg-type]
-        win_lpatch += w_lp
-        zero_range += int(record["ssim_Lpatch_zero_range_patches"])  # type: ignore[call-overload]
+        if record["ssim_100m_L250"] is not None:
+            sum_l250 += _num(record, "ssim_100m_L250") * windows
+        w_lpatch = int(_num(record, "ssim_windows_Lpatch"))
+        if record["ssim_100m_Lpatch"] is not None:
+            sum_lpatch += _num(record, "ssim_100m_Lpatch") * w_lpatch
+        win_lpatch += w_lpatch
+        zero_range += int(_num(record, "ssim_Lpatch_zero_range_patches"))
     return {
         "ssim_100m": sum_main / win_main if win_main > 0 else None,
         "ssim_100m_L250": sum_l250 / win_main if win_main > 0 else None,
         "ssim_100m_Lpatch": sum_lpatch / win_lpatch if win_lpatch > 0 else None,
         "ssim_windows_Lpatch": win_lpatch,
         "ssim_Lpatch_zero_range_patches": zero_range,
+    }
+
+
+def report_metrics(records: Sequence[Mapping[str, object]]) -> dict[str, float | int | None]:
+    """Return the pooled report block of scored rows: clamped MAE plus ``REPORT_SSIM_KEYS``."""
+    abs_sum = sum(_num(r, "abs_error_sum") for r in records)
+    cells = sum(int(_num(r, "valid_cells")) for r in records)
+    return {
+        "mae_100m": abs_sum / cells if cells > 0 else None,
+        "abs_error_sum": abs_sum,
+        "valid_cells": cells,
+        "ssim_windows": sum(int(_num(r, "ssim_windows")) for r in records),
+        **pooled_ssim_metrics(records),
     }
 
 
@@ -393,6 +407,7 @@ __all__ = [
     "PatchSsimVariants",
     "patch_export_filename",
     "pooled_ssim_metrics",
+    "report_metrics",
     "score_batch_patches",
     "score_patch_ssim_variants",
     "write_patch_export",

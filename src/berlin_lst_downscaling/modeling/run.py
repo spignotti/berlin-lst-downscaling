@@ -51,6 +51,7 @@ from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.evaluation_exports import (
     EvaluationIdentity,
     patch_export_filename,
+    report_metrics,
     score_batch_patches,
     write_patch_export,
 )
@@ -645,6 +646,11 @@ def resolve_run_ssim_data_range(
                 "for data.kind: real"
             )
         return test_override_ssim_data_range(float(override))
+    if str(cfg.data.get("kind", "synthetic")) == "real" and expected_fingerprints is None:
+        raise RuntimeError(
+            "real runs must check the SSIM data-range artifact against the patch-index "
+            "fingerprints; none were given"
+        )
     return load_ssim_data_range(expected_fingerprints=expected_fingerprints)
 
 
@@ -999,6 +1005,7 @@ def _fit_contract_lifecycle(
                 "reload_recomputed": recomputed,
                 "validation_abs_error_sum": float(recheck.abs_error_sum),
                 "validation_valid_cells": float(recheck.valid_cells),
+                "validation_report": report_metrics(validation_rows),
                 "residual_prior": residual_prior,
                 "residual_identity_mae_k": residual_identity_mae,
                 "residual_correction_mean_abs_k": correction_mean,

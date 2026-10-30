@@ -28,6 +28,7 @@ from berlin_lst_downscaling.modeling.evaluation_exports import (
     PATCH_EXPORT_METADATA_KEY,
     PATCH_EXPORT_SCHEMA,
     PATCH_EXPORT_SCHEMA_VERSION,
+    REPORT_SSIM_KEYS,
     EvaluationIdentity,
     patch_export_filename,
     score_batch_patches,
@@ -798,10 +799,18 @@ def test_validation_reload_writes_one_export_and_test_is_never_scored(
     table = pq.read_table(out / exports[0])
     summary = json.loads((out / "full_summary.json").read_text())
     assert table.num_rows > 0
-    assert sum(table.column("abs_error_sum").to_pylist()) == pytest.approx(
-        summary["validation_abs_error_sum"], rel=1e-4
-    )
+    # The export clamps to [150, 400] K before scoring; the selection recheck does
+    # not. Clamping toward the target range can only lower the absolute error.
+    export_abs = sum(table.column("abs_error_sum").to_pylist())
+    assert export_abs <= summary["validation_abs_error_sum"] * (1 + 1e-4)
     assert sum(table.column("valid_cells").to_pylist()) == int(summary["validation_valid_cells"])
+    report = summary["validation_report"]
+    assert report["abs_error_sum"] == pytest.approx(export_abs)
+    assert report["valid_cells"] == int(summary["validation_valid_cells"])
+    assert set(REPORT_SSIM_KEYS) <= set(report)
+    assert report["ssim_100m"] == pytest.approx(
+        sum(table.column("ssim_sum").to_pylist()) / sum(table.column("ssim_windows").to_pylist())
+    )
     assert set(table.column("split").to_pylist()) == {"validation"}
     footer = json.loads(pq.read_schema(out / exports[0]).metadata[PATCH_EXPORT_METADATA_KEY])
     assert footer["run_id"] == "exp-1" and footer["seed"] == int(cfg.seed)
@@ -922,3 +931,116 @@ def test_test_export_is_written_only_inside_score_test_once() -> None:
     for other in _calls(tree, "write_patch_export"):
         if other is not test_writes[0]:
             assert other not in _calls(scorer, "write_patch_export")
+
+
+# ---- shared evaluation clamp and pooled report metrics
+
+
+def test_clamp_eval_prediction_clamps_and_keeps_nan() -> None:
+    from berlin_lst_downscaling.modeling.metrics import (
+        EVAL_PREDICTION_CLAMP_K,
+        clamp_eval_prediction,
+    )
+
+    assert EVAL_PREDICTION_CLAMP_K == (150.0, 400.0)
+    out = clamp_eval_prediction(torch.tensor([100.0, 150.0, 300.0, 400.0, 500.0, float("nan")]))
+    assert out[:5].tolist() == [150.0, 150.0, 300.0, 400.0, 400.0]
+    assert bool(torch.isnan(out[5]))
+
+
+def test_score_batch_patches_clamps_prediction_before_metrics() -> None:
+    cells = REAL_PATCH_CELLS
+    pred = torch.full((1, 1, cells, cells), 500.0)
+    target = torch.full((1, 1, cells, cells), 300.0)
+    mask = torch.ones(1, 1, cells, cells, dtype=torch.bool)
+    rows = score_batch_patches(
+        pred, target, mask, [_meta("A:1", "A")], data_range_k=_RANGE.data_range_k
+    )
+    # 500 K is clamped to 400 K, so every cell errs by 100 K, not 200 K.
+    assert rows[0]["valid_cells"] == cells * cells
+    assert rows[0]["abs_error_sum"] == pytest.approx(100.0 * cells * cells)
+
+
+def test_pooled_ssim_metrics_hand_computed() -> None:
+    from berlin_lst_downscaling.modeling.evaluation_exports import (
+        pooled_ssim_metrics,
+    )
+
+    rows = [
+        _row(
+            "a",
+            ssim_sum=3.0,
+            ssim_windows=4,
+            ssim_100m_L250=0.5,
+            ssim_100m_Lpatch=0.2,
+            ssim_windows_Lpatch=2,
+            ssim_Lpatch_zero_range_patches=1,
+        ),
+        _row(
+            "b",
+            ssim_sum=1.0,
+            ssim_windows=2,
+            ssim_100m_L250=None,
+            ssim_100m_Lpatch=None,
+            ssim_windows_Lpatch=0,
+            ssim_Lpatch_zero_range_patches=2,
+        ),
+        _row(
+            "c",
+            ssim_sum=2.0,
+            ssim_windows=4,
+            ssim_100m_L250=0.25,
+            ssim_100m_Lpatch=0.8,
+            ssim_windows_Lpatch=6,
+            ssim_Lpatch_zero_range_patches=0,
+        ),
+    ]
+    out = pooled_ssim_metrics(rows)
+    assert tuple(out) == REPORT_SSIM_KEYS
+    assert out["ssim_100m"] == pytest.approx(6.0 / 10)
+    assert out["ssim_100m_L250"] == pytest.approx((0.5 * 4 + 0.25 * 4) / 10)
+    assert out["ssim_100m_Lpatch"] == pytest.approx((0.2 * 2 + 0.8 * 6) / 8)
+    assert out["ssim_windows_Lpatch"] == 8
+    assert out["ssim_Lpatch_zero_range_patches"] == 3
+
+
+def test_pooled_ssim_metrics_zero_windows_give_none() -> None:
+    from berlin_lst_downscaling.modeling.evaluation_exports import pooled_ssim_metrics
+
+    out = pooled_ssim_metrics(
+        [
+            _row(
+                "a",
+                ssim_sum=0.0,
+                ssim_windows=0,
+                ssim_100m_L250=None,
+                ssim_100m_Lpatch=None,
+                ssim_windows_Lpatch=0,
+            )
+        ]
+    )
+    assert out["ssim_100m"] is None
+    assert out["ssim_100m_L250"] is None
+    assert out["ssim_100m_Lpatch"] is None
+    assert out["ssim_windows_Lpatch"] == 0
+    assert pooled_ssim_metrics([])["ssim_100m"] is None
+
+
+def test_report_metrics_adds_mae_and_counts() -> None:
+    from berlin_lst_downscaling.modeling.evaluation_exports import (
+        pooled_ssim_metrics,
+        report_metrics,
+    )
+
+    rows = [
+        _row("a", abs_error_sum=10.0, valid_cells=20),
+        _row("b", abs_error_sum=5.0, valid_cells=30, ssim_sum=1.0, ssim_windows=2),
+    ]
+    out = report_metrics(rows)
+    assert out["mae_100m"] == pytest.approx(15.0 / 50)
+    assert out["abs_error_sum"] == pytest.approx(15.0)
+    assert out["valid_cells"] == 50
+    assert out["ssim_windows"] == 6
+    pooled = pooled_ssim_metrics(rows)
+    assert all(out[k] == pooled[k] for k in REPORT_SSIM_KEYS)
+    assert report_metrics([])["mae_100m"] is None

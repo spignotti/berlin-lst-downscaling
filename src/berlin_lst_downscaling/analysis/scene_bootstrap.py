@@ -3,9 +3,15 @@
 Inputs are per-patch export Parquet files (schema_version 1), one file per run
 (arm, seed, run_id) and split. Patch sums are pooled within scenes, averaged
 over three seeds per arm, differenced per scene (A - B), and the scene is the
-only resampling unit. ``ssim_sum`` and ``ssim_windows`` are the main SSIM
+only resampling unit. A single-run reference arm (the deterministic baseline
+with seed None, or the single-seed random forest) is paired with each seed of
+the other arm, i.e. replicated; the output flags this as
+``replicated_reference``. ``ssim_sum`` and ``ssim_windows`` are the main SSIM
 under the fixed artifact data range; ``metric="ssim_100m"`` pools exactly those
-sums and counts. The diagnostic L250 and per-patch-range columns are ignored.
+sums and counts. ``metric="ssim_100m_L250"`` pools ``ssim_100m_L250 *
+ssim_windows`` (same windows, L = 250 K): the appendix comparison to stages
+1-4. A ``ssim_100m`` comparison of exports that carry the L250 column also
+reports that appendix comparison. The per-patch-range columns are ignored.
 Only NumPy and PyArrow are used; nothing here evaluates
 a model or reads data products.
 """
@@ -29,8 +35,13 @@ SCHEMA_VERSION = 1
 FOOTER_KEY = b"patch_export"
 SEEDS: tuple[int, ...] = (0, 1, 2)
 _BATCH_INDICES = 1_000_000
+# Arm labels of the single-run reference models (modeling.baseline.METHOD and the
+# random-forest export arms); kept literal so this module needs no modeling import.
+REFERENCE_ARM_PATTERN = re.compile(r"^(naive_prior_expand|random_forest_stage[1-9][0-9]*)$")
 
-Metric = Literal["mae_100m", "ssim_100m"]
+Metric = Literal["mae_100m", "ssim_100m", "ssim_100m_L250"]
+METRICS: tuple[str, ...] = ("mae_100m", "ssim_100m", "ssim_100m_L250")
+L250_COLUMN = "ssim_100m_L250"
 
 _COLUMN_CHECKS: dict[str, Callable[[pa.DataType], bool]] = {
     "schema_version": pa.types.is_int32,
@@ -118,9 +129,10 @@ _ROW_FIELDS = (*_ID_FIELDS, "abs_error_sum", "ssim_sum", "valid_cells", "ssim_wi
 @dataclass(frozen=True)
 class ArmIdentity:
     arm: str
-    seeds: tuple[int, ...]
+    seeds: tuple[int | None, ...]
     run_ids: tuple[str, ...]
     checkpoints: tuple[str | None, ...]
+    replicated: bool = False
 
 
 @dataclass(frozen=True)
@@ -176,6 +188,8 @@ class ComparisonResult:
     frac_b_better: float
     seed_diagnostics: SeedDiagnostics
     allow_scene_mismatch: bool
+    replicated_reference: bool = False
+    appendix_l250: ComparisonResult | None = None
 
 
 # --------------------------------------------------------------------------- load
@@ -208,7 +222,15 @@ def _validate_table(path: Path, table: pa.Table, footer: dict[str, Any], split: 
     missing = [c for c in _COLUMN_CHECKS if c not in table.column_names]
     if missing:
         raise SceneBootstrapError(f"{path}: missing columns {missing}")
-    table = table.select(list(_COLUMN_CHECKS))
+    has_l250 = L250_COLUMN in table.column_names
+    table = table.select([*_COLUMN_CHECKS, *((L250_COLUMN,) if has_l250 else ())])
+    if has_l250:
+        _validate_l250(
+            str(path),
+            table.column(L250_COLUMN).to_pylist(),
+            table.column("ssim_windows").to_pylist(),
+            type_ok=pa.types.is_float64(table.schema.field(L250_COLUMN).type),
+        )
     for name, check in _COLUMN_CHECKS.items():
         if not check(table.schema.field(name).type):
             raise SceneBootstrapError(
@@ -252,10 +274,28 @@ def _validate_table(path: Path, table: pa.Table, footer: dict[str, Any], split: 
     patch_ids = table.column("patch_id").to_pylist()
     if len(set(patch_ids)) != len(patch_ids):
         raise SceneBootstrapError(f"{path}: patch_id is not unique within the file")
-    return table.cast(_normalized_schema())
+    return table.cast(_normalized_schema(with_l250=has_l250))
 
 
-def _normalized_schema() -> pa.Schema:
+def _validate_l250(
+    name: str, values: Sequence[Any], windows: Sequence[Any], *, type_ok: bool = True
+) -> None:
+    """L250 shares the main SSIM windows: finite with windows, null without."""
+    if not type_ok:
+        raise SceneBootstrapError(f"{name}: column {L250_COLUMN!r} must be float64")
+    for value, wins in zip(values, windows, strict=True):
+        if wins == 0 and value is not None:
+            raise SceneBootstrapError(f"{name}: {L250_COLUMN} must be null without SSIM windows")
+        finite = (
+            isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+        )
+        if wins != 0 and not finite:
+            raise SceneBootstrapError(
+                f"{name}: {L250_COLUMN} must be finite where ssim_windows > 0, got {value!r}"
+            )
+
+
+def _normalized_schema(*, with_l250: bool = False) -> pa.Schema:
     types = {
         "schema_version": pa.int32(),
         "seed": pa.int64(),
@@ -265,7 +305,8 @@ def _normalized_schema() -> pa.Schema:
         "abs_error_sum": pa.float64(),
         "ssim_sum": pa.float64(),
     }
-    return pa.schema([(n, types.get(n, pa.string())) for n in _COLUMN_CHECKS])
+    fields = [(n, types.get(n, pa.string())) for n in _COLUMN_CHECKS]
+    return pa.schema(fields + ([(L250_COLUMN, pa.float64())] if with_l250 else []))
 
 
 def load_patch_exports(paths: Sequence[Path], *, split: str) -> pa.Table:
@@ -297,6 +338,8 @@ def load_patch_exports(paths: Sequence[Path], *, split: str) -> pa.Table:
                 f"{path}: footer split {footer.get('split')!r} does not match requested {split!r}"
             )
         tables.append(_validate_table(path, pq.read_table(path), footer, split))
+    if len({L250_COLUMN in t.column_names for t in tables}) > 1:
+        raise SceneBootstrapError(f"some exports carry {L250_COLUMN!r} and some do not")
     return pa.concat_tables(tables)
 
 
@@ -396,11 +439,12 @@ def aggregate_scenes(rows: pa.Table) -> pa.Table:
 @dataclass
 class _Run:
     arm: str
-    seed: int
+    seed: int | None
     run_id: str
     checkpoint: str | None
     split: str
-    patches: dict[str, tuple[str, int, int, float, float]]  # pid -> scene, cells, wins, abs, ssim
+    # pid -> scene, cells, wins, abs, ssim, L250 sum (None without the column)
+    patches: dict[str, tuple[str, int, int, float, float, float | None]]
     dates: dict[str, str | None]  # scene -> date
 
     @property
@@ -449,22 +493,35 @@ def _arm_runs(table: pa.Table, name: str) -> list[_Run]:
         raise SceneBootstrapError(
             f"{name}: only the validation split is accepted, got {sorted(splits, key=str)}"
         )
-    if None in set(c["seed"]):
-        raise SceneBootstrapError(f"{name}: null seeds are not allowed")
-    if set(c["seed"]) != set(SEEDS):
-        raise SceneBootstrapError(
-            f"{name}: seeds must be exactly {list(SEEDS)}, got {sorted(set(c['seed']))}"
-        )
-    _validate_rows(name, {n: c[n] for n in _ROW_FIELDS})
     arm = next(iter(arms))
+    seed_set = set(c["seed"])
+    expected_seeds: tuple[int | None, ...] = SEEDS
+    if REFERENCE_ARM_PATTERN.fullmatch(str(arm)) and seed_set != set(SEEDS):
+        if len(seed_set) != 1:
+            raise SceneBootstrapError(
+                f"{name}: reference arm {arm!r} must hold exactly one run or seeds "
+                f"{list(SEEDS)}, got seeds {sorted(seed_set, key=str)}"
+            )
+        expected_seeds = (next(iter(seed_set)),)
+    else:
+        if None in seed_set:
+            raise SceneBootstrapError(f"{name}: null seeds are not allowed")
+        if seed_set != set(SEEDS):
+            raise SceneBootstrapError(
+                f"{name}: seeds must be exactly {list(SEEDS)}, got {sorted(seed_set)}"
+            )
+    _validate_rows(name, {n: c[n] for n in _ROW_FIELDS})
+    l250 = table.column(L250_COLUMN).to_pylist() if L250_COLUMN in table.column_names else None
+    if l250 is not None:
+        _validate_l250(name, l250, c["ssim_windows"])
     split = next(iter(splits))
-    by_seed: dict[int, dict[tuple, list[int]]] = {}
+    by_seed: dict[int | None, dict[tuple, list[int]]] = {}
     for i in range(table.num_rows):
         by_seed.setdefault(c["seed"][i], {}).setdefault(
             (c["run_id"][i], c["checkpoint"][i]), []
         ).append(i)
     runs: list[_Run] = []
-    for seed in SEEDS:
+    for seed in expected_seeds:
         groups = by_seed[seed]
         if len({rid for rid, _ in groups}) != 1:
             raise SceneBootstrapError(
@@ -473,15 +530,17 @@ def _arm_runs(table: pa.Table, name: str) -> list[_Run]:
         if len(groups) != 1:
             raise SceneBootstrapError(f"{name}: seed {seed} has multiple checkpoints")
         (rid, ckpt), idx = next(iter(groups.items()))
-        patches: dict[str, tuple[str, int, int, float, float]] = {}
+        patches: dict[str, tuple[str, int, int, float, float, float | None]] = {}
         dates: dict[str, str | None] = {}
         for i in idx:
             pid = c["patch_id"][i]
             if pid in patches:
                 raise SceneBootstrapError(f"{name}: duplicate patch_id {pid!r} in run seed {seed}")
             scene = c["scene_id"][i]
-            patches[pid] = (scene, c["valid_cells"][i], c["ssim_windows"][i],
-                            c["abs_error_sum"][i], c["ssim_sum"][i])  # fmt: skip
+            wins = c["ssim_windows"][i]
+            l250_sum = None if l250 is None else (float(l250[i]) * wins if wins else 0.0)
+            patches[pid] = (scene, c["valid_cells"][i], wins,
+                            c["abs_error_sum"][i], c["ssim_sum"][i], l250_sum)  # fmt: skip
             date = c["scene_date"][i]
             if date is not None:
                 if dates.get(scene) not in (None, date):
@@ -514,8 +573,12 @@ def compare_arms(
     rng_seed: int = 0,
     allow_scene_mismatch: bool = False,
 ) -> ComparisonResult:
-    """Paired scene cluster bootstrap of arm A minus arm B on the 100 m metric."""
-    if metric not in ("mae_100m", "ssim_100m"):
+    """Paired scene cluster bootstrap of arm A minus arm B on the 100 m metric.
+
+    A single-run reference arm is paired with each seed of the other arm
+    (replicated); its scene metric is that one run, its seed SD is 0.
+    """
+    if metric not in METRICS:
         raise SceneBootstrapError(f"unsupported metric {metric!r}")
     _validate_n_bootstrap(n_bootstrap, rng_seed)
     runs_a = _arm_runs(arm_a, "arm_a")
@@ -524,6 +587,11 @@ def compare_arms(
         raise SceneBootstrapError("both arms must come from the same split")
     if runs_a[0].arm == runs_b[0].arm:
         raise SceneBootstrapError("arm A and arm B must have different arm labels")
+    replicated_a, replicated_b = len(runs_a) == 1, len(runs_b) == 1
+    if replicated_a and replicated_b:
+        raise SceneBootstrapError(
+            f"both arms are single-run reference arms; one arm needs seeds {list(SEEDS)}"
+        )
     split = runs_a[0].split
     runs = runs_a + runs_b
 
@@ -531,7 +599,7 @@ def compare_arms(
     ref: dict[str, tuple[int, int]] = {}
     ref_scene: dict[str, str] = {}
     for run in runs:
-        for pid, (scene, cells, wins, _a, _s) in run.patches.items():
+        for pid, (scene, cells, wins, _a, _s, _l) in run.patches.items():
             if pid in ref and ref[pid] != (cells, wins):
                 raise SceneBootstrapError(
                     f"patch {pid!r} has differing valid_cells/ssim_windows across runs "
@@ -578,17 +646,23 @@ def compare_arms(
     if not keep:
         raise SceneBootstrapError("no scenes remain present in all runs with identical patch sets")
 
-    num_idx, den_idx = (3, 1) if metric == "mae_100m" else (4, 2)
+    has_l250 = all(rec[5] is not None for run in runs for rec in run.patches.values())
+    if metric == L250_COLUMN and not has_l250:
+        raise SceneBootstrapError(f"metric {metric!r} needs the {L250_COLUMN!r} column in all runs")
     keep_set = set(keep)
 
     def run_sums(run: _Run) -> tuple[dict[str, float], dict[str, int]]:
         num: dict[str, float] = dict.fromkeys(keep, 0.0)
         den: dict[str, int] = dict.fromkeys(keep, 0)
         for pid in sorted(run.patches):
-            rec = run.patches[pid]
-            if rec[0] in keep_set:
-                num[rec[0]] += float(rec[num_idx])
-                den[rec[0]] += int(rec[den_idx])
+            scene, cells, wins, abs_sum, ssim_sum, l250_sum = run.patches[pid]
+            if scene in keep_set:
+                if metric == "mae_100m":
+                    num[scene] += float(abs_sum)
+                    den[scene] += int(cells)
+                else:
+                    num[scene] += float(ssim_sum if metric == "ssim_100m" else l250_sum or 0.0)
+                    den[scene] += int(wins)
         if not all(math.isfinite(v) for v in num.values()):
             raise SceneBootstrapError(
                 f"run {run.label}: pooled {metric} sums are not finite (overflow)"
@@ -672,15 +746,17 @@ def compare_arms(
             out.append(tot_n / tot_d)
         return out
 
-    sm_a, sm_b = seed_metrics(runs_a), seed_metrics(runs_b)
+    # A replicated reference contributes the same value to every seed pair.
+    sm_a = seed_metrics(runs_a) * (len(SEEDS) if replicated_a else 1)
+    sm_b = seed_metrics(runs_b) * (len(SEEDS) if replicated_b else 1)
     sdiffs = [x - y for x, y in zip(sm_a, sm_b, strict=True)]
     with np.errstate(over="ignore", invalid="ignore"):
         stats = np.array(
             [
                 np.mean(sm_a),
                 np.mean(sm_b),
-                np.std(sm_a, ddof=1),
-                np.std(sm_b, ddof=1),
+                0.0 if replicated_a else np.std(sm_a, ddof=1),
+                0.0 if replicated_b else np.std(sm_b, ddof=1),
             ]
         )
     require_finite(np.array([*sm_a, *sm_b, *sdiffs, *stats]), "seed diagnostic")
@@ -701,12 +777,13 @@ def compare_arms(
         sign_consistency=f"{max(n_pos, n_neg)}/{len(SEEDS)} same sign ({n_zero} tied)",
     )
 
-    def ident(rs: list[_Run]) -> ArmIdentity:
+    def ident(rs: list[_Run], replicated: bool) -> ArmIdentity:
         return ArmIdentity(
             rs[0].arm,
             tuple(r.seed for r in rs),
             tuple(r.run_id for r in rs),
             tuple(r.checkpoint for r in rs),
+            replicated=replicated,
         )
 
     return ComparisonResult(
@@ -714,8 +791,8 @@ def compare_arms(
         split=split,
         metric=metric,
         direction="lower_is_better" if lower_better else "higher_is_better",
-        arm_a=ident(runs_a),
-        arm_b=ident(runs_b),
+        arm_a=ident(runs_a, replicated_a),
+        arm_b=ident(runs_b, replicated_b),
         scenes=contribs,
         dropped_scenes=tuple(dropped),
         n_bootstrap=n_bootstrap,
@@ -728,6 +805,19 @@ def compare_arms(
         frac_b_better=float(b_better.mean()),
         seed_diagnostics=diag,
         allow_scene_mismatch=allow_scene_mismatch,
+        replicated_reference=replicated_a or replicated_b,
+        appendix_l250=(
+            compare_arms(
+                arm_a,
+                arm_b,
+                metric=L250_COLUMN,
+                n_bootstrap=n_bootstrap,
+                rng_seed=rng_seed,
+                allow_scene_mismatch=allow_scene_mismatch,
+            )
+            if metric == "ssim_100m" and has_l250
+            else None
+        ),
     )
 
 
@@ -765,6 +855,7 @@ def result_to_dict(result: ComparisonResult) -> dict[str, Any]:
             "seeds": list(a.seeds),
             "run_ids": list(a.run_ids),
             "checkpoints": list(a.checkpoints),
+            "replicated": a.replicated,
         }
 
     d = result.seed_diagnostics
@@ -793,6 +884,8 @@ def result_to_dict(result: ComparisonResult) -> dict[str, Any]:
             for x in result.dropped_scenes
         ],
         "allow_scene_mismatch": result.allow_scene_mismatch,
+        "replicated_reference": result.replicated_reference,
+        "replication_note": _replication_note(result),
         "bootstrap": {
             "n_bootstrap": result.n_bootstrap,
             "rng_seed": result.rng_seed,
@@ -806,6 +899,7 @@ def result_to_dict(result: ComparisonResult) -> dict[str, Any]:
             "tie": result.frac_tie,
             "b_better": result.frac_b_better,
         },
+        "appendix_ssim_100m_L250": _appendix_dict(result.appendix_l250),
         "seed_diagnostics": {
             "kind": "pooled_overall_metrics",
             "metric_a": list(d.metric_a),
@@ -823,6 +917,42 @@ def result_to_dict(result: ComparisonResult) -> dict[str, Any]:
     }
 
 
+_L250_ROLE = (
+    "appendix comparison to stages 1-4 (L = 250 K); the fixed-L ssim_100m is the main metric"
+)
+
+
+def _appendix_dict(appendix: ComparisonResult | None) -> dict[str, Any] | None:
+    if appendix is None:
+        return None
+    return {
+        "metric": appendix.metric,
+        "role": _L250_ROLE,
+        "point_estimate": appendix.point_estimate,
+        "ci_95": [appendix.ci_low, appendix.ci_high],
+        "fractions": {
+            "a_better": appendix.frac_a_better,
+            "tie": appendix.frac_tie,
+            "b_better": appendix.frac_b_better,
+        },
+        "mean_a": appendix.seed_diagnostics.mean_a,
+        "mean_b": appendix.seed_diagnostics.mean_b,
+    }
+
+
+def _replication_note(result: ComparisonResult) -> str | None:
+    if not result.replicated_reference:
+        return None
+    ref, other = (
+        (result.arm_a, result.arm_b) if result.arm_a.replicated else (result.arm_b, result.arm_a)
+    )
+    return (
+        f"{ref.arm} is a single-run reference (seed {ref.seeds[0]}, run {ref.run_ids[0]}); "
+        f"it is replicated and paired with each {other.arm} seed {list(other.seeds)}. "
+        "Its seed SD is 0 by construction."
+    )
+
+
 def render_markdown(result: ComparisonResult) -> str:
     d = result.seed_diagnostics
     a, b = result.arm_a.arm, result.arm_b.arm
@@ -833,6 +963,11 @@ def render_markdown(result: ComparisonResult) -> str:
         f"Split: {result.split}; metric: {result.metric} ({result.direction}); "
         f"retained scenes: {n}.",
         "",
+    ]
+    note = _replication_note(result)
+    if note is not None:
+        lines += [f"Replicated reference: {note}", ""]
+    lines += [
         "## Seed summaries (pooled overall metrics, not the primary estimand)",
         "",
         "| arm | seed 0 | seed 1 | seed 2 | mean | SD (ddof=1) |",
@@ -859,7 +994,8 @@ def render_markdown(result: ComparisonResult) -> str:
         "## Per-seed differences (A - B)",
         "",
     ]
-    for s, diff in zip(result.arm_a.seeds, d.diffs, strict=True):
+    paired = result.arm_b if result.arm_a.replicated else result.arm_a
+    for s, diff in zip(paired.seeds, d.diffs, strict=True):
         lines.append(f"- seed {s}: {diff:+.4f}")
     lines += ["", f"Sign consistency: {d.sign_consistency}.", ""]
     lines.append("## Dropped scenes")
@@ -872,6 +1008,18 @@ def render_markdown(result: ComparisonResult) -> str:
     else:
         lines.append("None.")
     lines.append("")
+    if result.appendix_l250 is not None:
+        x = result.appendix_l250
+        lines += [
+            "## Appendix: ssim_100m_L250",
+            "",
+            f"Role: {_L250_ROLE}.",
+            "",
+            f"Mean A {x.seed_diagnostics.mean_a:.4f}, mean B {x.seed_diagnostics.mean_b:.4f}; "
+            f"paired scene difference {x.point_estimate:.4f}, 95% percentile CI "
+            f"[{x.ci_low:.4f}, {x.ci_high:.4f}].",
+            "",
+        ]
     return "\n".join(lines)
 
 

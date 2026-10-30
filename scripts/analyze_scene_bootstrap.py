@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from berlin_lst_downscaling.analysis.scene_bootstrap import (
+    METRICS,
     SceneBootstrapError,
     compare_arms,
     load_patch_exports,
@@ -21,14 +22,21 @@ from berlin_lst_downscaling.analysis.scene_bootstrap import (
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--arm-a", nargs=3, type=Path, required=True, metavar="FILE")
-    p.add_argument("--arm-b", nargs=3, type=Path, required=True, metavar="FILE")
+    arm_help = (
+        "three seed exports, or one export of a single-run reference arm (baseline or "
+        "random forest), which is replicated against each seed of the other arm"
+    )
+    p.add_argument("--arm-a", nargs="+", type=Path, required=True, metavar="FILE", help=arm_help)
+    p.add_argument("--arm-b", nargs="+", type=Path, required=True, metavar="FILE", help=arm_help)
     p.add_argument("--split", choices=("validation",), default="validation")
     p.add_argument(
         "--metric",
-        choices=("mae_100m", "ssim_100m"),
+        choices=METRICS,
         default="mae_100m",
-        help="mae_100m, or ssim_100m (SSIM under the fixed artifact data range)",
+        help=(
+            "mae_100m, ssim_100m (main SSIM, fixed artifact data range; also reports the "
+            "ssim_100m_L250 appendix comparison), or ssim_100m_L250 alone"
+        ),
     )
     p.add_argument("--n-bootstrap", type=int, default=10_000)
     p.add_argument("--rng-seed", type=int, default=0)
@@ -40,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    for flag, files in (("--arm-a", args.arm_a), ("--arm-b", args.arm_b)):
+        if len(files) not in (1, 3):
+            parser.error(f"{flag} takes 3 seed exports or 1 reference export, got {len(files)}")
     inputs = [*args.arm_a, *args.arm_b]
     prefix: Path = args.output_prefix
     outs = {

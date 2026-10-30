@@ -79,6 +79,7 @@ from berlin_lst_downscaling.modeling.contracts import (
 )
 from berlin_lst_downscaling.modeling.evaluation_exports import score_patch_ssim_variants
 from berlin_lst_downscaling.modeling.metrics import (
+    clamp_eval_prediction,
     masked_abs_error_sums,
     masked_ssim_stats,
     pool_10m_to_100m,
