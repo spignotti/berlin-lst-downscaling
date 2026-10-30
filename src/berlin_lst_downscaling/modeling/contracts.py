@@ -167,6 +167,7 @@ class RealSampleMeta:
     row: int  # global canonical 100 m anchor row
     col: int  # global canonical 100 m anchor col
     filled_feature_pixels: int  # invalid 10 m predictor pixels zero-filled
+    scene_date: str | None = None  # ISO YYYY-MM-DD when the patch index carries one
 
 
 @dataclass
