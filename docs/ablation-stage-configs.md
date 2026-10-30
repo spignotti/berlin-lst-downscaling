@@ -38,6 +38,8 @@ require `aggregation: arithmetic`; T4 is available only on generic modeling
 paths. Stage 5 logs support-weighted thermal objective terms (L1, SSIM penalty,
 gradient) separately for train and validation while checkpoint selection remains
 `validation/mae_100m`.
+Term scales and numerics of that objective are audited in
+[`stage5-loss-audit.md`](stage5-loss-audit.md).
 
 Smoke (GCS-free):
 
