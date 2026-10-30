@@ -8,6 +8,9 @@ defaults:
   - _base
   - _self_
 
+# Test-only SSIM data range override for the GCS-free smoke; rejected for data.kind: real.
+ssim_data_range_test_override_k: 40.0
+
 data:
   kind: synthetic_contract
   batch_size: 2

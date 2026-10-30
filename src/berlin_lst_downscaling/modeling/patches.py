@@ -734,6 +734,25 @@ class RealPatchReader:
             return self._record_exclusion(reason)
         return None
 
+    def read_target_and_mask(self, ref: PatchRef) -> tuple[np.ndarray, np.ndarray] | None:
+        """Read only the 100 m target and validity mask, or ``None`` after an exclusion.
+
+        Applies the same prior, footprint, and eligibility checks and records
+        the same exclusion as :meth:`admission_reason`; no feature window is read.
+        """
+        prior = self._prior_for(ref.scene_id)
+        if prior is None:
+            self._record_exclusion(NO_LANDSAT_REASON)
+            return None
+        if prior.window(row=ref.row, col=ref.col) is None:
+            self._record_exclusion(prior.unavailable_reason(row=ref.row, col=ref.col))
+            return None
+        target_mask, reason = self._read_target_and_mask(ref, prior)
+        if target_mask is None:
+            self._record_exclusion(reason)
+            return None
+        return target_mask.target, target_mask.mask
+
     # ── reading ───────────────────────────────────────────────────────
 
     def read_patch(self, ref: PatchRef) -> RealSample | None:
