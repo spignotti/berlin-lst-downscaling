@@ -2,15 +2,22 @@
 
 ``C1 = (K1 * L)^2`` and ``C2 = (K2 * L)^2`` use one fixed ``L = p99.5 - p0.5``
 of the valid 100 m targets of the train split (2017-2023). The value lives in
-``configs/modeling/ssim_data_range/v1.yaml``. While that artifact is a
-placeholder every production path raises; there is no fallback to the Kelvin
-plausibility range (250 K).
+``configs/modeling/ssim_data_range/v<N>.yaml``; ``SSIM_DATA_RANGE_ARTIFACT``
+names the active version. While that artifact is a placeholder every production
+path raises; there is no fallback to the Kelvin plausibility range (250 K).
+
+An artifact is bound to the patch index it was derived from (two fingerprints).
+Loading it against a different index, or when either side lacks a fingerprint,
+raises. The fix is a new version file written by the derivation script; a
+published version is never overwritten. See
+``configs/modeling/ssim_data_range/README.md``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,16 +35,77 @@ SSIM_RANGE_PERCENTILE_METHOD: str = "linear"
 SSIM_RANGE_SPLIT: str = "train"
 SSIM_RANGE_TRAIN_YEARS: tuple[int, ...] = tuple(range(2017, 2024))
 SSIM_RANGE_ARTIFACT_VERSION: str = "v1"
-# Module global, read at call time so tests can monkeypatch it.
-SSIM_DATA_RANGE_ARTIFACT: Path = (
-    Path(__file__).resolve().parents[3] / "configs" / "modeling" / "ssim_data_range" / "v1.yaml"
+SSIM_DATA_RANGE_DIR: Path = (
+    Path(__file__).resolve().parents[3] / "configs" / "modeling" / "ssim_data_range"
 )
+# Module global, read at call time so tests can monkeypatch it.
+SSIM_DATA_RANGE_ARTIFACT: Path = SSIM_DATA_RANGE_DIR / "v1.yaml"
 SSIM_RANGE_DERIVATION_SCRIPT: str = "scripts/operators/derive_ssim_data_range.py"
 SSIM_RANGE_DERIVATION_COMMAND: str = (
     "uv run python scripts/operators/derive_ssim_data_range.py --config-name v6_l5_locked"
 )
 
 _TOLERANCE_K = 1e-6
+_FINGERPRINT_KEYS: tuple[str, ...] = ("index_policy_hash", "source_policy_hash")
+_ARTIFACT_FILE_RE = re.compile(r"^v([1-9][0-9]*)\.yaml$")
+_ARTIFACT_VERSION_RE = re.compile(r"^v[1-9][0-9]*$")
+
+
+def is_artifact_version(name: str) -> bool:
+    """Return True for ``v<N>`` with N a positive integer without leading zeros."""
+    return isinstance(name, str) and _ARTIFACT_VERSION_RE.fullmatch(name) is not None
+
+
+def next_artifact_version(directory: Path | str) -> str:
+    """Return the next free ``v<N>`` name from the ``v<N>.yaml`` files in ``directory``."""
+    highest = 0
+    root = Path(directory)
+    if root.is_dir():
+        for entry in root.iterdir():
+            match = _ARTIFACT_FILE_RE.fullmatch(entry.name)
+            if match is not None:
+                highest = max(highest, int(match.group(1)))
+    return f"v{highest + 1}"
+
+
+def _missing_fingerprint(value: object) -> bool:
+    return value is None or str(value).strip() in ("", "None")
+
+
+def _mismatch_message(
+    key: str, artifact_path: Path | str | None, version: str | None, artifact: str, run: str
+) -> str:
+    directory = Path(artifact_path).parent if artifact_path else SSIM_DATA_RANGE_DIR
+    next_version = next_artifact_version(directory)
+    return (
+        f"SSIM data-range artifact {artifact_path} (version {version!r}) was derived on a "
+        f"different patch index: {key} artifact={artifact!r} run={run!r}. The artifact is bound "
+        f"to the patch index it was derived from. Derive a NEW artifact version (next: "
+        f"{next_version}) with `{SSIM_RANGE_DERIVATION_COMMAND}`; never overwrite or reuse the "
+        f"existing version. Then point SSIM_DATA_RANGE_ARTIFACT at the new file in a reviewed "
+        "change."
+    )
+
+
+def _check_fingerprints(
+    artifact_fp: Mapping[str, Any],
+    run_fp: Mapping[str, Any],
+    *,
+    artifact_path: Path | str | None,
+    version: str | None,
+) -> None:
+    """Fail closed: a missing fingerprint on either side never counts as a match."""
+    for key in _FINGERPRINT_KEYS:
+        for side, values in (("artifact", artifact_fp), ("run patch index", run_fp)):
+            if _missing_fingerprint(values.get(key)):
+                raise RuntimeError(
+                    f"SSIM data-range fingerprint {key} is missing on the {side} side "
+                    f"(artifact {artifact_path}, version {version!r}); a missing fingerprint "
+                    "never counts as a match."
+                )
+        a, r = str(artifact_fp[key]), str(run_fp[key])
+        if a != r:
+            raise RuntimeError(_mismatch_message(key, artifact_path, version, a, r))
 
 
 @dataclass(frozen=True)
@@ -248,13 +316,12 @@ def load_ssim_data_range(
     fingerprints = doc.get("patch_index_fingerprints")
     fp = fingerprints if isinstance(fingerprints, dict) else {}
     if expected_fingerprints is not None:
-        for key in ("index_policy_hash", "source_policy_hash"):
-            if str(expected_fingerprints.get(key)) != str(fp.get(key)):
-                raise RuntimeError(
-                    f"SSIM data-range artifact was derived on a different patch index: "
-                    f"{key} artifact={fp.get(key)!r} run={expected_fingerprints.get(key)!r}. "
-                    f"Re-derive with `{SSIM_RANGE_DERIVATION_COMMAND}`."
-                )
+        _check_fingerprints(
+            fp,
+            expected_fingerprints,
+            artifact_path=artifact,
+            version=None if doc.get("version") is None else str(doc["version"]),
+        )
     return SsimDataRange(
         data_range_k=float(data_range),
         low_k=float(low),
@@ -339,12 +406,12 @@ def check_ssim_range_fingerprints(
     """Raise if an artifact-sourced range was derived on a different patch index."""
     if ssim_range.source != "artifact":
         return
-    for key in ("index_policy_hash", "source_policy_hash"):
-        if str(getattr(ssim_range, key)) != str(fingerprints.get(key)):
-            raise RuntimeError(
-                f"SSIM data range {key}={getattr(ssim_range, key)!r} differs from the run "
-                f"patch index {fingerprints.get(key)!r}"
-            )
+    _check_fingerprints(
+        {key: getattr(ssim_range, key) for key in _FINGERPRINT_KEYS},
+        fingerprints,
+        artifact_path=ssim_range.artifact_path or SSIM_DATA_RANGE_ARTIFACT,
+        version=ssim_range.version,
+    )
 
 
 # Not a test: stops pytest from collecting the helper when imported into a test module.
@@ -362,11 +429,14 @@ def artifact_payload(
     derived_at: str,
     exclusions: Mapping[str, int],
     n_refs_requested: int,
+    version: str,
 ) -> dict[str, Any]:
     """Return the filled artifact document."""
+    if not is_artifact_version(version):
+        raise ValueError(f"artifact version must look like 'v<N>', got {version!r}")
     return {
         "schema_version": 1,
-        "version": SSIM_RANGE_ARTIFACT_VERSION,
+        "version": version,
         "status": "filled",
         "quantity": "ssim_data_range",
         "split": SSIM_RANGE_SPLIT,
@@ -395,45 +465,48 @@ def artifact_payload(
     }
 
 
-def check_artifact_writable(path: Path | str, *, overwrite_filled: bool) -> None:
-    """Refuse to overwrite a filled (or unparseable) artifact without the explicit flag."""
+def check_artifact_writable(path: Path | str) -> None:
+    """Refuse an existing path or a stem that is not a ``v<N>`` version."""
     target = Path(path)
-    if not target.exists() or overwrite_filled:
-        return
-    try:
-        doc = yaml.safe_load(target.read_text(encoding="utf-8"))
-        filled = isinstance(doc, dict) and doc.get("status") == "filled"
-        parsed = isinstance(doc, dict)
-    except (yaml.YAMLError, OSError, UnicodeDecodeError):
-        filled, parsed = False, False
-    if filled or not parsed:
+    if not is_artifact_version(target.stem):
+        raise ValueError(
+            f"SSIM data-range artifact file name must be 'v<N>.yaml', got {target.name!r}"
+        )
+    if target.exists():
         raise FileExistsError(
-            f"SSIM data-range artifact {target} exists and is filled or unreadable; "
-            "pass --overwrite-filled to replace it"
+            f"SSIM data-range artifact {target} exists; published artifact versions are never "
+            f"overwritten. Derive the next version ({next_artifact_version(target.parent)}) "
+            "instead."
         )
 
 
-def write_artifact(
-    payload: dict[str, Any], path: Path | str, *, overwrite_filled: bool = False
-) -> Path:
-    """Write the artifact as YAML to a local path (never to a remote URI)."""
+def write_artifact(payload: dict[str, Any], path: Path | str) -> Path:
+    """Create a new artifact version file locally (never remote, never overwriting)."""
     # Path("gs://x") collapses to "gs:/x", so check the raw string and that form.
     raw = str(path)
     if "://" in raw or raw.startswith("gs:/"):
         raise ValueError(f"SSIM data-range artifact must be written locally, got {str(path)!r}")
-    check_artifact_writable(path, overwrite_filled=overwrite_filled)
     out = Path(path)
+    check_artifact_writable(out)
+    if payload.get("version") != out.stem:
+        raise ValueError(
+            f"artifact file stem {out.stem!r} differs from payload version "
+            f"{payload.get('version')!r}"
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     header = (
         "# Fixed SSIM data range L (train split only). Generated by\n"
-        f"# {SSIM_RANGE_DERIVATION_SCRIPT}; commit before L5 starts.\n"
+        f"# {SSIM_RANGE_DERIVATION_SCRIPT}; immutable once published. A different patch\n"
+        "# index needs a new version file; activate it via SSIM_DATA_RANGE_ARTIFACT.\n"
     )
-    out.write_text(header + yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    with out.open("x", encoding="utf-8") as handle:
+        handle.write(header + yaml.safe_dump(payload, sort_keys=False))
     return out
 
 
 __all__ = [
     "SSIM_DATA_RANGE_ARTIFACT",
+    "SSIM_DATA_RANGE_DIR",
     "SSIM_RANGE_ARTIFACT_VERSION",
     "SSIM_RANGE_DERIVATION_COMMAND",
     "SSIM_RANGE_DERIVATION_SCRIPT",
@@ -449,7 +522,9 @@ __all__ = [
     "check_artifact_writable",
     "check_ssim_range_fingerprints",
     "derive_ssim_data_range",
+    "is_artifact_version",
     "load_ssim_data_range",
+    "next_artifact_version",
     "production_ssim_data_range_k",
     "resolve_task_ssim_data_range",
     "test_override_ssim_data_range",

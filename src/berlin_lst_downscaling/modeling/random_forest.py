@@ -57,7 +57,13 @@ from berlin_lst_downscaling.data.features.contracts import (
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.data.training.report import now_iso
 from berlin_lst_downscaling.modeling.aggregation import AGGREGATION_ARITHMETIC, AggregationMethod
-from berlin_lst_downscaling.modeling.baseline import PRIOR_RULE, PatchRecord, SplitSummary
+from berlin_lst_downscaling.modeling.baseline import (
+    PRIOR_RULE,
+    PatchRecord,
+    SplitSummary,
+    record_payload,
+    splits_payload,
+)
 from berlin_lst_downscaling.modeling.channels import (
     ABLATION_STAGE_CHANNELS,
     V6_LADDER_STAGE_CHANNELS,
@@ -667,10 +673,10 @@ def score_stage(
         prediction = torch.from_numpy(reconstruct_10m_prediction(cache.prior_100m[i], residual))
         target = torch.from_numpy(cache.target_100m[i][None, None])
         mask = torch.from_numpy(cache.mask_100m[i][None, None])
-        pooled = pool_10m_to_100m(prediction, aggregation, mask)
+        pooled = clamp_eval_prediction(pool_10m_to_100m(prediction, aggregation, mask))
         error_sum, count = masked_abs_error_sums(pooled, target, mask)
         ssim_sum, ssim_windows = masked_ssim_stats(
-            pooled, target, mask, data_range_k=ssim_range.data_range_k
+            pooled, target, mask, clamp_predictions=False, data_range_k=ssim_range.data_range_k
         )
         records.append(
             PatchRecord(
@@ -821,11 +827,8 @@ class StageResult:
             "model_sha256": self.model_sha256,
             "fit_seconds": self.fit_seconds,
             "replay": self.replay,
-            "splits": {
-                name: {**asdict(summary), "mae": summary.mae, "ssim": summary.ssim}
-                for name, summary in self.splits.items()
-            },
-            "patches": [asdict(record) for record in self.patches],
+            "splits": splits_payload(self.splits, self.patches),
+            "patches": [record_payload(record) for record in self.patches],
         }
 
 

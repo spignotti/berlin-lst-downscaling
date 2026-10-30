@@ -3,9 +3,12 @@
 One row per evaluated patch with the additive sums the scene bootstrap needs
 (absolute-error sum, valid cells, SSIM sum and windows). ``ssim_sum``,
 ``ssim_windows`` and the derived ``ssim_100m`` use the fixed train-derived SSIM
-data range of the committed artifact (its provenance is written to the footer).
-``ssim_100m_L250`` (legacy L = 250 K) and ``ssim_100m_Lpatch`` (per-patch
-target range) are diagnostic columns only. The export is a pure sidecar: it
+data range of the committed artifact (its provenance is written to the footer);
+``ssim_100m`` is the main SSIM metric. ``ssim_100m_L250`` (L = 250 K) is the
+appendix comparison value to stages 1-4, which used that range. It uses the same
+fully-valid windows as ``ssim_100m``. ``ssim_100m_Lpatch`` (per-patch target
+range) is a diagnostic column. All predictions are clamped once by
+``clamp_eval_prediction`` before scoring. The export is a pure sidecar: it
 never changes a metric, a checkpoint choice, or a report field.
 
 Importing this module does not import torch or the training orchestration;
@@ -17,7 +20,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -56,6 +59,14 @@ PATCH_EXPORT_SCHEMA: pa.Schema = pa.schema(
         pa.field("ssim_Lpatch_zero_range_patches", pa.int64(), nullable=False),
         pa.field("filled_feature_pixels", pa.int64(), nullable=True),
     ]
+)
+
+REPORT_SSIM_KEYS: tuple[str, ...] = (
+    "ssim_100m",
+    "ssim_100m_L250",
+    "ssim_100m_Lpatch",
+    "ssim_windows_Lpatch",
+    "ssim_Lpatch_zero_range_patches",
 )
 
 _SPLITS = frozenset({"train", "validation", "test"})
@@ -136,10 +147,18 @@ def score_batch_patches(
     metadata: Sequence[RealSampleMeta],
     *,
     data_range_k: float,
-    clamp_predictions: bool = False,
 ) -> list[dict[str, object]]:
-    """Return one additive-sum row per sample of an already pooled 100 m batch."""
-    from berlin_lst_downscaling.modeling.metrics import masked_abs_error_sums, masked_ssim_stats
+    """Return one additive-sum row per sample of an already pooled 100 m batch.
+
+    The prediction is clamped once with ``clamp_eval_prediction`` before every metric.
+    """
+    from berlin_lst_downscaling.modeling.metrics import (
+        clamp_eval_prediction,
+        masked_abs_error_sums,
+        masked_ssim_stats,
+    )
+
+    prediction_100m = clamp_eval_prediction(prediction_100m)
 
     batch = int(prediction_100m.shape[0])
     if batch != len(metadata):
@@ -150,7 +169,7 @@ def score_batch_patches(
         pred, target, mask = prediction_100m[sl], target_100m[sl], mask_100m[sl]
         error_sum, count = masked_abs_error_sums(pred, target, mask)
         ssim_sum, ssim_count = masked_ssim_stats(
-            pred, target, mask, clamp_predictions=clamp_predictions, data_range_k=data_range_k
+            pred, target, mask, clamp_predictions=False, data_range_k=data_range_k
         )
         variants = score_patch_ssim_variants(pred, target, mask)
         rows.append(
@@ -168,6 +187,44 @@ def score_batch_patches(
             }
         )
     return rows
+
+
+def pooled_ssim_metrics(
+    records: Iterable[Mapping[str, object]],
+) -> dict[str, float | int | None]:
+    """Pool per-patch SSIM fields into the report keys shared by all models.
+
+    ``ssim_100m`` is the main metric (fixed-L SSIM). ``ssim_100m_L250`` is the
+    appendix comparison value to stages 1-4 (L = 250 K, same windows as the main
+    SSIM). ``ssim_100m_Lpatch`` is a diagnostic. A mean is ``None`` when its
+    window denominator is 0.
+    """
+    sum_main = 0.0
+    win_main = 0
+    sum_l250 = 0.0
+    sum_lpatch = 0.0
+    win_lpatch = 0
+    zero_range = 0
+    for record in records:
+        windows = int(record["ssim_windows"])  # type: ignore[call-overload]
+        sum_main += float(record["ssim_sum"])  # type: ignore[arg-type]
+        win_main += windows
+        l250 = record["ssim_100m_L250"]
+        if l250 is not None:
+            sum_l250 += float(l250) * windows  # type: ignore[arg-type]
+        w_lp = int(record["ssim_windows_Lpatch"])  # type: ignore[call-overload]
+        lpatch = record["ssim_100m_Lpatch"]
+        if lpatch is not None:
+            sum_lpatch += float(lpatch) * w_lp  # type: ignore[arg-type]
+        win_lpatch += w_lp
+        zero_range += int(record["ssim_Lpatch_zero_range_patches"])  # type: ignore[call-overload]
+    return {
+        "ssim_100m": sum_main / win_main if win_main > 0 else None,
+        "ssim_100m_L250": sum_l250 / win_main if win_main > 0 else None,
+        "ssim_100m_Lpatch": sum_lpatch / win_lpatch if win_lpatch > 0 else None,
+        "ssim_windows_Lpatch": win_lpatch,
+        "ssim_Lpatch_zero_range_patches": zero_range,
+    }
 
 
 def _count(value: object, name: str, patch_id: str) -> int:
@@ -328,12 +385,14 @@ def write_patch_export(
 
 
 __all__ = [
+    "REPORT_SSIM_KEYS",
     "PATCH_EXPORT_METADATA_KEY",
     "PATCH_EXPORT_SCHEMA",
     "PATCH_EXPORT_SCHEMA_VERSION",
     "EvaluationIdentity",
     "PatchSsimVariants",
     "patch_export_filename",
+    "pooled_ssim_metrics",
     "score_batch_patches",
     "score_patch_ssim_variants",
     "write_patch_export",

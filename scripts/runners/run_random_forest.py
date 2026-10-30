@@ -206,6 +206,9 @@ def main(cfg: DictConfig) -> int:
     if any(Path(output_root).glob("random_forest_*")):
         raise ValueError("RF output root already contains artifacts; choose a fresh root")
 
+    # Validate the SSIM artifact before W&B opens and before any data read.
+    source, ssim_range = _resolve_source_and_ssim(cfg)
+
     with (
         RunLogSession(output_root, pipeline="random_forest", run_id=run_id, level=level),
         TemporaryDirectory(prefix="cache-", dir=output_root) as cache_root,
@@ -247,7 +250,6 @@ def main(cfg: DictConfig) -> int:
             max_depth=spec.max_depth,
             n_jobs=spec.n_jobs,
         )
-        source, ssim_range = _resolve_source_and_ssim(cfg)
         log_event(
             _logger,
             logging.INFO,
