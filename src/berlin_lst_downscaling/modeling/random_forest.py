@@ -36,7 +36,7 @@ import resource
 import time
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -83,6 +83,7 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     patch_index_fingerprints,
 )
+from berlin_lst_downscaling.modeling.ssim_range import load_ssim_data_range
 
 _logger = logging.getLogger(__name__)
 
@@ -821,6 +822,7 @@ class RandomForestReport:
     git_revision: str
     written_at: str
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
+    ssim_data_range: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -843,6 +845,7 @@ class RandomForestReport:
             "resource_usage": self.resource_usage,
             "git_revision": self.git_revision,
             "written_at": self.written_at,
+            "ssim_data_range": self.ssim_data_range,
         }
         # v1 payloads stay byte-identical: the field appears only for schema 5.
         if self.feature_schema_version != FEATURE_SCHEMA_VERSION:
@@ -869,6 +872,7 @@ def build_report(
     feature_schema_version: int = FEATURE_SCHEMA_VERSION,
 ) -> RandomForestReport:
     """Assemble the writable artifact from the run's evidence."""
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
     return RandomForestReport(
         forest=spec.payload(),
         library_versions=library_versions(),
@@ -901,7 +905,8 @@ def build_report(
             "ard_root": cfg.ard_root,
             "aggregation": cfg.aggregation,
         },
-        fingerprints=patch_index_fingerprints(cfg.patch_index_root),
+        fingerprints=fingerprints,
+        ssim_data_range=load_ssim_data_range(expected_fingerprints=fingerprints).payload(),
         resolved_config=resolved_config,
         runtime_seconds=runtime_seconds,
         resource_usage={

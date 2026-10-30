@@ -52,6 +52,8 @@ from berlin_lst_downscaling.modeling.contracts import (
     validate_real_batch,
 )
 from berlin_lst_downscaling.modeling.metrics import (
+    METRIC_ONLY_SSIM_KEYS,
+    SSIM_LEGACY_DATA_RANGE_K,
     THERMAL_AWARE_GRAD_WEIGHT,
     THERMAL_AWARE_SSIM_WEIGHT,
     MaskedMAE,
@@ -65,8 +67,10 @@ from berlin_lst_downscaling.modeling.metrics import (
     ValidCells,
     masked_l1_loss,
     masked_ssim_stats,
+    masked_ssim_stats_patch_range,
     pool_10m_to_100m,
     prediction_outside_lst_range_counts,
+    resolve_ssim_data_range_k,
     thermal_objective_batch,
 )
 from berlin_lst_downscaling.modeling.patch_cache import PatchCache, build_patch_cache
@@ -630,6 +634,10 @@ class RealLSTTask(LightningModule):
         Training objective. ``masked_l1`` is Stages 1–4; ``thermal_aware`` is
         Stage 5 (same inputs, structural + gradient penalties). Checkpoint
         selection stays masked MAE in both cases.
+    ssim_data_range_k:
+        Fixed SSIM data range L. ``None`` resolves the committed train-derived
+        artifact (raises while it is a placeholder); the resolved value is
+        saved in the hyperparameters.
     """
 
     def __init__(
@@ -643,8 +651,12 @@ class RealLSTTask(LightningModule):
         residual_prior: bool = False,
         loss_name: str = "masked_l1",
         aggregation: AggregationMethod | str = AGGREGATION_ARITHMETIC,
+        ssim_data_range_k: float | None = None,
     ) -> None:
         super().__init__()
+        # Reassigned before save_hyperparameters so the resolved L is saved.
+        ssim_data_range_k = resolve_ssim_data_range_k(ssim_data_range_k)
+        self.ssim_data_range_k = ssim_data_range_k
         if loss_name not in ("masked_l1", "thermal_aware"):
             raise ValueError(f"loss_name must be 'masked_l1' or 'thermal_aware', got {loss_name!r}")
         self.model = UNet(in_channels=n_active_channels + 1, base_width=base_width, depth=depth)
@@ -664,6 +676,10 @@ class RealLSTTask(LightningModule):
         self.val_mae = MaskedMAE()
         self.val_ssim = MaskedSSIM()
         self.val_ssim_windows = SupportedWindows()
+        # Validation-only appendix variants; never in the loss or checkpoint selection.
+        self.val_ssim_L250 = MaskedSSIM()
+        self.val_ssim_Lpatch = MaskedSSIM()
+        self.val_ssim_Lpatch_zero_range = SupportCounter()
         self.val_valid_cells = ValidCells()
         self.train_thermal_l1 = SupportWeightedSum()
         self.train_thermal_ssim = SupportWeightedSum()
@@ -689,7 +705,9 @@ class RealLSTTask(LightningModule):
         self, prediction_100m: Tensor, target_100m: Tensor, mask_100m: Tensor
     ) -> Tensor:
         if self.loss_name == "thermal_aware":
-            return thermal_objective_batch(prediction_100m, target_100m, mask_100m).loss
+            return thermal_objective_batch(
+                prediction_100m, target_100m, mask_100m, data_range_k=self.ssim_data_range_k
+            ).loss
         return masked_l1_loss(prediction_100m, target_100m, mask_100m)
 
     def _accumulate_thermal_audit(self, batch_stats: ThermalObjectiveBatch, *, train: bool) -> None:
@@ -767,7 +785,12 @@ class RealLSTTask(LightningModule):
     def training_step(self, batch: RealBatch, batch_idx: int) -> Tensor:
         prediction_100m = pool_10m_to_100m(self(batch), self.aggregation, batch.mask_100m)
         if self.loss_name == "thermal_aware":
-            objective = thermal_objective_batch(prediction_100m, batch.target_100m, batch.mask_100m)
+            objective = thermal_objective_batch(
+                prediction_100m,
+                batch.target_100m,
+                batch.mask_100m,
+                data_range_k=self.ssim_data_range_k,
+            )
             loss = objective.loss
             self._accumulate_thermal_audit(objective, train=True)
             self._log_thermal_batch_metrics(train=True)
@@ -791,7 +814,10 @@ class RealLSTTask(LightningModule):
             self.val_mae.update(prediction_100m, batch.target_100m, batch.mask_100m)
             if self.loss_name == "thermal_aware":
                 objective = thermal_objective_batch(
-                    prediction_100m, batch.target_100m, batch.mask_100m
+                    prediction_100m,
+                    batch.target_100m,
+                    batch.mask_100m,
+                    data_range_k=self.ssim_data_range_k,
                 )
                 self._accumulate_thermal_audit(objective, train=False)
                 self._log_thermal_batch_metrics(train=False)
@@ -802,9 +828,23 @@ class RealLSTTask(LightningModule):
                 batch.target_100m,
                 batch.mask_100m,
                 clamp_predictions=False,
+                data_range_k=self.ssim_data_range_k,
             )
             self.val_ssim.update(ssim_sum, ssim_count)
             self.val_ssim_windows.update(ssim_count)
+            l250_sum, l250_count = masked_ssim_stats(
+                prediction_100m,
+                batch.target_100m,
+                batch.mask_100m,
+                clamp_predictions=False,
+                data_range_k=SSIM_LEGACY_DATA_RANGE_K,
+            )
+            self.val_ssim_L250.update(l250_sum, l250_count)
+            lp_sum, lp_count, lp_zero = masked_ssim_stats_patch_range(
+                prediction_100m, batch.target_100m, batch.mask_100m
+            )
+            self.val_ssim_Lpatch.update(lp_sum, lp_count)
+            self.val_ssim_Lpatch_zero_range.update(lp_zero)
             outside_count, pixel_count = prediction_outside_lst_range_counts(prediction_100m)
             self.val_pred_outside_lst_range.update(outside_count, pixel_count)
             self.val_valid_cells.update(batch.mask_100m)
@@ -812,6 +852,10 @@ class RealLSTTask(LightningModule):
         self.log("validation/mae_100m", self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         self.log("validation/ssim_100m", self.val_ssim, on_step=False, on_epoch=True)
         self.log("validation/ssim_windows", self.val_ssim_windows, on_step=False, on_epoch=True)
+        l250_key, lpatch_key, lpatch_zero_key = METRIC_ONLY_SSIM_KEYS
+        self.log(l250_key, self.val_ssim_L250, on_step=False, on_epoch=True)
+        self.log(lpatch_key, self.val_ssim_Lpatch, on_step=False, on_epoch=True)
+        self.log(lpatch_zero_key, self.val_ssim_Lpatch_zero_range, on_step=False, on_epoch=True)
         self.log(
             "validation/ssim_supported",
             ssim_count,

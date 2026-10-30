@@ -25,6 +25,7 @@ import logging
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -44,6 +45,7 @@ from berlin_lst_downscaling.modeling.patches import (
     load_patch_refs,
     patch_index_fingerprints,
 )
+from berlin_lst_downscaling.modeling.ssim_range import load_ssim_data_range
 
 _logger = logging.getLogger(__name__)
 
@@ -105,6 +107,7 @@ class BaselineReport:
     fingerprints: dict[str, str]
     git_revision: str
     written_at: str
+    ssim_data_range: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict:
         return {
@@ -122,6 +125,7 @@ class BaselineReport:
             "fingerprints": self.fingerprints,
             "git_revision": self.git_revision,
             "written_at": self.written_at,
+            "ssim_data_range": self.ssim_data_range,
         }
 
 
@@ -237,6 +241,7 @@ def build_report(
     git_revision: str,
 ) -> BaselineReport:
     """Assemble the writable artifact from the evaluated records."""
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
     return BaselineReport(
         method=METHOD,
         prior_rule=PRIOR_RULE,
@@ -255,9 +260,10 @@ def build_report(
             "ard_root": cfg.ard_root,
             "aggregation": cfg.aggregation,
         },
-        fingerprints=patch_index_fingerprints(cfg.patch_index_root),
+        fingerprints=fingerprints,
         git_revision=git_revision,
         written_at=now_iso(),
+        ssim_data_range=load_ssim_data_range(expected_fingerprints=fingerprints).payload(),
     )
 
 

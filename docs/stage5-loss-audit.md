@@ -286,6 +286,55 @@ The two agree closely but are not identical.
 - **Q2:** Is the window-weighted (rather than patch-weighted) SSIM mean the
   intended definition? It matches the current docs.
 
+### Decision on Q1: fixed data range from the train split
+
+The author decided Q1: the SSIM data range `L` is a **fixed** value derived
+only from the train split (2017–2023, `split == "train"` rows of the
+training/v3 patch index): `L = p99.5 − p0.5` of the valid 100 m Landsat ST
+targets of all admitted train patches. The 2024 validation and 2025 test
+splits never enter the derivation. The same `L` feeds the L5 loss term and
+the SSIM metric. This supersedes the 250 K constants quoted above.
+
+SSIM parameters (one code path, `masked_ssim_stats` in `modeling/metrics.py`):
+
+| Parameter | Value |
+|---|---|
+| Window | 7×7 uniform, no padding, fully valid windows only |
+| `K1`, `K2` | 0.01, 0.03 |
+| Covariance | population (uniform window mean of products minus product of means) |
+| `L` | train-split `p99.5 − p0.5`, from `configs/modeling/ssim_data_range/v1.yaml` |
+| `C1`, `C2` | `(K1·L)²`, `(K2·L)²`, computed in fp32 outside autocast |
+| Clamp | targets (and predictions in the training loss) clamped to `LST_RANGE_K = (150, 400)` K; unchanged, not to p0.5/p99.5 |
+| Percentiles | `np.percentile(..., method="linear")` over all valid (mask == 1, finite) cells, collected in memory (~5.5k patches × 256 cells ≈ 11 MB) |
+
+The artifact is committed as a **placeholder** (`status: placeholder`, value
+fields null) because the coding environment has no GCS access. While it is a
+placeholder, every production SSIM path (L5 loss, validation metric, naive
+baseline and random-forest reports, and `RealLSTTask` construction) raises
+and names the derivation command. There is no fallback to 250 K. A real run
+also checks the artifact's patch-index fingerprints against the index it
+reads. Only the GCS-free `contract_smoke` config and the unit tests use an
+explicit test override (`ssim_data_range_test_override_k`, rejected for
+`data.kind: real`). **L5 must not start before the artifact is filled and
+committed.**
+
+Derive and fill the artifact (operator machine with ADC; reads only the
+train split, writes only the local YAML):
+
+```
+uv run python scripts/operators/derive_ssim_data_range.py --config-name v6_l5_locked
+```
+
+The run records the used `L`, its artifact version and SHA-256 in the run
+metadata and summary (`ssim_data_range`).
+
+Appendix sensitivity (metric only, never in the loss or checkpoint
+selection, which stays `validation/mae_100m`): `validation/ssim_100m_L250`
+uses the legacy `L = 250 K`; `validation/ssim_100m_Lpatch` uses a per-patch
+`L` (max − min of the clamped valid target cells of that patch). A patch with
+zero range is excluded and counted in
+`validation/ssim_Lpatch_zero_range_patches`; it never yields NaN.
+
 ## Second loss variant
 
 Budget context (figures given in the task, not measured here): ~2.5 USD and

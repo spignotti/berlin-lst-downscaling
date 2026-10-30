@@ -25,6 +25,7 @@ from berlin_lst_downscaling.data.features.contracts import (
     feature_schema,
 )
 from berlin_lst_downscaling.modeling.contracts import RealBatch, validate_real_batch
+from berlin_lst_downscaling.modeling.metrics import resolve_ssim_data_range_k
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask
 from berlin_lst_downscaling.modeling.unet import UNet
 
@@ -166,7 +167,11 @@ class TesseraRealLSTTask(RealLSTTask):
         loss_name: str = "masked_l1",
         aggregation: str = "arithmetic",
         n_active_channels: int | None = None,
+        ssim_data_range_k: float | None = None,
     ) -> None:
+        # Resolved here as well so this signature's save_hyperparameters below
+        # records the value, not None.
+        ssim_data_range_k = resolve_ssim_data_range_k(ssim_data_range_k)
         # `n_active_channels` is accepted for checkpoint compat: parent
         # checkpoints record the fused width (kept+adapter). It must match
         # the derived width when given; the canonical keys are
@@ -181,6 +186,7 @@ class TesseraRealLSTTask(RealLSTTask):
             residual_prior=residual_prior,
             loss_name=loss_name,
             aggregation=aggregation,  # type: ignore[arg-type]
+            ssim_data_range_k=ssim_data_range_k,
         )
         # The parent built UNet(kept+adapter+1) for kept+adapted+prior: keep
         # it, add the learnable 1×1, and validate kept width at the boundary.

@@ -1,0 +1,32 @@
+# PLACEHOLDER for the fixed SSIM data range L (version v1).
+# L = p99.5 - p0.5 of the valid 100 m targets of the train split only (2017-2023).
+# While status is "placeholder" every production path raises (L5 must not start).
+# Fill and commit it with:
+#   uv run python scripts/operators/derive_ssim_data_range.py --config-name v6_l5_locked
+schema_version: 1
+version: v1
+status: placeholder
+quantity: ssim_data_range
+split: train
+years: [2017, 2018, 2019, 2020, 2021, 2022, 2023]
+p_low: 0.5
+p_high: 99.5
+percentile_method: linear
+low_k: null
+high_k: null
+data_range_k: null
+n_cells: null
+n_patches: null
+n_patches_empty: null
+n_nonfinite_masked_cells: null
+n_scenes: null
+n_refs_requested: null
+exclusions: null
+patch_index_root: null
+patch_index_fingerprints: null
+training_root: null
+config_name: null
+script: scripts/operators/derive_ssim_data_range.py
+derivation_command: uv run python scripts/operators/derive_ssim_data_range.py --config-name v6_l5_locked
+git_commit: null
+derived_at: null

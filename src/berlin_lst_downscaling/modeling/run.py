@@ -84,6 +84,11 @@ from berlin_lst_downscaling.modeling.run_identity import (
     persist_run_identity,
     resolve_run_identity,
 )
+from berlin_lst_downscaling.modeling.ssim_range import (
+    SsimDataRange,
+    load_ssim_data_range,
+    test_override_ssim_data_range,
+)
 from berlin_lst_downscaling.modeling.synthetic import (
     ContractSyntheticDataModule,
     SyntheticDataModule,
@@ -375,6 +380,9 @@ class EpochMetricsRecorder(Callback):
                 "validation_mae_100m": None,
                 "validation_valid_cells": None,
                 "validation_ssim_100m": None,
+                "validation_ssim_100m_L250": None,
+                "validation_ssim_100m_Lpatch": None,
+                "validation_ssim_Lpatch_zero_range_patches": None,
                 "validation_ssim_windows": None,
                 "validation_ssim_supported": None,
                 "validation_pred_outside_lst_range_frac": None,
@@ -402,6 +410,11 @@ class EpochMetricsRecorder(Callback):
         entry["validation_valid_cells"] = self._read(trainer, "validation/valid_cells")
         entry["validation_ssim_100m"] = self._read(trainer, "validation/ssim_100m")
         entry["validation_ssim_windows"] = self._read(trainer, "validation/ssim_windows")
+        entry["validation_ssim_100m_L250"] = self._read(trainer, "validation/ssim_100m_L250")
+        entry["validation_ssim_100m_Lpatch"] = self._read(trainer, "validation/ssim_100m_Lpatch")
+        entry["validation_ssim_Lpatch_zero_range_patches"] = self._read(
+            trainer, "validation/ssim_Lpatch_zero_range_patches"
+        )
         entry["validation_ssim_supported"] = self._read(trainer, "validation/ssim_supported")
         entry["validation_pred_outside_lst_range_frac"] = self._read(
             trainer, "validation/pred_outside_lst_range_frac"
@@ -568,6 +581,21 @@ def _early_stop_epoch(
     raise RuntimeError(f"unexpected early stopping reason {reason!r} for {monitored}")
 
 
+def resolve_run_ssim_data_range(
+    cfg: DictConfig, *, expected_fingerprints: Mapping[str, str] | None
+) -> SsimDataRange:
+    """Resolve the run's fixed SSIM data range (artifact, or smoke-only override)."""
+    override = OmegaConf.select(cfg, "ssim_data_range_test_override_k")
+    if override is not None:
+        if str(cfg.data.get("kind", "synthetic")) == "real":
+            raise RuntimeError(
+                "ssim_data_range_test_override_k is test/smoke-only and is rejected "
+                "for data.kind: real"
+            )
+        return test_override_ssim_data_range(float(override))
+    return load_ssim_data_range(expected_fingerprints=expected_fingerprints)
+
+
 def _fit_contract_lifecycle(
     cfg: DictConfig,
     run_id: str,
@@ -593,6 +621,9 @@ def _fit_contract_lifecycle(
     evaluate_test = evaluate_test_from_config(cfg)
     residual_prior = bool(cfg.get("stage1_residual_prior", False))
     loss_name = str(OmegaConf.select(cfg, "contract.loss") or "masked_l1")
+    ssim_range = resolve_run_ssim_data_range(
+        cfg, expected_fingerprints=source_metadata.get("patch_index_fingerprints")
+    )
     tessera_enabled = bool(OmegaConf.select(cfg, "data.tessera_enabled") or False)
     tessera_embeddings_root = str(OmegaConf.select(cfg, "data.tessera_embeddings_root") or "")
     if tessera_enabled:
@@ -620,6 +651,7 @@ def _fit_contract_lifecycle(
             residual_prior=residual_prior,
             loss_name=loss_name,
             aggregation=aggregation,
+            ssim_data_range_k=ssim_range.data_range_k,
         )
     else:
         task = RealLSTTask(
@@ -632,6 +664,7 @@ def _fit_contract_lifecycle(
             residual_prior=residual_prior,
             loss_name=loss_name,
             aggregation=aggregation,
+            ssim_data_range_k=ssim_range.data_range_k,
         )
 
     output_root = Path(str(cfg.output_root))
@@ -779,6 +812,7 @@ def _fit_contract_lifecycle(
         ),
         "reproducibility": reproducibility,
         "run_identity": run_identity.to_payload(),
+        "ssim_data_range": ssim_range.payload(),
         **source_metadata,
     }
     if is_v6:
@@ -881,6 +915,7 @@ def _fit_contract_lifecycle(
                 "residual_identity_mae_k": residual_identity_mae,
                 "residual_correction_mean_abs_k": correction_mean,
                 "resolved_config": OmegaConf.to_container(cfg, resolve=True),
+                "ssim_data_range": ssim_range.payload(),
             }
             if is_probe or is_full:
                 experiment = wandb_logger.experiment

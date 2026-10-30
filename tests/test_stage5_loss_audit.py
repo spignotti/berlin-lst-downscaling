@@ -7,9 +7,9 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from berlin_lst_downscaling.modeling.metrics import (
-    SSIM_DATA_RANGE,
     SSIM_K1,
     SSIM_K2,
+    SSIM_LEGACY_DATA_RANGE_K,
     THERMAL_AWARE_GRAD_WEIGHT,
     THERMAL_AWARE_SSIM_WEIGHT,
     masked_ssim_stats,
@@ -31,9 +31,8 @@ def _smooth_field(
 
 
 def _reference_ssim_fp64(prediction: Tensor, target: Tensor) -> float:
-    low, high = SSIM_DATA_RANGE
-    c1 = (SSIM_K1 * (high - low)) ** 2
-    c2 = (SSIM_K2 * (high - low)) ** 2
+    c1 = (SSIM_K1 * SSIM_LEGACY_DATA_RANGE_K) ** 2
+    c2 = (SSIM_K2 * SSIM_LEGACY_DATA_RANGE_K) ** 2
     x = prediction.double().flatten()
     y = target.double().flatten()
     mu_x, mu_y = x.mean(), y.mean()
@@ -56,7 +55,9 @@ def test_ssim_fp32_matches_fp64_reference_at_kelvin_scale() -> None:
         prediction = pred64.float()
         target = target64.float()
         mask = torch.ones_like(prediction, dtype=torch.bool)
-        total, count = masked_ssim_stats(prediction, target, mask)
+        total, count = masked_ssim_stats(
+            prediction, target, mask, data_range_k=SSIM_LEGACY_DATA_RANGE_K
+        )
         assert int(count) == 1
         expected = _reference_ssim_fp64(prediction, target)
         max_error = max(max_error, abs(float(total) - expected))
@@ -73,7 +74,13 @@ def test_ssim_ignores_non_finite_values_outside_supported_windows() -> None:
     prediction[..., 15, 15] = 1e20
     target = torch.full((1, 1, 16, 16), 300.0)
 
-    total, count = masked_ssim_stats(prediction, target, mask, clamp_predictions=False)
+    total, count = masked_ssim_stats(
+        prediction,
+        target,
+        mask,
+        clamp_predictions=False,
+        data_range_k=SSIM_LEGACY_DATA_RANGE_K,
+    )
 
     assert int(count) == 1
     assert torch.isfinite(total)
@@ -103,7 +110,7 @@ def test_thermal_objective_ignores_invalid_cell_values() -> None:
         if target_invalid is not None:
             tgt[~mask] = target_invalid
         pred.requires_grad_(True)
-        loss = thermal_objective_batch(pred, tgt, mask).loss
+        loss = thermal_objective_batch(pred, tgt, mask, data_range_k=SSIM_LEGACY_DATA_RANGE_K).loss
         loss.backward()
         assert pred.grad is not None
         return loss.detach(), pred.grad
@@ -126,7 +133,7 @@ def test_thermal_objective_without_supported_window_is_l1_plus_gradient() -> Non
     target = 300.0 + _smooth_field(generator, (1, 1, 16, 16), 1.0, torch.float32)
     prediction = target + 0.5 * torch.randn((1, 1, 16, 16), generator=generator)
 
-    out = thermal_objective_batch(prediction, target, mask)
+    out = thermal_objective_batch(prediction, target, mask, data_range_k=SSIM_LEGACY_DATA_RANGE_K)
 
     assert float(out.ssim_supported) == 0.0
     assert float(out.ssim_penalty_unweighted) == 0.0
@@ -147,7 +154,7 @@ def test_ssim_term_is_small_against_l1_on_realistic_patches() -> None:
     prediction = (coarse + 1.0).requires_grad_(True)
     mask = torch.ones_like(target, dtype=torch.bool)
 
-    out = thermal_objective_batch(prediction, target, mask)
+    out = thermal_objective_batch(prediction, target, mask, data_range_k=SSIM_LEGACY_DATA_RANGE_K)
 
     ssim_term = THERMAL_AWARE_SSIM_WEIGHT * out.ssim_penalty_unweighted
     grad_term = THERMAL_AWARE_GRAD_WEIGHT * out.gradient_unweighted
@@ -169,8 +176,15 @@ def test_thermal_objective_cannot_see_structure_inside_a_100m_block() -> None:
     checker = (torch.arange(10)[:, None] + torch.arange(10)[None, :]) % 2 * 2.0 - 1.0
     pattern = 5.0 * checker.repeat(16, 16)[None, None]
 
-    plain = thermal_objective_batch(pool_10m_to_100m(base_10m), target, mask)
-    textured = thermal_objective_batch(pool_10m_to_100m(base_10m + pattern), target, mask)
+    plain = thermal_objective_batch(
+        pool_10m_to_100m(base_10m), target, mask, data_range_k=SSIM_LEGACY_DATA_RANGE_K
+    )
+    textured = thermal_objective_batch(
+        pool_10m_to_100m(base_10m + pattern),
+        target,
+        mask,
+        data_range_k=SSIM_LEGACY_DATA_RANGE_K,
+    )
 
     assert torch.allclose(plain.loss, textured.loss, atol=1e-5)
 
@@ -182,7 +196,9 @@ def test_ssim_reference_shift_keeps_target_clamp_for_huge_targets() -> None:
     target = torch.full((1, 1, 8, 8), 300.0)
     target[..., 0, 0] = 1e25
 
-    total, count = masked_ssim_stats(prediction, target, mask)
+    total, count = masked_ssim_stats(
+        prediction, target, mask, data_range_k=SSIM_LEGACY_DATA_RANGE_K
+    )
 
     assert int(count) == 4
     assert torch.isfinite(total)
