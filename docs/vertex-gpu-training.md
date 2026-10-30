@@ -359,6 +359,157 @@ polling, so a disconnected client reconnects with `--status <resource-name>`
 instead of resubmitting. Cancel a runaway job with
 `gcloud ai custom-jobs cancel <resource-name> --region=europe-west3`.
 
+## v6 fixed per-run overhead (data prep, post-fit, upload)
+
+Job `v6-l4-v6-n2-timing-20261030` (v6-l4, n1-standard-4 + 1x T4, image from
+`b42b893`) spent about 57 min from job start to the first train step, about
+2:26 min train plus 20 s validation per epoch, about 8.6 min between the end of
+`fit` and `run_done`, and about 1.5 min on upload and teardown. Across the
+27-run matrix this fixed overhead costs more than the training itself.
+
+### Where the data-prep time goes (code reading; no new Vertex measurement)
+
+The v6 configs set a positive `data.cache_max_bytes`, and `cache_root: null`
+resolves to `<output_root>/cache`. So even `mode: stream` builds the complete
+job-local patch cache before training starts. `RealPatchDataModule.setup()` does:
+
+1. **Ref loading and source preload.** It loads the training/v3 patch index and
+   the scaler/ledger metadata, then preloads scene metadata.
+2. **Admission (serial).** For each requested train and validation ref, it builds
+   the scene prior on first use (it reads the full native Landsat and flag rasters
+   once per scene), then reads the target and mask windows to check eligibility.
+3. **Cache build (serial before this change).** `_build_cache()` calls
+   `read_patch()` for every admitted patch in order. Each call opens the target,
+   mask and feature COGs. The feature read requests all 22 source channels,
+   decompresses the raster blocks, applies the published scaler, and zero-fills
+   nonfinite feature values.
+
+For 6,570 admitted train and validation patches, the two passes perform roughly
+32,850 raster opens, plus the scene-prior and metadata reads. A raster open is
+not the same as one HTTP request: a COG window read issues several range
+requests. The reader does no reprojection. It checks alignment and reads
+windows. DataLoader workers (`data.num_workers`) cannot speed this up, because
+the cache is built in the main process before any loader exists.
+
+Historical evidence (`docs/patch-read-timing.md`, issue #35) used older data
+and hardware. There, feature reads made up about 88% of the read pass, and the
+duplicate target/mask opens made up about 10% of admission plus read. These
+numbers show where the time goes. They are not a breakdown of the Vertex job
+above, which logged no per-phase timings.
+
+### What changed
+
+- **Bounded, ordered, threaded cache reads.** `data.cache_build_workers` (v6
+  base: `4`; allowed `1`-`4`; `1` is the serial reference path) sets how many
+  reader threads fill the cache. `ordered_bounded_map` yields results strictly
+  in submission order, never in completion order. It keeps at most
+  `2 * workers` reads submitted but not yet consumed, so memory stays bounded,
+  and it cancels pending reads on failure or early close. The coordinator thread
+  is the only cache writer. Each thread uses its own `RealPatchReader.copy_for_reads()`,
+  which shares the scaler and the scene priors already built during admission.
+  So no thread rebuilds priors or reloads metadata. Cached tensors, their order,
+  the scaler arithmetic, nodata handling and window geometry stay the same.
+  This is an operational setting. It is not part of any scientific lock, policy
+  hash or cache provenance. `data.num_workers` stays locked at `0`.
+- **Retries.** Each patch read gets at most 3 attempts with a fixed backoff of
+  0.5 s and then 1.0 s, with no jitter and no RNG calls. Only `RasterioIOError`,
+  `TimeoutError` and `ConnectionError` are retried, and each retry is logged
+  with `log_event`. Contract, shape and provenance errors fail at once. So does
+  an admitted patch that becomes unreadable. When retries run out, the run fails
+  with the patch ID and attempt count. No patch is ever skipped.
+- **Atomic publication.** The cache is written to a unique staging sibling of
+  the cache root and validated there. Only then is it renamed into place. A
+  failed build removes only its own staging directory. A killed process may
+  leave a staging directory behind, but it never opens as a ready cache and
+  never blocks a rebuild. An existing ready cache is reopened only when its
+  provenance, ordered patch IDs, active width and channel indices match.
+  Otherwise the run fails without deleting the cache. A cache root without a
+  manifest is refused, not deleted. There is never a silent fallback to
+  streaming.
+- **No double read in eager mode.** With the cache enabled, setup no longer
+  collates eager batches before the cache build. Before, that step read the
+  features a second time.
+- **Retry-safe setup.** A failed `setup()` clears its partial state, so the
+  next call prepares again. A successful setup is still idempotent.
+
+**Expected effect (estimate, not measured).** Data prep should take about
+25–40 min per run instead of about 57 min. This assumes the cache-read part
+runs 1.5–3x faster with four threads (GCS latency-bound reads overlap, while
+decompression and scaler work share 4 vCPUs) and that serial admission stays
+as it is. The ideal 4x speedup of the cache pass is an upper bound. The owner
+must confirm the estimate with the `phase_timings` of the next run.
+
+Not done, on purpose: no prebuilt consolidated cache artifact in GCS, no
+whole-scene downloads, and no `num_workers > 0`. Each of these would add a new
+data product or loosen a locked contract.
+
+### The post-fit gap (~8.6 min)
+
+Between `trainer.fit()` returning and `run_done`, `run_real_training()` does
+the following:
+
+1. Checks the checkpoint selection.
+2. Loads the best checkpoint onto the CPU.
+3. Runs a full validation inference pass on the CPU with the reloaded
+   checkpoint: shape and finiteness checks, the masked-MAE recomputation that
+   is compared against the callback value within the existing tolerance, and
+   the residual-correction statistics.
+4. Runs test evaluation, only on full runs with test enabled. `--skip-test`
+   still records `{"skipped": true}`.
+5. Writes the summary.
+6. Updates and finalizes W&B.
+
+The CPU validation pass (1,047 patches through the U-Net on 4 vCPUs) is the
+likely main cost. The W&B share is unmeasured. This pass is the required
+best-checkpoint reload verification, so it stays unchanged: same device,
+tolerance and reported metrics. It already reads from the cached validation
+tensors and does not set up or admit data again (covered by
+`tests/test_vertex_phase_timings.py`). Each step now has its own timer, so the
+next run shows where the gap goes.
+
+### Phase timings
+
+`timed_phase` (`modeling/timing.py`) emits `phase_start` and `phase_end`
+`log_event` records. Each `phase_end` record has `started_at`, `ended_at` (UTC),
+`duration_seconds` and `status` (`ok`/`failed`). Phases:
+
+| Phase | Covers |
+|---|---|
+| `container_bootstrap` | entrypoint start (`VERTEX_CONTAINER_STARTED_AT_NS`) → Python dispatch (auth, Hydra compose, imports) |
+| `modeling_total` | the whole `run_modeling` dispatch |
+| `data_prep` | DataModule setup; contains `data_ref_loading`, `source_preload`, `admission`, `cache_build` |
+| `residual_identity` | pre-fit residual identity check |
+| `fit` | `trainer.fit` |
+| `post_fit` | contains `post_fit_checkpoint_load`, `post_fit_validation_verify`, `post_fit_test_eval` (only when it runs), `post_fit_summary` |
+| `wandb_finalize` | W&B metadata update and `finish` |
+| `epoch_curve_upload`, `checkpoint_hash_upload` | uploader work in `vertex_evidence.py` (`vertex` run log; per invocation) |
+| `evidence_upload` | logged after the upload returns; not in `evidence.json` |
+
+The `epoch_timing` events (`EpochTimingRecorder`) give each completed epoch's
+`train_seconds` (excluding validation), `validation_seconds` and
+`epoch_seconds`. Sanity validation and incomplete epochs are ignored.
+
+`evidence.json` has an additive `phase_timings` block. It holds `phases` (the
+last `phase_end` per phase from the run's modeling JSONL), `epochs`, `data_prep`
+(the existing `source_setup_seconds`, `admission_seconds` and
+`cache_build_seconds`, plus `cache_build_workers` and `cache_reused`),
+`uploader`, and `unavailable`. Nested phases overlap, so do not sum them.
+Intervals the worker cannot observe are `null` with a reason, never `0`:
+`provision_to_container` (Vertex provisioning comes before the container),
+`platform_teardown` (it comes after the container exits), and `evidence_upload`
+(its duration cannot be part of its own immutable payload). Older evidence
+without timing logs is still valid and gets `available: false` with a reason.
+
+### Owner steps before the next timed run
+
+1. Run the existing build-context check, then rebuild the image with the Cloud
+   Build recipe in [Build and push the image](#build-and-push-the-image) at the
+   new source SHA.
+2. Use the new image digest for the next separately authorized run, and read
+   `phase_timings` from its `evidence.json`.
+
+There is no cache-builder step: the cache is still built inside each job.
+
 ## Bounds and cost
 
 - Machine: one on-demand `n1-standard-4` + one `NVIDIA_TESLA_T4` in

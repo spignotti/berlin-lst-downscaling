@@ -222,6 +222,29 @@ def evaluate_test_from_config(cfg: DictConfig) -> bool:
     return value
 
 
+CACHE_BUILD_WORKERS_MAX = 4
+
+
+def cache_build_workers_from_config(cfg: DictConfig) -> int:
+    """Read ``data.cache_build_workers``; missing means the serial reference path.
+
+    An operational setting only: it bounds the reader threads that fill the
+    job-local cache and never changes the cached content, so it is not pinned
+    by the scientific locks and not part of any policy hash.
+    """
+    value = OmegaConf.select(cfg, "data.cache_build_workers", default=1)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= CACHE_BUILD_WORKERS_MAX
+    ):
+        raise ValueError(
+            f"data.cache_build_workers must be an int in [1, {CACHE_BUILD_WORKERS_MAX}], "
+            f"got {value!r}"
+        )
+    return value
+
+
 def _early_stop_eval_problems(cfg: DictConfig) -> list[str]:
     problems: list[str] = []
     try:
@@ -1040,6 +1063,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "Stage-1 verification profile is cancelled; runtime is frozen from "
             "the J1–J4 efficiency results in docs/stage1-efficiency.md"
         )
+    cache_build_workers_from_config(cfg)
     _residual_prior_configs = {
         STAGE1_LOCKED_CONFIG_NAME,
         STAGE1_PROBE_CONFIG_NAME,
@@ -1103,7 +1127,9 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
 
 
 __all__ = [
+    "CACHE_BUILD_WORKERS_MAX",
     "EarlyStoppingSpec",
+    "cache_build_workers_from_config",
     "early_stopping_from_config",
     "evaluate_test_from_config",
     "assert_aggregation_arithmetic_for_locked",

@@ -357,3 +357,43 @@ def test_plan_helper_lists_27_runs(capsys: pytest.CaptureFixture[str]) -> None:
     ) in out
     assert out.count("arm=") == 27
     assert "est_hours=2.50" in out
+
+
+@pytest.mark.parametrize("workers", [1, 2, 3, 4])
+def test_cache_build_workers_accepted_without_changing_the_lock(
+    compose_modeling: Callable[..., DictConfig], workers: int
+) -> None:
+    cfg = _mutable(compose_modeling("v6_l4_locked"))
+    cfg.data.cache_build_workers = workers
+    _check(cfg, "v6_l4_locked")
+    assert cfg.data.num_workers == 0
+
+
+@pytest.mark.parametrize("bad", [True, 2.0, "4", None, 0, 5, -1])
+def test_cache_build_workers_malformed_rejected(
+    compose_modeling: Callable[..., DictConfig], bad: object
+) -> None:
+    cfg = _mutable(compose_modeling("v6_l4_locked"))
+    cfg.data.cache_build_workers = bad
+    with pytest.raises(ValueError, match="cache_build_workers"):
+        guard_modeling_config(cfg, "v6_l4_locked")
+
+
+@pytest.mark.parametrize("arm", _ARMS, ids=lambda a: a.arm_id)
+def test_all_arms_keep_zero_loader_workers_and_parallel_cache_build(
+    compose_modeling: Callable[..., DictConfig], arm: object
+) -> None:
+    name = arm.config_name  # type: ignore[attr-defined]
+    cfg = compose_modeling(name)
+    assert cfg.data.num_workers == 0
+    assert cfg.data.cache_build_workers == 4
+    _check(cfg, name)
+
+
+def test_nonzero_loader_workers_override_is_rejected(
+    compose_modeling: Callable[..., DictConfig],
+) -> None:
+    cfg = _mutable(compose_modeling("v6_l4_locked"))
+    cfg.data.num_workers = 2
+    with pytest.raises(ValueError):
+        _check(cfg, "v6_l4_locked")

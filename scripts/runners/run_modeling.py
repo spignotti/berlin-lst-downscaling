@@ -36,6 +36,9 @@ fail-closed).
 from __future__ import annotations
 
 import logging
+import os
+import time
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import hydra
@@ -44,8 +47,54 @@ from omegaconf import DictConfig
 
 from berlin_lst_downscaling.data.io import RunLogSession, log_event
 from berlin_lst_downscaling.modeling.run import guard_modeling_config, run_modeling
+from berlin_lst_downscaling.modeling.timing import timed_phase
 
 _logger = logging.getLogger(__name__)
+
+
+def _log_container_bootstrap() -> None:
+    """Log container entry to Python dispatch, or that it cannot be observed."""
+    raw = os.environ.get("VERTEX_CONTAINER_STARTED_AT_NS")
+    if raw is None or not raw.strip():
+        log_event(
+            _logger,
+            logging.INFO,
+            "phase_unavailable",
+            phase="container_bootstrap",
+            reason="VERTEX_CONTAINER_STARTED_AT_NS not set",
+        )
+        return
+    try:
+        started_ns = int(raw)
+    except ValueError:
+        log_event(
+            _logger,
+            logging.WARNING,
+            "phase_unavailable",
+            phase="container_bootstrap",
+            reason=f"VERTEX_CONTAINER_STARTED_AT_NS is not an integer: {raw!r}",
+        )
+        return
+    ended_ns = time.time_ns()
+    if ended_ns < started_ns:
+        log_event(
+            _logger,
+            logging.WARNING,
+            "phase_unavailable",
+            phase="container_bootstrap",
+            reason="VERTEX_CONTAINER_STARTED_AT_NS is in the future",
+        )
+        return
+    log_event(
+        _logger,
+        logging.INFO,
+        "phase_end",
+        phase="container_bootstrap",
+        started_at=datetime.fromtimestamp(started_ns / 1e9, UTC).isoformat(),
+        ended_at=datetime.fromtimestamp(ended_ns / 1e9, UTC).isoformat(),
+        duration_seconds=(ended_ns - started_ns) / 1e9,
+        status="ok",
+    )
 
 
 @hydra.main(config_path="../../configs/modeling", config_name="full", version_base=None)
@@ -74,7 +123,9 @@ def main(cfg: DictConfig) -> int:
             seed=int(cfg.get("seed", 0)),
             wandb_mode=str(cfg.get("wandb", {}).get("mode", "")),
         )
-        result = run_modeling(cfg, run_id=run_id, config_name=config_name)
+        _log_container_bootstrap()
+        with timed_phase("modeling_total", logger=_logger):
+            result = run_modeling(cfg, run_id=run_id, config_name=config_name)
 
         print(f"Modeling — run {run_id}")
         print(f"  Best checkpoint : {result.best_checkpoint}")

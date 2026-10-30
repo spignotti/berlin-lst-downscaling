@@ -18,14 +18,127 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sys
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from google.cloud import storage
 
+from berlin_lst_downscaling.data.io import RunLogSession
+from berlin_lst_downscaling.modeling.timing import timed_phase
+
 # Bounded, non-secret stdout tail kept as execution evidence.
 _RESULT_TAIL_LINES = 20
+
+
+_logger = logging.getLogger(__name__)
+
+_UNOBSERVABLE_PHASES = {
+    "provision_to_container": "Vertex provisioning precedes the container; not observable inside",
+    "platform_teardown": "Vertex teardown follows the container exit; not observable inside it",
+    "evidence_upload": "its own duration cannot be part of the immutable evidence payload; "
+    "it is logged to the vertex run log after the upload returns",
+}
+
+
+@contextmanager
+def _timed_upload(phase: str, durations: dict[str, float]) -> Iterator[None]:
+    """Time an upload with ``timed_phase`` and keep its duration for the record."""
+    started = time.perf_counter()
+    with timed_phase(phase, logger=_logger):
+        yield
+    durations[phase] = time.perf_counter() - started
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    records: list[dict] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            print(f"WARNING: {path}:{number} is not valid JSON: {exc}", file=sys.stderr)
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+def _modeling_log(run_root: Path, context: dict) -> Path | None:
+    logs = run_root / "logs" / "modeling"
+    run_id = context.get("run_id")
+    if run_id:
+        candidate = logs / f"{run_id}.jsonl"
+        return candidate if candidate.is_file() else None
+    candidates = sorted(logs.glob("*.jsonl"))
+    return candidates[-1] if candidates else None
+
+
+def build_phase_timings(
+    run_root: Path,
+    context: dict,
+    scope: dict,
+    uploader: dict[str, float] | None,
+) -> dict:
+    """Collect wall-clock phases of the modeling run and this uploader invocation.
+
+    Nested phases overlap and must not be summed. An interval that cannot be
+    observed is ``null`` with a reason, never ``0``.
+    """
+    unavailable: dict[str, dict] = {
+        name: {"duration_seconds": None, "reason": reason}
+        for name, reason in _UNOBSERVABLE_PHASES.items()
+    }
+    timings: dict = {
+        "available": False,
+        "reason": None,
+        "modeling_log": None,
+        "phases": {},
+        "epochs": [],
+        "data_prep": {
+            key: scope[key]
+            for key in (
+                "source_setup_seconds",
+                "admission_seconds",
+                "cache_build_seconds",
+                "cache_build_workers",
+                "cache_reused",
+            )
+            if key in scope
+        },
+        "uploader": {name: seconds for name, seconds in (uploader or {}).items()},
+        "unavailable": unavailable,
+    }
+    log = _modeling_log(run_root, context)
+    if log is None:
+        timings["reason"] = "modeling JSONL log not found"
+        return timings
+    timings["modeling_log"] = log.name
+    for entry in _read_jsonl(log):
+        event = entry.get("event")
+        phase = entry.get("phase")
+        if event == "phase_end" and isinstance(phase, str):
+            timings["phases"][phase] = {
+                key: entry.get(key)
+                for key in ("started_at", "ended_at", "duration_seconds", "status")
+            }
+        elif event == "phase_unavailable" and isinstance(phase, str):
+            unavailable[phase] = {"duration_seconds": None, "reason": entry.get("reason")}
+        elif event == "epoch_timing":
+            timings["epochs"].append(
+                {
+                    key: entry.get(key)
+                    for key in ("epoch", "train_seconds", "validation_seconds", "epoch_seconds")
+                }
+            )
+    timings["available"] = True
+    return timings
 
 
 def _read_json(path: Path) -> dict | None:
@@ -118,6 +231,7 @@ def build_record(
     checkpoint: dict | None = None,
     efficiency_slot: int | None = None,
     efficiency_role: str | None = None,
+    uploader_timings: dict[str, float] | None = None,
 ) -> dict:
     """Build the compact, non-secret evidence record.
 
@@ -255,6 +369,7 @@ def build_record(
     else:
         record["profile"] = "smoke"
         record["result_tail"] = _result_tail(result_file)
+    record["phase_timings"] = build_phase_timings(run_root, context, scope, uploader_timings)
     return record
 
 
@@ -344,10 +459,17 @@ def main() -> None:
 
     if args.epoch_metrics_only and not args.epoch_metrics_uri:
         raise SystemExit("ERROR: --epoch-metrics-only requires --epoch-metrics-uri")
+    with RunLogSession(str(args.run_root), pipeline="vertex", run_id=uuid.uuid4().hex[:8]):
+        _publish(args)
+
+
+def _publish(args: argparse.Namespace) -> None:
+    uploader: dict[str, float] = {}
     if args.epoch_metrics_uri:
-        _upload_epoch_metrics(
-            args.run_root, args.epoch_metrics_uri, required=not args.epoch_metrics_only
-        )
+        with _timed_upload("epoch_curve_upload", uploader):
+            _upload_epoch_metrics(
+                args.run_root, args.epoch_metrics_uri, required=not args.epoch_metrics_only
+            )
         if args.epoch_metrics_only:
             return
 
@@ -360,7 +482,8 @@ def main() -> None:
         if not args.checkpoint_path.is_file():
             raise SystemExit(f"ERROR: checkpoint not found: {args.checkpoint_path}")
         # Upload the checkpoint before the manifest that references it.
-        checkpoint = _upload_checkpoint_create_only(args.checkpoint_path, args.checkpoint_uri)
+        with _timed_upload("checkpoint_hash_upload", uploader):
+            checkpoint = _upload_checkpoint_create_only(args.checkpoint_path, args.checkpoint_uri)
         print(f"checkpoint uploaded: {checkpoint['uri']} ({checkpoint['bytes']} bytes)")
 
     record = build_record(
@@ -373,9 +496,11 @@ def main() -> None:
         checkpoint=checkpoint,
         efficiency_slot=args.efficiency_slot,
         efficiency_role=args.efficiency_role,
+        uploader_timings=uploader,
     )
     payload = json.dumps(record, indent=2, sort_keys=True, default=str).encode("utf-8")
-    _upload_create_only(args.evidence_uri, payload)
+    with timed_phase("evidence_upload", logger=_logger):
+        _upload_create_only(args.evidence_uri, payload)
     print(f"evidence uploaded: {args.evidence_uri}")
 
 
