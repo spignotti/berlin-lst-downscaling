@@ -253,8 +253,10 @@ class RealPatchDataModule(LightningDataModule):
         cache_root: Path | None = None,
         cache_max_bytes: int = 0,
         cache_build_workers: int = 1,
+        reuse_ready_cache: bool = False,
     ) -> None:
         super().__init__()
+        self.reuse_ready_cache = reuse_ready_cache
         self.cache_build_workers = validate_read_workers(cache_build_workers)
         if mode not in ("eager", "stream"):
             raise ValueError(f"data mode {mode!r} is not one of 'eager', 'stream'")
@@ -468,6 +470,13 @@ class RealPatchDataModule(LightningDataModule):
             raise RuntimeError(
                 f"cache root {cache_root} exists without a ready manifest; "
                 "refusing to reuse or delete an incomplete cache"
+            )
+        if ready and not self.reuse_ready_cache:
+            # The provenance does not pin the reader code revision, so a cache
+            # left by an earlier run is refused unless reuse is requested.
+            raise RuntimeError(
+                f"cache root {cache_root} already holds a ready cache; "
+                "refusing to reuse it across runs"
             )
         self.cache_reused = ready
         with timed_phase(

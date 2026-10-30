@@ -320,6 +320,7 @@ def _module(
     *,
     fingerprint: str = "x",
     mode: str = "stream",
+    reuse_ready_cache: bool = False,
 ) -> RealPatchDataModule:
     samples = {
         ref.patch_id: _sample(ref.patch_id, N_V6, i, ref.split) for i, ref in enumerate(_refs())
@@ -345,7 +346,22 @@ def _module(
         splits=("train", "validation"),
         cache_root=tmp_path / "cache",
         cache_max_bytes=MAX_BYTES,
+        reuse_ready_cache=reuse_ready_cache,
     )
+
+
+def test_ready_cache_is_refused_and_kept_without_explicit_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readers: list[_CountingReader] = []
+    _module(tmp_path, monkeypatch, readers).setup("fit")
+    before = (tmp_path / "cache" / "manifest.json").read_bytes()
+    readers.clear()
+    second = _module(tmp_path, monkeypatch, readers)
+    with pytest.raises(RuntimeError, match="refusing to reuse it across runs"):
+        second.setup("fit")
+    assert all(reader.reads == [] for reader in readers)
+    assert (tmp_path / "cache" / "manifest.json").read_bytes() == before
 
 
 def test_matching_ready_cache_reopens_without_reading_sources(
@@ -358,7 +374,7 @@ def test_matching_ready_cache_reopens_without_reading_sources(
     first_batch = next(iter(first.train_dataloader()))
     readers.clear()
 
-    second = _module(tmp_path, monkeypatch, readers)
+    second = _module(tmp_path, monkeypatch, readers, reuse_ready_cache=True)
     second.setup("fit")
     assert second.stats()["cache_reused"] is True
     assert all(reader.reads == [] for reader in readers)
@@ -372,7 +388,7 @@ def test_ready_cache_with_other_provenance_fails_and_is_kept(
     readers: list[_CountingReader] = []
     _module(tmp_path, monkeypatch, readers).setup("fit")
     before = (tmp_path / "cache" / "manifest.json").read_bytes()
-    other = _module(tmp_path, monkeypatch, readers, fingerprint="changed")
+    other = _module(tmp_path, monkeypatch, readers, fingerprint="changed", reuse_ready_cache=True)
     with pytest.raises(RuntimeError, match="provenance"):
         other.setup("fit")
     assert (tmp_path / "cache" / "manifest.json").read_bytes() == before
