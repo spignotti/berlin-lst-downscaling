@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from berlin_lst_downscaling.analysis.training_aggregation import SceneMeta, select_train_scenes
+from berlin_lst_downscaling.modeling import ssim_range
 from berlin_lst_downscaling.modeling.aggregation import resolve_report_aggregation
 from berlin_lst_downscaling.modeling.baseline import build_report as build_baseline_report
 from berlin_lst_downscaling.modeling.patches import RealSourceConfig
@@ -28,7 +29,16 @@ _STUB_FINGERPRINTS = {
 
 
 @pytest.fixture(autouse=True)
-def _stub_patch_index_fingerprints(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_patch_index_fingerprints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+    write_ssim_artifact,  # noqa: ANN001
+) -> None:
+    artifact = write_ssim_artifact(
+        tmp_path_factory.mktemp("ssim_stub") / "ssim.yaml", fingerprints=_STUB_FINGERPRINTS
+    )
+    monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", artifact)
+
     def stub(_root: str) -> dict[str, str]:
         return dict(_STUB_FINGERPRINTS)
 
@@ -59,6 +69,7 @@ def test_baseline_report_builder_stores_aggregation_under_source() -> None:
         summaries={},
         exclusions={},
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     assert "aggregation" not in payload
     assert payload["source"]["aggregation"] == "t4"
@@ -96,6 +107,7 @@ def test_rf_report_builder_stores_aggregation_under_source() -> None:
         runtime_seconds=1.0,
         cache_bytes=0,
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     assert resolve_report_aggregation(payload) == "t4"
 
@@ -141,6 +153,7 @@ def test_rf_vs_naive_comparison_rejects_mismatched_methods() -> None:
         runtime_seconds=0.0,
         cache_bytes=0,
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     naive_payload = build_baseline_report(
         cfg=RealSourceConfig(
@@ -154,6 +167,7 @@ def test_rf_vs_naive_comparison_rejects_mismatched_methods() -> None:
         summaries={},
         exclusions={},
         git_revision="abc",
+        ssim_range=ssim_range.load_ssim_data_range(),
     ).to_payload()
     assert resolve_report_aggregation(rf_payload) == "t4"
     assert resolve_report_aggregation(naive_payload) == "arithmetic"

@@ -73,6 +73,7 @@ from berlin_lst_downscaling.modeling.random_forest import (
     load_model,
     model_file_name,
     probe_residuals,
+    resolve_report_ssim_data_range,
     resolve_stage_selection,
     score_stage,
     stage_matrix,
@@ -82,6 +83,7 @@ from berlin_lst_downscaling.modeling.random_forest import (
     write_report,
     write_train_rows,
 )
+from berlin_lst_downscaling.modeling.ssim_range import SsimDataRange
 
 _logger = logging.getLogger(__name__)
 
@@ -144,6 +146,12 @@ def _take_first(refs: list[PatchRef], limit: object) -> list[PatchRef]:
 def _probe_indices(cache: EvalSplit, per_split: int) -> list[int]:
     """Return the deterministic probe positions of one cached split."""
     return list(range(min(per_split, len(cache.patch_ids))))
+
+
+def _resolve_source_and_ssim(cfg: DictConfig) -> tuple[RealSourceConfig, SsimDataRange]:
+    """Build the source and load the SSIM data range once, before any data read."""
+    source = _source_config(cfg)
+    return source, resolve_report_ssim_data_range(source)
 
 
 @hydra.main(
@@ -233,7 +241,15 @@ def main(cfg: DictConfig) -> int:
             max_depth=spec.max_depth,
             n_jobs=spec.n_jobs,
         )
-        source = _source_config(cfg)
+        source, ssim_range = _resolve_source_and_ssim(cfg)
+        log_event(
+            _logger,
+            logging.INFO,
+            "ssim_data_range",
+            data_range_k=ssim_range.data_range_k,
+            version=ssim_range.version,
+            artifact_sha256=ssim_range.artifact_sha256,
+        )
         refs = load_patch_refs(source, splits=("train", *splits))
         for ref in refs:
             valid_year = (
@@ -365,6 +381,7 @@ def main(cfg: DictConfig) -> int:
                     cache,
                     model,
                     stage,
+                    ssim_range=ssim_range,
                     aggregation=source.aggregation,
                     n_feature_channels=n_feature_channels,
                 )
@@ -410,6 +427,7 @@ def main(cfg: DictConfig) -> int:
         probes = _write_probes(caches, stage_probes, probe_count, output_root, splits)
         report = build_report(
             cfg=source,
+            ssim_range=ssim_range,
             spec=spec,
             scope={
                 "wandb": {

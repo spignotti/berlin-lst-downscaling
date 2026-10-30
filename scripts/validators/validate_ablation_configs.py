@@ -66,6 +66,8 @@ _CONFIG_DIR = str(_REPO_ROOT / "configs" / "modeling")
 _MATRIX_PATH = _REPO_ROOT / "configs" / "ablation" / "v6_matrix.yaml"
 _V6_SOURCE_CHANNELS = 22
 _CACHE_MODES = ("both", "off", "on")
+# Wiring-only SSIM data range on fake tensors; the production L comes from the committed artifact.
+_WIRING_SSIM_RANGE_K = 40.0
 
 
 def _compose(config_name: str, overrides: list[str] | None = None):
@@ -162,13 +164,16 @@ def _check_stage(config_name: str) -> list[str]:
         depth=4,
         residual_prior=True,
         loss_name=loss_name,
+        ssim_data_range_k=_WIRING_SSIM_RANGE_K,
     )
     task.eval()
     with torch.inference_mode():
         prediction = task(batch)
         pooled = pool_10m_to_100m(prediction)
         if loss_name == "thermal_aware":
-            loss = thermal_aware_loss(pooled, batch.target_100m, batch.mask_100m)
+            loss = thermal_aware_loss(
+                pooled, batch.target_100m, batch.mask_100m, data_range_k=_WIRING_SSIM_RANGE_K
+            )
         else:
             loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
     if not torch.isfinite(loss):
@@ -184,7 +189,7 @@ def _check_stage(config_name: str) -> list[str]:
         was_warn = torch.is_deterministic_algorithms_warn_only_enabled()
         try:
             torch.use_deterministic_algorithms(True)
-            loss_bwd = thermal_aware_loss(pred, target, mask)
+            loss_bwd = thermal_aware_loss(pred, target, mask, data_range_k=_WIRING_SSIM_RANGE_K)
             loss_bwd.backward()
         except RuntimeError as exc:
             failures.append(
@@ -231,6 +236,7 @@ def _check_v6_arm(arm_id: str, cache_mode: str = "both") -> list[str]:
         depth=4,
         residual_prior=True,
         loss_name=arm.loss,
+        ssim_data_range_k=_WIRING_SSIM_RANGE_K,
     )
     task.eval()
     splits = {split: _v6_split_samples(split) for split in ("train", "validation")}
@@ -314,7 +320,9 @@ def _v6_forward_failures(
     with torch.inference_mode():
         pooled = pool_10m_to_100m(task(batch))
         if loss_name == "thermal_aware":
-            loss = thermal_aware_loss(pooled, batch.target_100m, batch.mask_100m)
+            loss = thermal_aware_loss(
+                pooled, batch.target_100m, batch.mask_100m, data_range_k=_WIRING_SSIM_RANGE_K
+            )
         else:
             loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
     if not torch.isfinite(loss):
