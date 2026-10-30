@@ -66,6 +66,8 @@ class PatchRecord:
     ssim_sum: float
     ssim_windows: int
     filled_feature_pixels: int
+    scene_id: str | None = None
+    scene_date: str | None = None
 
 
 @dataclass
@@ -225,6 +227,8 @@ def _score_patch(sample: RealSample, *, aggregation: AggregationMethod) -> Patch
         ssim_sum=float(ssim_sum),
         ssim_windows=int(ssim_count),
         filled_feature_pixels=sample.meta.filled_feature_pixels,
+        scene_id=sample.meta.scene_id,
+        scene_date=sample.meta.scene_date,
     )
 
 

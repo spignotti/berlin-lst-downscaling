@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -50,6 +51,11 @@ from berlin_lst_downscaling.modeling.aggregation import resolve_aggregation_meth
 from berlin_lst_downscaling.modeling.channels import (
     ActiveChannelSelection,
     schema_version_from_config,
+)
+from berlin_lst_downscaling.modeling.evaluation_exports import (
+    EvaluationIdentity,
+    patch_export_filename,
+    write_patch_export,
 )
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
@@ -481,6 +487,21 @@ def main(cfg: DictConfig) -> int:
         print(f"  Report: {uri}")
 
         _check_accounting(stage_results, splits, caches)
+        for stage in stages:
+            identity = EvaluationIdentity(
+                arm=f"random_forest_stage{stage.stage}",
+                seed=seed,
+                run_id=run_id,
+                checkpoint=model_file_name(stage.stage),
+            )
+            for split in splits:
+                write_patch_export(
+                    [asdict(r) for r in stage_results[stage.stage].patches if r.split == split],
+                    Path(output_root)
+                    / patch_export_filename(split, prefix=f"eval_stage{stage.stage}"),
+                    identity=identity,
+                    split=split,
+                )
         return 0
 
 

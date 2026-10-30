@@ -40,3 +40,38 @@ Folgerung: Ein eigener Target-Arm (z. B. LST mit statischer Emissivität neu ber
 Die bisherige 100-m-Aggregations-MAE misst **keine direkt beobachtete 10-m-LST-Genauigkeit**. Aufgrund räumlich wiederkehrender Patchanker ist auch eine unabhängige räumliche Transferfähigkeit noch nicht nachgewiesen.
 
 [Aufgabenstellung](../00-aufgabenstellung.md) · [Stage-1-Limitationen](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/stage1-full-results.md) · [Ablations-Limitationen](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/ablation-full-results.md).
+
+## Paired scene bootstrap (ablation evaluation)
+
+The ablation compares 9 arms with 3 seeds each. The comparison of two arms uses a paired scene cluster bootstrap implemented in `berlin_lst_downscaling.analysis.scene_bootstrap` with the CLI `scripts/analyze_scene_bootstrap.py`.
+
+**Estimand.** Per run and scene, patch sums are pooled (sum of absolute errors divided by the sum of valid cells for MAE; sum of SSIM values divided by the sum of SSIM windows for SSIM), never averaged as patch means. Per arm, the three seed runs are averaged per scene. The primary estimate is the equal-scene-weight mean of the paired difference d_s = A - B over scenes.
+
+**Resampling.** The unit is the scene. Scenes are resampled with replacement (B = 10 000, fixed `numpy.random.default_rng` seed, scene ids sorted) and the 95 % interval is the percentile interval of the replicate means. Patches are not the unit because neighbouring patches within a scene share atmosphere and surface state and are spatially autocorrelated, so treating them as independent would understate uncertainty. Seeds are never resampled.
+
+**Seed summaries.** Per-seed pooled overall metrics (mean, SD with ddof = 1, per-seed difference, sign consistency such as "3/3 same sign") are reported as diagnostics only. They differ from the primary estimand, which weights scenes equally. No seed-level significance test is performed: with n = 3 the smallest two-sided sign-flip p-value is 0.25.
+
+**Mismatch handling.** By default all six runs must have identical scene sets and identical per-scene patch sets; otherwise the tool raises and names the affected runs and scenes. `--allow-scene-mismatch` drops whole scenes that are not present with identical patch sets in all runs (never an intersection of patches) and records every dropped scene with its reason and affected runs. If no scene remains, the tool fails. Differing `valid_cells` or `ssim_windows` for the same patch, or conflicting scene dates, always raise.
+
+**SSIM.** Scenes without SSIM windows have a null SSIM; if a retained scene lacks support for the selected metric the tool raises. Direction: MAE is lower-is-better (A better if d < 0), SSIM is higher-is-better (A better if d > 0); ties are reported separately.
+
+**Multiplicity.** `holm_adjust` applies the Holm correction to a declared family of comparisons against one reference arm. The module does not produce bootstrap p-values yet; this is optional future work.
+
+**Validation first.** The CLI defaults to `--split validation`. Reading existing test exports requires `--i-know-test-is-frozen`; the tool only reads explicit local export files and never launches an evaluation.
+
+**Export schema (schema_version 1).** One Parquet file per run and split, columns: `schema_version` int32, `arm` string, `seed` int64 (nullable), `run_id` string, `checkpoint` string (nullable), `patch_id` string, `scene_id` string, `scene_date` string (nullable, YYYY-MM-DD), `split` string, `abs_error_sum` float64, `valid_cells` int64, `ssim_sum` float64, `ssim_windows` int64, `filled_feature_pixels` int64 (nullable). The footer key `patch_export` holds JSON with `schema_version`, `split`, `arm`, `seed`, `run_id`, `checkpoint`. File names: `eval_validation_patches.parquet`, `eval_test_patches.parquet`, and `eval_stage{n}_<split>_patches.parquet` for the random-forest runs.
+
+**Reporting table template.**
+
+| Arm A | Arm B | Metric | Mean A (SD) | Mean B (SD) | Paired diff A - B | 95 % CI | Scenes A better / tie / B better | Seed sign consistency |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `<arm>` | `<arm>` | `<metric>` | `<value (sd)>` | `<value (sd)>` | `<value>` | `[<low>, <high>]` | `<n / n / n>` | `<k/3 same sign>` |
+
+**Example (validation only).**
+
+```bash
+uv run python scripts/analyze_scene_bootstrap.py \
+  --arm-a <arm_a>/seed0/eval_validation_patches.parquet <arm_a>/seed1/eval_validation_patches.parquet <arm_a>/seed2/eval_validation_patches.parquet \
+  --arm-b <arm_b>/seed0/eval_validation_patches.parquet <arm_b>/seed1/eval_validation_patches.parquet <arm_b>/seed2/eval_validation_patches.parquet \
+  --output-prefix <out_dir>/<arm_a>_vs_<arm_b>
+```
