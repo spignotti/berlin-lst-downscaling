@@ -17,9 +17,10 @@ Aktuelles Design auf `training/v3`:
 - Fester 2D-U-Net-Backbone mit Kelvin-Residual (Prior als separater Input, nullinitialisierter Korrektur-Head).
 - Drei Eingangsvarianten: (1) volle Optik (alle 22 Kanäle), (2) ohne NDVI, (3) ohne Rot, NIR und Indizes.
 - Optionaler TESSERA-Arm: nur als Code vorhanden, nicht gelaufen; ersetzt die 6 Morphologie- und 2 Schattenkanäle durch jährliche TESSERA-Embeddings. Die handgebauten Features bleiben das Hauptmodell.
-- v6-Ablationsmatrix eingefroren (Entscheidung 31.10.2026): 9 Arme × Seeds 0, 1, 2 = 27 Läufe, je 40 Epochen, Cosine-Lernratenplan mit 2 Warmup-Epochen (T_max = 40, eta_min = 0), ohne Early Stopping, mit vorgebautem Patch-Cache. Offen sind nur noch die Loss-Varianten und die Neuauflage der Random-Forest-Baseline auf `training/v3`.
+- v6-Ablationsmatrix eingefroren (Entscheidung 31.10.2026): 9 Arme × Seeds 0, 1, 2 = 27 Läufe, je 40 Epochen, Cosine-Lernratenplan mit 2 Warmup-Epochen (T_max = 40, eta_min = 0), ohne Early Stopping, mit vorgebautem Patch-Cache. Offen sind nur noch die Loss-Varianten, die Neuauflage der Random-Forest-Baseline auf `training/v3` und die naive Baseline (naive Prior-Expansion) auf `training/v3`.
 - Modellauswahl und Testauswertung (Entscheidung 31.10.2026): Die Modellauswahl nutzt ausschließlich Validation 2024. Die finale Testauswertung 2025 wird pro Lauf genau einmal auf dem besten Validation-2024-Checkpoint gerechnet (`validation/mae_100m` auf dem 100-m-Raster), nicht auf der letzten Epoche.
 - Begründung Cosine-Lernratenplan: Ein Bestätigungslauf mit **einem Seed** (Seed 0, 40 Epochen, nur Validation, Test unberührt) erreichte eine beste Validation-MAE von 0,3801 K in Epoche 39 von 40, gegenüber 0,3846 K in Epoche 59 von 60 beim Pilotlauf mit konstanter Lernrate (dort 0,391 K nach 40 Epochen). Ab Epoche 30 bleibt die Cosine-Kurve im Bereich 0,380–0,396 K, die des Pilotlaufs im Bereich 0,391–0,461 K.
+- Epochenzählung (geprüft gegen `src/berlin_lst_downscaling/modeling/run.py`): Alle Epochenangaben in diesem Protokoll sind 1-basiert. Die aufgezeichnete Lernkurve nutzt `trainer.current_epoch + 1`, die Laufzusammenfassung meldet `best_epoch` als Epochenzahl aus dem Checkpoint-Dateinamen plus eins (`_best_epoch_from_path`), und die Early-Stopping-Epoche ist ebenfalls 1-basiert. Lightning selbst (`trainer.current_epoch`), die Checkpoint-Dateinamen (`best-<epoch>-<metrik>.ckpt`) und das Timing-Ereignis `epoch_timing` (`timing.py`) zählen 0-basiert. „Epoche 39 von 40“ im Cosine-Bestätigungslauf bedeutet daher die 39. von 40 Epochen (Checkpoint-Dateiname `best-38-…`).
 - Ergebnisse auf `training/v3`: **ausstehend**.
 
 ### Historisches Studiendesign (training/v1)
@@ -39,7 +40,7 @@ Aktuelles Design auf `training/v3`:
 
 [Tensor- und Pseudo-Pair-Contract](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/pseudo-pair-tensor-contract.md) · [Ablationskonfigurationen](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/ablation-stage-configs.md) · [Evidenz](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/ablation-full-results.md).
 
-Die Fixierung der Modell- und Loss-Konfigurationen ist in GitHub nachgewiesen. Die Random-Forest-Baseline wurde auf `training/v1` abgeschlossen (09.10.2026; historisch, siehe [Ergebnistabellen WB3](../04-ergebnisse-wb3-ergebnistabellen.md)); auf `training/v3` ist sie **ausstehend**.
+Die Fixierung der Modell- und Loss-Konfigurationen ist in GitHub nachgewiesen. Die Random-Forest-Baseline wurde auf `training/v1` abgeschlossen (09.10.2026; historisch, siehe [Ergebnistabellen WB3](../04-ergebnisse-wb3-ergebnistabellen.md)); auf `training/v3` ist sie **ausstehend**, ebenso die naive Baseline (naive Prior-Expansion) auf `training/v3`.
 
 Weiterführend: [Features v6](../../features-v6.md) · [TESSERA-Arm](../../tessera-arm.md).
 

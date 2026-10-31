@@ -241,8 +241,8 @@ def test_default_matrix_totals() -> None:
         a: [0, 1, 2] for a in V6_ABLATION_ARMS
     }
     runs, hours, usd = plan_totals(matrix)
-    # 27 x (0.1 + 40 x 0.12)
-    assert (runs, math.isclose(hours, 132.3), math.isclose(usd, 132.3)) == (27, True, True)
+    # 27 x (0.6 + 40 x 0.045)
+    assert (runs, math.isclose(hours, 64.8), math.isclose(usd, 64.8)) == (27, True, True)
 
 
 def test_epoch_aware_totals() -> None:
@@ -511,25 +511,42 @@ def test_plan_helper_lists_27_runs(capsys: pytest.CaptureFixture[str]) -> None:
     assert module.main([]) == 0
     out = capsys.readouterr().out
     assert (
-        "TOTAL runs=27 est_gpu_hours=132.3 est_usd=132.3 (placeholder estimates: "
-        "hours_per_epoch=0.12 fixed_overhead=0.10; nothing submitted)"
+        "TOTAL runs=27 est_gpu_hours=64.8 est_usd=64.8 (estimates measured on the v6 L4 "
+        "cosine confirmation run: hours_per_epoch=0.045 fixed_overhead=0.60; nothing submitted)"
     ) in out
     run_lines = [line for line in out.splitlines() if line.startswith("arm=")]
     assert len(run_lines) == 27
     for line in run_lines:
         assert (
             "epochs=40 lr_schedule=cosine early_stopping=false patch_cache=prebuilt "
-            "est_hours=4.90 launcher_args: --mode v6-"
+            "est_hours=2.40 launcher_args: --mode v6-"
         ) in line
         assert line.endswith("--max-epochs 40 --lr-schedule cosine --patch-cache prebuilt")
     assert "--skip-test" not in out
     assert "test" not in out.replace("est_", "")
     assert (
         "arm=LOO-S config=v6_loo_shadow_locked seed=2 epochs=40 lr_schedule=cosine "
-        "early_stopping=false patch_cache=prebuilt est_hours=4.90 launcher_args: "
+        "early_stopping=false patch_cache=prebuilt est_hours=2.40 launcher_args: "
         "--mode v6-loo-shadow --seed 2 --max-epochs 40 --lr-schedule cosine "
         "--patch-cache prebuilt"
     ) in out
+    assert "<N>" not in out
+
+
+def test_plan_helper_rejects_early_stopping_without_patience(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw = OmegaConf.to_container(OmegaConf.load(_MATRIX))
+    assert isinstance(raw, dict)
+    raw["early_stopping"] = True
+    matrix = tmp_path / "v6_matrix.yaml"
+    OmegaConf.save(OmegaConf.create(raw), matrix)
+    module = _load_script("validators", "plan_v6_ablation")
+    assert module.main(["--matrix", str(matrix)]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no patience value" in captured.err
+    assert "--early-stopping-patience" in captured.err
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])

@@ -129,17 +129,21 @@ ard_root:         gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-202607
 
 The acceptance image was built with **Cloud Build** from code SHA `ef80930`
 (the local Docker export hung). Cloud Build workers are linux/amd64, so no
-`--platform` is needed. Use the committed config `cloudbuild/vertex-image.yaml`
-and the builder SA:
+`--platform` is needed. Current command, with the committed config
+`cloudbuild/vertex-image.yaml` and the builder SA:
 
 ```bash
-gcloud builds submit --project=berlin-lst-training \
+gcloud builds submit --project=berlin-lst-training --region=europe-west3 \
+  --gcs-source-staging-dir=gs://berlin-lst-training_cloudbuild/source \
   --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
   --config=cloudbuild/vertex-image.yaml \
   --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
 ```
 
 Run it under the operator SA with `scripts/operators/with-gcp-operator.sh -- gcloud builds submit ...`.
+The operator SA lacks project-level `storage.buckets.list`, so gcloud cannot
+auto-detect or create the default source staging bucket; passing
+`--gcs-source-staging-dir` explicitly avoids that without granting new rights.
 
 Run `scripts/operators/check_build_context.sh` before every `gcloud builds
 submit`. It compares `gcloud meta list-files-for-upload .` with the tracked
@@ -511,7 +515,7 @@ manifest's `git_commit` matches the image. `_COMMIT` is the full 40-character SH
 `_EXPECTED_KEY` is optional (the build fails if the key is not in the output):
 
 ```bash
-gcloud builds submit --no-source --project=berlin-lst-training \
+gcloud builds submit --no-source --project=berlin-lst-training --region=europe-west3 \
   --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
   --config=cloudbuild/patch-cache.yaml \
   --substitutions=_COMMIT=<40-char sha>,_CONFIG_NAME=v6_l4_locked,_EXPECTED_KEY=<key>
