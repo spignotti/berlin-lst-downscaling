@@ -30,6 +30,10 @@ SSIM_PAD: int = SSIM_WINDOW // 2
 # Plausibility clamp for targets (and predictions when clamped). It is not the
 # SSIM data range L; L is the fixed train-derived artifact (modeling/ssim_range.py).
 SSIM_CLAMP_RANGE_K: tuple[float, float] = LST_RANGE_K
+# Shared evaluation clamp: every reported evaluation metric (MAE, main SSIM, L250,
+# Lpatch) sees the pooled 100 m prediction clamped into this Kelvin range once.
+# Training, the loss and checkpoint selection do not use it.
+EVAL_PREDICTION_CLAMP_K: tuple[float, float] = LST_RANGE_K
 # Metric-only appendix variant: L from the Kelvin plausibility range (250 K).
 SSIM_LEGACY_DATA_RANGE_K: float = LST_RANGE_K[1] - LST_RANGE_K[0]
 SSIM_K1: float = 0.01
@@ -445,6 +449,16 @@ def masked_ssim_stats_patch_range(
     return total, count, zero_count
 
 
+def clamp_eval_prediction(prediction_100m: Tensor) -> Tensor:
+    """Clamp a pooled 100 m prediction into ``EVAL_PREDICTION_CLAMP_K``.
+
+    ``torch.clamp`` propagates NaN, so non-finite predictions still reach the
+    fail-closed finiteness checks downstream.
+    """
+    low, high = EVAL_PREDICTION_CLAMP_K
+    return torch.clamp(prediction_100m, min=low, max=high)
+
+
 def prediction_outside_lst_range_counts(prediction: Tensor) -> tuple[Tensor, Tensor]:
     """Return ``(count outside LST_RANGE_K, pixel count)`` for a prediction map.
 
@@ -593,6 +607,7 @@ class ValidCells(Metric):
 
 
 __all__ = [
+    "EVAL_PREDICTION_CLAMP_K",
     "METRIC_ONLY_SSIM_KEYS",
     "SSIM_CLAMP_RANGE_K",
     "SSIM_LEGACY_DATA_RANGE_K",
@@ -609,6 +624,7 @@ __all__ = [
     "SupportedWindows",
     "ThermalObjectiveBatch",
     "ValidCells",
+    "clamp_eval_prediction",
     "masked_abs_error_sums",
     "masked_gradient_stats",
     "masked_l1_loss",

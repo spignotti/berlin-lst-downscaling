@@ -64,7 +64,7 @@ def export_table(
     for pid, scene, date, cells, wins in patches:
         mae, ssim = fn(arm, seed, int(scene[5:]), (pid, scene, date, cells, wins))
         row = {
-            "schema_version": 1,
+            "schema_version": 2,
             "arm": arm,
             "seed": seed,
             "run_id": rid,
@@ -88,7 +88,7 @@ def write_export(path: Path, table: pa.Table, *, footer_split: str | None = None
     first = {
         n: table.column(n)[0].as_py() for n in ("arm", "seed", "run_id", "checkpoint", "split")
     }
-    footer = {"schema_version": 1, **first}
+    footer = {"schema_version": 2, "prediction_clamp_k": [150.0, 400.0], **first}
     if footer_split is not None:
         footer["split"] = footer_split
     pq.write_table(
@@ -533,6 +533,46 @@ def test_footer_split_mismatch_rejected_before_reading_table(
         sb.load_patch_exports([path], split="validation")
 
 
+def test_old_schema_or_missing_clamp_rejected(tmp_path: Path, world: list[Patch]) -> None:
+    t = export_table("A", 0, "validation", world, flat(1.0))
+    first = {n: t.column(n)[0].as_py() for n in ("arm", "seed", "run_id", "checkpoint", "split")}
+    v1_rows = t.set_column(
+        t.schema.get_field_index("schema_version"),
+        "schema_version",
+        pa.array([1] * t.num_rows, pa.int32()),
+    )
+    cases = {
+        "old_version": (v1_rows, {"schema_version": 1, **first}, "schema_version"),
+        "old_version_with_clamp": (
+            v1_rows,
+            {"schema_version": 1, "prediction_clamp_k": [150.0, 400.0], **first},
+            "schema_version",
+        ),
+        "missing_clamp": (t, {"schema_version": 2, **first}, "prediction_clamp_k"),
+        "other_clamp": (
+            t,
+            {"schema_version": 2, "prediction_clamp_k": [0.0, 500.0], **first},
+            "prediction_clamp_k",
+        ),
+    }
+    good = write_export(tmp_path / "good.parquet", t)
+    for name, (table, footer, match) in cases.items():
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(
+            table.replace_schema_metadata({b"patch_export": json.dumps(footer).encode()}), path
+        )
+        with pytest.raises(sb.SceneBootstrapError, match=match):
+            sb.load_patch_exports([path], split="validation")
+        with pytest.raises(sb.SceneBootstrapError, match=match):
+            sb.load_patch_exports([good, path], split="validation")
+
+
+def test_bootstrap_clamp_matches_eval_clamp() -> None:
+    from berlin_lst_downscaling.modeling.metrics import EVAL_PREDICTION_CLAMP_K
+
+    assert sb.PREDICTION_CLAMP_K == EVAL_PREDICTION_CLAMP_K
+
+
 def test_footer_row_disagreement_rejected(tmp_path: Path, world: list[Patch]) -> None:
     t = export_table("A", 0, "validation", world, flat(1.0))
     arm_col = pa.array(["A"] * (t.num_rows - 1) + ["Z"])
@@ -567,7 +607,7 @@ def test_json_and_markdown_outputs(tmp_path: Path, world: list[Patch]) -> None:
     jp, mp = sb.write_outputs(res, tmp_path / "nested" / "out")
     assert jp.name == "out.json" and mp.name == "out.md"
     data = json.loads(jp.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["split"] == "validation"
     assert data["direction"] == "lower_is_better"
     assert data["retained_scenes"] == 19
@@ -902,3 +942,256 @@ def test_ssim_bootstrap_ignores_null_lpatch_diagnostic(tmp_path: Path, world: li
     )
     res = sb.compare_arms(a, b, metric="ssim_100m", n_bootstrap=200)
     assert res.point_estimate == pytest.approx(0.2)
+
+
+# ------------------------------------------------------- single-run reference arms
+
+
+def _ref_value(arm: str, seed: int, si: int, patch: Patch) -> tuple[float, float]:
+    return 6.0 + 0.2 * si, 0.4
+
+
+def _multi_value(arm: str, seed: int, si: int, patch: Patch) -> tuple[float, float]:
+    return 5.0 + 0.1 * si + 0.3 * seed + 0.05 * (si % 3), 0.5
+
+
+def _reference_table(
+    arm: str, patches: list[Patch], seed: int | None, fn: ValueFn = _ref_value
+) -> pa.Table:
+    table = export_table(arm, 0 if seed is None else seed, "validation", patches, fn)
+    idx = table.schema.get_field_index("seed")
+    nulls = pa.array([seed] * table.num_rows, type=pa.int64())
+    return table.set_column(idx, SCHEMA.field("seed"), nulls)
+
+
+def _scene_means(table: pa.Table) -> dict[str, float]:
+    agg = sb.aggregate_scenes(table).to_pylist()
+    num: dict[str, list[float]] = {}
+    for r in agg:
+        num.setdefault(r["scene_id"], []).append(r["mae_100m"])
+    return {s: float(np.mean(v)) for s, v in num.items()}
+
+
+def _expected_point(multi: pa.Table, ref: pa.Table, *, ref_first: bool) -> float:
+    a_means = _scene_means(multi)
+    r_means = _scene_means(ref)
+    diffs = [(r_means[s] - a_means[s]) if ref_first else (a_means[s] - r_means[s]) for s in a_means]
+    return float(np.mean(diffs))
+
+
+def test_baseline_reference_as_arm_b_is_replicated(world: list[Patch]) -> None:
+    multi = build_arm("A", world, _multi_value)
+    ref = _reference_table("naive_prior_expand", world, None)
+    res = sb.compare_arms(multi, ref, n_bootstrap=50)
+    assert res.replicated_reference is True
+    assert res.arm_b.replicated is True
+    assert res.arm_a.replicated is False
+    assert res.point_estimate == pytest.approx(_expected_point(multi, ref, ref_first=False))
+    d = res.seed_diagnostics
+    single = d.metric_b[0]
+    assert len(d.metric_b) == 3 and d.metric_b == (single, single, single)
+    assert d.sd_b == 0.0
+    assert d.mean_b == pytest.approx(single)
+    assert len(d.metric_a) == 3 and d.sd_a > 0
+    assert d.diffs == pytest.approx([m - single for m in d.metric_a])
+    data = sb.result_to_dict(res)
+    assert data["replicated_reference"] is True
+    assert "naive_prior_expand" in data["replication_note"]
+    assert data["arm_b"]["replicated"] is True
+    assert data["arm_a"]["replicated"] is False
+
+
+def test_baseline_reference_as_arm_a_uses_other_arm_seeds_in_markdown(
+    world: list[Patch],
+) -> None:
+    multi = build_arm("B", world, _multi_value)
+    ref = _reference_table("naive_prior_expand", world, None)
+    res = sb.compare_arms(ref, multi, n_bootstrap=50)
+    assert res.arm_a.replicated and not res.arm_b.replicated
+    assert res.point_estimate == pytest.approx(_expected_point(multi, ref, ref_first=True))
+    assert res.seed_diagnostics.sd_a == 0.0
+    md = sb.render_markdown(res)
+    assert "Replicated reference:" in md
+    for s, diff in zip((0, 1, 2), res.seed_diagnostics.diffs, strict=True):
+        assert f"- seed {s}: {diff:+.4f}" in md
+
+
+def test_rf_single_seed_reference_is_replicated(world: list[Patch]) -> None:
+    multi = build_arm("A", world, _multi_value)
+    ref = _reference_table("random_forest_stage2", world, 0)
+    res = sb.compare_arms(multi, ref, n_bootstrap=50)
+    assert res.replicated_reference is True and res.arm_b.replicated is True
+    assert res.point_estimate == pytest.approx(_expected_point(multi, ref, ref_first=False))
+    assert res.seed_diagnostics.sd_b == 0.0
+    note = sb.result_to_dict(res)["replication_note"]
+    assert "random_forest_stage2" in note
+
+
+def test_not_replicated_case_has_no_note(world: list[Patch]) -> None:
+    res = sb.compare_arms(
+        build_arm("A", world, _multi_value), build_arm("B", world, _multi_value), n_bootstrap=50
+    )
+    assert res.replicated_reference is False
+    assert not res.arm_a.replicated and not res.arm_b.replicated
+    data = sb.result_to_dict(res)
+    assert data["replicated_reference"] is False
+    assert data["replication_note"] is None
+    assert "Replicated reference:" not in sb.render_markdown(res)
+
+
+def test_both_single_run_reference_arms_raise(world: list[Patch]) -> None:
+    a = _reference_table("naive_prior_expand", world, None)
+    b = _reference_table("random_forest_stage1", world, 0)
+    with pytest.raises(sb.SceneBootstrapError, match="both arms are single-run reference arms"):
+        sb.compare_arms(a, b, n_bootstrap=50)
+
+
+def test_non_reference_single_seed_arm_raises(world: list[Patch]) -> None:
+    single = export_table("A", 0, "validation", world, _multi_value)
+    with pytest.raises(sb.SceneBootstrapError, match="seeds"):
+        sb.compare_arms(single, build_arm("B", world, _multi_value), n_bootstrap=50)
+
+
+def test_reference_arm_with_two_seeds_raises(world: list[Patch]) -> None:
+    two = pa.concat_tables(
+        [export_table("naive_prior_expand", s, "validation", world, _ref_value) for s in (0, 1)]
+    )
+    with pytest.raises(sb.SceneBootstrapError):
+        sb.compare_arms(build_arm("A", world, _multi_value), two, n_bootstrap=50)
+
+
+def test_load_patch_exports_roundtrips_seed_none_reference(
+    tmp_path: Path, world: list[Patch]
+) -> None:
+    ref = _reference_table("naive_prior_expand", world, None)
+    path = write_export(tmp_path / "ref.parquet", ref)
+    loaded = sb.load_patch_exports([path], split="validation")
+    assert loaded.num_rows == ref.num_rows
+    assert set(loaded.column("seed").to_pylist()) == {None}
+    res = sb.compare_arms(build_arm("A", world, _multi_value), loaded, n_bootstrap=50)
+    assert res.replicated_reference is True
+
+
+# ------------------------------------------------------------ L250 metric and appendix
+
+
+def _with_l250(table: pa.Table, value: float | None, *, where_windows: bool = True) -> pa.Table:
+    wins = table.column("ssim_windows").to_pylist()
+    vals = [
+        value if (w > 0 or not where_windows) else None  # null iff no windows
+        for w in wins
+    ]
+    return table.append_column(
+        pa.field("ssim_100m_L250", pa.float64()), pa.array(vals, pa.float64())
+    )
+
+
+def _l250_arm(arm: str, patches: list[Patch], ssim: float, l250: float | None) -> pa.Table:
+    fn: ValueFn = lambda a, s, si, p: (5.0, ssim)  # noqa: E731
+    tables = [export_table(arm, s, "validation", patches, fn) for s in (0, 1, 2)]
+    return pa.concat_tables([_with_l250(t, l250) for t in tables])
+
+
+def test_l250_metric_hand_computed(world: list[Patch]) -> None:
+    a = _l250_arm("A", world, 0.5, 0.3)
+    b = _l250_arm("B", world, 0.5, 0.1)
+    res = sb.compare_arms(a, b, metric="ssim_100m_L250", n_bootstrap=50)
+    assert res.metric == "ssim_100m_L250"
+    assert res.point_estimate == pytest.approx(0.2)
+    assert res.seed_diagnostics.metric_a == pytest.approx([0.3, 0.3, 0.3])
+    assert res.seed_diagnostics.metric_b == pytest.approx([0.1, 0.1, 0.1])
+    assert res.appendix_l250 is None
+
+
+def test_l250_metric_weights_by_windows() -> None:
+    patches: list[Patch] = [("p1", "scene00", None, 10, 2), ("p2", "scene00", None, 10, 6)]
+
+    def build(arm: str, vals: tuple[float, float]) -> pa.Table:
+        out = []
+        for s in (0, 1, 2):
+            t = export_table(arm, s, "validation", patches, lambda *_a: (1.0, 0.5))
+            col = pa.array([vals[0], vals[1]], pa.float64())
+            out.append(t.append_column(pa.field("ssim_100m_L250", pa.float64()), col))
+        return pa.concat_tables(out)
+
+    res = sb.compare_arms(
+        build("A", (0.2, 0.6)), build("B", (0.0, 0.0)), metric="ssim_100m_L250", n_bootstrap=50
+    )
+    assert res.point_estimate == pytest.approx((0.2 * 2 + 0.6 * 6) / 8)
+
+
+def test_appendix_present_when_all_runs_carry_l250(world: list[Patch]) -> None:
+    a = _l250_arm("A", world, 0.6, 0.3)
+    b = _l250_arm("B", world, 0.4, 0.1)
+    res = sb.compare_arms(a, b, metric="ssim_100m", n_bootstrap=50)
+    assert res.point_estimate == pytest.approx(0.2)
+    assert res.appendix_l250 is not None
+    assert res.appendix_l250.point_estimate == pytest.approx(0.2)
+    data = sb.result_to_dict(res)
+    app = data["appendix_ssim_100m_L250"]
+    assert app["metric"] == "ssim_100m_L250"
+    assert set(app) >= {
+        "metric",
+        "role",
+        "point_estimate",
+        "ci_95",
+        "fractions",
+        "mean_a",
+        "mean_b",
+    }
+    assert app["point_estimate"] == pytest.approx(0.2)
+    assert app["mean_a"] == pytest.approx(0.3) and app["mean_b"] == pytest.approx(0.1)
+    assert "## Appendix: ssim_100m_L250" in sb.render_markdown(res)
+
+
+def test_appendix_absent_without_column_or_for_mae(world: list[Patch]) -> None:
+    res = sb.compare_arms(
+        build_arm("A", world, flat(1.0)), build_arm("B", world, flat(1.0)),
+        metric="ssim_100m", n_bootstrap=50,
+    )  # fmt: skip
+    assert res.appendix_l250 is None
+    assert sb.result_to_dict(res)["appendix_ssim_100m_L250"] is None
+    assert "Appendix" not in sb.render_markdown(res)
+    mae = sb.compare_arms(
+        _l250_arm("A", world, 0.5, 0.3), _l250_arm("B", world, 0.5, 0.1), n_bootstrap=50
+    )
+    assert mae.appendix_l250 is None
+    assert sb.result_to_dict(mae)["appendix_ssim_100m_L250"] is None
+
+
+def test_l250_metric_without_column_raises(world: list[Patch]) -> None:
+    with pytest.raises(sb.SceneBootstrapError, match="ssim_100m_L250"):
+        sb.compare_arms(
+            build_arm("A", world, flat(1.0)), build_arm("B", world, flat(1.0)),
+            metric="ssim_100m_L250", n_bootstrap=50,
+        )  # fmt: skip
+
+
+def test_l250_null_with_windows_raises(world: list[Patch]) -> None:
+    a = _l250_arm("A", world, 0.5, None)  # null although windows > 0
+    with pytest.raises(sb.SceneBootstrapError, match="ssim_100m_L250"):
+        sb.compare_arms(a, _l250_arm("B", world, 0.5, 0.1), n_bootstrap=50)
+
+
+def test_l250_value_without_windows_raises() -> None:
+    patches: list[Patch] = [("p1", "scene00", None, 10, 0), ("p2", "scene01", None, 10, 3)]
+    fn: ValueFn = lambda *_a: (1.0, 0.0)  # noqa: E731
+
+    def build(arm: str) -> pa.Table:
+        ts = [export_table(arm, s, "validation", patches, fn) for s in (0, 1, 2)]
+        return pa.concat_tables([_with_l250(t, 0.4, where_windows=False) for t in ts])
+
+    with pytest.raises(sb.SceneBootstrapError, match="ssim_100m_L250"):
+        sb.compare_arms(build("A"), build("B"), n_bootstrap=50)
+
+
+def test_load_patch_exports_rejects_mixed_l250_columns(tmp_path: Path, world: list[Patch]) -> None:
+    fn: ValueFn = lambda *_a: (1.0, 0.5)  # noqa: E731
+    with_col = _with_l250(export_table("A", 0, "validation", world, fn), 0.3)
+    without = export_table("A", 1, "validation", world, fn)
+    paths = [
+        write_export(tmp_path / "a0.parquet", with_col),
+        write_export(tmp_path / "a1.parquet", without),
+    ]
+    with pytest.raises(sb.SceneBootstrapError, match="ssim_100m_L250"):
+        sb.load_patch_exports(paths, split="validation")

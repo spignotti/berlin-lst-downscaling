@@ -35,8 +35,11 @@ from berlin_lst_downscaling.modeling.ssim_range import (
     SsimRangeSample,
     artifact_payload,
     check_artifact_writable,
+    check_ssim_range_fingerprints,
     derive_ssim_data_range,
+    is_artifact_version,
     load_ssim_data_range,
+    next_artifact_version,
     resolve_task_ssim_data_range,
     test_override_ssim_data_range,
     write_artifact,
@@ -227,7 +230,7 @@ def test_derive_from_source_rejects_validation_ref() -> None:
         )
 
 
-def _filled_payload() -> dict:
+def _filled_payload(version: str = "v1") -> dict:
     stats = derive_ssim_data_range(
         [
             _sample(
@@ -249,6 +252,7 @@ def _filled_payload() -> dict:
         derived_at="2026-01-01T00:00:00+00:00",
         exclusions={"empty_mask": 1},
         n_refs_requested=2,
+        version=version,
     )
 
 
@@ -265,6 +269,7 @@ def test_write_artifact_refuses_remote_and_round_trips(tmp_path: Path) -> None:
     assert loaded.payload()["clamp_range_k"] == list(LST_RANGE_K)
     with pytest.raises(RuntimeError, match="derive_ssim_data_range.py"):
         load_ssim_data_range(out, expected_fingerprints={**_FP, "source_policy_hash": "other"})
+    assert out.read_text(encoding="utf-8").startswith("# Fixed SSIM data range L")
 
 
 def test_load_rejects_missing_years(tmp_path: Path) -> None:
@@ -274,6 +279,16 @@ def test_load_rejects_missing_years(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(payload), encoding="utf-8")
     with pytest.raises(RuntimeError, match="years"):
         load_ssim_data_range(path)
+
+
+def test_load_rejects_version_stem_mismatch(tmp_path: Path) -> None:
+    for name, version in (("v2.yaml", "v1"), ("latest.yaml", "v1"), ("v1.yaml", None)):
+        payload = _filled_payload()
+        payload["version"] = version
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="file stem"):
+            load_ssim_data_range(path)
 
 
 def test_load_rejects_inconsistent_artifact(tmp_path: Path) -> None:
@@ -517,6 +532,8 @@ def test_resolve_run_ssim_data_range_override_rules() -> None:
         },
     )
     assert from_artifact.source == "artifact" and from_artifact.data_range_k == 40.0
+    with pytest.raises(RuntimeError, match="fingerprints; none were given"):
+        resolve_run_ssim_data_range(plain, expected_fingerprints=None)
 
 
 # 11. checkpoint provenance and reload check
@@ -711,8 +728,6 @@ def _runner(name: str) -> ModuleType:
 def test_runners_load_artifact_before_any_data_read(
     name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import inspect
-
     module = _runner(name)
     cfg = OmegaConf.create(
         {
@@ -740,14 +755,113 @@ def test_runners_load_artifact_before_any_data_read(
     monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", placeholder)
     with pytest.raises(RuntimeError, match="placeholder"):
         module._resolve_source_and_ssim(cfg)
-    # In main, the loader call precedes every data read and the fit.
-    src = inspect.getsource(module.main)
-    first_read = min(
-        src.index(token)
-        for token in ("load_refs(", "load_patch_refs(", "collect_train_pool(", ".fit(")
-        if token in src
-    )
-    assert src.index("_resolve_source_and_ssim(") < first_read
+
+
+def _compose_runner_cfg(name: str, output_root: Path) -> object:
+    from hydra import compose, initialize_config_dir
+
+    config_name = "baseline_smoke" if name == "run_baseline" else "random_forest_smoke"
+    with initialize_config_dir(config_dir=str(_REPO / "configs" / "modeling"), version_base=None):
+        return compose(config_name=config_name, overrides=[f"output_root={output_root}"])
+
+
+def _stub_fingerprints(monkeypatch: pytest.MonkeyPatch) -> None:
+    fp = {"index_policy_hash": "a", "source_policy_hash": "b"}
+    for mod in ("baseline", "random_forest"):
+        monkeypatch.setattr(
+            f"berlin_lst_downscaling.modeling.{mod}.patch_index_fingerprints", lambda _r: dict(fp)
+        )
+
+
+def _stub_data_reads(
+    module: ModuleType, monkeypatch: pytest.MonkeyPatch, calls: list[str], *, fail: bool
+) -> None:
+    class _Sentinel(Exception):
+        pass
+
+    def record(label: str):  # noqa: ANN202
+        def fn(*_a: object, **_k: object) -> None:
+            calls.append(label)
+            if fail:
+                raise _Sentinel(label)
+
+        return fn
+
+    for attr in ("load_refs", "load_patch_refs", "RealPatchReader", "collect_train_pool"):
+        if hasattr(module, attr):
+            monkeypatch.setattr(module, attr, record(attr))
+
+
+@pytest.fixture
+def _rf_hydra(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    module = _runner("run_random_forest")
+    hydra_cfg = SimpleNamespace(job=SimpleNamespace(config_name="random_forest_smoke"))
+    monkeypatch.setattr(module, "HydraConfig", SimpleNamespace(get=lambda: hydra_cfg))
+
+
+@pytest.mark.parametrize("name", ["run_baseline", "run_random_forest"])
+def test_main_raises_on_missing_artifact_before_any_data_read(
+    name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    module = _runner(name)
+    if name == "run_random_forest":
+        hydra_cfg = SimpleNamespace(job=SimpleNamespace(config_name="random_forest_smoke"))
+        monkeypatch.setattr(module, "HydraConfig", SimpleNamespace(get=lambda: hydra_cfg))
+        wandb_calls: list[str] = []
+        monkeypatch.setattr(module.wandb, "init", lambda *a, **k: wandb_calls.append("init"))
+    else:
+        wandb_calls = []
+    assert hasattr(module.main, "__wrapped__")
+    cfg = _compose_runner_cfg(name, tmp_path / "out")
+    _stub_fingerprints(monkeypatch)
+    monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", tmp_path / "missing.yaml")
+    calls: list[str] = []
+    _stub_data_reads(module, monkeypatch, calls, fail=False)
+    with pytest.raises(FileNotFoundError, match=r"derive_ssim_data_range\.py"):
+        module.main.__wrapped__(cfg)
+    assert calls == []
+    assert wandb_calls == []  # RF validates the artifact before opening W&B
+
+
+@pytest.mark.parametrize("name", ["run_baseline", "run_random_forest"])
+def test_main_resolves_ssim_before_first_data_read(
+    name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    module = _runner(name)
+    if name == "run_random_forest":
+        hydra_cfg = SimpleNamespace(job=SimpleNamespace(config_name="random_forest_smoke"))
+        monkeypatch.setattr(module, "HydraConfig", SimpleNamespace(get=lambda: hydra_cfg))
+        monkeypatch.setattr(module.wandb, "init", lambda *a, **k: _NullContext())
+    cfg = _compose_runner_cfg(name, tmp_path / "out")
+    calls: list[str] = []
+
+    def fake_resolve(_cfg: object) -> tuple[object, object]:
+        calls.append("ssim")
+        return _source(), test_override_ssim_data_range(10.0)
+
+    monkeypatch.setattr(module, "_resolve_source_and_ssim", fake_resolve)
+    _stub_data_reads(module, monkeypatch, calls, fail=True)
+    with pytest.raises(Exception, match=r"^load_|^RealPatchReader|^collect_"):
+        module.main.__wrapped__(cfg)
+    assert calls[0] == "ssim"
+    assert len(calls) == 2 and calls[1] != "ssim"
+
+
+class _NullContext:
+    def __enter__(self) -> _NullContext:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def __getattr__(self, _name: str):  # noqa: ANN204
+        return lambda *a, **k: None
 
 
 # 13. overwrite guard and GDAL credentials
@@ -757,34 +871,209 @@ def test_overwrite_guard(tmp_path: Path) -> None:
     payload = _filled_payload()
     path = tmp_path / "v1.yaml"
     write_artifact(payload, path)
-    with pytest.raises(FileExistsError, match="--overwrite-filled"):
+    first = path.read_bytes()
+    with pytest.raises(FileExistsError, match=r"never\s+overwritten.*v2"):
         write_artifact(payload, path)
-    with pytest.raises(FileExistsError, match="--overwrite-filled"):
-        check_artifact_writable(path, overwrite_filled=False)
-    write_artifact(payload, path, overwrite_filled=True)
-    garbage = tmp_path / "bad.yaml"
+    with pytest.raises(FileExistsError, match="v2"):
+        check_artifact_writable(path)
+    assert path.read_bytes() == first
+    garbage = tmp_path / "v2.yaml"
     garbage.write_text(": : [", encoding="utf-8")
-    with pytest.raises(FileExistsError):
-        check_artifact_writable(garbage, overwrite_filled=False)
-    placeholder = tmp_path / "ph.yaml"
+    placeholder = tmp_path / "v3.yaml"
     placeholder.write_text(yaml.safe_dump({"status": "placeholder"}), encoding="utf-8")
-    write_artifact(payload, placeholder)
-    check_artifact_writable(tmp_path / "missing.yaml", overwrite_filled=False)
+    for existing, version in ((garbage, "v2"), (placeholder, "v3")):
+        before = existing.read_bytes()
+        with pytest.raises(FileExistsError):
+            write_artifact(_filled_payload(version), existing)
+        with pytest.raises(FileExistsError):
+            check_artifact_writable(existing)
+        assert existing.read_bytes() == before
+    check_artifact_writable(tmp_path / "v9.yaml")
 
 
-def test_cli_refuses_filled_before_derivation(
+def test_write_artifact_stem_and_version_must_agree(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="differs from payload version"):
+        write_artifact(_filled_payload("v1"), tmp_path / "v2.yaml")
+    with pytest.raises(ValueError, match=r"v<N>\.yaml"):
+        write_artifact(_filled_payload("v1"), tmp_path / "latest.yaml")
+    with pytest.raises(ValueError, match=r"v<N>\.yaml"):
+        check_artifact_writable(tmp_path / "v0.yaml")
+    assert not list(tmp_path.iterdir())
+    with pytest.raises(ValueError, match="artifact version"):
+        _filled_payload("latest")
+
+
+def test_artifact_payload_records_version() -> None:
+    assert _filled_payload("v7")["version"] == "v7"
+
+
+def test_next_artifact_version(tmp_path: Path) -> None:
+    assert next_artifact_version(tmp_path) == "v1"
+    (tmp_path / "v1.yaml").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    assert next_artifact_version(tmp_path) == "v2"
+    (tmp_path / "v3.yaml").write_text("x", encoding="utf-8")
+    assert next_artifact_version(tmp_path) == "v4"
+    for ignored in ("v0.yaml", "v1.yml", "foo.yaml", "v10.yaml.bak", "v01.yaml"):
+        (tmp_path / ignored).write_text("x", encoding="utf-8")
+    assert next_artifact_version(tmp_path) == "v4"
+    assert next_artifact_version(str(tmp_path)) == "v4"
+    assert [is_artifact_version(n) for n in ("v1", "v12", "v0", "v01", "1", "v1.yaml")] == [
+        True,
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+
+
+def test_committed_artifact_version_and_fingerprints() -> None:
+    doc = yaml.safe_load(_COMMITTED.read_text(encoding="utf-8"))
+    assert doc["version"] == "v1" == _COMMITTED.stem
+    assert _COMMITTED == ssim_range.SSIM_DATA_RANGE_DIR / "v1.yaml"
+    fp = doc["patch_index_fingerprints"]
+    assert fp["index_policy_hash"] and fp["source_policy_hash"]
+    assert load_ssim_data_range(_COMMITTED, expected_fingerprints=fp).version == "v1"
+
+
+# fingerprints fail closed
+
+
+def _artifact_with(tmp_path: Path, fingerprints: dict | None) -> Path:
+    payload = _filled_payload()
+    if fingerprints is None:
+        payload.pop("patch_index_fingerprints")
+    else:
+        payload["patch_index_fingerprints"] = fingerprints
+    return write_artifact(payload, tmp_path / "v1.yaml")
+
+
+_MISSING_VALUES = [None, "", "None"]
+
+
+@pytest.mark.parametrize("bad", _MISSING_VALUES)
+@pytest.mark.parametrize("key", ["index_policy_hash", "source_policy_hash"])
+def test_load_rejects_missing_artifact_fingerprint(tmp_path: Path, key: str, bad: object) -> None:
+    out = _artifact_with(tmp_path, {**_FP, key: bad})
+    with pytest.raises(RuntimeError, match=rf"{key}.*artifact side.*never counts as a match"):
+        load_ssim_data_range(out, expected_fingerprints=_FP)
+    # Both sides None must not pass either.
+    with pytest.raises(RuntimeError, match="never counts as a match"):
+        load_ssim_data_range(out, expected_fingerprints={**_FP, key: None})
+
+
+def test_load_rejects_absent_fingerprint_block(tmp_path: Path) -> None:
+    out = _artifact_with(tmp_path, None)
+    with pytest.raises(RuntimeError, match="artifact side"):
+        load_ssim_data_range(out, expected_fingerprints=_FP)
+    assert load_ssim_data_range(out).version == "v1"  # no comparison requested
+
+
+@pytest.mark.parametrize("bad", _MISSING_VALUES)
+@pytest.mark.parametrize("key", ["index_policy_hash", "source_policy_hash"])
+def test_load_rejects_missing_run_fingerprint(tmp_path: Path, key: str, bad: object) -> None:
+    out = _artifact_with(tmp_path, dict(_FP))
+    run = {**_FP, key: bad}
+    with pytest.raises(RuntimeError, match=rf"{key}.*run patch index side.*never counts"):
+        load_ssim_data_range(out, expected_fingerprints=run)
+    run.pop(key)
+    with pytest.raises(RuntimeError, match="run patch index side"):
+        load_ssim_data_range(out, expected_fingerprints=run)
+
+
+def test_load_mismatch_demands_new_version(tmp_path: Path) -> None:
+    out = _artifact_with(tmp_path, dict(_FP))
+    with pytest.raises(RuntimeError) as err:
+        load_ssim_data_range(out, expected_fingerprints={**_FP, "source_policy_hash": "other"})
+    msg = str(err.value)
+    assert str(out) in msg and "'v1'" in msg and "src-h" in msg and "other" in msg
+    assert "v2" in msg and "never overwrite" in msg and "SSIM_DATA_RANGE_ARTIFACT" in msg
+    assert "derive_ssim_data_range.py" in msg
+
+
+def _loaded(tmp_path: Path, fingerprints: dict | None) -> ssim_range.SsimDataRange:
+    return load_ssim_data_range(_artifact_with(tmp_path, fingerprints))
+
+
+def test_check_fingerprints_match_and_override(tmp_path: Path) -> None:
+    check_ssim_range_fingerprints(_loaded(tmp_path, dict(_FP)), _FP)
+    check_ssim_range_fingerprints(test_override_ssim_data_range(10.0), {})
+
+
+@pytest.mark.parametrize("bad", _MISSING_VALUES)
+def test_check_fingerprints_rejects_missing_sides(tmp_path: Path, bad: object) -> None:
+    artifact_missing = _loaded(tmp_path, {**_FP, "index_policy_hash": bad})
+    with pytest.raises(RuntimeError, match=r"index_policy_hash.*artifact side"):
+        check_ssim_range_fingerprints(artifact_missing, _FP)
+    with pytest.raises(RuntimeError, match="never counts as a match"):
+        check_ssim_range_fingerprints(artifact_missing, {**_FP, "index_policy_hash": bad})
+    ok = _loaded(tmp_path / "ok", dict(_FP))
+    with pytest.raises(RuntimeError, match=r"source_policy_hash.*run patch index side"):
+        check_ssim_range_fingerprints(ok, {**_FP, "source_policy_hash": bad})
+    with pytest.raises(RuntimeError, match="run patch index side"):
+        check_ssim_range_fingerprints(ok, {"index_policy_hash": "idx-h"})
+
+
+def test_check_fingerprints_mismatch_demands_new_version(tmp_path: Path) -> None:
+    loaded = _loaded(tmp_path, dict(_FP))
+    with pytest.raises(RuntimeError) as err:
+        check_ssim_range_fingerprints(loaded, {**_FP, "index_policy_hash": "other"})
+    msg = str(err.value)
+    assert loaded.artifact_path is not None and loaded.artifact_path in msg
+    assert "'v1'" in msg and "idx-h" in msg and "other" in msg
+    assert "v2" in msg and "never overwrite" in msg
+
+
+def test_cli_refuses_existing_out_before_derivation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script = _load_script()
     out = write_artifact(_filled_payload(), tmp_path / "v1.yaml")
+    before = out.read_bytes()
 
     def boom(*_a: object, **_k: object) -> None:
         raise AssertionError("derivation must not start")
 
     monkeypatch.setattr(script, "derive_from_source", boom)
     monkeypatch.setattr(script, "ensure_gdal_gcs_auth", boom)
-    with pytest.raises(FileExistsError, match="--overwrite-filled"):
+    monkeypatch.setattr(script, "compose", boom)
+    monkeypatch.setattr(script, "real_source_config", boom)
+    with pytest.raises(FileExistsError, match="never"):
         script.main(["--out", str(out)])
+    with pytest.raises(SystemExit):
+        script.main(["--out", str(tmp_path / "custom.yaml")])
+    with pytest.raises(SystemExit):
+        script.main(["--out", "gs://bucket/v2.yaml"])
+    assert out.read_bytes() == before
+
+
+def test_cli_default_out_writes_next_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = _load_script()
+    v1 = write_artifact(_filled_payload(), tmp_path / "v1.yaml")
+    (tmp_path / "README.md").write_text("doc", encoding="utf-8")
+    before = v1.read_bytes()
+    stats = derive_ssim_data_range(
+        [
+            _sample(
+                f"p{y}", np.linspace(280, 320, 256).reshape(16, 16), np.ones((16, 16), bool), year=y
+            )
+            for y in range(2017, 2024)
+        ]
+    )
+    monkeypatch.setattr(script, "SSIM_DATA_RANGE_DIR", tmp_path)
+    monkeypatch.setattr(script, "derive_from_source", lambda _s: (stats, {}, 7, dict(_FP)))
+    monkeypatch.setattr(script, "real_source_config", lambda _cfg: _source())
+    monkeypatch.setattr(script, "compose", lambda **_k: OmegaConf.create({}))
+    monkeypatch.setattr(script, "ensure_gdal_gcs_auth", lambda: None)
+    assert script.main([]) == 0
+    v2 = tmp_path / "v2.yaml"
+    assert yaml.safe_load(v2.read_text(encoding="utf-8"))["version"] == "v2"
+    assert v1.read_bytes() == before
+    assert script.main([]) == 0
+    assert (tmp_path / "v3.yaml").is_file()
 
 
 def test_cli_sets_gdal_credentials_before_derivation(

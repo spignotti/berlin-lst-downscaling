@@ -51,6 +51,7 @@ from berlin_lst_downscaling.modeling.contracts import validate_real_batch
 from berlin_lst_downscaling.modeling.evaluation_exports import (
     EvaluationIdentity,
     patch_export_filename,
+    report_metrics,
     score_batch_patches,
     write_patch_export,
 )
@@ -73,7 +74,11 @@ from berlin_lst_downscaling.modeling.guards import (
     guard_modeling_config,
 )
 from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
-from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
+from berlin_lst_downscaling.modeling.metrics import (
+    EVAL_PREDICTION_CLAMP_K,
+    MaskedMAE,
+    pool_10m_to_100m,
+)
 from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     assert_scaler_matches_config,
@@ -564,9 +569,11 @@ def _score_test_once(
 
     A test-only streamed data module reads the full published test split and
     scores it through the same nested 10x10 pooling and cell-weighted masked MAE
-    used for validation. Callers invoke this only after the best checkpoint and
-    its validation reload have succeeded, so the test set cannot influence
-    checkpoint choice. The read scope is retained as ``test_scope.json``.
+    used for validation. ``mae_100m``, its sums and ``test_report`` pool the clamped
+    rows of the test export; ``mae_100m_unclamped`` is the raw MaskedMAE diagnostic.
+    Callers invoke this only after the best checkpoint and its validation reload
+    have succeeded, so the test set cannot influence checkpoint choice. The read
+    scope is retained as ``test_scope.json``.
     """
     selection = selection_from_config(cfg)
     test_module = RealPatchDataModule(
@@ -621,11 +628,15 @@ def _score_test_once(
         ssim_range=ssim_range,
     )
 
+    report = report_metrics(patch_rows)
     patches = scope.get("patches_per_split", {})
     return {
-        "mae_100m": float(metric.compute()),
-        "abs_error_sum": float(metric.abs_error_sum),
-        "valid_cells": float(metric.valid_cells),
+        "mae_100m": report["mae_100m"],
+        "mae_100m_unclamped": float(metric.compute()),
+        "test_report": report,
+        "prediction_clamp_k": [float(v) for v in EVAL_PREDICTION_CLAMP_K],
+        "abs_error_sum": report["abs_error_sum"],
+        "valid_cells": report["valid_cells"],
         "patches": int(patches.get("test", 0)) if isinstance(patches, dict) else 0,
         "scope_uri": str(output_root / "test_scope.json"),
     }
@@ -699,6 +710,11 @@ def resolve_run_ssim_data_range(
                 "for data.kind: real"
             )
         return test_override_ssim_data_range(float(override))
+    if str(cfg.data.get("kind", "synthetic")) == "real" and expected_fingerprints is None:
+        raise RuntimeError(
+            "real runs must check the SSIM data-range artifact against the patch-index "
+            "fingerprints; none were given"
+        )
     return load_ssim_data_range(expected_fingerprints=expected_fingerprints)
 
 
@@ -1072,6 +1088,7 @@ def _fit_contract_lifecycle(
                         "reload_recomputed": recomputed,
                         "validation_abs_error_sum": float(recheck.abs_error_sum),
                         "validation_valid_cells": float(recheck.valid_cells),
+                        "validation_report": report_metrics(validation_rows),
                         "residual_prior": residual_prior,
                         "residual_identity_mae_k": residual_identity_mae,
                         "residual_correction_mean_abs_k": correction_mean,

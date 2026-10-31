@@ -11,8 +11,10 @@ Usage
 -----
     uv run python scripts/operators/derive_ssim_data_range.py --config-name v6_l5_locked
 
-The result (``configs/modeling/ssim_data_range/v1.yaml`` by default) must be
-committed before L5 starts; until then every production path raises.
+The script writes the next free version file (``configs/modeling/ssim_data_range/
+v<N>.yaml``) and never overwrites an existing one. To activate it, point
+``SSIM_DATA_RANGE_ARTIFACT`` at the new file in a reviewed PR; until a filled,
+matching artifact is active every production path raises.
 """
 
 from __future__ import annotations
@@ -36,12 +38,14 @@ from berlin_lst_downscaling.modeling.patches import (
 )
 from berlin_lst_downscaling.modeling.run import real_source_config
 from berlin_lst_downscaling.modeling.ssim_range import (
-    SSIM_DATA_RANGE_ARTIFACT,
+    SSIM_DATA_RANGE_DIR,
     SsimRangeSample,
     SsimRangeStats,
     artifact_payload,
     check_artifact_writable,
     derive_ssim_data_range,
+    is_artifact_version,
+    next_artifact_version,
     write_artifact,
 )
 
@@ -104,16 +108,22 @@ def _git_commit() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-name", default="v6_l5_locked", help="modeling config")
-    parser.add_argument("--out", default=str(SSIM_DATA_RANGE_ARTIFACT), help="local YAML path")
     parser.add_argument(
-        "--overwrite-filled",
-        action="store_true",
-        help="allow replacing an existing filled artifact",
+        "--out",
+        default=None,
+        help="new local version file v<N>.yaml (default: next free version in the config dir)",
     )
     args = parser.parse_args(argv)
-    if "://" in args.out:
-        parser.error("--out must be a local path (never gs://)")
-    check_artifact_writable(Path(args.out), overwrite_filled=args.overwrite_filled)
+    if args.out is None:
+        out_path = SSIM_DATA_RANGE_DIR / f"{next_artifact_version(SSIM_DATA_RANGE_DIR)}.yaml"
+    else:
+        if "://" in args.out:
+            parser.error("--out must be a local path (never gs://)")
+        out_path = Path(args.out)
+        if not is_artifact_version(out_path.stem):
+            parser.error("--out file name must be v<N>.yaml")
+    check_artifact_writable(out_path)
+    version = out_path.stem
 
     with initialize_config_dir(config_dir=str(_CONFIG_DIR), version_base=None):
         cfg = compose(config_name=args.config_name)
@@ -131,8 +141,9 @@ def main(argv: list[str] | None = None) -> int:
         derived_at=now_iso(),
         exclusions=exclusions,
         n_refs_requested=n_refs,
+        version=version,
     )
-    out = write_artifact(payload, Path(args.out), overwrite_filled=args.overwrite_filled)
+    out = write_artifact(payload, out_path)
     print(f"wrote {out}")
     print(
         f"L = {stats.data_range_k:.4f} K (p0.5 {stats.low_k:.4f}, p99.5 {stats.high_k:.4f}); "

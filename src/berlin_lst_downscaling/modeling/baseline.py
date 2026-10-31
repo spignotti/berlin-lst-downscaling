@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,8 +33,12 @@ import torch
 from berlin_lst_downscaling.data.io import log_event, run_context_path
 from berlin_lst_downscaling.data.training.report import now_iso
 from berlin_lst_downscaling.modeling.aggregation import AggregationMethod
-from berlin_lst_downscaling.modeling.evaluation_exports import score_patch_ssim_variants
+from berlin_lst_downscaling.modeling.evaluation_exports import (
+    pooled_ssim_metrics,
+    score_patch_ssim_variants,
+)
 from berlin_lst_downscaling.modeling.metrics import (
+    clamp_eval_prediction,
     masked_abs_error_sums,
     masked_ssim_stats,
     pool_10m_to_100m,
@@ -126,11 +131,8 @@ class BaselineReport:
             "prior_rule": self.prior_rule,
             "primary_metric": self.primary_metric,
             "secondary_metric": self.secondary_metric,
-            "splits": {
-                name: {**asdict(summary), "mae": summary.mae, "ssim": summary.ssim}
-                for name, summary in self.splits.items()
-            },
-            "patches": [asdict(record) for record in self.patches],
+            "splits": splits_payload(self.splits, self.patches),
+            "patches": [record_payload(record) for record in self.patches],
             "exclusions": self.exclusions,
             "source": self.source,
             "fingerprints": self.fingerprints,
@@ -138,6 +140,38 @@ class BaselineReport:
             "written_at": self.written_at,
             "ssim_data_range": self.ssim_data_range,
         }
+
+
+def record_payload(record: PatchRecord) -> dict[str, Any]:
+    """Return the per-patch payload with the export-named ``ssim_100m`` key."""
+    return {
+        **asdict(record),
+        "ssim_100m": record.ssim_sum / record.ssim_windows if record.ssim_windows > 0 else None,
+    }
+
+
+def split_summary_payload(summary: SplitSummary, records: Sequence[PatchRecord]) -> dict[str, Any]:
+    """Return a split summary payload with the shared report SSIM keys.
+
+    ``records`` are the patches of that split. ``mae`` and ``ssim`` stay for
+    backward compatibility; the SSIM keys match the U-Net validation export.
+    """
+    return {
+        **asdict(summary),
+        "mae": summary.mae,
+        "ssim": summary.ssim,
+        **pooled_ssim_metrics([asdict(record) for record in records]),
+    }
+
+
+def splits_payload(
+    summaries: Mapping[str, SplitSummary], records: Sequence[PatchRecord]
+) -> dict[str, dict[str, Any]]:
+    """Return ``split_summary_payload`` for every split of a report."""
+    return {
+        name: split_summary_payload(summary, [r for r in records if r.split == name])
+        for name, summary in summaries.items()
+    }
 
 
 def _counter_delta(before: Counter[str], after: Counter[str]) -> dict[str, int]:
@@ -240,10 +274,10 @@ def _score_patch(
     prior_10m = torch.from_numpy(sample.lst_prior_k[None])  # (1, 1, H, W)
     target = torch.from_numpy(sample.target_100m[None])
     mask = torch.from_numpy(sample.mask_100m[None])
-    prediction_100m = pool_10m_to_100m(prior_10m, aggregation)
+    prediction_100m = clamp_eval_prediction(pool_10m_to_100m(prior_10m, aggregation))
     error_sum, count = masked_abs_error_sums(prediction_100m, target, mask)
     ssim_sum, ssim_count = masked_ssim_stats(
-        prediction_100m, target, mask, data_range_k=data_range_k
+        prediction_100m, target, mask, clamp_predictions=False, data_range_k=data_range_k
     )
     return PatchRecord(
         patch_id=sample.meta.patch_id,
@@ -338,6 +372,9 @@ __all__ = [
     "SplitSummary",
     "build_report",
     "evaluate_baseline",
+    "record_payload",
+    "split_summary_payload",
+    "splits_payload",
     "resolve_report_ssim_data_range",
     "git_revision_for",
     "load_refs",
