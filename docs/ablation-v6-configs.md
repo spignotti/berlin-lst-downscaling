@@ -115,7 +115,9 @@ prints no `--skip-test`.
   and record `evaluate_test: false`; they are pilot/timing runs only and never
   enter the final arm comparison. `scripts/validators/plan_v6_ablation.py` and
   the matrix set no `evaluate_test` override, so planned runs score the test
-  split (default true).
+  split (default true). The test pass scores the best-validation checkpoint
+  (`validation/mae_100m`, mode min), reloaded from `best_model_path`, not the
+  last epoch.
 - Before training, the real path (and the v6 random forest and naive baseline
   runners) checks that the published scaler's channel names equal the feature
   schema roster and that the arm's selected indices map back to its names.

@@ -17,8 +17,9 @@ Aktuelles Design auf `training/v3`:
 - Fester 2D-U-Net-Backbone mit Kelvin-Residual (Prior als separater Input, nullinitialisierter Korrektur-Head).
 - Drei Eingangsvarianten: (1) volle Optik (alle 22 Kanäle), (2) ohne NDVI, (3) ohne Rot, NIR und Indizes.
 - Optionaler TESSERA-Arm: nur als Code vorhanden, nicht gelaufen; ersetzt die 6 Morphologie- und 2 Schattenkanäle durch jährliche TESSERA-Embeddings. Die handgebauten Features bleiben das Hauptmodell.
-- Finale Ablationsmatrix (exakte Arme, Seeds, Loss-Varianten, Neuauflage der Random-Forest-Baseline): **offen**.
-- Trainingsschema der v6-Ablationsmatrix (Entscheidung 31.10.2026): 9 Arme × Seeds 0, 1, 2 = 27 Läufe, je 40 Epochen, Cosine-Lernratenplan mit 2 Warmup-Epochen (T_max = 40, eta_min = 0), ohne Early Stopping.
+- v6-Ablationsmatrix eingefroren (Entscheidung 31.10.2026): 9 Arme × Seeds 0, 1, 2 = 27 Läufe, je 40 Epochen, Cosine-Lernratenplan mit 2 Warmup-Epochen (T_max = 40, eta_min = 0), ohne Early Stopping, mit vorgebautem Patch-Cache. Offen sind nur noch die Loss-Varianten und die Neuauflage der Random-Forest-Baseline auf `training/v3`.
+- Modellauswahl und Testauswertung (Entscheidung 31.10.2026): Die Modellauswahl nutzt ausschließlich Validation 2024. Die finale Testauswertung 2025 wird pro Lauf genau einmal auf dem besten Validation-2024-Checkpoint gerechnet (`validation/mae_100m` auf dem 100-m-Raster), nicht auf der letzten Epoche.
+- Begründung Cosine-Lernratenplan: Ein Bestätigungslauf mit **einem Seed** (Seed 0, 40 Epochen, nur Validation, Test unberührt) erreichte eine beste Validation-MAE von 0,3801 K in Epoche 39 von 40, gegenüber 0,3846 K in Epoche 59 von 60 beim Pilotlauf mit konstanter Lernrate (dort 0,391 K nach 40 Epochen). Ab Epoche 30 bleibt die Cosine-Kurve im Bereich 0,380–0,396 K, die des Pilotlaufs im Bereich 0,391–0,461 K.
 - Ergebnisse auf `training/v3`: **ausstehend**.
 
 ### Historisches Studiendesign (training/v1)

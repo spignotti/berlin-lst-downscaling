@@ -507,7 +507,9 @@ and `prebuilt_shards` in `data_scope.json`, the evidence record and
 `prebuilt_load` appear in `phase_timings.phases`.
 
 Informational record only (not read by any code): published cache keys per arm,
-built at commit `6ce1482`. The job always derives the key at runtime from the arm's
+built at commit `6ce1482`. Source: the prebuilt manifests published by Cloud Build at
+that commit (`6ce14828cb8398470b8bdf32490a26b1e02d2fae`, builds `483ed6be` and
+`7d820294`), `git_dirty: false`. The job always derives the key at runtime from the arm's
 data config; L5 shares the L4 data config and thus the L4 cache.
 
 | Arm | Key |
