@@ -74,11 +74,21 @@ no entry). The training schema is matrix-level, one value for all 27 runs
   is resolved at runtime from each arm's data config; no key is stored in the
   matrix or in code. L5 shares the L4 data config and so the L4 cache.
 
-The planning estimates are PLACEHOLDERS until the timing smoke
-measures them (not measured, not a verified rate): `hours_per_epoch_estimate`
-(0.12), `fixed_overhead_hours_estimate` (0.1) and `usd_per_hour` (1.00). The
-estimate per run is `fixed_overhead + max_epochs * hours_per_epoch`, so 27 x
-(0.1 + 40 x 0.12) = 132.3 GPU hours. List the planned runs, the equivalent
+The planning estimates are read only by the planner, not by the Vertex
+launcher. They are measured on the v6 L4 cosine confirmation run (Vertex custom
+job 3483894676707082240, 40 epochs, 1x T4, europe-west3, job-local patch cache):
+about 159 s per epoch and about 2 h 23 min wall time for the whole job,
+including provisioning and the job-local cache build. Hence
+`hours_per_epoch_estimate` 0.045 (159 s ≈ 0.044 h, rounded up) and
+`fixed_overhead_hours_estimate` 0.6 (covers provisioning and the job-local
+cache build; measured 2.38 h - 40 x 159 s ≈ 0.62 h, and the rounded-up
+per-epoch value keeps the 2.4 h run estimate above the measured 2.38 h; runs
+with a prebuilt cache should need less).
+`usd_per_hour` (1.00) is the user-authorized Vertex cap, not a verified list
+price. The estimate per run is `fixed_overhead + max_epochs * hours_per_epoch`,
+so 27 x (0.6 + 40 x 0.045) = 64.8 GPU hours. The planner refuses a matrix with
+`early_stopping: true`, because the v6 schema has no patience value; such a run
+needs `--early-stopping-patience` set explicitly on the launcher. List the planned runs, the equivalent
 launcher arguments and the estimated totals without submitting anything:
 
 ```

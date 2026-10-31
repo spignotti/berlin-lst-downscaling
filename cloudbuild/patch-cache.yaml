@@ -2,7 +2,8 @@
 # Uploads no source (`--no-source`); the build clones the public repository at
 # _COMMIT, checks the tree is clean, and runs build_prebuilt_patch_cache.py with
 # --expected-commit. _EXPECTED_KEY (optional) must appear in the build output.
-#   gcloud builds submit --no-source --project=berlin-lst-training \
+# No source upload, so no --gcs-source-staging-dir is needed.
+#   gcloud builds submit --no-source --project=berlin-lst-training --region=europe-west3 \
 #     --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
 #     --config=cloudbuild/patch-cache.yaml \
 #     --substitutions=_COMMIT=<40-char sha>,_CONFIG_NAME=v6_l4_locked[,_EXPECTED_KEY=<key>]
@@ -39,7 +40,12 @@ steps:
           ca-certificates git libexpat1 libsqlite3-0 zlib1g libzstd1 liblzma5 \
           libjpeg62-turbo libpng16-16 libtiff6 libcurl4 libxml2 >/dev/null
         git config --global --add safe.directory /workspace/repo
-        pip install --quiet --root-user-action=ignore uv==0.7.2
+        # uv 0.7.2 as in Dockerfile.vertex, pinned by the PyPI sha256 of the
+        # manylinux x86_64 wheel (Cloud Build workers are x86_64).
+        printf '%s\n' 'uv==0.7.2 --hash=sha256:7236ec776c559fbc3ae4389b7cd506a2428ad9dd0402ac3d9446200ea3dc45f6' \
+          > /tmp/uv-requirements.txt
+        pip install --quiet --root-user-action=ignore --only-binary=:all: \
+          --require-hashes -r /tmp/uv-requirements.txt
         uv sync --frozen --no-dev
         if [[ -n "$$(git status --porcelain)" ]]; then
           echo "ERROR: working tree is not clean after uv sync"; git status --short; exit 1

@@ -1,6 +1,10 @@
 # Cloud Build: build and push the Vertex training image from Dockerfile.vertex.
-# Submit from the repo root (run scripts/operators/check_build_context.sh first):
-#   gcloud builds submit --project=berlin-lst-training \
+# Submit from the repo root (run scripts/operators/check_build_context.sh first).
+# The operator SA lacks project-level storage.buckets.list, so gcloud cannot
+# auto-detect or create the default source staging bucket; the explicit
+# --gcs-source-staging-dir avoids that without granting new rights.
+#   gcloud builds submit --project=berlin-lst-training --region=europe-west3 \
+#     --gcs-source-staging-dir=gs://berlin-lst-training_cloudbuild/source \
 #     --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
 #     --config=cloudbuild/vertex-image.yaml \
 #     --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .

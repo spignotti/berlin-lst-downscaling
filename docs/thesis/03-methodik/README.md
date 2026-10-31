@@ -18,7 +18,8 @@ Aktuelles Ablationsdesign auf `training/v3` (`features/v6`, 22 Kanäle):
 
 - Eingangsvarianten: (1) volle Optik (alle 22 Kanäle), (2) ohne NDVI, (3) ohne Rot, NIR und Indizes.
 - Optionaler TESSERA-Arm: nur als Code vorhanden, nicht gelaufen; die handgebauten Features bleiben das Hauptmodell.
-- v6-Ablationsmatrix eingefroren (9 Arme × Seeds 0, 1, 2 = 27 Läufe, 40 Epochen, Cosine-Lernrate, ohne Early Stopping; Test 2025 einmal auf dem besten Validation-2024-Checkpoint); offen nur Loss-Varianten und Neuauflage der Random-Forest-Baseline auf `training/v3` ([Protokoll](modell-ablationsprotokoll.md)).
+- v6-Ablationsmatrix eingefroren (9 Arme × Seeds 0, 1, 2 = 27 Läufe, 40 Epochen, Cosine-Lernrate, ohne Early Stopping; Test 2025 einmal auf dem besten Validation-2024-Checkpoint); offen nur Loss-Varianten, Neuauflage der Random-Forest-Baseline auf `training/v3` und die naive Baseline (naive Prior-Expansion) auf `training/v3` ([Protokoll](modell-ablationsprotokoll.md)).
+- Epochenzählung: Epochenangaben in Protokoll, Lernkurve und Laufzusammenfassung (`best_epoch`, Early-Stopping-Epoche) sind 1-basiert; Lightning (`trainer.current_epoch`) und die Checkpoint-Dateinamen (`best-<epoch>-<metrik>.ckpt`) zählen 0-basiert. Die beste Validation-MAE „in Epoche 39 von 40“ im Cosine-Bestätigungslauf meint also die 39. von 40 Epochen (Checkpoint-Dateiname `best-38-…`). Details im [Protokoll](modell-ablationsprotokoll.md).
 - Ergebnisse auf `training/v3`: ausstehend.
 
 ### Historische Ablationsleiter (training/v1)

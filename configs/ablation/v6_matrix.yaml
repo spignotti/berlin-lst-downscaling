@@ -23,8 +23,14 @@ arms:
   NO-NDVI-NDWI: {seeds: [0, 1, 2]}
   NO-RED-NIR-IDX: {seeds: [0, 1, 2]}
 
-# PLACEHOLDERS until the timing smoke measures them: not measured, and not a
-# verified rate. Run hours = fixed overhead + max_epochs * hours per epoch.
-hours_per_epoch_estimate: 0.12
-fixed_overhead_hours_estimate: 0.1
-usd_per_hour: 1.00  # placeholder
+# Planner-only estimates (scripts/validators/plan_v6_ablation.py); the Vertex
+# launcher does not read them. Measured on the v6 L4 cosine confirmation run
+# (Vertex custom job 3483894676707082240, 40 epochs, T4, europe-west3, job-local
+# patch cache): ~159 s per epoch, ~2 h 23 min wall time for the whole job.
+# Run hours = fixed overhead + max_epochs * hours per epoch.
+hours_per_epoch_estimate: 0.045
+# Includes provisioning and the job-local cache build (measured ~0.62 h; the
+# rounded-up per-epoch value keeps the 2.4 h run estimate above the measured
+# 2.38 h). Runs with a prebuilt cache should need less.
+fixed_overhead_hours_estimate: 0.6
+usd_per_hour: 1.00  # user-authorized Vertex cap, not a verified list price
