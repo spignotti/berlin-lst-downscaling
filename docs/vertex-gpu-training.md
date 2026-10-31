@@ -383,8 +383,11 @@ counted inside `max_epochs`, so `max_epochs` must exceed `warmup_epochs`.
 - Early stopping may be combined with cosine; `T_max` stays `max_epochs`.
 - The v6 lock pins `warmup_epochs=2` and `eta_min=0.0` and admits only the name
   `constant|cosine`. The switch is one value per matrix (`lr_schedule` in
-  `configs/ablation/v6_matrix.yaml`); per-arm entries must not carry it, and no
-  `v6_*_locked.yaml` sets `trainer.lr_schedule`.
+  `configs/ablation/v6_matrix.yaml`, now `cosine`); per-arm entries must not
+  carry it, and no `v6_*_locked.yaml` sets `trainer.lr_schedule`. `max_epochs`
+  (40), `early_stopping` (false) and `patch_cache` (prebuilt) are matrix-level
+  values too; the launcher defaults stay unchanged, so the matrix runs pass
+  them explicitly (see `scripts/validators/plan_v6_ablation.py`).
 - v1 locks (stage1..stage5, isolate) reject `cosine`.
 - The learning rate is logged per epoch as `lr`. The schedule is recorded in the
   checkpoint hparams, `full_summary.json` / `probe_summary.json` (`lr_schedule`),
@@ -502,6 +505,21 @@ entrypoint turns into the same overrides. The run records `patch_cache_source`
 and `prebuilt_shards` in `data_scope.json`, the evidence record and
 `phase_timings.data_prep`; the phases `prebuilt_download`, `prebuilt_verify` and
 `prebuilt_load` appear in `phase_timings.phases`.
+
+Informational record only (not read by any code): published cache keys per arm,
+built at commit `6ce1482`. The job always derives the key at runtime from the arm's
+data config; L5 shares the L4 data config and thus the L4 cache.
+
+| Arm | Key |
+| --- | --- |
+| L1 | `5911cff6dd8b56ad` |
+| L2 | `23ffd18517548ce7` |
+| L3 | `38562d4344385cae` |
+| L4, L5 | `7c2a942710258ac6` |
+| LOO-M | `eda96c7d98d27f50` |
+| LOO-S | `610f679bd4119947` |
+| NO-NDVI-NDWI | `64448d9e28008040` |
+| NO-RED-NIR-IDX | `7193a4b2cfea516f` |
 
 At load the job compares the manifest's `git_commit` with the running code's commit
 (`VERTEX_SOURCE_SHA`, else local `git rev-parse HEAD`) and records
