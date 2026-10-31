@@ -16,6 +16,7 @@ from hydra import compose, initialize_config_dir
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
+from berlin_lst_downscaling.modeling import ssim_range
 from berlin_lst_downscaling.modeling.contracts import REAL_PATCH_CELLS, REAL_PATCH_PX
 from berlin_lst_downscaling.modeling.patches import PatchRef, RealSample, RealSampleMeta
 
@@ -29,6 +30,11 @@ V3_CHAIN_KEYS = (
     "patch_index_root",
     "ard_root",
 )
+_STUB_FINGERPRINTS = {
+    "index_policy_hash": "idx",
+    "source_policy_hash": "src",
+    "patches_total": "7",
+}
 
 
 def _load_script(relative: str, name: str) -> ModuleType:
@@ -38,6 +44,30 @@ def _load_script(relative: str, name: str) -> ModuleType:
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _stub_patch_index_fingerprints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+    write_ssim_artifact,  # noqa: ANN001
+) -> None:
+    artifact = write_ssim_artifact(
+        tmp_path_factory.mktemp("ssim_stub") / "ssim.yaml", fingerprints=_STUB_FINGERPRINTS
+    )
+    monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", artifact)
+
+    def stub(_root: str) -> dict[str, str]:
+        return dict(_STUB_FINGERPRINTS)
+
+    monkeypatch.setattr(
+        "berlin_lst_downscaling.modeling.baseline.patch_index_fingerprints",
+        stub,
+    )
+    monkeypatch.setattr(
+        "berlin_lst_downscaling.modeling.random_forest.patch_index_fingerprints",
+        stub,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -195,10 +225,6 @@ def _install_fakes(monkeypatch: pytest.MonkeyPatch, runner: ModuleType) -> _Harn
     monkeypatch.setattr(runner, "assert_scaler_spec_matches", lambda *a, **k: None)
     monkeypatch.setattr(runner, "git_revision_for", lambda *a, **k: "test-rev")
     monkeypatch.setattr(runner.wandb, "init", fake_wandb_init)
-    monkeypatch.setattr(
-        "berlin_lst_downscaling.modeling.random_forest.patch_index_fingerprints",
-        lambda _root: {"index_policy_hash": "x", "source_policy_hash": "y", "patches_total": 7},
-    )
     return harness
 
 
