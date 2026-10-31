@@ -1,0 +1,60 @@
+# Cloud Build: build and upload one prebuilt patch cache from a pinned public commit.
+# Uploads no source (`--no-source`); the build clones the public repository at
+# _COMMIT, checks the tree is clean, and runs build_prebuilt_patch_cache.py with
+# --expected-commit. _EXPECTED_KEY (optional) must appear in the build output.
+#   gcloud builds submit --no-source --project=berlin-lst-training \
+#     --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
+#     --config=cloudbuild/patch-cache.yaml \
+#     --substitutions=_COMMIT=<40-char sha>,_CONFIG_NAME=v6_l4_locked[,_EXPECTED_KEY=<key>]
+# Bash-level `$` is written `$$` so Cloud Build does not substitute it.
+substitutions:
+  _COMMIT: ''
+  _CONFIG_NAME: ''
+  _EXPECTED_KEY: ''
+steps:
+  - id: clone
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        [[ "${_COMMIT}" =~ ^[0-9a-f]{40}$$ ]] || { echo "ERROR: _COMMIT must be a full 40-char SHA"; exit 1; }
+        [[ -n "${_CONFIG_NAME}" ]] || { echo "ERROR: _CONFIG_NAME is required"; exit 1; }
+        git clone https://github.com/spignotti/berlin-lst-downscaling.git /workspace/repo
+        cd /workspace/repo
+        git checkout --detach "${_COMMIT}"
+        [[ "$$(git rev-parse HEAD)" == "${_COMMIT}" ]] || { echo "ERROR: HEAD is not ${_COMMIT}"; exit 1; }
+  - id: build-cache
+    # Same base image and digest as Dockerfile.vertex.
+    name: python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
+    dir: repo
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends \
+          ca-certificates git libexpat1 libsqlite3-0 zlib1g libzstd1 liblzma5 \
+          libjpeg62-turbo libpng16-16 libtiff6 libcurl4 libxml2 >/dev/null
+        git config --global --add safe.directory /workspace/repo
+        pip install --quiet --root-user-action=ignore uv==0.7.2
+        uv sync --frozen --no-dev
+        if [[ -n "$$(git status --porcelain)" ]]; then
+          echo "ERROR: working tree is not clean after uv sync"; git status --short; exit 1
+        fi
+        uv run --no-sync python scripts/operators/build_prebuilt_patch_cache.py \
+          --config-name "${_CONFIG_NAME}" \
+          --local-dir "/workspace/build/${_CONFIG_NAME}" \
+          --expected-commit "${_COMMIT}" 2>&1 | tee /workspace/build-cache.log
+        if [[ -n "${_EXPECTED_KEY}" ]]; then
+          grep -qF "${_EXPECTED_KEY}" /workspace/build-cache.log \
+            || { echo "ERROR: expected key ${_EXPECTED_KEY} not in build output"; exit 1; }
+        fi
+serviceAccount: projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com
+timeout: 10800s
+options:
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY

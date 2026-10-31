@@ -26,6 +26,8 @@ lifecycle for berlin-lst-downscaling. The launchers and helpers live in
 - Start run tab:  `scripts/runners/vm/start-vm-run-tab.sh <launcher> [args...]`
 - Cloud monitor:  `scripts/runners/vm/cloud-monitor.sh <vm|bucket|mount|run --run-id <id>>`
 - Local ADC:     `gcloud auth application-default login` (new account)
+- Sync VM .env:  `scripts/runners/vm/sync-vm-env.sh [--check]`
+- As operator SA: `scripts/operators/with-gcp-operator.sh -- <command>`
 
 All `run-*-vm.sh` launchers source the shared fail-closed lifecycle in
 `scripts/runners/vm/vm-runner-common.sh` (start → deploy pinned
@@ -57,6 +59,37 @@ Example:
     # or without Herdr:
     scripts/runners/vm/run-features-v6-vm.sh main
 
+## Accounts and secrets
+
+GCP and secret operations run from a Linux operator machine as the operator SA
+`berlin-lst-operator@berlin-lst-training.iam.gserviceaccount.com`. Its JSON key
+lives only in Infisical (EU, thesis project, env `dev`, folder `/operator`,
+secret `GCP_OPERATOR_SA_KEY`). Use it per command:
+
+```bash
+scripts/operators/with-gcp-operator.sh -- scripts/runners/vm/ssh-vm.sh --check
+```
+
+The wrapper fetches the key to a 0600 temp file, sets
+`GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` for
+that command, and removes the file on exit. `--activate` does a persistent
+`gcloud auth activate-service-account` instead; `--check` prints only the SA
+email. Infisical auth is Universal Auth (`INFISICAL_THESIS_CLIENT_ID` /
+`INFISICAL_THESIS_CLIENT_SECRET`, kept outside the repo), an existing
+`INFISICAL_TOKEN`, or an `infisical login` session.
+
+| Infisical folder | Secrets | Read by |
+|---|---|---|
+| `/operator` | `GCP_OPERATOR_SA_KEY` | operator machine |
+| `/data` | `EARTHDATA_USERNAME`, `EARTHDATA_PASSWORD`, `EARTHDATA_TOKEN` | operator machine; copied to the VM `.env` by `sync-vm-env.sh` |
+| `/vertex` | `WANDB_API_KEY` | Vertex worker identity (unchanged) |
+
+The operator SA has `roles/compute.osAdminLogin` on the VM. Cloud Build uses the
+separate builder SA `berlin-lst-builder@…` (committed configs in `cloudbuild/`).
+Worker SAs are unchanged. Billing, quotas, IAM, key rotation, and Infisical admin
+stay with the project owner. See also `docs/vertex-gpu-training.md`
+(Accounts and secrets).
+
 ## Purpose
 
 This page documents how to access Google Cloud resources for the berlin-lst-downscaling project: GCS bucket (via rclone mount, gcloud CLI, and Python), and ADC authentication.
@@ -73,7 +106,7 @@ Canonical account since the 2026-09-25 GCS cutover (see
 | Region | `europe-west3` (Frankfurt) |
 | GCS bucket | `berlin-lst-training-data` |
 | Service account (VM) | `berlin-lst-vertex@berlin-lst-training.iam.gserviceaccount.com` |
-| Auth method | user ADC via `gcloud auth application-default login` for local runs; the VM uses its attached SA through the metadata server |
+| Auth method | on the operator machine, ADC comes from `scripts/operators/with-gcp-operator.sh` (operator SA); alternatively user ADC via `gcloud auth application-default login` for local runs; the VM uses its attached SA through the metadata server |
 
 Legacy: the old account (project `masterarbeit-berlin-lst-v2`, bucket
 `gs://berlin-lst-data`, service account
@@ -91,8 +124,12 @@ old-account fallback any more.
 
 ## Environment
 
-Local Python Google libraries (`google.cloud.storage`, `google.auth`) use
-ADC. After the cutover that must be the **new** account:
+On the operator machine, run commands under
+`scripts/operators/with-gcp-operator.sh --`; the Google libraries then use the
+operator SA and no `gcloud auth application-default login` is needed.
+
+Alternatively, local Python Google libraries (`google.cloud.storage`, `google.auth`) use
+user ADC. After the cutover that must be the **new** account:
 
 ```bash
 gcloud auth application-default login    # sign in as the new account owner
@@ -273,6 +310,7 @@ for blob in bucket.list_blobs(max_results=5):
 |---------|-------------|-----|
 | `ssh-vm.sh` fails with "Instance ID mismatch" | VM was deleted and recreated with same name | Verify with `status-vm.sh`. If intentional, update pinned ID in `vm-identity.sh` and re-run host-key ceremony. |
 | `ssh-vm.sh` fails with "No host-key entry" | Host key never provisioned or was cleared | Run the host-key ceremony (see above). |
+| `ssh-vm.sh` fails with "no OS Login POSIX account" or cannot resolve the user | The calling identity has no OS Login profile or registered key | Register the key (see "OS Login" above); check with `ssh-vm.sh --check`. |
 | `ssh-vm.sh` fails with "Connection refused" | VM is stopped or SSH daemon not ready | Check state with `status-vm.sh`. Start if needed. |
 | `ssh-vm.sh` fails with "Connection timed out" | No external IP or firewall rule missing | Check `status-vm.sh` for external IP. If absent, VM may need restart. |
 | `start-vm.sh` fails with "does not exist" | VM was deleted | Requires manual recreation — this script will NOT create one. |
@@ -489,14 +527,34 @@ authenticated channel — never by accepting whatever the VM presents.
    ```
 7. Re-run `ssh-vm.sh --check` to confirm.
 
-A freshly created VM has no login key, and `ssh-vm.sh` never provisions one.
-Add the operator's public key to the instance before the first connection:
+SSH login uses OS Login (`enable-oslogin=TRUE`); `ssh-vm.sh` never provisions
+keys, generates keys, or writes known-hosts entries. Register the public key
+once, as the identity that will connect (for the operator SA, wrap it with
+`scripts/operators/with-gcp-operator.sh --`):
 
 ```bash
-gcloud compute instances add-metadata berlin-lst-vm --zone=europe-west3-b \
-  --project=berlin-lst-training \
-  --metadata=ssh-keys="silas:$(cat ~/.ssh/google_compute_engine.pub)"
+gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub --ttl 30d
 ```
+
+`ssh-vm.sh` resolves the login user from `BERLIN_LST_SSH_USER`, else from
+`gcloud compute os-login describe-profile --format='value(posixAccounts[0].username)'`
+(service accounts get `sa_<id>`). `BERLIN_LST_SSH_IDENTITY_FILE` overrides the key
+path (default `~/.ssh/google_compute_engine`). `ssh-vm.sh --check` prints the user
+and its source.
+
+One-time migration (owner, manual): `/workspace/app` was created by the old
+metadata-key user, and the OS Login user (`osAdminLogin` = sudo) may not own it.
+Run once over `ssh-vm.sh` (single quotes, so `id -un` expands on the VM); scripts
+never do this automatically:
+
+```bash
+scripts/runners/vm/ssh-vm.sh -- 'sudo chown -R "$(id -un)" /workspace /workspace/app'
+scripts/runners/vm/ssh-vm.sh -- 'uv --version'
+```
+
+(Or use a shared group.) `/usr/local/bin/uv` was linked into the old user's
+`~/.local/bin`; if `uv --version` fails for the new user, install uv for it and
+re-link (see "One-time provisioning" below).
 
 If no independent fingerprint source exists: **halt**, do not trust the key.
 
@@ -514,16 +572,17 @@ sudo ln -sf "$HOME/.local/bin/uvx" /usr/local/bin/uvx
 sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace
 git clone https://github.com/spignotti/berlin-lst-downscaling.git /workspace/app
 cd /workspace/app && uv sync --frozen
-
-# .env (only EARTHDATA_TOKEN needed; ADC handles GCS auth)
-# The token value must be carried over manually from the local secret source
-# (never through the repo or chat): `security` is a macOS command and is not
-# present on the Debian VM, so the recipe below would otherwise write MISSING.
-cat > .env <<EOF
-EARTHDATA_TOKEN=<paste the token here>
-EOF
-chmod 600 .env
 ```
+
+Then write `.env` from the operator machine (not inside the VM):
+
+```bash
+scripts/runners/vm/sync-vm-env.sh          # or --check to list names only
+```
+
+It writes `/workspace/app/.env` (mode 0600) with `EARTHDATA_TOKEN`,
+`EARTHDATA_USERNAME`, and `EARTHDATA_PASSWORD` from Infisical `dev` `/data` over
+ssh stdin. Values are never printed. It replaces the whole file.
 
 ### Costs
 

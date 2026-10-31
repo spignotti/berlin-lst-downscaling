@@ -40,11 +40,48 @@ cache, batch 4, workers 0, `pin_memory: false`, `16-mixed`.
 - Because bucket, registry, and job share one region, there is **no
   cross-region** Cloud Storage or Artifact Registry transfer for this path.
 
+## Accounts and secrets
+
+GCP and secret operations run from a Linux operator machine. Admin tasks
+(billing, quotas, IAM, key rotation, Infisical admin) stay with the project owner.
+
+| Account | Role |
+|---|---|
+| Operator SA `berlin-lst-operator@berlin-lst-training.iam.gserviceaccount.com` | Operator GCP work from the operator machine (launches, builds, VM lifecycle and SSH; `roles/compute.osAdminLogin` on the VM). Its grants are managed by the owner. Its JSON key lives only in Infisical (`/operator`, secret `GCP_OPERATOR_SA_KEY`). |
+| Builder SA `berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com` | Cloud Build only. Every build passes it with `--service-account`; logging is `CLOUD_LOGGING_ONLY`. |
+| Worker SAs | Unchanged: `berlin-lst-vertex-smoke@…` for Vertex, `berlin-lst-vertex@…` attached to the VM. |
+
+Use the operator SA through the wrapper. It fetches the key into a 0600 temp
+file, points `GOOGLE_APPLICATION_CREDENTIALS` and
+`CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` at it for that one command, and removes
+the file on exit:
+
+```bash
+scripts/operators/with-gcp-operator.sh -- <command> [args...]
+scripts/operators/with-gcp-operator.sh --check      # prints only the SA email
+```
+
+`--activate` instead runs a persistent `gcloud auth activate-service-account`.
+The wrapper authenticates to Infisical with Universal Auth
+(`INFISICAL_THESIS_CLIENT_ID` / `INFISICAL_THESIS_CLIENT_SECRET`, kept outside
+the repo), an existing `INFISICAL_TOKEN`, or an `infisical login` session.
+`.infisical.json` at the repo root links the project (non-secret).
+
+Infisical (EU, thesis project, environment `dev`):
+
+| Folder | Secrets | Read by |
+|---|---|---|
+| `/operator` | `GCP_OPERATOR_SA_KEY` | the operator machine |
+| `/data` | `EARTHDATA_USERNAME`, `EARTHDATA_PASSWORD`, `EARTHDATA_TOKEN` | the operator machine; written to the VM `.env` by `scripts/runners/vm/sync-vm-env.sh` |
+| `/vertex` | `WANDB_API_KEY` | the Vertex worker identity (GCP ID token machine identity) |
+
+VM SSH uses OS Login; see `docs/vm-operations.md#accounts-and-secrets`.
+
 ## Identities
 
 | Role | Identity | Needs |
 |------|----------|-------|
-| Submitter (workstation) | the operator's user ADC | `roles/aiplatform.user`; Artifact Registry writer to push the image |
+| Submitter (operator machine) | the operator SA via `scripts/operators/with-gcp-operator.sh --`, or the operator's user ADC | `roles/aiplatform.user`; Artifact Registry writer to push the image |
 | Worker (Vertex) | `berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com` | read the published inputs; create (not rewrite) its own QA evidence prefix; Artifact Registry reader; Infisical identity via GCP ID token |
 | Infisical | a machine identity using **GCP ID Token** auth | allowed service account = the worker SA; access to the `WANDB_API_KEY` secret only |
 
@@ -71,6 +108,8 @@ folder (`/vertex`, environment `dev`). The entrypoint sets `INFISICAL_DOMAIN`
 (EU Cloud) explicitly because a machine-identity login does not persist the
 instance. A human creates the machine identity, binds it to the worker service
 account, and stores the key. Agents never read, print, or export secret values.
+Earthdata credentials live in `/data` and the operator SA key in `/operator`, in
+the same thesis project.
 
 At runtime the worker (`scripts/operators/vertex_entrypoint.sh`) exchanges its
 GCP identity token for a short-lived Infisical access token, then
@@ -88,23 +127,19 @@ ard_root:         gs://berlin-lst-training-data/ard/full/2017-2026-cutoff-202607
 
 ## Build and push the image
 
-The acceptance image was built with **Cloud Build** (the local Docker export
-hung on this workstation) from code SHA `ef80930`. Pass a throwaway config
-(Cloud Build workers are linux/amd64, so no `--platform` is needed):
+The acceptance image was built with **Cloud Build** from code SHA `ef80930`
+(the local Docker export hung). Cloud Build workers are linux/amd64, so no
+`--platform` is needed. Use the committed config `cloudbuild/vertex-image.yaml`
+and the builder SA:
 
 ```bash
-cat > /tmp/cloudbuild-vertex.yaml <<'YAML'
-steps:
-  - name: gcr.io/cloud-builders/docker
-    args: [build, -f, Dockerfile.vertex, -t, '${_IMAGE}', .]
-images:
-  - '${_IMAGE}'
-YAML
-
 gcloud builds submit --project=berlin-lst-training \
-  --config=/tmp/cloudbuild-vertex.yaml \
+  --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
+  --config=cloudbuild/vertex-image.yaml \
   --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
 ```
+
+Run it under the operator SA with `scripts/operators/with-gcp-operator.sh -- gcloud builds submit ...`.
 
 Run `scripts/operators/check_build_context.sh` before every `gcloud builds
 submit`. It compares `gcloud meta list-files-for-upload .` with the tracked
@@ -471,8 +506,20 @@ Rules for a published cache:
   format version. `--overwrite` only replaces leftover shards of an interrupted upload
   at a prefix without a manifest; without it such leftovers are refused.
 
-Build and upload on the Mac (needs Application Default Credentials for the upload
-and for reading the `gs://` roots). The first command builds and packs locally, the
+Preferred: build in Cloud Build from the public repo at the merged commit, so the
+manifest's `git_commit` matches the image. `_COMMIT` is the full 40-character SHA,
+`_EXPECTED_KEY` is optional (the build fails if the key is not in the output):
+
+```bash
+gcloud builds submit --no-source --project=berlin-lst-training \
+  --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
+  --config=cloudbuild/patch-cache.yaml \
+  --substitutions=_COMMIT=<40-char sha>,_CONFIG_NAME=v6_l4_locked,_EXPECTED_KEY=<key>
+```
+
+Alternative: build and upload on the operator machine (needs Application Default
+Credentials for the upload and for reading the `gs://` roots; wrap the commands in
+`scripts/operators/with-gcp-operator.sh --`). The first command builds and packs locally, the
 second repeats it and uploads; `--dry-run` prints the key and prefix after the local
 build without packing or uploading.
 

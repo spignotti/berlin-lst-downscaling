@@ -1,0 +1,14 @@
+# Cloud Build: build and push the Vertex training image from Dockerfile.vertex.
+# Submit from the repo root (run scripts/operators/check_build_context.sh first):
+#   gcloud builds submit --project=berlin-lst-training \
+#     --service-account=projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com \
+#     --config=cloudbuild/vertex-image.yaml \
+#     --substitutions=_IMAGE=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex:<sha> .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, Dockerfile.vertex, -t, '${_IMAGE}', .]
+images:
+  - '${_IMAGE}'
+serviceAccount: projects/berlin-lst-training/serviceAccounts/berlin-lst-builder@berlin-lst-training.iam.gserviceaccount.com
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -6,7 +6,12 @@
 #   - VM identity matches pinned instance ID
 #   - A host-key entry exists in google_compute_known_hosts for that ID
 #   - An SSH identity file is readable at ~/.ssh/google_compute_engine
+#     (override: BERLIN_LST_SSH_IDENTITY_FILE) whose public key is registered
+#     in the caller's OS Login profile
 #   - The VM is RUNNING with an external IP
+#
+# The login user is BERLIN_LST_SSH_USER if set, otherwise the POSIX username of
+# the active gcloud account's OS Login profile (users and service accounts).
 #
 # NEVER writes known-hosts, generates keys, or provisions metadata keys.
 #
@@ -19,10 +24,9 @@ set -euo pipefail
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPTS_DIR/vm-identity.sh"
 
-SSH_USER="silas"
 SSH_PORT=22
 SSH_TIMEOUT=10
-SSH_IDENTITY_FILE="$HOME/.ssh/google_compute_engine"
+SSH_IDENTITY_FILE="${BERLIN_LST_SSH_IDENTITY_FILE:-$HOME/.ssh/google_compute_engine}"
 
 # ── parse args ───────────────────────────────────────────────────────────────
 
@@ -80,6 +84,30 @@ if [[ ! -r "$SSH_IDENTITY_FILE" ]]; then
   exit 1
 fi
 
+# ── login user (OS Login) ───────────────────────────────────────────────────
+
+if [[ -n "${BERLIN_LST_SSH_USER:-}" ]]; then
+  SSH_USER="$BERLIN_LST_SSH_USER"
+  SSH_USER_SOURCE="BERLIN_LST_SSH_USER"
+else
+  SSH_USER=$(gcloud compute os-login describe-profile \
+    --format='value(posixAccounts[0].username)' 2>/dev/null) || SSH_USER=""
+  SSH_USER_SOURCE="OS Login profile of the active gcloud account"
+  if [[ -z "$SSH_USER" ]]; then
+    echo "ERROR: no OS Login POSIX account for the active gcloud account" >&2
+    echo "  (or describe-profile failed: check gcloud auth)." >&2
+    echo "  Register the public key once (creates the POSIX account):" >&2
+    echo "    gcloud compute os-login ssh-keys add --key-file ${SSH_IDENTITY_FILE}.pub --ttl 30d" >&2
+    echo "  or set BERLIN_LST_SSH_USER." >&2
+    exit 1
+  fi
+fi
+
+if [[ ! "$SSH_USER" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+  echo "ERROR: invalid SSH user name from $SSH_USER_SOURCE." >&2
+  exit 1
+fi
+
 # ── --check: report readiness without connecting ─────────────────────────────
 
 if [[ "$CHECK_ONLY" == "true" ]]; then
@@ -88,7 +116,7 @@ if [[ "$CHECK_ONLY" == "true" ]]; then
   echo "  Instance:     $VM_NAME (ID: $VM_INSTANCE_ID)"
   echo "  State:        $VM_ACTUAL_STATE"
   echo "  IP:           $IP"
-  echo "  User:         $SSH_USER"
+  echo "  User:         $SSH_USER (from $SSH_USER_SOURCE)"
   echo "  Identity:     $SSH_IDENTITY_FILE"
   echo "  Host key:     $KEY_LINE"
   exit 0

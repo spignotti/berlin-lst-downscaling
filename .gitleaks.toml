@@ -1,0 +1,6 @@
+# gitleaks configuration: the upstream default rules, nothing relaxed.
+# Known false positives are listed by fingerprint in .gitleaksignore.
+title = "berlin-lst-downscaling"
+
+[extend]
+useDefault = true

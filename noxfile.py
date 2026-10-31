@@ -135,6 +135,16 @@ def tests(session: nox.Session) -> None:
     session.run("uv", "run", "pytest", external=True)
 
 
+@nox.session(venv_backend="none", name="secret-scan")
+def secret_scan(session: nox.Session) -> None:
+    """Scan the full git history with gitleaks, as CI does (not a default session)."""
+    import shutil
+
+    if shutil.which("gitleaks") is None:
+        session.skip("gitleaks is not on PATH")
+    session.run("gitleaks", "git", "--redact", "--no-banner", ".", external=True)
+
+
 @nox.session(venv_backend="none", name="validate-ablation-configs")
 def validate_ablation_configs(session: nox.Session) -> None:
     """Check locked ablation profiles without reading GCS."""

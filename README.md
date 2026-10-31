@@ -82,6 +82,10 @@ comparison and the pipeline smokes read GCS. The dynamic pipeline also needs
 a Copernicus CDS API key. Heavy production runs execute on a GCP VM against
 GCS; managed model training will run on Vertex AI.
 
+Secrets come from Infisical (see `docs/vm-operations.md#accounts-and-secrets`);
+`.env.example` lists names only. To enable the optional gitleaks pre-commit hook,
+run `uvx pre-commit install`.
+
 ### Modelling gates
 
 All three are technical checks, not quality thresholds.

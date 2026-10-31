@@ -5,8 +5,10 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 ## Compute and storage
 
 - Canonical bucket: `gs://berlin-lst-training-data/` (GCP project `berlin-lst-training`, `europe-west3`).
-- Local mount: rclone at `~/.mnt/berlin-lst/` (gcsfuse is unavailable on this arm64 Mac).
+- Local mount: rclone at `~/.mnt/berlin-lst/` (on the owner's Mac; gcsfuse is unavailable on this arm64 Mac).
 - Heavy pipeline runs use the On-Demand VM `berlin-lst-vm`. Start, stop, SSH, and run launchers live only in `scripts/runners/vm/`. Application code consumes GCS and Hydra and does not know the VM.
+- GCP and secret operations run from a Linux operator machine as the operator SA through `scripts/operators/with-gcp-operator.sh` (its key lives only in Infisical `/operator`). VM SSH uses OS Login.
+- Cloud Build uses the builder SA with the committed configs in `cloudbuild/`.
 - Managed GPU training runs on Vertex AI (`docs/vertex-gpu-training.md`).
 - Keep the VM stopped when it is not running a job. Deletion protection stays on; the boot disk is not auto-delete.
 - The bucket holds immutable canonical products, retained QA evidence, and ephemeral run outputs. Do not delete or rewrite canonical products outside a planned task. Do not edit retained evidence. Remove ephemeral outputs in the task that created them.
@@ -21,7 +23,7 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 ## Validation
 
 - Default nox sessions are `lint`, `typecheck`, `tests`, `validate-ablation-configs`, `smoke-training-contract-cpu`, `smoke-modeling`, and `smoke-modeling-contract`. New or changed computational logic (math, masks, splits, aggregation, hashing) needs unit tests. Tests must be offline and small.
-- CI on `main` and pull requests runs `uv run --locked nox` (job name `validate`).
+- CI on `main` and pull requests runs `uv run --locked nox` (job name `validate`). The CI job `secret-scan` runs gitleaks over the full history. Locally, enable the optional hook with `uvx pre-commit install` (`.pre-commit-config.yaml`), or run `uv run nox -s secret-scan` when gitleaks is on PATH.
 
 ## Git
 
