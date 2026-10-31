@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import sys
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from hydra import compose, initialize_config_dir
@@ -239,29 +241,29 @@ def test_default_matrix_totals() -> None:
         a: [0, 1, 2] for a in V6_ABLATION_ARMS
     }
     runs, hours, usd = plan_totals(matrix)
-    assert (runs, math.isclose(hours, 67.5), math.isclose(usd, 67.5)) == (27, True, True)
+    # 27 x (0.1 + 40 x 0.12)
+    assert (runs, math.isclose(hours, 132.3), math.isclose(usd, 132.3)) == (27, True, True)
 
 
 def test_epoch_aware_totals() -> None:
     raw = _raw()
-    raw["arms"]["L1"] = {"seeds": [0, 1], "max_epochs": 10}
-    raw["arms"]["L2"] = {"seeds": [0], "max_epochs": 30}
+    raw["max_epochs"] = 10
+    raw["arms"]["L1"] = {"seeds": [0, 1]}
     raw["hours_per_epoch_estimate"] = 0.5
     raw["fixed_overhead_hours_estimate"] = 1.0
     matrix = parse_v6_matrix(raw)
-    by_arm = {r.arm_id: run_hours_estimate(matrix, r) for r in plan_runs(matrix)}
-    assert math.isclose(by_arm["L1"], 1.0 + 10 * 0.5)
-    assert math.isclose(by_arm["L2"], 1.0 + 30 * 0.5)
-    # 2 x L1 (6.0) + L2 (16.0) + 7 other arms x (1.0 + 20 * 0.5 = 11.0)
+    assert {run_hours_estimate(matrix, r) for r in plan_runs(matrix)} == {1.0 + 10 * 0.5}
+    # 2 x L1 + 8 other arms x 1 seed, each 6.0 h
     runs, hours, usd = plan_totals(matrix)
     assert runs == 10
-    assert math.isclose(hours, 2 * 6.0 + 16.0 + 7 * 11.0)
+    assert math.isclose(hours, 10 * 6.0)
     assert math.isclose(usd, hours)
 
 
 def _raw() -> dict:
-    arms = {a: {"seeds": [0], "max_epochs": 20} for a in V6_ABLATION_ARMS}
+    arms = {a: {"seeds": [0]} for a in V6_ABLATION_ARMS}
     return {
+        "max_epochs": 20,
         "arms": arms,
         "hours_per_epoch_estimate": 0.12,
         "fixed_overhead_hours_estimate": 0.1,
@@ -296,8 +298,135 @@ def test_per_arm_lr_schedule_rejected() -> None:
         parse_v6_matrix(raw)
 
 
-def test_shipped_matrix_is_constant() -> None:
-    assert load_v6_matrix(_MATRIX).lr_schedule == "constant"
+def test_shipped_matrix_is_40_epoch_cosine_prebuilt_without_early_stopping() -> None:
+    matrix = load_v6_matrix(_MATRIX)
+    planned = plan_runs(matrix)
+    assert len(planned) == 27
+    assert {(r.arm_id, r.seed) for r in planned} == {
+        (a, s) for a in V6_ABLATION_ARMS for s in (0, 1, 2)
+    }
+    assert {(r.max_epochs, r.lr_schedule, r.early_stopping, r.patch_cache) for r in planned} == {
+        (40, "cosine", False, "prebuilt")
+    }
+
+
+def test_shipped_matrix_has_no_per_arm_schema_keys() -> None:
+    raw = OmegaConf.to_container(OmegaConf.load(_MATRIX))
+    assert isinstance(raw, dict)
+    assert {k: raw[k] for k in ("max_epochs", "lr_schedule", "early_stopping", "patch_cache")} == {
+        "max_epochs": 40,
+        "lr_schedule": "cosine",
+        "early_stopping": False,
+        "patch_cache": "prebuilt",
+    }
+    assert all(entry == {"seeds": [0, 1, 2]} for entry in raw["arms"].values())
+
+
+def test_matrix_defaults_when_absent() -> None:
+    matrix = parse_v6_matrix(_raw())
+    assert (matrix.early_stopping, matrix.patch_cache) == (False, "job_local")
+    assert {(r.early_stopping, r.patch_cache) for r in plan_runs(matrix)} == {(False, "job_local")}
+
+
+def test_matrix_level_switches_reach_runs() -> None:
+    raw = _raw()
+    raw["early_stopping"] = True
+    raw["patch_cache"] = "prebuilt"
+    raw["max_epochs"] = 3
+    raw["lr_schedule"] = "cosine"
+    runs = plan_runs(parse_v6_matrix(raw))
+    assert {(r.max_epochs, r.early_stopping, r.patch_cache) for r in runs} == {
+        (3, True, "prebuilt")
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("max_epochs", 40), ("early_stopping", False), ("patch_cache", "prebuilt")],
+)
+def test_per_arm_matrix_level_keys_rejected(key: str, value: object) -> None:
+    raw = _raw()
+    raw["arms"]["L3"][key] = value
+    with pytest.raises(ValueError, match="matrix-level"):
+        parse_v6_matrix(raw)
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", None, "no"])
+def test_non_bool_early_stopping_rejected(value: object) -> None:
+    raw = _raw()
+    raw["early_stopping"] = value
+    with pytest.raises(ValueError, match="early_stopping"):
+        parse_v6_matrix(raw)
+
+
+@pytest.mark.parametrize("value", ["gcs", "", None, True, "PREBUILT"])
+def test_unknown_patch_cache_rejected(value: object) -> None:
+    raw = _raw()
+    raw["patch_cache"] = value
+    with pytest.raises(ValueError, match="patch_cache"):
+        parse_v6_matrix(raw)
+
+
+@pytest.mark.parametrize("epochs", [1, 2])
+def test_cosine_needs_epochs_after_warmup(epochs: int) -> None:
+    raw = _raw()
+    raw["lr_schedule"] = "cosine"
+    raw["max_epochs"] = epochs
+    with pytest.raises(ValueError, match="warmup"):
+        parse_v6_matrix(raw)
+    raw["lr_schedule"] = "constant"
+    assert parse_v6_matrix(raw).max_epochs == epochs
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 2.5, "40", None])
+def test_bad_matrix_max_epochs_rejected(value: object) -> None:
+    raw = _raw()
+    raw["max_epochs"] = value
+    with pytest.raises(ValueError, match="max_epochs"):
+        parse_v6_matrix(raw)
+
+
+def test_missing_matrix_max_epochs_rejected() -> None:
+    raw = _raw()
+    del raw["max_epochs"]
+    with pytest.raises(ValueError, match="max_epochs"):
+        parse_v6_matrix(raw)
+
+
+def test_shipped_runs_compose_to_the_planned_schema(
+    compose_modeling: Callable[..., DictConfig],
+) -> None:
+    # Same overrides as validate_ablation_configs._check_v6_matrix (that session runs it too).
+    for run in plan_runs(load_v6_matrix(_MATRIX)):
+        cfg = compose_modeling(
+            run.config_name,
+            [
+                f"seed={run.seed}",
+                f"trainer.max_epochs={run.max_epochs}",
+                f"trainer.lr_schedule.name={run.lr_schedule}",
+                f"early_stopping.enabled={str(run.early_stopping).lower()}",
+                "+data.patch_cache.source=prebuilt",
+            ],
+        )
+        _check(cfg, run.config_name)
+        assert cfg.trainer.max_epochs == 40
+        assert cfg.trainer.lr_schedule.name == "cosine"
+        assert cfg.trainer.lr_schedule.warmup_epochs == 2
+        assert cfg.early_stopping.enabled is False
+        assert cfg.data.patch_cache.source == "prebuilt"
+
+
+def test_plan_arm_modes_match_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = _load_script("validators", "plan_v6_ablation")
+    if importlib.util.find_spec("google.cloud.aiplatform_v1") is None:
+        stub = MagicMock()
+        monkeypatch.setitem(sys.modules, "google.cloud.aiplatform_v1", stub)
+        monkeypatch.setitem(sys.modules, "google.cloud.aiplatform_v1.types", stub.types)
+    launcher = _load_script("operators", "launch_vertex_modeling")
+    assert set(plan.ARM_LAUNCHER_MODE) == set(V6_ABLATION_ARMS)
+    assert sorted(plan.ARM_LAUNCHER_MODE.values()) == sorted(launcher._V6_ABLATION_MODES)
+    for arm_id, mode in plan.ARM_LAUNCHER_MODE.items():
+        assert launcher.MODE_CONFIG_NAME[mode] == V6_ABLATION_ARMS[arm_id].config_name
 
 
 def test_missing_arm_rejected() -> None:
@@ -309,7 +438,7 @@ def test_missing_arm_rejected() -> None:
 
 def test_extra_arm_rejected() -> None:
     raw = _raw()
-    raw["arms"]["LOO-ERA5"] = {"seeds": [0], "max_epochs": 20}
+    raw["arms"]["LOO-ERA5"] = {"seeds": [0]}
     with pytest.raises(ValueError, match="extra"):
         parse_v6_matrix(raw)
 
@@ -321,8 +450,6 @@ def test_extra_arm_rejected() -> None:
         ("seeds", [-1]),
         ("seeds", [True]),
         ("seeds", []),
-        ("max_epochs", 0),
-        ("max_epochs", True),
     ],
 )
 def test_malformed_arm_entry_rejected(field: str, value: object) -> None:
@@ -369,21 +496,40 @@ def test_zero_overhead_allowed() -> None:
     assert parse_v6_matrix(raw).fixed_overhead_hours_estimate == 0.0
 
 
-def test_plan_helper_lists_27_runs(capsys: pytest.CaptureFixture[str]) -> None:
+def _load_script(folder: str, name: str):
     spec = importlib.util.spec_from_file_location(
-        "plan_v6_ablation", _ROOT / "scripts" / "validators" / "plan_v6_ablation.py"
+        f"{name}_under_test", _ROOT / "scripts" / folder / f"{name}.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_plan_helper_lists_27_runs(capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load_script("validators", "plan_v6_ablation")
     assert module.main([]) == 0
     out = capsys.readouterr().out
     assert (
-        "TOTAL runs=27 est_gpu_hours=67.5 est_usd=67.5 (placeholder estimates: "
+        "TOTAL runs=27 est_gpu_hours=132.3 est_usd=132.3 (placeholder estimates: "
         "hours_per_epoch=0.12 fixed_overhead=0.10; nothing submitted)"
     ) in out
-    assert out.count("arm=") == 27
-    assert "est_hours=2.50" in out
+    run_lines = [line for line in out.splitlines() if line.startswith("arm=")]
+    assert len(run_lines) == 27
+    for line in run_lines:
+        assert (
+            "epochs=40 lr_schedule=cosine early_stopping=false patch_cache=prebuilt "
+            "est_hours=4.90 launcher_args: --mode v6-"
+        ) in line
+        assert line.endswith("--max-epochs 40 --lr-schedule cosine --patch-cache prebuilt")
+    assert "--skip-test" not in out
+    assert "test" not in out.replace("est_", "")
+    assert (
+        "arm=LOO-S config=v6_loo_shadow_locked seed=2 epochs=40 lr_schedule=cosine "
+        "early_stopping=false patch_cache=prebuilt est_hours=4.90 launcher_args: "
+        "--mode v6-loo-shadow --seed 2 --max-epochs 40 --lr-schedule cosine "
+        "--patch-cache prebuilt"
+    ) in out
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3, 4])

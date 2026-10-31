@@ -919,6 +919,42 @@ def test_score_test_once_is_gated_by_full_and_evaluate_test() -> None:
     assert not _calls(tree, "_score_test_once") or len(_calls(tree, "_score_test_once")) == 1
 
 
+def test_score_test_once_receives_best_validation_checkpoint() -> None:
+    tree = ast.parse(_RUN_SOURCE)
+    lifecycle = _function(tree, "_fit_contract_lifecycle")
+
+    def _assigns(name: str) -> list[ast.Assign]:
+        return [
+            n
+            for n in ast.walk(lifecycle)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)
+        ]
+
+    checkpoints = _calls(lifecycle, "ModelCheckpoint")
+    assert len(checkpoints) == 1
+    kwargs = {kw.arg: kw.value for kw in checkpoints[0].keywords}
+    assert isinstance(kwargs["monitor"], ast.Name) and kwargs["monitor"].id == "monitored"
+    assert getattr(kwargs["mode"], "value", None) == "min"
+    monitored = _assigns("monitored")
+    assert [getattr(n.value, "value", None) for n in monitored] == ["validation/mae_100m"]
+
+    best = [ast.unparse(n.value) for n in _assigns("best_checkpoint")]
+    assert sorted(best) == ["''", "checkpoint_callback.best_model_path"]
+
+    reloads = _assigns("reloaded")
+    assert reloads
+    for node in reloads:
+        call = node.value
+        assert isinstance(call, ast.Call)
+        assert isinstance(call.func, ast.Attribute) and call.func.attr == "load_from_checkpoint"
+        assert isinstance(call.args[0], ast.Name) and call.args[0].id == "best_checkpoint"
+
+    assert "last_model_path" not in ast.unparse(lifecycle)
+    (scorer_call,) = _calls(lifecycle, "_score_test_once")
+    assert isinstance(scorer_call.args[2], ast.Name) and scorer_call.args[2].id == "reloaded"
+
+
 def test_test_export_is_written_only_inside_score_test_once() -> None:
     tree = ast.parse(_RUN_SOURCE)
     scorer = _function(tree, "_score_test_once")

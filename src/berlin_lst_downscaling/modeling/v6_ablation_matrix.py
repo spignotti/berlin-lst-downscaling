@@ -1,4 +1,4 @@
-"""v6 ablation run matrix: which arms run with which seeds and epochs.
+"""v6 ablation run matrix: which arms run with which seeds, and the shared training schema.
 
 The matrix file only plans runs; nothing here submits a job. Estimates are
 planning figures, not measurements.
@@ -19,19 +19,25 @@ from berlin_lst_downscaling.modeling.channels import V6_ABLATION_ARMS
 @dataclass(frozen=True)
 class V6ArmPlan:
     seeds: tuple[int, ...]
-    max_epochs: int
 
 
 _LR_SCHEDULES = ("constant", "cosine")
+_PATCH_CACHES = ("job_local", "prebuilt")
+_MATRIX_LEVEL_KEYS = ("max_epochs", "lr_schedule", "early_stopping", "patch_cache")
+# The v6 lock pins trainer.lr_schedule.warmup_epochs=2; cosine needs epochs after warmup.
+_COSINE_WARMUP_EPOCHS = 2
 
 
 @dataclass(frozen=True)
 class V6Matrix:
     arms: dict[str, V6ArmPlan]
+    max_epochs: int
     hours_per_epoch_estimate: float
     fixed_overhead_hours_estimate: float
     usd_per_hour: float
     lr_schedule: str = "constant"
+    early_stopping: bool = False
+    patch_cache: str = "job_local"
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,8 @@ class PlannedRun:
     seed: int
     max_epochs: int
     lr_schedule: str
+    early_stopping: bool
+    patch_cache: str
 
 
 def _plain_int(value: object, label: str, *, minimum: int) -> int:
@@ -90,20 +98,31 @@ def parse_v6_matrix(raw: object) -> V6Matrix:
         entry = arms_raw[arm_id]
         if not isinstance(entry, Mapping):
             raise ValueError(f"arm {arm_id}: entry must be a mapping")
-        if "lr_schedule" in entry:
-            raise ValueError(
-                f"arm {arm_id}: lr_schedule is a matrix-level switch, not a per-arm key"
-            )
+        for key in _MATRIX_LEVEL_KEYS:
+            if key in entry:
+                raise ValueError(f"arm {arm_id}: {key} is a matrix-level switch, not a per-arm key")
         seeds_raw = entry.get("seeds")
         if not isinstance(seeds_raw, (list, tuple)) or not seeds_raw:
             raise ValueError(f"arm {arm_id}: seeds must be a non-empty list")
         seeds = tuple(_plain_int(s, f"arm {arm_id}: seed", minimum=0) for s in seeds_raw)
         if len(set(seeds)) != len(seeds):
             raise ValueError(f"arm {arm_id}: seeds must be unique, got {list(seeds)}")
-        epochs = _plain_int(entry.get("max_epochs"), f"arm {arm_id}: max_epochs", minimum=1)
-        arms[arm_id] = V6ArmPlan(seeds=seeds, max_epochs=epochs)
+        arms[arm_id] = V6ArmPlan(seeds=seeds)
+    max_epochs = _plain_int(raw.get("max_epochs"), "max_epochs", minimum=1)
+    if lr_schedule == "cosine" and max_epochs <= _COSINE_WARMUP_EPOCHS:
+        raise ValueError(
+            f"lr_schedule cosine needs max_epochs > {_COSINE_WARMUP_EPOCHS} (the pinned warmup), "
+            f"got {max_epochs}"
+        )
+    early_stopping = raw.get("early_stopping", False)
+    if not isinstance(early_stopping, bool):
+        raise ValueError(f"early_stopping must be a bool, got {early_stopping!r}")
+    patch_cache = raw.get("patch_cache", "job_local")
+    if patch_cache not in _PATCH_CACHES:
+        raise ValueError(f"patch_cache must be one of {_PATCH_CACHES}, got {patch_cache!r}")
     return V6Matrix(
         arms=arms,
+        max_epochs=max_epochs,
         hours_per_epoch_estimate=_positive_float(
             raw.get("hours_per_epoch_estimate"), "hours_per_epoch_estimate"
         ),
@@ -112,6 +131,8 @@ def parse_v6_matrix(raw: object) -> V6Matrix:
         ),
         usd_per_hour=_positive_float(raw.get("usd_per_hour"), "usd_per_hour"),
         lr_schedule=lr_schedule,
+        early_stopping=early_stopping,
+        patch_cache=patch_cache,
     )
 
 
@@ -127,7 +148,13 @@ def plan_runs(matrix: V6Matrix) -> list[PlannedRun]:
     """Expand the matrix into one planned run per (arm, seed)."""
     return [
         PlannedRun(
-            arm_id, V6_ABLATION_ARMS[arm_id].config_name, seed, plan.max_epochs, matrix.lr_schedule
+            arm_id,
+            V6_ABLATION_ARMS[arm_id].config_name,
+            seed,
+            matrix.max_epochs,
+            matrix.lr_schedule,
+            matrix.early_stopping,
+            matrix.patch_cache,
         )
         for arm_id, plan in matrix.arms.items()
         for seed in plan.seeds
