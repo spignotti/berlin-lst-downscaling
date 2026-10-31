@@ -511,9 +511,11 @@ def _score_test_once(
 
     A test-only streamed data module reads the full published test split and
     scores it through the same nested 10x10 pooling and cell-weighted masked MAE
-    used for validation. Callers invoke this only after the best checkpoint and
-    its validation reload have succeeded, so the test set cannot influence
-    checkpoint choice. The read scope is retained as ``test_scope.json``.
+    used for validation. ``mae_100m``, its sums and ``test_report`` pool the clamped
+    rows of the test export; ``mae_100m_unclamped`` is the raw MaskedMAE diagnostic.
+    Callers invoke this only after the best checkpoint and its validation reload
+    have succeeded, so the test set cannot influence checkpoint choice. The read
+    scope is retained as ``test_scope.json``.
     """
     selection = selection_from_config(cfg)
     test_module = RealPatchDataModule(
@@ -568,11 +570,14 @@ def _score_test_once(
         ssim_range=ssim_range,
     )
 
+    report = report_metrics(patch_rows)
     patches = scope.get("patches_per_split", {})
     return {
-        "mae_100m": float(metric.compute()),
-        "abs_error_sum": float(metric.abs_error_sum),
-        "valid_cells": float(metric.valid_cells),
+        "mae_100m": report["mae_100m"],
+        "mae_100m_unclamped": float(metric.compute()),
+        "test_report": report,
+        "abs_error_sum": report["abs_error_sum"],
+        "valid_cells": report["valid_cells"],
         "patches": int(patches.get("test", 0)) if isinstance(patches, dict) else 0,
         "scope_uri": str(output_root / "test_scope.json"),
     }

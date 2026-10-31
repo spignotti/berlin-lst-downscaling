@@ -64,7 +64,7 @@ def export_table(
     for pid, scene, date, cells, wins in patches:
         mae, ssim = fn(arm, seed, int(scene[5:]), (pid, scene, date, cells, wins))
         row = {
-            "schema_version": 1,
+            "schema_version": 2,
             "arm": arm,
             "seed": seed,
             "run_id": rid,
@@ -88,7 +88,7 @@ def write_export(path: Path, table: pa.Table, *, footer_split: str | None = None
     first = {
         n: table.column(n)[0].as_py() for n in ("arm", "seed", "run_id", "checkpoint", "split")
     }
-    footer = {"schema_version": 1, **first}
+    footer = {"schema_version": 2, "prediction_clamp_k": [150.0, 400.0], **first}
     if footer_split is not None:
         footer["split"] = footer_split
     pq.write_table(
@@ -533,6 +533,46 @@ def test_footer_split_mismatch_rejected_before_reading_table(
         sb.load_patch_exports([path], split="validation")
 
 
+def test_old_schema_or_missing_clamp_rejected(tmp_path: Path, world: list[Patch]) -> None:
+    t = export_table("A", 0, "validation", world, flat(1.0))
+    first = {n: t.column(n)[0].as_py() for n in ("arm", "seed", "run_id", "checkpoint", "split")}
+    v1_rows = t.set_column(
+        t.schema.get_field_index("schema_version"),
+        "schema_version",
+        pa.array([1] * t.num_rows, pa.int32()),
+    )
+    cases = {
+        "old_version": (v1_rows, {"schema_version": 1, **first}, "schema_version"),
+        "old_version_with_clamp": (
+            v1_rows,
+            {"schema_version": 1, "prediction_clamp_k": [150.0, 400.0], **first},
+            "schema_version",
+        ),
+        "missing_clamp": (t, {"schema_version": 2, **first}, "prediction_clamp_k"),
+        "other_clamp": (
+            t,
+            {"schema_version": 2, "prediction_clamp_k": [0.0, 500.0], **first},
+            "prediction_clamp_k",
+        ),
+    }
+    good = write_export(tmp_path / "good.parquet", t)
+    for name, (table, footer, match) in cases.items():
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(
+            table.replace_schema_metadata({b"patch_export": json.dumps(footer).encode()}), path
+        )
+        with pytest.raises(sb.SceneBootstrapError, match=match):
+            sb.load_patch_exports([path], split="validation")
+        with pytest.raises(sb.SceneBootstrapError, match=match):
+            sb.load_patch_exports([good, path], split="validation")
+
+
+def test_bootstrap_clamp_matches_eval_clamp() -> None:
+    from berlin_lst_downscaling.modeling.metrics import EVAL_PREDICTION_CLAMP_K
+
+    assert sb.PREDICTION_CLAMP_K == EVAL_PREDICTION_CLAMP_K
+
+
 def test_footer_row_disagreement_rejected(tmp_path: Path, world: list[Patch]) -> None:
     t = export_table("A", 0, "validation", world, flat(1.0))
     arm_col = pa.array(["A"] * (t.num_rows - 1) + ["Z"])
@@ -567,7 +607,7 @@ def test_json_and_markdown_outputs(tmp_path: Path, world: list[Patch]) -> None:
     jp, mp = sb.write_outputs(res, tmp_path / "nested" / "out")
     assert jp.name == "out.json" and mp.name == "out.md"
     data = json.loads(jp.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["split"] == "validation"
     assert data["direction"] == "lower_is_better"
     assert data["retained_scenes"] == 19

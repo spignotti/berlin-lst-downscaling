@@ -8,7 +8,8 @@ data range of the committed artifact (its provenance is written to the footer);
 appendix comparison value to stages 1-4, which used that range. It uses the same
 fully-valid windows as ``ssim_100m``. ``ssim_100m_Lpatch`` (per-patch target
 range) is a diagnostic column. All predictions are clamped once by
-``clamp_eval_prediction`` before scoring. The export is a pure sidecar: it
+``clamp_eval_prediction`` before scoring; the footer records that range as
+``prediction_clamp_k`` (schema_version 2). The export is a pure sidecar: it
 never changes a metric, a checkpoint choice, or a report field.
 
 Importing this module does not import torch or the training orchestration;
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     from berlin_lst_downscaling.modeling.contracts import RealSampleMeta
     from berlin_lst_downscaling.modeling.ssim_range import SsimDataRange
 
-PATCH_EXPORT_SCHEMA_VERSION = 1
+PATCH_EXPORT_SCHEMA_VERSION = 2
 PATCH_EXPORT_METADATA_KEY = b"patch_export"
 
 PATCH_EXPORT_SCHEMA: pa.Schema = pa.schema(
@@ -371,6 +372,8 @@ def write_patch_export(
         )
     rows.sort(key=lambda row: (str(row["scene_id"]), str(row["patch_id"])))
 
+    from berlin_lst_downscaling.modeling.metrics import EVAL_PREDICTION_CLAMP_K
+
     footer = json.dumps(
         {
             "schema_version": PATCH_EXPORT_SCHEMA_VERSION,
@@ -380,6 +383,7 @@ def write_patch_export(
             "run_id": identity.run_id,
             "checkpoint": identity.checkpoint,
             "ssim_data_range": ssim_range.payload(),
+            "prediction_clamp_k": [float(v) for v in EVAL_PREDICTION_CLAMP_K],
         },
         sort_keys=True,
     ).encode("utf-8")

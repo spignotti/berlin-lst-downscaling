@@ -36,6 +36,7 @@ from berlin_lst_downscaling.modeling.evaluation_exports import (
     write_patch_export,
 )
 from berlin_lst_downscaling.modeling.metrics import (
+    EVAL_PREDICTION_CLAMP_K,
     SSIM_LEGACY_DATA_RANGE_K,
     masked_abs_error_sums,
     masked_ssim_stats,
@@ -139,14 +140,16 @@ def test_schema_and_identity_round_trip(tmp_path: Path) -> None:
     assert set(table.column("schema_version").to_pylist()) == {PATCH_EXPORT_SCHEMA_VERSION}
     footer = json.loads(pq.read_schema(path).metadata[PATCH_EXPORT_METADATA_KEY])
     assert footer == {
-        "schema_version": 1,
+        "schema_version": 2,
         "split": "validation",
         "arm": "L3",
         "seed": 7,
         "run_id": "r1",
         "checkpoint": "ckpt/a.ckpt",
         "ssim_data_range": _RANGE.payload(),
+        "prediction_clamp_k": [150.0, 400.0],
     }
+    assert footer["prediction_clamp_k"] == list(EVAL_PREDICTION_CLAMP_K)
     assert table.column("ssim_100m").to_pylist() == [0.75, 0.75, 0.75]
     assert table.column("ssim_100m_L250").to_pylist() == [0.7] * 3
     assert table.column("ssim_windows_Lpatch").to_pylist() == [4] * 3

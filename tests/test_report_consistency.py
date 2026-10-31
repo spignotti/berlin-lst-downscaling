@@ -144,3 +144,95 @@ def test_rf_score_stage_clamps_prediction(tmp_path, monkeypatch: pytest.MonkeyPa
     )
     assert records[0].valid_cells == 256
     assert records[0].abs_error_sum == pytest.approx(100.0 * 256)
+
+
+def test_score_test_once_reports_clamped_mae_matching_export(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Synthetic stand-in data module: no test-split data is read."""
+    import pyarrow.parquet as pq
+    import torch
+    from omegaconf import OmegaConf
+
+    from berlin_lst_downscaling.modeling import run as run_module
+    from berlin_lst_downscaling.modeling.contracts import (
+        REAL_PATCH_CELLS,
+        REAL_PATCH_PX,
+        RealSampleMeta,
+    )
+    from berlin_lst_downscaling.modeling.evaluation_exports import (
+        EvaluationIdentity,
+        patch_export_filename,
+    )
+
+    cells, px = REAL_PATCH_CELLS, REAL_PATCH_PX
+    batch = SimpleNamespace(
+        features=torch.zeros(2, 2, px, px),
+        target_100m=torch.full((2, 1, cells, cells), 300.0),
+        mask_100m=torch.ones(2, 1, cells, cells, dtype=torch.bool),
+        metadata=[
+            RealSampleMeta(
+                patch_id=f"P{i}",
+                scene_id="S1",
+                split="test",
+                year=2025,
+                row=0,
+                col=i,
+                filled_feature_pixels=0,
+            )
+            for i in range(2)
+        ],
+    )
+    # Patch 0 is inside the clamp (|290 - 300| = 10); patch 1 (600 K) clamps to 400 K.
+    prediction = torch.stack([torch.full((1, px, px), 290.0), torch.full((1, px, px), 600.0)])
+    created: list[dict[str, object]] = []
+
+    class _FakeModule:
+        def __init__(self, _source: object, **kwargs: object) -> None:
+            created.append(kwargs)
+
+        def setup(self) -> None:
+            pass
+
+        def stats(self) -> dict[str, object]:
+            return {"patches_per_split": {"test": 2}}
+
+        def test_dataloader(self) -> list[SimpleNamespace]:
+            return [batch]
+
+    class _Reloaded:
+        n_active_channels = 2
+
+        def __call__(self, _batch: object) -> torch.Tensor:
+            return prediction
+
+    monkeypatch.setattr(run_module, "RealPatchDataModule", _FakeModule)
+    monkeypatch.setattr(
+        run_module, "selection_from_config", lambda _cfg: SimpleNamespace(n_active=2, indices=None)
+    )
+    monkeypatch.setattr(run_module, "validate_real_batch", lambda *_a, **_k: None)
+    cfg = OmegaConf.create({"data": {"batch_size": 2}, "seed": 0})
+
+    result = run_module._score_test_once(
+        cfg,
+        SimpleNamespace(),  # type: ignore[arg-type]
+        _Reloaded(),  # type: ignore[arg-type]
+        tmp_path,
+        export_identity=EvaluationIdentity(arm="L5", seed=0, run_id="r", checkpoint="c"),
+        ssim_range=test_override_ssim_data_range(30.0),
+    )
+
+    assert created and created[0]["splits"] == ("test",)
+    assert result["mae_100m"] == pytest.approx((10.0 + 100.0) / 2)
+    assert result["mae_100m_unclamped"] == pytest.approx((10.0 + 300.0) / 2)
+    assert result["mae_100m"] != pytest.approx(result["mae_100m_unclamped"])
+    table = pq.read_table(tmp_path / patch_export_filename("test"))
+    pooled = sum(table.column("abs_error_sum").to_pylist()) / sum(
+        table.column("valid_cells").to_pylist()
+    )
+    assert result["mae_100m"] == pytest.approx(pooled)
+    report = result["test_report"]
+    assert isinstance(report, dict)
+    assert set(REPORT_SSIM_KEYS) <= set(report)
+    assert report["mae_100m"] == result["mae_100m"]
+    assert report == pytest.approx(report_metrics(table.to_pylist()))

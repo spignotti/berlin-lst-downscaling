@@ -1,6 +1,6 @@
 """Paired scene cluster bootstrap for ablation arm comparisons.
 
-Inputs are per-patch export Parquet files (schema_version 1), one file per run
+Inputs are per-patch export Parquet files (schema_version 2), one file per run
 (arm, seed, run_id) and split. Patch sums are pooled within scenes, averaged
 over three seeds per arm, differenced per scene (A - B), and the scene is the
 only resampling unit. A single-run reference arm (the deterministic baseline
@@ -31,8 +31,11 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FOOTER_KEY = b"patch_export"
+# modeling.metrics.EVAL_PREDICTION_CLAMP_K, kept literal so this module needs no modeling
+# import. Older exports (schema_version 1) were scored without it and are refused.
+PREDICTION_CLAMP_K: tuple[float, float] = (150.0, 400.0)
 SEEDS: tuple[int, ...] = (0, 1, 2)
 _BATCH_INDICES = 1_000_000
 # Arm labels of the single-run reference models (modeling.baseline.METHOD and the
@@ -235,7 +238,7 @@ def _validate_table(path: Path, table: pa.Table, footer: dict[str, Any], split: 
         if not check(table.schema.field(name).type):
             raise SceneBootstrapError(
                 f"{path}: column {name!r} has type {table.schema.field(name).type}, "
-                "which violates schema_version 1"
+                f"which violates schema_version {SCHEMA_VERSION}"
             )
     if table.num_rows == 0:
         raise SceneBootstrapError(f"{path}: export has no rows")
@@ -332,6 +335,12 @@ def load_patch_exports(paths: Sequence[Path], *, split: str) -> pa.Table:
             raise SceneBootstrapError(
                 f"{path}: footer schema_version {footer.get('schema_version')!r} "
                 f"!= {SCHEMA_VERSION}"
+            )
+        clamp = footer.get("prediction_clamp_k")
+        if not isinstance(clamp, list) or clamp != list(PREDICTION_CLAMP_K):
+            raise SceneBootstrapError(
+                f"{path}: footer prediction_clamp_k {clamp!r} != {list(PREDICTION_CLAMP_K)}; "
+                "only exports scored with the shared evaluation clamp can be compared"
             )
         if footer.get("split") != split:
             raise SceneBootstrapError(

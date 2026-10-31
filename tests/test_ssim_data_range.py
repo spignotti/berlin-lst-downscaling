@@ -281,6 +281,16 @@ def test_load_rejects_missing_years(tmp_path: Path) -> None:
         load_ssim_data_range(path)
 
 
+def test_load_rejects_version_stem_mismatch(tmp_path: Path) -> None:
+    for name, version in (("v2.yaml", "v1"), ("latest.yaml", "v1"), ("v1.yaml", None)):
+        payload = _filled_payload()
+        payload["version"] = version
+        path = tmp_path / name
+        path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+        with pytest.raises(RuntimeError, match="file stem"):
+            load_ssim_data_range(path)
+
+
 def test_load_rejects_inconsistent_artifact(tmp_path: Path) -> None:
     payload = _filled_payload()
     for key, value in (
@@ -920,7 +930,7 @@ def test_next_artifact_version(tmp_path: Path) -> None:
 
 def test_committed_artifact_version_and_fingerprints() -> None:
     doc = yaml.safe_load(_COMMITTED.read_text(encoding="utf-8"))
-    assert doc["version"] == "v1" == ssim_range.SSIM_RANGE_ARTIFACT_VERSION
+    assert doc["version"] == "v1" == _COMMITTED.stem
     assert _COMMITTED == ssim_range.SSIM_DATA_RANGE_DIR / "v1.yaml"
     fp = doc["patch_index_fingerprints"]
     assert fp["index_policy_hash"] and fp["source_policy_hash"]

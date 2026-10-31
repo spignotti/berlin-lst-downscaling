@@ -55,7 +55,7 @@ def _filled_ssim_artifact(tmp_path_factory, monkeypatch):  # noqa: ANN001, ANN20
     ``ssim_range.SSIM_DATA_RANGE_ARTIFACT`` to the real path.
     """
     path = write_filled_ssim_artifact(
-        tmp_path_factory.mktemp("ssim_artifact") / "ssim_data_range_test.yaml"
+        tmp_path_factory.mktemp("ssim_artifact") / "v1.yaml"
     )
     monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", path)
     return path

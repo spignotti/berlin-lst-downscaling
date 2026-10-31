@@ -34,7 +34,6 @@ SSIM_RANGE_P_HIGH: float = 99.5
 SSIM_RANGE_PERCENTILE_METHOD: str = "linear"
 SSIM_RANGE_SPLIT: str = "train"
 SSIM_RANGE_TRAIN_YEARS: tuple[int, ...] = tuple(range(2017, 2024))
-SSIM_RANGE_ARTIFACT_VERSION: str = "v1"
 SSIM_DATA_RANGE_DIR: Path = (
     Path(__file__).resolve().parents[3] / "configs" / "modeling" / "ssim_data_range"
 )
@@ -313,6 +312,11 @@ def load_ssim_data_range(
         raise RuntimeError(f"SSIM low_k/high_k {low!r}/{high!r} are not finite numbers")
     if abs((high - low) - data_range) > _TOLERANCE_K:
         raise RuntimeError(f"SSIM data_range_k {data_range!r} != high_k - low_k ({high - low!r})")
+    if doc.get("version") != artifact.stem:
+        raise RuntimeError(
+            f"SSIM data-range artifact {artifact} declares version {doc.get('version')!r}, "
+            f"which differs from its file stem {artifact.stem!r}"
+        )
     fingerprints = doc.get("patch_index_fingerprints")
     fp = fingerprints if isinstance(fingerprints, dict) else {}
     if expected_fingerprints is not None:
@@ -507,7 +511,6 @@ def write_artifact(payload: dict[str, Any], path: Path | str) -> Path:
 __all__ = [
     "SSIM_DATA_RANGE_ARTIFACT",
     "SSIM_DATA_RANGE_DIR",
-    "SSIM_RANGE_ARTIFACT_VERSION",
     "SSIM_RANGE_DERIVATION_COMMAND",
     "SSIM_RANGE_DERIVATION_SCRIPT",
     "SSIM_RANGE_PERCENTILE_METHOD",
