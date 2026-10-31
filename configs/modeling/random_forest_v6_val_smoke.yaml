@@ -1,0 +1,11 @@
+# @package _global_
+# Random-forest v6 residual baseline smoke, validation-only: the bounded
+# random_forest_v6_smoke subset scored on validation 2024 only. The test split
+# (2025) is never requested or read.
+defaults:
+  - random_forest_v6_smoke
+  - _self_
+
+splits: ["validation"]           # val-only: test 2025 stays closed
+
+output_root: "data/smoke/random-forest-v6-notest"

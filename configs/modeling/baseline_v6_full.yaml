@@ -1,4 +1,6 @@
 # @package _global_
+# WARNING: this config OPENS TEST 2025 (splits train + validation + test). Do not run it
+# before the v6 ablation matrix is frozen; use baseline_v6_val instead.
 # Naive prior-expand baseline on the v3 data chain (training/v3, features/v6), full run: every indexed patch of the requested
 # splits. Explicit, expensive invocation — not run by CI.
 #

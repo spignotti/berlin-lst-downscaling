@@ -1,0 +1,12 @@
+# @package _global_
+# Naive prior-expand baseline on the v3 data chain, validation-only: every
+# indexed train and validation 2024 patch. The test split (2025) is never
+# requested, so no test patch ref is loaded. Use this variant until the v6
+# ablation matrix is frozen.
+defaults:
+  - baseline_v6_full
+  - _self_
+
+splits: ["train", "validation"]   # val-only: test 2025 stays closed
+
+output_root: "data/runs/baseline-real-v6-notest"

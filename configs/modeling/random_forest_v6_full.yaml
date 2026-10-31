@@ -1,4 +1,6 @@
 # @package _global_
+# WARNING: this config OPENS TEST 2025 (splits validation + test). Do not run it
+# before the v6 ablation matrix is frozen; use random_forest_v6_val_full instead.
 # RF v6: one forest per v6 ladder set L1-L4 (10 / 16 / 18 / 22 channels) from the v6
 # arm registry, on the v3 data chain (training/v3, features/v6, feature schema 5).
 # Protocol constants are identical to random_forest_full.yaml.
