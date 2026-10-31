@@ -53,7 +53,7 @@ def _stub_patch_index_fingerprints(
     write_ssim_artifact,  # noqa: ANN001
 ) -> None:
     artifact = write_ssim_artifact(
-        tmp_path_factory.mktemp("ssim_stub") / "ssim.yaml", fingerprints=_STUB_FINGERPRINTS
+        tmp_path_factory.mktemp("ssim_stub") / "v1.yaml", fingerprints=_STUB_FINGERPRINTS
     )
     monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", artifact)
 
