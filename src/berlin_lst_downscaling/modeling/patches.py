@@ -670,6 +670,20 @@ class RealPatchReader:
         self._landsat_queried: set[str] = set()
         self._priors: dict[str, ScenePrior] = {}
 
+    def copy_for_reads(self) -> RealPatchReader:
+        """Return an independent reader sharing the scaler and resolved scene state.
+
+        The copy reuses the already-resolved ledger URIs and scene priors, so it
+        issues no ledger or prior reads for admitted scenes. Mutable containers
+        are copied; ``ScenePrior`` objects are read-only and shared. Exclusions
+        start empty.
+        """
+        clone = RealPatchReader(self.cfg, analysis_10=self.analysis_10, scaler=self.scaler)
+        clone._landsat = dict(self._landsat)
+        clone._landsat_queried = set(self._landsat_queried)
+        clone._priors = dict(self._priors)
+        return clone
+
     # ── scene resolution (cached) ─────────────────────────────────────
 
     @property

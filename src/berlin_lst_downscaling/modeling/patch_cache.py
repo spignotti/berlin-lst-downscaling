@@ -4,20 +4,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
-from collections.abc import Iterable
+import tempfile
+import time
+from collections import deque
+from collections.abc import Callable, Generator, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
+from rasterio.errors import RasterioIOError
 
+from berlin_lst_downscaling.data.io import log_event
 from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
     RealSampleMeta,
 )
 from berlin_lst_downscaling.modeling.patches import RealSample
+
+logger = logging.getLogger(__name__)
+
+CACHE_READ_WORKERS_MAX = 4
+READ_MAX_ATTEMPTS = 3
+READ_BACKOFF_SECONDS = (0.5, 1.0)
+_RETRYABLE_READ_ERRORS = (RasterioIOError, TimeoutError, ConnectionError)
 
 _ARRAYS = {
     "features": ("features.npy", np.dtype("float32")),
@@ -52,6 +66,93 @@ def estimate_cache_bytes(count: int, channels: int) -> int:
         + REAL_PATCH_CELLS * REAL_PATCH_CELLS
     )
     return n * per_sample + len(_ARRAYS) * 8192 + n * 2048
+
+
+def validate_read_workers(max_workers: object) -> int:
+    if (
+        not isinstance(max_workers, int)
+        or isinstance(max_workers, bool)
+        or not 1 <= max_workers <= CACHE_READ_WORKERS_MAX
+    ):
+        raise ValueError(
+            f"max_workers must be an int in [1, {CACHE_READ_WORKERS_MAX}], got {max_workers!r}"
+        )
+    return max_workers
+
+
+def ordered_bounded_map[T, R](
+    function: Callable[[T], R], items: Iterable[T], *, max_workers: int
+) -> Generator[R, None, None]:
+    """Apply ``function`` to ``items`` on up to ``max_workers`` threads, yielding in input order.
+
+    At most ``2 * max_workers`` results are submitted but not yet consumed, so
+    the input is consumed lazily. A failure or early close cancels pending work
+    and shuts the pool down. One worker runs inline without threads.
+    """
+    workers = validate_read_workers(max_workers)
+    if workers == 1:
+        for item in items:
+            yield function(item)
+        return
+    pending: deque[Future[R]] = deque()
+    source = iter(items)
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="patch-read")
+    try:
+        exhausted = False
+        while True:
+            while not exhausted and len(pending) < 2 * workers:
+                try:
+                    item = next(source)
+                except StopIteration:
+                    exhausted = True
+                    break
+                pending.append(executor.submit(function, item))
+            if not pending:
+                return
+            yield pending.popleft().result()
+    finally:
+        for future in pending:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def read_with_retry[T](
+    read: Callable[[], T | None],
+    *,
+    patch_id: str,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Call ``read`` with bounded retries for transient I/O errors only.
+
+    Retries ``RasterioIOError``, ``TimeoutError`` and ``ConnectionError`` (at
+    most ``READ_MAX_ATTEMPTS`` attempts, fixed backoff). Any other exception
+    propagates unchanged; a ``None`` result for an admitted patch raises.
+    """
+    for attempt in range(1, READ_MAX_ATTEMPTS + 1):
+        try:
+            result = read()
+        except _RETRYABLE_READ_ERRORS as exc:
+            if attempt == READ_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"admitted patch {patch_id} unreadable after {attempt} attempts: {exc}"
+                ) from exc
+            delay = READ_BACKOFF_SECONDS[attempt - 1]
+            log_event(
+                logger,
+                logging.WARNING,
+                "patch_read_retry",
+                patch_id=patch_id,
+                attempt=attempt,
+                max_attempts=READ_MAX_ATTEMPTS,
+                delay_seconds=delay,
+                error=repr(exc),
+            )
+            sleep(delay)
+            continue
+        if result is None:
+            raise RuntimeError(f"admitted patch became unreadable: {patch_id}")
+        return result
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 class PatchCache:
@@ -91,7 +192,7 @@ class PatchCache:
             for row, patch_id in zip(self._metadata, self.patch_ids, strict=True)
         ):
             raise RuntimeError("patch cache metadata order differs from its patch-ID list")
-        self.arrays: dict[str, np.ndarray] = {}
+        self.arrays: dict[str, np.memmap] = {}
         shape_specs = {
             "features": _feature_shape(len(self.patch_ids), active_channels),
             "prior": (len(self.patch_ids), 1, REAL_PATCH_PX, REAL_PATCH_PX),
@@ -197,34 +298,77 @@ def build_patch_cache(
     if available < estimate:
         raise OSError(f"cache needs an estimated {estimate} bytes but only {available} are free")
 
-    root.mkdir(parents=True, exist_ok=False)
+    staging = Path(tempfile.mkdtemp(dir=root.parent, prefix=f".{root.name}.staging-"))
+    arrays: dict[str, np.memmap] = {}
+    try:
+        manifest = _write_staged_cache(
+            staging,
+            samples,
+            arrays=arrays,
+            patch_ids=patch_ids,
+            active_channels=active_channels,
+            source_channels=source_channels,
+            provenance=provenance,
+            max_bytes=max_bytes,
+            indices=indices,
+            index_array=index_array,
+            estimate=estimate,
+        )
+        if root.exists():
+            raise FileExistsError(f"cache root appeared during the build: {root}")
+        os.rename(staging, root)
+        PatchCache(root, provenance)
+    except BaseException:
+        arrays.clear()
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return manifest
+
+
+def _write_staged_cache(
+    root: Path,
+    samples: Iterable[RealSample],
+    *,
+    arrays: dict[str, np.memmap],
+    patch_ids: list[str],
+    active_channels: int,
+    source_channels: int,
+    provenance: dict[str, object],
+    max_bytes: int,
+    indices: tuple[int, ...],
+    index_array: np.ndarray,
+    estimate: int,
+) -> dict[str, object]:
+    """Write arrays then the manifest into ``root`` and validate it by reopening."""
     count = len(patch_ids)
-    arrays = {
-        "features": np.lib.format.open_memmap(
-            root / _ARRAYS["features"][0],
-            mode="w+",
-            dtype="float32",
-            shape=_feature_shape(count, active_channels),
-        ),
-        "prior": np.lib.format.open_memmap(
-            root / _ARRAYS["prior"][0],
-            mode="w+",
-            dtype="float32",
-            shape=(count, 1, REAL_PATCH_PX, REAL_PATCH_PX),
-        ),
-        "target": np.lib.format.open_memmap(
-            root / _ARRAYS["target"][0],
-            mode="w+",
-            dtype="float32",
-            shape=(count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
-        ),
-        "mask": np.lib.format.open_memmap(
-            root / _ARRAYS["mask"][0],
-            mode="w+",
-            dtype="bool",
-            shape=(count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
-        ),
-    }
+    arrays.update(
+        {
+            "features": np.lib.format.open_memmap(
+                root / _ARRAYS["features"][0],
+                mode="w+",
+                dtype="float32",
+                shape=_feature_shape(count, active_channels),
+            ),
+            "prior": np.lib.format.open_memmap(
+                root / _ARRAYS["prior"][0],
+                mode="w+",
+                dtype="float32",
+                shape=(count, 1, REAL_PATCH_PX, REAL_PATCH_PX),
+            ),
+            "target": np.lib.format.open_memmap(
+                root / _ARRAYS["target"][0],
+                mode="w+",
+                dtype="float32",
+                shape=(count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
+            ),
+            "mask": np.lib.format.open_memmap(
+                root / _ARRAYS["mask"][0],
+                mode="w+",
+                dtype="bool",
+                shape=(count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
+            ),
+        }
+    )
     metadata: list[dict[str, object]] = []
     iterator = iter(samples)
     for index, expected_id in enumerate(patch_ids):
@@ -278,7 +422,7 @@ def build_patch_cache(
 
     for array in arrays.values():
         array.flush()
-    del arrays
+    arrays.clear()
 
     shapes = {
         "features": list(_feature_shape(count, active_channels)),

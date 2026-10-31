@@ -5,13 +5,17 @@ GCS-free. Verifies each locked cumulative stage and each isolation profile
 resolves, passes the ablation lock, selects the expected V3 channel subset
 (including non-prefix shadow sets), and that :class:`RealLSTTask` accepts a
 batch under that width and loss. Also checks the v6 ablation arms and the v6 run
-matrix (offline). Exit 0 on GO.
+matrix (offline). Each v6 arm runs a CPU forward/loss check on synthetic train and
+validation batches through the uncached collation path, the job-local patch cache
+built with bounded ordered reads, or both (``--cache-mode``). Exit 0 on GO.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +40,7 @@ from berlin_lst_downscaling.modeling.contracts import (
 )
 from berlin_lst_downscaling.modeling.guards import (
     assert_ablation_lock,
+    cache_build_workers_from_config,
     contract_invariants,
     guard_modeling_config,
 )
@@ -43,6 +48,11 @@ from berlin_lst_downscaling.modeling.metrics import (
     masked_l1_loss,
     pool_10m_to_100m,
     thermal_aware_loss,
+)
+from berlin_lst_downscaling.modeling.patch_cache import (
+    PatchCache,
+    build_patch_cache,
+    ordered_bounded_map,
 )
 from berlin_lst_downscaling.modeling.patches import RealSample, collate_real_batch
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask
@@ -55,6 +65,8 @@ from berlin_lst_downscaling.modeling.v6_ablation_matrix import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = str(_REPO_ROOT / "configs" / "modeling")
 _MATRIX_PATH = _REPO_ROOT / "configs" / "ablation" / "v6_matrix.yaml"
+_V6_SOURCE_CHANNELS = 22
+_CACHE_MODES = ("both", "off", "on")
 # Wiring-only SSIM data range on fake tensors; the production L comes from the committed artifact.
 _WIRING_SSIM_RANGE_K = 40.0
 
@@ -202,7 +214,7 @@ def _guard_v6(cfg, config_name: str) -> None:
     assert_ablation_lock(cfg)
 
 
-def _check_v6_arm(arm_id: str) -> list[str]:
+def _check_v6_arm(arm_id: str, cache_mode: str = "both") -> list[str]:
     arm = V6_ABLATION_ARMS[arm_id]
     name = arm.config_name
     cfg = _compose(name)
@@ -234,13 +246,6 @@ def _check_v6_arm(arm_id: str) -> list[str]:
         failures.append(f"{name}: feature order is not {expected_order}")
     if str(cfg.contract.feature_order) != expected_order:
         failures.append(f"{name}: contract.feature_order is not {expected_order}")
-    batch = collate_real_batch(
-        [_fake_sample(n_channels=22), _fake_sample("smoke:1", n_channels=22)],
-        n_active_channels=selection.n_active,
-        channel_indices=selection.indices,
-    )
-    if tuple(batch.features.shape) != (2, selection.n_active, REAL_PATCH_PX, REAL_PATCH_PX):
-        failures.append(f"{name}: collated feature shape {tuple(batch.features.shape)}")
     task = RealLSTTask(
         n_active_channels=selection.n_active,
         base_width=32,
@@ -250,17 +255,95 @@ def _check_v6_arm(arm_id: str) -> list[str]:
         ssim_data_range_k=_WIRING_SSIM_RANGE_K,
     )
     task.eval()
+    splits = {split: _v6_split_samples(split) for split in ("train", "validation")}
+    for split, samples in splits.items():
+        uncached = collate_real_batch(
+            samples, n_active_channels=selection.n_active, channel_indices=selection.indices
+        )
+        batches = {"uncached": uncached} if cache_mode in ("both", "off") else {}
+        if cache_mode in ("both", "on"):
+            cached = _cached_batch(cfg, samples, selection.n_active, selection.indices)
+            for key in ("features", "lst_prior", "target_100m", "mask_100m"):
+                if not _identical(getattr(cached, key), getattr(uncached, key)):
+                    failures.append(f"{name} {split}: cached {key} differs from uncached")
+            if [m.patch_id for m in cached.metadata] != [m.patch_id for m in uncached.metadata]:
+                failures.append(f"{name} {split}: cached patch order differs from uncached")
+            batches["cached"] = cached
+        for path, batch in batches.items():
+            failures.extend(
+                _v6_forward_failures(
+                    name, f"{split}/{path}", task, arm.loss, batch, selection.n_active
+                )
+            )
+    return failures
+
+
+def _identical(left: torch.Tensor, right: torch.Tensor) -> bool:
+    if left.dtype != right.dtype or left.shape != right.shape:
+        return False
+    if not left.is_floating_point():
+        return torch.equal(left, right)
+    return torch.equal(left.isnan(), right.isnan()) and torch.equal(
+        left.nan_to_num(), right.nan_to_num()
+    )
+
+
+def _v6_split_samples(split: str) -> list[RealSample]:
+    year = 2018 if split == "train" else 2024
+    samples = []
+    for i in range(3):
+        sample = _fake_sample(f"smoke:{split}:{i}", n_channels=_V6_SOURCE_CHANNELS)
+        sample.features[i % _V6_SOURCE_CHANNELS] += float(i + 1)
+        samples.append(replace(sample, meta=replace(sample.meta, split=split, year=year)))
+    return samples
+
+
+def _cached_batch(
+    cfg, samples: list[RealSample], n_active: int, indices: tuple[int, ...]
+) -> RealBatch:
+    provenance: dict[str, object] = {
+        "channel_order": [f"c{i}" for i in indices],
+        "channel_indices": list(indices),
+        "source_channels": _V6_SOURCE_CHANNELS,
+    }
+    with tempfile.TemporaryDirectory(prefix="ablation-cache-") as tmp:
+        root = Path(tmp) / "cache"
+        build_patch_cache(
+            root,
+            ordered_bounded_map(
+                lambda s: s, samples, max_workers=cache_build_workers_from_config(cfg)
+            ),
+            patch_ids=[s.meta.patch_id for s in samples],
+            active_channels=n_active,
+            source_channels=_V6_SOURCE_CHANNELS,
+            provenance=provenance,
+            max_bytes=int(cfg.data.cache_max_bytes),
+            channel_indices=indices,
+        )
+        cache = PatchCache(root, provenance)
+        batch = collate_real_batch(
+            [cache[i] for i in range(len(cache))], n_active_channels=n_active
+        )
+        del cache
+    return batch
+
+
+def _v6_forward_failures(
+    name: str, label: str, task: RealLSTTask, loss_name: str, batch: RealBatch, n_active: int
+) -> list[str]:
+    if tuple(batch.features.shape) != (len(batch.metadata), n_active, REAL_PATCH_PX, REAL_PATCH_PX):
+        return [f"{name} {label}: collated feature shape {tuple(batch.features.shape)}"]
     with torch.inference_mode():
         pooled = pool_10m_to_100m(task(batch))
-        if arm.loss == "thermal_aware":
+        if loss_name == "thermal_aware":
             loss = thermal_aware_loss(
                 pooled, batch.target_100m, batch.mask_100m, data_range_k=_WIRING_SSIM_RANGE_K
             )
         else:
             loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
     if not torch.isfinite(loss):
-        failures.append(f"{name}: non-finite {arm.loss} loss")
-    return failures
+        return [f"{name} {label}: non-finite {loss_name} loss"]
+    return []
 
 
 def _check_v6_matrix() -> tuple[list[str], str]:
@@ -303,14 +386,23 @@ def _check_v6_matrix() -> tuple[list[str], str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--cache-mode",
+        choices=_CACHE_MODES,
+        default="both",
+        help="v6 arm data path to exercise: uncached collation, the patch cache, or both",
+    )
+    args = parser.parse_args(argv)
 
     failures: list[str] = []
     for config_name in ABLATION_LOCKED_CONFIG_NAMES:
         failures.extend(_check_stage(config_name))
 
-    for arm_id in V6_ABLATION_ARMS:
-        failures.extend(_check_v6_arm(arm_id))
+    for arm_id, arm in V6_ABLATION_ARMS.items():
+        arm_failures = _check_v6_arm(arm_id, args.cache_mode)
+        failures.extend(arm_failures)
+        status = "FAIL" if arm_failures else "PASS"
+        print(f"v6 arm {arm_id} ({arm.config_name}) cache_mode={args.cache_mode}: {status}")
     matrix_failures, matrix_summary = _check_v6_matrix()
     failures.extend(matrix_failures)
 
@@ -349,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     summary += ", " + ", ".join(
         f"{arm_id}=C{len(arm.channels)}" for arm_id, arm in V6_ABLATION_ARMS.items()
     )
-    print(f"ablation config smoke GO — {summary}; {matrix_summary}")
+    print(f"ablation config smoke GO — {summary}; {matrix_summary}; cache_mode={args.cache_mode}")
     return 0
 
 

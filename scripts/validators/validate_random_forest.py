@@ -667,6 +667,17 @@ def _prediction_100m(
     return _pool_temperature_10m_to_100m(native[None], method)
 
 
+def _eval_splits_for(scope: dict, errors: list[str]) -> tuple[str, ...]:
+    """Expected eval splits: validation+test unless the report marks test as skipped."""
+    marker = scope.get("test_split")
+    if marker is None:
+        return tuple(_SPLIT_YEARS)
+    if marker == "skipped":
+        return ("validation",)
+    errors.append(f"scope.test_split must be absent or 'skipped', got {marker!r}")
+    return tuple(_SPLIT_YEARS)
+
+
 def _check_protocol(report: dict, index_rows: list[dict], errors: list[str]) -> None:
     """Reject weakened full runs and split/year drift before model loading."""
     scope = report.get("scope", {})
@@ -683,6 +694,25 @@ def _check_protocol(report: dict, index_rows: list[dict], errors: list[str]) -> 
         if not valid:
             errors.append(f"published index has invalid split/year: {split}/{year}")
             break
+    eval_splits = _eval_splits_for(scope, errors)
+    val_only = eval_splits == ("validation",)
+    if val_only:
+        stage_payloads = list(report.get("stages", {}).values())
+        leaked = (
+            "test" in scope.get("eval_splits", {})
+            or any("test" in payload.get("splits", {}) for payload in stage_payloads)
+            or any(
+                str(record.get("split")) == "test"
+                for payload in stage_payloads
+                for record in payload.get("patches", [])
+            )
+            or any(
+                str(entry.get("split")) == "test"
+                for entry in report.get("probes", {}).get("patches", [])
+            )
+        )
+        if leaked:
+            errors.append("val-only report must not contain the test split")
     forest = report.get("forest", {})
     frozen = {
         "min_samples_leaf": 5,
@@ -712,9 +742,12 @@ def _check_protocol(report: dict, index_rows: list[dict], errors: list[str]) -> 
         errors.append("full run must request every published train patch")
     stages = report.get("stages", {})
     for stage, payload in stages.items():
-        if set(payload.get("splits", {})) != set(_SPLIT_YEARS):
-            errors.append(f"full stage {stage} must evaluate validation and test")
-        for split in _SPLIT_YEARS:
+        if set(payload.get("splits", {})) != set(eval_splits):
+            if val_only:
+                errors.append(f"full val-only stage {stage} must evaluate validation only")
+            else:
+                errors.append(f"full stage {stage} must evaluate validation and test")
+        for split in eval_splits:
             count = len(_split_index_ids(index_rows, split))
             if payload.get("splits", {}).get(split, {}).get("requested_patches") != count:
                 errors.append(f"full stage {stage} {split}: incomplete requested coverage")

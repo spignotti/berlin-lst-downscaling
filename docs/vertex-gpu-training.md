@@ -414,6 +414,274 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 
 The resulting run label is `<label>-seed0-ep40-cos-notest`.
 
+### Prebuilt patch cache
+
+By default each v6 job builds its patch cache from the rasters (the threaded
+`cache_build` phase). The prebuilt cache moves that work to the operator machine
+once per cache identity: the job downloads verified shards instead. Selection is
+opt-in (`--patch-cache prebuilt`); the default stays a job-local build, and no
+`configs/*.yaml` carries the setting.
+
+Layout (one prefix per cache identity, holding train and validation together; the
+2025 test split is never cached and no flag can cache it):
+
+```text
+gs://berlin-lst-training-data/patch-cache/v<format>/<key>/
+  prebuilt_manifest.json     # uploaded last; a prefix without it is incomplete
+  shards/<file>-<NNNNN>.bin  # row-aligned byte shards, 512 MiB max each
+```
+
+The artifact is exactly the job-local cache directory (`features.npy`, `prior.npy`,
+`target.npy`, `mask.npy`, `manifest.json`; train rows then validation rows) built
+by the same `RealPatchDataModule` code, cut on row boundaries. Concatenating the
+shards reproduces each file byte for byte; `PatchCache` then runs its existing
+exact provenance check, so a stored cache that differs from the run's resolved
+sources cannot load.
+
+`key` is the first 16 hex characters of the SHA-256 of these components (sorted
+JSON): `cache_format_version`, `patch_cache_version`, `index_policy_hash`,
+`source_policy_hash`, `scaler_digest`, `source_channels`, `source_channel_order`,
+`channel_indices`, `splits` (`["train","validation"]`) and `provenance_sha256` (the
+digest of the full cache provenance: source roots, geometry and per-patch anchors,
+admitted and skipped patches, aggregation, preprocessing version).
+
+Rebuild (a new prefix appears by itself) whenever any component changes: a new patch
+index, a new source release or ARD, a new scaler, a different channel arm, different
+geometry or `max_patches_per_split`/scene bounds, or a new format version. The key does not pin the reader or preprocessing code revision (the
+manifest records the builder's `git_commit` and `git_dirty`, and runs copy them into
+`prebuilt_build_provenance`); after a change to the patch read or scaling code, bump
+`preprocessing_version` or rebuild under a new format version.
+
+Rules for a published cache:
+
+- **Same commit as the image.** Build the training image and the prebuilt cache from
+  the same clean, merged `main` commit, and record that SHA with the run (it is the
+  image's `VERTEX_SOURCE_SHA`). The builder refuses to upload from a dirty working
+  tree or an unknown commit unless `--allow-dirty` is passed (local experiments only;
+  it prints a warning), and `--expected-commit <sha>` fails when `HEAD` differs.
+  `--local-only` and `--dry-run` skip the clean-tree check.
+- **Immutable.** A prefix that holds `prebuilt_manifest.json` is published and is
+  never overwritten, with or without `--overwrite` (the library function refuses it
+  too, and the manifest is written with a generation precondition, so a concurrent
+  publish cannot replace it; shards replaced in such a race fail their SHA-256 check
+  at fetch). A changed cache needs a new key, e.g. by bumping the
+  format version. `--overwrite` only replaces leftover shards of an interrupted upload
+  at a prefix without a manifest; without it such leftovers are refused.
+
+Build and upload on the Mac (needs Application Default Credentials for the upload
+and for reading the `gs://` roots). The first command builds and packs locally, the
+second repeats it and uploads; `--dry-run` prints the key and prefix after the local
+build without packing or uploading.
+
+```bash
+uv run python scripts/operators/build_prebuilt_patch_cache.py \
+  --config-name v6_l4_locked --local-dir "$HOME/berlin-lst-cache-build/v6-l4" --local-only
+uv run python scripts/operators/build_prebuilt_patch_cache.py \
+  --config-name v6_l4_locked --local-dir "$HOME/berlin-lst-cache-build/v6-l4"
+```
+
+Use the locked config of the arm you will run (`v6_l1_locked` ... `v6_l5_locked`,
+`v6_loo_*_locked`, `v6_no_*_locked`) with the same `--override` values the run uses
+if any. `--local-dir` must be a local path outside the repository (otherwise the
+build output makes the tree dirty and the manifest records `git_dirty: true`) and
+must not exist yet under `cache/`.
+
+Run selection:
+
+```bash
+... launch_vertex_modeling.py --mode v6-l4 ... --patch-cache prebuilt
+... launch_vertex_modeling.py --mode v6-l4 ... --patch-cache prebuilt --allow-job-local-fallback
+```
+
+The launcher appends `+data.patch_cache.source=prebuilt` (and
+`+data.patch_cache.allow_job_local_fallback=true`) to the Hydra overrides and sets
+`VERTEX_PATCH_CACHE_SOURCE=prebuilt` / `VERTEX_PATCH_CACHE_FALLBACK=1`, which the
+entrypoint turns into the same overrides. The run records `patch_cache_source`
+(`job_local`, `prebuilt` or `job_local_fallback`), `patch_cache_prefix`,
+`patch_cache_key` and `prebuilt_{download,verify,load}_seconds`, `prebuilt_bytes`
+and `prebuilt_shards` in `data_scope.json`, the evidence record and
+`phase_timings.data_prep`; the phases `prebuilt_download`, `prebuilt_verify` and
+`prebuilt_load` appear in `phase_timings.phases`.
+
+At load the job compares the manifest's `git_commit` with the running code's commit
+(`VERTEX_SOURCE_SHA`, else local `git rev-parse HEAD`) and records
+`prebuilt_commit_match`, `prebuilt_build_commit` and `prebuilt_running_commit` in the
+same places. `true`: cache and image come from the same commit. `false`: they differ;
+the job logs the warning event `prebuilt_cache_commit_mismatch` and continues (the key
+still pins the data identity), so check whether the patch read or scaling code changed
+between the two SHAs. `null`: either commit is unknown (warning event
+`prebuilt_cache_commit_unknown`).
+
+Failure modes (every one fails closed):
+
+- Missing prefix or no `prebuilt_manifest.json`: `PrebuiltCacheMissing`.
+- Identity mismatch: `PrebuiltCacheMismatch` names the component, before any shard
+  is downloaded.
+- A shard or the assembled file fails its size or SHA-256 check: each shard is
+  retried (default 3 attempts, `prebuilt_cache_shard_retry` warning events), then
+  `PrebuiltCacheChecksumError` names the shard and nothing is left in the cache root.
+- Upload to a published prefix (one with `prebuilt_manifest.json`) is always
+  refused; leftover shards without a manifest are refused without `--overwrite`.
+- Without `--allow-job-local-fallback` a failed prebuilt load stops the job and never
+  builds job-locally. With it, the job emits the warning event
+  `patch_cache_prebuilt_fallback` (prefix, reason, field), removes the partial cache
+  root, builds job-locally and records `patch_cache_source=job_local_fallback`.
+
+The container entrypoint changed, so rebuild and push the image with the steps in
+"Build and push the image" before the first prebuilt run, and pin the new digest in
+`--image-uri`.
+
+## v6 fixed per-run overhead (data prep, post-fit, upload)
+
+Job `v6-l4-v6-n2-timing-20261030` (v6-l4, n1-standard-4 + 1x T4, image from
+`b42b893`) spent about 57 min from job start to the first train step, about
+2:26 min train plus 20 s validation per epoch, about 8.6 min between the end of
+`fit` and `run_done`, and about 1.5 min on upload and teardown. Across the
+27-run matrix this fixed overhead costs more than the training itself.
+
+### Where the data-prep time goes (code reading; no new Vertex measurement)
+
+The v6 configs set a positive `data.cache_max_bytes`, and `cache_root: null`
+resolves to `<output_root>/cache`. So even `mode: stream` builds the complete
+job-local patch cache before training starts. `RealPatchDataModule.setup()` does:
+
+1. **Ref loading and source preload.** It loads the training/v3 patch index and
+   the scaler/ledger metadata, then preloads scene metadata.
+2. **Admission (serial).** For each requested train and validation ref, it builds
+   the scene prior on first use (it reads the full native Landsat and flag rasters
+   once per scene), then reads the target and mask windows to check eligibility.
+3. **Cache build (serial before this change).** `_build_cache()` calls
+   `read_patch()` for every admitted patch in order. Each call opens the target,
+   mask and feature COGs. The feature read requests all 22 source channels,
+   decompresses the raster blocks, applies the published scaler, and zero-fills
+   nonfinite feature values.
+
+For 6,570 admitted train and validation patches, the two passes perform roughly
+32,850 raster opens, plus the scene-prior and metadata reads. A raster open is
+not the same as one HTTP request: a COG window read issues several range
+requests. The reader does no reprojection. It checks alignment and reads
+windows. DataLoader workers (`data.num_workers`) cannot speed this up, because
+the cache is built in the main process before any loader exists.
+
+Historical evidence (`docs/patch-read-timing.md`, issue #35) used older data
+and hardware. There, feature reads made up about 88% of the read pass, and the
+duplicate target/mask opens made up about 10% of admission plus read. These
+numbers show where the time goes. They are not a breakdown of the Vertex job
+above, which logged no per-phase timings.
+
+### What changed
+
+- **Bounded, ordered, threaded cache reads.** `data.cache_build_workers` (v6
+  base: `4`; allowed `1`-`4`; `1` is the serial reference path) sets how many
+  reader threads fill the cache. `ordered_bounded_map` yields results strictly
+  in submission order, never in completion order. It keeps at most
+  `2 * workers` reads submitted but not yet consumed, so memory stays bounded,
+  and it cancels pending reads on failure or early close. The coordinator thread
+  is the only cache writer. Each thread uses its own `RealPatchReader.copy_for_reads()`,
+  which shares the scaler and the scene priors already built during admission.
+  So no thread rebuilds priors or reloads metadata. Cached tensors, their order,
+  the scaler arithmetic, nodata handling and window geometry stay the same.
+  This is an operational setting. It is not part of any scientific lock, policy
+  hash or cache provenance. `data.num_workers` stays locked at `0`.
+- **Retries.** Each patch read gets at most 3 attempts with a fixed backoff of
+  0.5 s and then 1.0 s, with no jitter and no RNG calls. Only `RasterioIOError`,
+  `TimeoutError` and `ConnectionError` are retried, and each retry is logged
+  with `log_event`. Contract, shape and provenance errors fail at once. So does
+  an admitted patch that becomes unreadable. When retries run out, the run fails
+  with the patch ID and attempt count. No patch is ever skipped.
+- **Atomic publication.** The cache is written to a unique staging sibling of
+  the cache root and validated there. Only then is it renamed into place. A
+  failed build removes only its own staging directory. A killed process may
+  leave a staging directory behind, but it never opens as a ready cache and
+  never blocks a rebuild. An existing ready cache is reopened only when its
+  provenance, ordered patch IDs, active width and channel indices match.
+  Otherwise the run fails without deleting the cache. A cache root without a
+  manifest is refused, not deleted. There is never a silent fallback to
+  streaming.
+- **No double read in eager mode.** With the cache enabled, setup no longer
+  collates eager batches before the cache build. Before, that step read the
+  features a second time.
+- **Retry-safe setup.** A failed `setup()` clears its partial state, so the
+  next call prepares again. A successful setup is still idempotent.
+
+**Expected effect (estimate, not measured).** Data prep should take about
+25–40 min per run instead of about 57 min. This assumes the cache-read part
+runs 1.5–3x faster with four threads (GCS latency-bound reads overlap, while
+decompression and scaler work share 4 vCPUs) and that serial admission stays
+as it is. The ideal 4x speedup of the cache pass is an upper bound. The owner
+must confirm the estimate with the `phase_timings` of the next run.
+
+Not done, on purpose: no prebuilt consolidated cache artifact in GCS, no
+whole-scene downloads, and no `num_workers > 0`. Each of these would add a new
+data product or loosen a locked contract.
+
+### The post-fit gap (~8.6 min)
+
+Between `trainer.fit()` returning and `run_done`, `run_real_training()` does
+the following:
+
+1. Checks the checkpoint selection.
+2. Loads the best checkpoint onto the CPU.
+3. Runs a full validation inference pass on the CPU with the reloaded
+   checkpoint: shape and finiteness checks, the masked-MAE recomputation that
+   is compared against the callback value within the existing tolerance, and
+   the residual-correction statistics.
+4. Runs test evaluation, only on full runs with test enabled. `--skip-test`
+   still records `{"skipped": true}`.
+5. Writes the summary.
+6. Updates and finalizes W&B.
+
+The CPU validation pass (1,047 patches through the U-Net on 4 vCPUs) is the
+likely main cost. The W&B share is unmeasured. This pass is the required
+best-checkpoint reload verification, so it stays unchanged: same device,
+tolerance and reported metrics. It already reads from the cached validation
+tensors and does not set up or admit data again (covered by
+`tests/test_vertex_phase_timings.py`). Each step now has its own timer, so the
+next run shows where the gap goes.
+
+### Phase timings
+
+`timed_phase` (`modeling/timing.py`) emits `phase_start` and `phase_end`
+`log_event` records. Each `phase_end` record has `started_at`, `ended_at` (UTC),
+`duration_seconds` and `status` (`ok`/`failed`). Phases:
+
+| Phase | Covers |
+|---|---|
+| `container_bootstrap` | entrypoint start (`VERTEX_CONTAINER_STARTED_AT_NS`) → Python dispatch (auth, Hydra compose, imports) |
+| `modeling_total` | the whole `run_modeling` dispatch |
+| `data_prep` | DataModule setup; contains `data_ref_loading`, `source_preload`, `admission`, `cache_build` |
+| `residual_identity` | pre-fit residual identity check |
+| `fit` | `trainer.fit` |
+| `post_fit` | contains `post_fit_checkpoint_load`, `post_fit_validation_verify`, `post_fit_test_eval` (only when it runs), `post_fit_summary` |
+| `wandb_finalize` | W&B metadata update and `finish` |
+| `epoch_curve_upload`, `checkpoint_hash_upload` | uploader work in `vertex_evidence.py` (`vertex` run log; per invocation) |
+| `evidence_upload` | logged after the upload returns; not in `evidence.json` |
+
+The `epoch_timing` events (`EpochTimingRecorder`) give each completed epoch's
+`train_seconds` (excluding validation), `validation_seconds` and
+`epoch_seconds`. Sanity validation and incomplete epochs are ignored.
+
+`evidence.json` has an additive `phase_timings` block. It holds `phases` (the
+last `phase_end` per phase from the run's modeling JSONL), `epochs`, `data_prep`
+(the existing `source_setup_seconds`, `admission_seconds` and
+`cache_build_seconds`, plus `cache_build_workers` and `cache_reused`),
+`uploader`, and `unavailable`. Nested phases overlap, so do not sum them.
+Intervals the worker cannot observe are `null` with a reason, never `0`:
+`provision_to_container` (Vertex provisioning comes before the container),
+`platform_teardown` (it comes after the container exits), and `evidence_upload`
+(its duration cannot be part of its own immutable payload). Older evidence
+without timing logs is still valid and gets `available: false` with a reason.
+
+### Owner steps before the next timed run
+
+1. Run the existing build-context check, then rebuild the image with the Cloud
+   Build recipe in [Build and push the image](#build-and-push-the-image) at the
+   new source SHA.
+2. Use the new image digest for the next separately authorized run, and read
+   `phase_timings` from its `evidence.json`.
+
+There is no cache-builder step: the cache is still built inside each job.
+
 ## Bounds and cost
 
 - Machine: one on-demand `n1-standard-4` + one `NVIDIA_TESLA_T4` in

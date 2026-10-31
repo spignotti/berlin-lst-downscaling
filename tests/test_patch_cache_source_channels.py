@@ -254,6 +254,169 @@ def test_cached_datamodule_v6_reader_yields_task_batch(
     assert tuple(val.features.shape) == (1, len(indices), REAL_PATCH_PX, REAL_PATCH_PX)
 
 
+def _staging_dirs(parent: Path) -> list[Path]:
+    return [p for p in parent.iterdir() if ".staging-" in p.name]
+
+
+def test_failed_build_publishes_nothing_and_cleans_its_staging(tmp_path: Path) -> None:
+    samples = [_sample(f"p{i}", N_V6, i) for i in range(2)]
+
+    def failing():
+        yield samples[0]
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        build_patch_cache(
+            tmp_path / "cache",
+            failing(),
+            patch_ids=["p0", "p1"],
+            active_channels=N_V6,
+            source_channels=N_V6,
+            provenance=_provenance(N_V6, tuple(range(N_V6))),
+            max_bytes=MAX_BYTES,
+        )
+    assert not (tmp_path / "cache").exists()
+    assert _staging_dirs(tmp_path) == []
+
+
+def test_interrupted_staging_does_not_block_rebuild(tmp_path: Path) -> None:
+    leftover = tmp_path / ".cache.staging-dead"
+    leftover.mkdir()
+    (leftover / "features.npy").write_bytes(b"partial")
+    with pytest.raises(RuntimeError, match="incomplete"):
+        PatchCache(leftover, _provenance(N_V6, tuple(range(N_V6))))
+    samples = [_sample(f"p{i}", N_V6, i) for i in range(2)]
+    _build(tmp_path / "cache", samples, N_V6, tuple(range(N_V6)))
+    assert (tmp_path / "cache" / "manifest.json").is_file()
+    assert (leftover / "features.npy").read_bytes() == b"partial"
+    assert not list((tmp_path / "cache").glob("*.partial"))
+
+
+def test_existing_cache_is_never_overwritten(tmp_path: Path) -> None:
+    samples = [_sample(f"p{i}", N_V6, i) for i in range(2)]
+    indices = tuple(range(N_V6))
+    _build(tmp_path / "cache", samples, N_V6, indices)
+    before = (tmp_path / "cache" / "manifest.json").read_bytes()
+    with pytest.raises(FileExistsError):
+        _build(tmp_path / "cache", samples, N_V6, indices)
+    assert (tmp_path / "cache" / "manifest.json").read_bytes() == before
+    assert _staging_dirs(tmp_path) == []
+
+
+class _CountingReader(_FakeReader):
+    def __init__(self, samples: dict[str, RealSample], n_channels: int) -> None:
+        super().__init__(samples, n_channels)
+        self.reads: list[str] = []
+
+    def read_patch(self, ref: PatchRef) -> RealSample:
+        self.reads.append(ref.patch_id)
+        return super().read_patch(ref)
+
+
+def _module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    readers: list[_CountingReader],
+    *,
+    fingerprint: str = "x",
+    mode: str = "stream",
+    reuse_ready_cache: bool = False,
+) -> RealPatchDataModule:
+    samples = {
+        ref.patch_id: _sample(ref.patch_id, N_V6, i, ref.split) for i, ref in enumerate(_refs())
+    }
+
+    def make_reader(_source: object) -> _CountingReader:
+        reader = _CountingReader(samples, N_V6)
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(real_task, "RealPatchReader", make_reader)
+    monkeypatch.setattr(
+        real_task,
+        "load_patch_refs",
+        lambda _source, *, splits, scene_ids: [r for r in _refs() if r.split in splits],
+    )
+    monkeypatch.setattr(real_task, "patch_index_fingerprints", lambda _root: {"index": fingerprint})
+    return RealPatchDataModule(
+        RealSourceConfig("local", "local", "local", "local"),
+        batch_size=2,
+        n_active_channels=N_V6,
+        mode=mode,
+        splits=("train", "validation"),
+        cache_root=tmp_path / "cache",
+        cache_max_bytes=MAX_BYTES,
+        reuse_ready_cache=reuse_ready_cache,
+    )
+
+
+def test_ready_cache_is_refused_and_kept_without_explicit_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readers: list[_CountingReader] = []
+    _module(tmp_path, monkeypatch, readers).setup("fit")
+    before = (tmp_path / "cache" / "manifest.json").read_bytes()
+    readers.clear()
+    second = _module(tmp_path, monkeypatch, readers)
+    with pytest.raises(RuntimeError, match="refusing to reuse it across runs"):
+        second.setup("fit")
+    assert all(reader.reads == [] for reader in readers)
+    assert (tmp_path / "cache" / "manifest.json").read_bytes() == before
+
+
+def test_matching_ready_cache_reopens_without_reading_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readers: list[_CountingReader] = []
+    first = _module(tmp_path, monkeypatch, readers)
+    first.setup("fit")
+    assert first.stats()["cache_reused"] is False
+    first_batch = next(iter(first.train_dataloader()))
+    readers.clear()
+
+    second = _module(tmp_path, monkeypatch, readers, reuse_ready_cache=True)
+    second.setup("fit")
+    assert second.stats()["cache_reused"] is True
+    assert all(reader.reads == [] for reader in readers)
+    second_batch = next(iter(second.train_dataloader()))
+    assert np.array_equal(first_batch.features.numpy(), second_batch.features.numpy())
+
+
+def test_ready_cache_with_other_provenance_fails_and_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readers: list[_CountingReader] = []
+    _module(tmp_path, monkeypatch, readers).setup("fit")
+    before = (tmp_path / "cache" / "manifest.json").read_bytes()
+    other = _module(tmp_path, monkeypatch, readers, fingerprint="changed", reuse_ready_cache=True)
+    with pytest.raises(RuntimeError, match="provenance"):
+        other.setup("fit")
+    assert (tmp_path / "cache" / "manifest.json").read_bytes() == before
+    with pytest.raises(RuntimeError):
+        other.train_dataloader()
+
+
+def test_cache_root_without_manifest_is_refused_not_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "features.npy").write_bytes(b"x")
+    module = _module(tmp_path, monkeypatch, [])
+    with pytest.raises(RuntimeError, match="without a ready manifest"):
+        module.setup("fit")
+    assert (tmp_path / "cache" / "features.npy").read_bytes() == b"x"
+
+
+def test_eager_cached_setup_reads_each_patch_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readers: list[_CountingReader] = []
+    module = _module(tmp_path, monkeypatch, readers, mode="eager")
+    module.setup("fit")
+    assert sorted(readers[0].reads) == ["t0", "t1", "v0"]
+    assert len(list(module.train_dataloader())) == 1
+
+
 def test_scene_date_survives_cache_round_trip(tmp_path: Path) -> None:
     sample = _sample("p0", N_V6, 0)
     sample.meta.scene_date = "2018-07-04"

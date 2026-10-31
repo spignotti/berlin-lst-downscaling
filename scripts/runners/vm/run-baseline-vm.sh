@@ -21,7 +21,10 @@
 #     stopped even when the run's evidence checks fail.
 #
 # Usage (run from the repository root, like the sibling launchers):
-#   run-baseline-vm.sh [branch] [baseline_full|baseline_v6_full]
+#   run-baseline-vm.sh [branch] [baseline_full|baseline_v6_full|baseline_v6_val]
+#
+# baseline_full and baseline_v6_full open test 2025. Until the v6 ablation
+# matrix is frozen use baseline_v6_val (validation 2024 only, no test ref).
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
@@ -30,10 +33,12 @@ source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
 BRANCH="${1:-main}"
 BASELINE_CONFIG="${2:-baseline_full}"
 case "$BASELINE_CONFIG" in
-  baseline_full|baseline_v6_full) ;;
-  *) echo "Usage: $0 [branch] [baseline_full|baseline_v6_full]" >&2; exit 1 ;;
+  baseline_full|baseline_v6_full|baseline_v6_val) ;;
+  *) echo "Usage: $0 [branch] [baseline_full|baseline_v6_full|baseline_v6_val]" >&2; exit 1 ;;
 esac
-PIPELINE_LABEL="Full naive baseline (validation+test)"
+EVAL_SPLITS="validation,test"
+if [[ "$BASELINE_CONFIG" == "baseline_v6_val" ]]; then EVAL_SPLITS="validation"; fi
+PIPELINE_LABEL="Full naive baseline (${EVAL_SPLITS/,/+})"
 MARKER_CONFIG="$BASELINE_CONFIG"
 POLL_MAX_SECONDS=7200
 # Independent-validator coverage: patches recomputed per split, with the block
@@ -45,6 +50,7 @@ TMP_BASE="${TMPDIR:-$REPO_ROOT/.tmp}"
 
 RUN_TAG="baseline-full"
 if [[ "$BASELINE_CONFIG" == "baseline_v6_full" ]]; then RUN_TAG="baseline-v6-full"; fi
+if [[ "$BASELINE_CONFIG" == "baseline_v6_val" ]]; then RUN_TAG="baseline-v6-notest"; fi
 vm_init_run "$RUN_TAG"
 
 OUTPUT_REL="data/runs/$RUN_TAG/$WRAP_RUN_ID"
@@ -53,10 +59,10 @@ REMOTE_REPORT="$REMOTE_OUTPUT/baseline_report.json"
 LOCAL_DIR="${TMP_BASE%/}/vm/$RUN_TAG/$WRAP_RUN_ID"
 # `set -f` (noglob) keeps the Hydra list override safe inside the detached
 # shell. No single quote may appear in REMOTE_CMD (see vm_launch_detached).
-REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name $BASELINE_CONFIG splits=[validation,test] output_root=$OUTPUT_REL"
+REMOTE_CMD="set -f; uv run python scripts/runners/run_baseline.py --config-name $BASELINE_CONFIG splits=[$EVAL_SPLITS] output_root=$OUTPUT_REL"
 
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
-echo "  Validation/test only; output root: $OUTPUT_REL"
+echo "  Splits: $EVAL_SPLITS only; output root: $OUTPUT_REL"
 
 # ── start VM + deploy ────────────────────────────────────────────────
 vm_start_and_wait_ssh
@@ -122,18 +128,22 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   # acceptable only when it passes), FULL coverage of both requested splits
   # (the validator accepts a bounded report, so this gate must reject one),
   # the exact split set, the deployed SHA, and positive valid cells per split.
-  FULL_COVERAGE=1
-  if printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection test: full' \
-    && printf '%s\n' "$VALIDATION_OUT" | grep -q 'selection validation: full'; then
-    FULL_COVERAGE=0
-  fi
+  FULL_COVERAGE=0
+  for split in ${EVAL_SPLITS//,/ }; do
+    if ! printf '%s\n' "$VALIDATION_OUT" | grep -q "selection $split: full"; then
+      FULL_COVERAGE=1
+    fi
+  done
+  EXPECTED_SPLITS=$(tr ',' '\n' <<<"$EVAL_SPLITS" | sort | paste -sd, -)
+  TEST_CELLS_OK=0
+  if [[ "$EVAL_SPLITS" == *test* && ! "$VALID_CELLS_TEST" -gt 0 ]]; then TEST_CELLS_OK=1; fi
   if [[ "$VALIDATION_RC" -eq 0 \
     && "$FULL_COVERAGE" -eq 0 \
     && "$REPORT_METHOD" == "naive_prior_expand" \
-    && "$REPORT_SPLITS" == "test,validation" \
+    && "$REPORT_SPLITS" == "$EXPECTED_SPLITS" \
     && "$REPORT_REV" == "$DEPLOYED_SHA" \
     && "$VALID_CELLS_VALIDATION" -gt 0 \
-    && "$VALID_CELLS_TEST" -gt 0 ]]; then
+    && "$TEST_CELLS_OK" -eq 0 ]]; then
     EVIDENCE_OK=0
   fi
 fi
@@ -145,7 +155,7 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   fi
   vm_stop
   if [[ "$EVIDENCE_OK" -eq 0 ]]; then
-    echo "SUCCESS: full validation/test baseline completed, independently validated, and secured."
+    echo "SUCCESS: full $EVAL_SPLITS baseline completed, independently validated, and secured."
     echo "  Run ID:       $WRAP_RUN_ID"
     echo "  Deployed SHA: $DEPLOYED_SHA"
     echo "  Artifact:     $LOCAL_DIR"
