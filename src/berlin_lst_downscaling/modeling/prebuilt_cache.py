@@ -106,18 +106,45 @@ def prebuilt_prefix(uri_root: str, components: Mapping[str, object]) -> str:
     return f"{uri_root.rstrip('/')}/v{PREBUILT_CACHE_FORMAT_VERSION}/{prebuilt_key(components)}"
 
 
-def _git_commit() -> str:
+def _git_output(*args: str) -> str | None:
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],  # noqa: S607
+        out = subprocess.run(  # noqa: S603
+            ["git", *args],  # noqa: S607
             capture_output=True,
             text=True,
             check=True,
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
-        return "unknown"
-    return out.stdout.strip() or "unknown"
+        return None
+    return out.stdout
+
+
+def _git_commit() -> str:
+    out = _git_output("rev-parse", "HEAD")
+    return (out or "").strip() or "unknown"
+
+
+def _git_dirty() -> bool | None:
+    """True if the working tree has changes, ``None`` if git is unavailable."""
+    out = _git_output("status", "--porcelain")
+    return None if out is None else bool(out.strip())
+
+
+def running_code_commit() -> str | None:
+    """Commit of the running code: ``VERTEX_SOURCE_SHA`` (the image), else local HEAD."""
+    sha = os.environ.get("VERTEX_SOURCE_SHA", "").strip()
+    if sha:
+        return sha
+    commit = _git_commit()
+    return None if commit == "unknown" else commit
+
+
+def commit_match(build_commit: object, running_commit: str | None) -> bool | None:
+    """Compare the cache's build commit with the running commit; ``None`` if either is unknown."""
+    if not isinstance(build_commit, str) or build_commit in ("", "unknown") or not running_commit:
+        return None
+    return build_commit == running_commit
 
 
 def _copy_range(src: Path, dst: Path, start: int, end: int) -> tuple[int, str]:
@@ -267,6 +294,7 @@ def pack_prebuilt_cache(
         "shards": shards,
         "provenance": {
             "git_commit": _git_commit(),
+            "git_dirty": _git_dirty(),
             "builder_version": BUILDER_VERSION,
             "created_at": datetime.now(UTC).isoformat(),
             **dict(provenance_extra or {}),
@@ -287,18 +315,39 @@ def prebuilt_manifest_exists(prefix: str) -> bool:
     return storage.exists(f"{prefix.rstrip('/')}/{PREBUILT_MANIFEST}")
 
 
+class PrebuiltCacheImmutable(PrebuiltCacheError, FileExistsError):
+    """The prefix already holds a published cache (``prebuilt_manifest.json``)."""
+
+
+def published_cache_error(prefix: str) -> PrebuiltCacheImmutable:
+    return PrebuiltCacheImmutable(
+        f"prebuilt patch cache at {prefix} is published and immutable; it is never "
+        "overwritten (not even with --overwrite). A changed cache needs a new key, "
+        "e.g. by bumping PREBUILT_CACHE_FORMAT_VERSION"
+    )
+
+
 def upload_prebuilt_cache(
     local_dir: Path, prefix: str, *, overwrite: bool = False, max_workers: int = 8
 ) -> None:
-    """Upload shards in parallel, then the manifest last (only after all shards)."""
+    """Upload shards in parallel, then the manifest last (only after all shards).
+
+    A prefix with a manifest is published and is always refused. ``overwrite``
+    only allows replacing leftover shards of an interrupted upload.
+    """
     _validate_workers(max_workers)
     prefix = prefix.rstrip("/")
-    if prebuilt_manifest_exists(prefix) and not overwrite:
-        raise FileExistsError(
-            f"prebuilt patch cache already exists at {prefix}; pass --overwrite to replace it"
-        )
+    if prebuilt_manifest_exists(prefix):
+        raise published_cache_error(prefix)
     manifest = json.loads((local_dir / PREBUILT_MANIFEST).read_text(encoding="utf-8"))
     names = [str(shard["name"]) for shard in manifest["shards"]]
+    if not overwrite:
+        leftover = [name for name in names if storage.exists(f"{prefix}/shards/{name}")]
+        if leftover:
+            raise FileExistsError(
+                f"{prefix} has {len(leftover)} leftover shards from an unpublished upload "
+                "(no manifest); pass --overwrite to replace them"
+            )
 
     def upload(name: str) -> None:
         storage.atomic_upload(
@@ -308,11 +357,12 @@ def upload_prebuilt_cache(
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         for future in [pool.submit(upload, name) for name in names]:
             future.result()
+    # Generation precondition 0: a manifest published concurrently is never replaced.
     storage.atomic_upload(
         local_dir / PREBUILT_MANIFEST,
         f"{prefix}/{PREBUILT_MANIFEST}",
-        overwrite=overwrite,
-        if_generation_match=None if overwrite else 0,
+        overwrite=False,
+        if_generation_match=0,
     )
     log_event(
         logger,
@@ -467,12 +517,28 @@ def fetch_prebuilt_cache(
     shutil.rmtree(parts, ignore_errors=True)
     raw_build = manifest.get("provenance")
     build = raw_build if isinstance(raw_build, dict) else {}
+    build_commit = build.get("git_commit")
+    running_commit = running_code_commit()
+    match = commit_match(build_commit, running_commit)
+    if match is not True:
+        log_event(
+            logger,
+            logging.WARNING,
+            "prebuilt_cache_commit_mismatch" if match is False else "prebuilt_cache_commit_unknown",
+            prefix=prefix,
+            prebuilt_build_commit=build_commit,
+            running_commit=running_commit,
+        )
     return {
         "prebuilt_download_seconds": download_seconds,
         "prebuilt_verify_seconds": verify_seconds,
         "prebuilt_bytes": sum(int(cast(int, shard["size"])) for shard in shards),
         "prebuilt_shards": len(shards),
         "prebuilt_build_provenance": {
-            key: build.get(key) for key in ("git_commit", "builder_version", "created_at")
+            key: build.get(key)
+            for key in ("git_commit", "git_dirty", "builder_version", "created_at")
         },
+        "prebuilt_commit_match": match,
+        "prebuilt_build_commit": build_commit,
+        "prebuilt_running_commit": running_commit,
     }

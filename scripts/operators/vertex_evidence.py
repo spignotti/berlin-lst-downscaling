@@ -47,6 +47,9 @@ _PATCH_CACHE_SCOPE_KEYS = (
     "prebuilt_load_seconds",
     "prebuilt_bytes",
     "prebuilt_shards",
+    "prebuilt_commit_match",
+    "prebuilt_build_commit",
+    "prebuilt_running_commit",
 )
 
 _UNOBSERVABLE_PHASES = {

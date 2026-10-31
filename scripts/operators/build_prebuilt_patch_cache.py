@@ -18,6 +18,11 @@ Usage
 
 ``--dry-run`` still builds the cache locally (the key needs the admitted
 patches) but neither packs nor uploads.
+
+An upload must come from the clean commit the training image is built from: a
+dirty working tree or an unknown commit is refused unless ``--allow-dirty`` is
+given, and ``--expected-commit <sha>`` fails when HEAD differs. A prefix that
+already holds ``prebuilt_manifest.json`` is published and is never overwritten.
 """
 
 from __future__ import annotations
@@ -35,10 +40,13 @@ from berlin_lst_downscaling.modeling.guards import guard_modeling_config
 from berlin_lst_downscaling.modeling.prebuilt_cache import (
     ALLOWED_SPLITS,
     DEFAULT_SHARD_MAX_BYTES,
+    _git_commit,
+    _git_dirty,
     pack_prebuilt_cache,
     prebuilt_key,
     prebuilt_manifest_exists,
     prebuilt_prefix,
+    published_cache_error,
     upload_prebuilt_cache,
 )
 from berlin_lst_downscaling.modeling.run import (
@@ -79,7 +87,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--local-dir", required=True, help="local build directory (never gs://)")
     parser.add_argument("--local-only", action="store_true", help="build and pack, no upload")
     parser.add_argument("--dry-run", action="store_true", help="build locally, print the key only")
-    parser.add_argument("--overwrite", action="store_true", help="replace an existing prefix")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace leftover shards of an interrupted upload (prefix without a manifest); "
+        "a published prefix is never overwritten",
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="upload from a dirty working tree or unknown commit (local experiments only)",
+    )
+    parser.add_argument(
+        "--expected-commit", default=None, help="fail unless git HEAD equals this SHA"
+    )
     parser.add_argument("--shard-max-bytes", type=int, default=DEFAULT_SHARD_MAX_BYTES)
     parser.add_argument("--upload-workers", type=int, default=8)
     parser.add_argument("--uri-root", default=None, help="default: data.patch_cache.uri_root")
@@ -100,6 +121,25 @@ def main(argv: list[str] | None = None) -> int:
     if set(splits) != set(ALLOWED_SPLITS) or len(splits) != len(ALLOWED_SPLITS):
         print(f"ERROR: splits must be exactly {','.join(ALLOWED_SPLITS)}, got {args.splits!r}")
         return 2
+
+    commit = _git_commit()
+    if args.expected_commit and commit != args.expected_commit.strip():
+        print(f"ERROR: HEAD is {commit}, --expected-commit is {args.expected_commit}")
+        return 2
+    if not (args.local_only or args.dry_run):
+        dirty = _git_dirty()
+        if commit == "unknown" or dirty is not False:
+            if commit == "unknown":
+                state = "unknown commit"
+            else:
+                state = "dirty working tree" if dirty else "working tree of unknown state"
+            if not args.allow_dirty:
+                print(
+                    f"ERROR: refusing to upload from a {state}; build the cache from the "
+                    "clean commit of the training image, or pass --allow-dirty"
+                )
+                return 2
+            print(f"WARNING: uploading from a {state} (--allow-dirty)")
 
     cfg = _compose(args.config_name, list(args.override))
     guard_modeling_config(cfg, args.config_name)
@@ -135,8 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(json.dumps({**summary, "dry_run": True}, indent=2, sort_keys=True))
         return 0
-    if not args.local_only and prebuilt_manifest_exists(prefix) and not args.overwrite:
-        print(f"ERROR: prebuilt patch cache already exists at {prefix}; pass --overwrite")
+    if not args.local_only and prebuilt_manifest_exists(prefix):
+        print(f"ERROR: {published_cache_error(prefix)}")
         return 2
 
     manifest = pack_prebuilt_cache(

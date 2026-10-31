@@ -365,6 +365,9 @@ def test_prebuilt_cache_keys_are_copied_into_scope_and_data_prep(
         "prebuilt_load_seconds": 0.5,
         "prebuilt_bytes": 100,
         "prebuilt_shards": 4,
+        "prebuilt_commit_match": False,
+        "prebuilt_build_commit": "abc",
+        "prebuilt_running_commit": "def",
     }
     (tmp_path / "data_scope.json").write_text(json.dumps(scope))
     _write_modeling_log(tmp_path, [])

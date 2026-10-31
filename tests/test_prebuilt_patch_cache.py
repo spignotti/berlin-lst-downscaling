@@ -28,6 +28,7 @@ from berlin_lst_downscaling.modeling.prebuilt_cache import (
     PREBUILT_MANIFEST,
     PrebuiltCacheChecksumError,
     PrebuiltCacheError,
+    PrebuiltCacheImmutable,
     PrebuiltCacheMismatch,
     PrebuiltCacheMissing,
     fetch_prebuilt_cache,
@@ -324,11 +325,15 @@ def test_fetch_roundtrip_is_byte_identical_and_loadable(tmp_path: Path, width: i
         "prebuilt_bytes",
         "prebuilt_shards",
         "prebuilt_build_provenance",
+        "prebuilt_commit_match",
+        "prebuilt_build_commit",
+        "prebuilt_running_commit",
     }
     packed = json.loads((out_dir / PREBUILT_MANIFEST).read_text())
     assert result["prebuilt_shards"] == len(packed["shards"])
     assert result["prebuilt_build_provenance"] == {
-        key: packed["provenance"][key] for key in ("git_commit", "builder_version", "created_at")
+        key: packed["provenance"][key]
+        for key in ("git_commit", "git_dirty", "builder_version", "created_at")
     }
     cache = PatchCache(dest, provenance)
     assert cache.patch_ids == tuple(f"p{i}" for i in range(5))
@@ -517,11 +522,34 @@ def test_zero_workers_are_rejected(uploaded: dict[str, Any]) -> None:
 # --- upload ------------------------------------------------------------------
 
 
-def test_upload_refuses_existing_without_overwrite(uploaded: dict[str, Any]) -> None:
-    with pytest.raises(FileExistsError, match="--overwrite"):
-        upload_prebuilt_cache(uploaded["out_dir"], uploaded["prefix"])
-    upload_prebuilt_cache(uploaded["out_dir"], uploaded["prefix"], overwrite=True)
-    assert prebuilt_manifest_exists(uploaded["prefix"])
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_upload_refuses_a_published_prefix_even_with_overwrite(
+    uploaded: dict[str, Any], monkeypatch: pytest.MonkeyPatch, overwrite: bool
+) -> None:
+    before = (Path(uploaded["prefix"]) / PREBUILT_MANIFEST).read_bytes()
+    calls: list[str] = []
+    monkeypatch.setattr(storage, "atomic_upload", lambda *a, **k: calls.append(str(a[1])))
+    with pytest.raises(PrebuiltCacheImmutable, match="published and immutable"):
+        upload_prebuilt_cache(uploaded["out_dir"], uploaded["prefix"], overwrite=overwrite)
+    assert calls == []
+    assert (Path(uploaded["prefix"]) / PREBUILT_MANIFEST).read_bytes() == before
+    assert issubclass(PrebuiltCacheImmutable, FileExistsError)
+
+
+def test_manifest_upload_always_uses_a_generation_precondition(
+    built: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = storage.atomic_upload
+    manifest_kwargs: list[dict[str, object]] = []
+
+    def recorder(local_path: object, dst: str, **kwargs: object) -> str:
+        if Path(dst).name == PREBUILT_MANIFEST:
+            manifest_kwargs.append(kwargs)
+        return real(local_path, dst, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(storage, "atomic_upload", recorder)
+    upload_prebuilt_cache(built["out_dir"], built["prefix"], overwrite=True)
+    assert manifest_kwargs == [{"overwrite": False, "if_generation_match": 0}]
 
 
 def test_upload_manifest_goes_last_and_only_after_every_shard(
@@ -557,9 +585,87 @@ def test_interrupted_upload_has_no_manifest_and_rerun_succeeds(
     with pytest.raises(ConnectionError):
         upload_prebuilt_cache(built["out_dir"], built["prefix"], max_workers=1)
     assert not prebuilt_manifest_exists(built["prefix"])
+    assert list((Path(built["prefix"]) / "shards").glob("*.bin"))
     monkeypatch.setattr(storage, "atomic_upload", real)
-    upload_prebuilt_cache(built["out_dir"], built["prefix"])
+    with pytest.raises(FileExistsError, match="leftover shards"):
+        upload_prebuilt_cache(built["out_dir"], built["prefix"])
+    assert not prebuilt_manifest_exists(built["prefix"])
+    upload_prebuilt_cache(built["out_dir"], built["prefix"], overwrite=True)
     dest = built["root"] / "fetched"
     fetch_prebuilt_cache(built["prefix"], dest, expected_components=built["components"])
     original = (built["cache_dir"] / "manifest.json").read_bytes()
     assert (dest / "manifest.json").read_bytes() == original
+
+
+# --- build commit ------------------------------------------------------------
+
+
+def test_pack_records_git_commit_and_dirty_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outputs = {("rev-parse", "HEAD"): "abc123\n", ("status", "--porcelain"): " M src/x.py\n"}
+    monkeypatch.setattr(prebuilt_cache, "_git_output", lambda *args: outputs[args])
+    cache_dir, _, components, counts = _make_cache(tmp_path, 22)
+    manifest = pack_prebuilt_cache(
+        cache_dir, tmp_path / "out", components=components, split_counts=counts
+    )
+    provenance = manifest["provenance"]
+    assert provenance["git_commit"] == "abc123"  # type: ignore[index]
+    assert provenance["git_dirty"] is True  # type: ignore[index]
+    outputs[("status", "--porcelain")] = ""
+    assert prebuilt_cache._git_dirty() is False
+    monkeypatch.setattr(prebuilt_cache, "_git_output", lambda *args: None)
+    assert prebuilt_cache._git_commit() == "unknown"
+    assert prebuilt_cache._git_dirty() is None
+
+
+def _set_build_commit(prefix: str, commit: object) -> None:
+    _tamper(prefix, lambda m: m["provenance"].__setitem__("git_commit", commit))
+
+
+@pytest.mark.parametrize(
+    ("build", "running", "match"),
+    [("abc", "abc", True), ("abc", "def", False), ("unknown", "abc", None)],
+    ids=["match", "mismatch", "unknown"],
+)
+def test_fetch_compares_build_commit_with_vertex_source_sha(
+    uploaded: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    build: str,
+    running: str,
+    match: bool | None,
+) -> None:
+    _set_build_commit(uploaded["prefix"], build)
+    monkeypatch.setenv("VERTEX_SOURCE_SHA", running)
+    monkeypatch.setattr(prebuilt_cache, "_git_output", lambda *args: pytest.fail("git called"))
+    caplog.set_level(logging.WARNING)
+    result = fetch_prebuilt_cache(
+        uploaded["prefix"], uploaded["root"] / "fetched", expected_components=uploaded["components"]
+    )
+    assert result["prebuilt_commit_match"] is match
+    assert result["prebuilt_build_commit"] == build
+    assert result["prebuilt_running_commit"] == running
+    warned = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    if match is False:
+        assert "prebuilt_cache_commit_mismatch" in warned
+    else:
+        assert "prebuilt_cache_commit_mismatch" not in warned
+
+
+def test_fetch_falls_back_to_local_head_or_unknown(
+    uploaded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_build_commit(uploaded["prefix"], "abc")
+    monkeypatch.delenv("VERTEX_SOURCE_SHA", raising=False)
+    monkeypatch.setattr(prebuilt_cache, "_git_output", lambda *args: "abc\n")
+    result = fetch_prebuilt_cache(
+        uploaded["prefix"], uploaded["root"] / "a", expected_components=uploaded["components"]
+    )
+    assert (result["prebuilt_commit_match"], result["prebuilt_running_commit"]) == (True, "abc")
+    monkeypatch.setattr(prebuilt_cache, "_git_output", lambda *args: None)
+    result = fetch_prebuilt_cache(
+        uploaded["prefix"], uploaded["root"] / "b", expected_components=uploaded["components"]
+    )
+    assert result["prebuilt_commit_match"] is None
+    assert result["prebuilt_running_commit"] is None

@@ -447,12 +447,26 @@ admitted and skipped patches, aggregation, preprocessing version).
 
 Rebuild (a new prefix appears by itself) whenever any component changes: a new patch
 index, a new source release or ARD, a new scaler, a different channel arm, different
-geometry or `max_patches_per_split`/scene bounds, or a new format version. Existing
-prefixes are never overwritten unless `--overwrite` is passed. The key does not pin
-the reader or preprocessing code revision (the manifest records the builder's
-`git_commit`, and runs copy it into `prebuilt_build_provenance`); after a change to
-the patch read or scaling code, bump `preprocessing_version` or rebuild under a new
-format version.
+geometry or `max_patches_per_split`/scene bounds, or a new format version. The key does not pin the reader or preprocessing code revision (the
+manifest records the builder's `git_commit` and `git_dirty`, and runs copy them into
+`prebuilt_build_provenance`); after a change to the patch read or scaling code, bump
+`preprocessing_version` or rebuild under a new format version.
+
+Rules for a published cache:
+
+- **Same commit as the image.** Build the training image and the prebuilt cache from
+  the same clean, merged `main` commit, and record that SHA with the run (it is the
+  image's `VERTEX_SOURCE_SHA`). The builder refuses to upload from a dirty working
+  tree or an unknown commit unless `--allow-dirty` is passed (local experiments only;
+  it prints a warning), and `--expected-commit <sha>` fails when `HEAD` differs.
+  `--local-only` and `--dry-run` skip the clean-tree check.
+- **Immutable.** A prefix that holds `prebuilt_manifest.json` is published and is
+  never overwritten, with or without `--overwrite` (the library function refuses it
+  too, and the manifest is written with a generation precondition, so a concurrent
+  publish cannot replace it; shards replaced in such a race fail their SHA-256 check
+  at fetch). A changed cache needs a new key, e.g. by bumping the
+  format version. `--overwrite` only replaces leftover shards of an interrupted upload
+  at a prefix without a manifest; without it such leftovers are refused.
 
 Build and upload on the Mac (needs Application Default Credentials for the upload
 and for reading the `gs://` roots). The first command builds and packs locally, the
@@ -468,7 +482,9 @@ uv run python scripts/operators/build_prebuilt_patch_cache.py \
 
 Use the locked config of the arm you will run (`v6_l1_locked` ... `v6_l5_locked`,
 `v6_loo_*_locked`, `v6_no_*_locked`) with the same `--override` values the run uses
-if any. `--local-dir` must be a local path and must not exist yet under `cache/`.
+if any. `--local-dir` must be a local path outside the repository (otherwise the
+build output makes the tree dirty and the manifest records `git_dirty: true`) and
+must not exist yet under `cache/`.
 
 Run selection:
 
@@ -487,6 +503,15 @@ and `prebuilt_shards` in `data_scope.json`, the evidence record and
 `phase_timings.data_prep`; the phases `prebuilt_download`, `prebuilt_verify` and
 `prebuilt_load` appear in `phase_timings.phases`.
 
+At load the job compares the manifest's `git_commit` with the running code's commit
+(`VERTEX_SOURCE_SHA`, else local `git rev-parse HEAD`) and records
+`prebuilt_commit_match`, `prebuilt_build_commit` and `prebuilt_running_commit` in the
+same places. `true`: cache and image come from the same commit. `false`: they differ;
+the job logs the warning event `prebuilt_cache_commit_mismatch` and continues (the key
+still pins the data identity), so check whether the patch read or scaling code changed
+between the two SHAs. `null`: either commit is unknown (warning event
+`prebuilt_cache_commit_unknown`).
+
 Failure modes (every one fails closed):
 
 - Missing prefix or no `prebuilt_manifest.json`: `PrebuiltCacheMissing`.
@@ -495,7 +520,8 @@ Failure modes (every one fails closed):
 - A shard or the assembled file fails its size or SHA-256 check: each shard is
   retried (default 3 attempts, `prebuilt_cache_shard_retry` warning events), then
   `PrebuiltCacheChecksumError` names the shard and nothing is left in the cache root.
-- Upload to an existing prefix is refused without `--overwrite`.
+- Upload to a published prefix (one with `prebuilt_manifest.json`) is always
+  refused; leftover shards without a manifest are refused without `--overwrite`.
 - Without `--allow-job-local-fallback` a failed prebuilt load stops the job and never
   builds job-locally. With it, the job emits the warning event
   `patch_cache_prebuilt_fallback` (prefix, reason, field), removes the partial cache

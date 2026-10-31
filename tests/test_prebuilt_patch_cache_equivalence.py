@@ -155,7 +155,10 @@ def test_stats_record_source_key_and_timings(
     assert stats["prebuilt_bytes"] > 0  # type: ignore[operator]
     assert stats["prebuilt_shards"] > 0  # type: ignore[operator]
     build = stats["prebuilt_build_provenance"]
-    assert isinstance(build, dict) and set(build) == {"git_commit", "builder_version", "created_at"}
+    assert isinstance(build, dict)
+    assert set(build) == {"git_commit", "git_dirty", "builder_version", "created_at"}
+    assert stats["prebuilt_build_commit"] == build["git_commit"]
+    assert "prebuilt_commit_match" in stats and "prebuilt_running_commit" in stats
     ended = {
         r.fields["phase"]  # type: ignore[attr-defined]
         for r in caplog.records

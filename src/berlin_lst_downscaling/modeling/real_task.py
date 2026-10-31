@@ -335,6 +335,9 @@ class RealPatchDataModule(LightningDataModule):
         self.prebuilt_bytes: int | None = None
         self.prebuilt_shards: int | None = None
         self.prebuilt_build_provenance: dict[str, object] | None = None
+        self.prebuilt_commit_match: bool | None = None
+        self.prebuilt_build_commit: str | None = None
+        self.prebuilt_running_commit: str | None = None
         self.reader: RealPatchReader | None = None
         self._admitted: dict[str, list[PatchRef]] = {}
         self._requested: dict[str, list[PatchRef]] = {split: [] for split in self.splits}
@@ -603,6 +606,9 @@ class RealPatchDataModule(LightningDataModule):
             self.prebuilt_build_provenance = cast(
                 dict[str, object], fetched["prebuilt_build_provenance"]
             )
+            self.prebuilt_commit_match = cast("bool | None", fetched["prebuilt_commit_match"])
+            self.prebuilt_build_commit = cast("str | None", fetched["prebuilt_build_commit"])
+            self.prebuilt_running_commit = cast("str | None", fetched["prebuilt_running_commit"])
             with timed_phase("prebuilt_load", logger=logger, patch_count=len(patch_ids)):
                 load_started = time.perf_counter()
                 self._verify_ready_cache(cache_root, provenance, patch_ids)
@@ -712,6 +718,9 @@ class RealPatchDataModule(LightningDataModule):
             "prebuilt_bytes": self.prebuilt_bytes,
             "prebuilt_shards": self.prebuilt_shards,
             "prebuilt_build_provenance": self.prebuilt_build_provenance,
+            "prebuilt_commit_match": self.prebuilt_commit_match,
+            "prebuilt_build_commit": self.prebuilt_build_commit,
+            "prebuilt_running_commit": self.prebuilt_running_commit,
             "batches_per_split": {
                 split: _batch_count(len(refs), self.batch_size)
                 for split, refs in self._admitted.items()

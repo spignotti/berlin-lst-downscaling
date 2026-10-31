@@ -1,9 +1,10 @@
-"""Prebuilt patch cache builder CLI: split guards, local-only, dry-run, overwrite refusal."""
+"""Prebuilt patch cache builder CLI: split guards, local-only, dry-run, immutability, commit pin."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -18,6 +19,7 @@ from berlin_lst_downscaling.modeling.prebuilt_cache import (
     PREBUILT_MANIFEST,
     prebuilt_key_components,
     prebuilt_prefix,
+    upload_prebuilt_cache,
 )
 
 _SCRIPT = (
@@ -83,6 +85,10 @@ def wired(cli: ModuleType, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(cli, "_compose", lambda name, overrides: cfg)
     monkeypatch.setattr(cli, "guard_modeling_config", lambda c, n: calls["guard"].append(n))
     monkeypatch.setattr(cli, "ensure_gdal_gcs_auth", lambda: None)
+    git = {"commit": "abc123", "dirty": False}
+    calls["git"] = git
+    monkeypatch.setattr(cli, "_git_commit", lambda: git["commit"])
+    monkeypatch.setattr(cli, "_git_dirty", lambda: git["dirty"])
 
     def build(_cfg: object, *, cache_root: Path, cache_max_bytes: int, **overrides: Any) -> Any:
         calls["build"].append(overrides)
@@ -175,23 +181,87 @@ def test_dry_run_neither_packs_nor_uploads(
     assert summary["dry_run"] is True and summary["prefix"].startswith(str(tmp_path / "gcs"))
 
 
-def test_existing_prefix_is_refused_before_packing(
-    cli: ModuleType, wired: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("extra", [(), ("--overwrite",)])
+def test_published_prefix_is_refused_before_packing(
+    cli: ModuleType,
+    wired: dict[str, Any],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: tuple[str, ...],
 ) -> None:
     components = _FakeModule(tmp_path).prebuilt_components()
     prefix = Path(prebuilt_prefix(str(tmp_path / "gcs"), components))
     prefix.mkdir(parents=True)
     (prefix / PREBUILT_MANIFEST).write_text("{}")
-    assert cli.main(_args(tmp_path)) == 2
-    assert "--overwrite" in capsys.readouterr().out
+    assert cli.main(_args(tmp_path, *extra)) == 2
+    assert "published and immutable" in capsys.readouterr().out
     assert not (tmp_path / "work" / "prebuilt").exists()
+    assert wired["upload"] == []
+    assert (prefix / PREBUILT_MANIFEST).read_text() == "{}"
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_upload_runs_and_overwrite_is_forwarded(
+    cli: ModuleType, wired: dict[str, Any], tmp_path: Path, overwrite: bool
+) -> None:
+    extra = ("--overwrite",) if overwrite else ()
+    assert cli.main(_args(tmp_path, "--upload-workers", "3", *extra)) == 0
+    ((args, kwargs),) = wired["upload"]
+    assert args[0] == tmp_path / "work" / "prebuilt"
+    assert kwargs == {"overwrite": overwrite, "max_workers": 3}
+
+
+def test_overwrite_replaces_leftover_shards_without_a_manifest(
+    cli: ModuleType, wired: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "upload_prebuilt_cache", upload_prebuilt_cache)
+    components = _FakeModule(tmp_path).prebuilt_components()
+    prefix = Path(prebuilt_prefix(str(tmp_path / "gcs"), components))
+    (prefix / "shards").mkdir(parents=True)
+    (prefix / "shards" / "features-00000.bin").write_bytes(b"stale")
+    with pytest.raises(FileExistsError, match="--overwrite"):
+        cli.main(_args(tmp_path))
+    assert not (prefix / PREBUILT_MANIFEST).exists()
+    shutil.rmtree(tmp_path / "work")
+    assert cli.main(_args(tmp_path, "--overwrite")) == 0
+    assert (prefix / PREBUILT_MANIFEST).exists()
+    assert (prefix / "shards" / "features-00000.bin").read_bytes() != b"stale"
+
+
+@pytest.mark.parametrize(
+    ("commit", "dirty"), [("abc123", True), ("unknown", False), ("abc123", None)]
+)
+def test_dirty_or_unknown_commit_is_refused_without_allow_dirty(
+    cli: ModuleType,
+    wired: dict[str, Any],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    commit: str,
+    dirty: bool | None,
+) -> None:
+    wired["git"].update(commit=commit, dirty=dirty)
+    assert cli.main(_args(tmp_path)) == 2
+    assert "--allow-dirty" in capsys.readouterr().out
+    assert wired["build"] == [] and wired["upload"] == []
+    assert cli.main(_args(tmp_path, "--allow-dirty")) == 0
+    assert "WARNING" in capsys.readouterr().out
+    assert len(wired["upload"]) == 1
+
+
+def test_dirty_tree_is_allowed_for_local_only(
+    cli: ModuleType, wired: dict[str, Any], tmp_path: Path
+) -> None:
+    wired["git"]["dirty"] = True
+    assert cli.main(_args(tmp_path, "--local-only")) == 0
     assert wired["upload"] == []
 
 
-def test_upload_runs_and_overwrite_is_forwarded(
-    cli: ModuleType, wired: dict[str, Any], tmp_path: Path
+def test_expected_commit_mismatch_fails(
+    cli: ModuleType, wired: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert cli.main(_args(tmp_path, "--upload-workers", "3")) == 0
-    ((args, kwargs),) = wired["upload"]
-    assert args[0] == tmp_path / "work" / "prebuilt"
-    assert kwargs == {"overwrite": False, "max_workers": 3}
+    assert cli.main(_args(tmp_path, "--expected-commit", "def456")) == 2
+    assert "--expected-commit" in capsys.readouterr().out
+    assert wired["build"] == [] and wired["upload"] == []
+    assert cli.main(_args(tmp_path, "--local-only", "--expected-commit", "def456")) == 2
+    assert cli.main(_args(tmp_path, "--expected-commit", "abc123")) == 0
+    assert len(wired["upload"]) == 1
