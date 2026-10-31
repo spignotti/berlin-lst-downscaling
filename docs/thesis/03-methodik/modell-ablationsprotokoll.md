@@ -18,6 +18,7 @@ Aktuelles Design auf `training/v3`:
 - Drei Eingangsvarianten: (1) volle Optik (alle 22 Kanäle), (2) ohne NDVI, (3) ohne Rot, NIR und Indizes.
 - Optionaler TESSERA-Arm: nur als Code vorhanden, nicht gelaufen; ersetzt die 6 Morphologie- und 2 Schattenkanäle durch jährliche TESSERA-Embeddings. Die handgebauten Features bleiben das Hauptmodell.
 - Finale Ablationsmatrix (exakte Arme, Seeds, Loss-Varianten, Neuauflage der Random-Forest-Baseline): **offen**.
+- Trainingsschema der v6-Ablationsmatrix (Entscheidung 31.10.2026): 9 Arme × Seeds 0, 1, 2 = 27 Läufe, je 40 Epochen, Cosine-Lernratenplan mit 2 Warmup-Epochen (T_max = 40, eta_min = 0), ohne Early Stopping.
 - Ergebnisse auf `training/v3`: **ausstehend**.
 
 ### Historisches Studiendesign (training/v1)

@@ -369,13 +369,24 @@ def _check_v6_matrix() -> tuple[list[str], str]:
             f"seed={run.seed}",
             f"trainer.max_epochs={run.max_epochs}",
             f"trainer.lr_schedule.name={run.lr_schedule}",
+            f"early_stopping.enabled={str(run.early_stopping).lower()}",
         ]
+        if run.patch_cache == "prebuilt":
+            # Only selects the source; the guard checks it offline, the key resolves at runtime.
+            overrides.append("+data.patch_cache.source=prebuilt")
         cfg = _compose(run.config_name, overrides)
         try:
             _guard_v6(cfg, run.config_name)
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{run.config_name} {overrides}: {exc}")
             continue
+        composed = (
+            cfg.trainer.max_epochs,
+            cfg.trainer.lr_schedule.name,
+            cfg.early_stopping.enabled,
+        )
+        if composed != (run.max_epochs, run.lr_schedule, run.early_stopping):
+            failures.append(f"{run.config_name} {overrides}: composed {composed} != planned")
         seen = roots.setdefault(run.arm_id, set())
         if str(cfg.output_root) in seen:
             failures.append(f"{run.config_name}: output_root repeats across seeds")

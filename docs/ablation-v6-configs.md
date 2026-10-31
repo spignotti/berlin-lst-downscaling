@@ -60,20 +60,37 @@ expectations).
 
 ## Run matrix
 
-`configs/ablation/v6_matrix.yaml` lists seeds and epochs per arm. The owner
+`configs/ablation/v6_matrix.yaml` lists the seeds per arm. The owner
 froze the matrix: 9 arms x seeds 0, 1, 2 = 27 runs (LOO-ERA5 equals L3 and has
-no entry). The planning estimates are PLACEHOLDERS until the timing smoke
+no entry). The training schema is matrix-level, one value for all 27 runs
+(owner decision 2026-10-31); per-arm entries must not carry these keys:
+
+- `max_epochs: 40`.
+- `lr_schedule: cosine`: warmup 2 epochs, `T_max = max_epochs`, `eta_min = 0`,
+  stepped per epoch (the v6 lock pins warmup and `eta_min`). The parser
+  requires `max_epochs > 2` for cosine.
+- `early_stopping: false` (default when absent: false).
+- `patch_cache: prebuilt` (default when absent: `job_local`). The cache prefix
+  is resolved at runtime from each arm's data config; no key is stored in the
+  matrix or in code. L5 shares the L4 data config and so the L4 cache.
+
+The planning estimates are PLACEHOLDERS until the timing smoke
 measures them (not measured, not a verified rate): `hours_per_epoch_estimate`
 (0.12), `fixed_overhead_hours_estimate` (0.1) and `usd_per_hour` (1.00). The
-estimate per run is `fixed_overhead + max_epochs * hours_per_epoch`. List the
-planned runs and the estimated totals without submitting anything:
+estimate per run is `fixed_overhead + max_epochs * hours_per_epoch`, so 27 x
+(0.1 + 40 x 0.12) = 132.3 GPU hours. List the planned runs, the equivalent
+launcher arguments and the estimated totals without submitting anything:
 
 ```
 uv run python scripts/validators/plan_v6_ablation.py
 ```
 
 `scripts/validators/validate_ablation_configs.py` composes every planned run
-and checks the lock, including distinct output roots per seed.
+(seed, `trainer.max_epochs`, `trainer.lr_schedule.name`,
+`early_stopping.enabled`, and `+data.patch_cache.source=prebuilt`) and checks
+the lock, including distinct output roots per seed. Test-pass handling is
+unchanged: the matrix sets no `evaluate_test` override and the plan helper
+prints no `--skip-test`.
 
 ## Early stopping, test pass, epoch curve
 
