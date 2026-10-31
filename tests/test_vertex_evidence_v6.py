@@ -174,6 +174,140 @@ def test_v1_full_record_has_no_test_skipped_key(evidence: ModuleType, tmp_path: 
     assert "test_skipped" not in record["full"]
 
 
+def _write_modeling_log(run_root: Path, records: list[dict]) -> None:
+    logs = run_root / "logs" / "modeling"
+    logs.mkdir(parents=True)
+    (logs / "abc.context.json").write_text(json.dumps({"pipeline": "modeling", "run_id": "abc"}))
+    (logs / "abc.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+
+
+def _record(evidence: ModuleType, run_root: Path, **kwargs: object) -> dict:
+    return evidence.build_record(
+        run_root,
+        run_label="l",
+        source_sha="s",
+        image_digest="d",
+        result_file=None,
+        profile="smoke",
+        **kwargs,
+    )
+
+
+def test_evidence_retains_phase_and_epoch_timings(evidence: ModuleType, tmp_path: Path) -> None:
+    (tmp_path / "data_scope.json").write_text(
+        json.dumps({"mode": "eager", "cache_build_seconds": 4.5, "cache_reused": False})
+    )
+    _write_modeling_log(
+        tmp_path,
+        [
+            {"event": "phase_start", "phase": "fit"},
+            {
+                "event": "phase_end",
+                "phase": "fit",
+                "started_at": "a",
+                "ended_at": "b",
+                "duration_seconds": 12.5,
+                "status": "ok",
+            },
+            {
+                "event": "epoch_timing",
+                "epoch": 0,
+                "train_seconds": 5.0,
+                "validation_seconds": 2.0,
+                "epoch_seconds": 7.0,
+            },
+            {"event": "phase_unavailable", "phase": "container_bootstrap", "reason": "unset"},
+        ],
+    )
+    timings = _record(evidence, tmp_path, uploader_timings={"checkpoint_hash_upload": 1.5})[
+        "phase_timings"
+    ]
+    assert timings["available"] is True
+    assert timings["phases"]["fit"]["duration_seconds"] == 12.5
+    assert timings["epochs"] == [
+        {"epoch": 0, "train_seconds": 5.0, "validation_seconds": 2.0, "epoch_seconds": 7.0}
+    ]
+    assert timings["data_prep"] == {"cache_build_seconds": 4.5, "cache_reused": False}
+    assert timings["uploader"] == {"checkpoint_hash_upload": 1.5}
+    assert timings["unavailable"]["container_bootstrap"] == {
+        "duration_seconds": None,
+        "reason": "unset",
+    }
+
+
+def test_missing_timing_logs_stay_backward_compatible(evidence: ModuleType, tmp_path: Path) -> None:
+    record = _record(evidence, tmp_path)
+    assert record["profile"] == "smoke"
+    assert record["result_tail"] == []
+    timings = record["phase_timings"]
+    assert timings["available"] is False
+    assert timings["reason"]
+    assert timings["phases"] == {} and timings["epochs"] == []
+
+
+def test_unobservable_intervals_are_explicitly_unavailable(
+    evidence: ModuleType, tmp_path: Path
+) -> None:
+    unavailable = _record(evidence, tmp_path)["phase_timings"]["unavailable"]
+    for name in ("provision_to_container", "platform_teardown", "evidence_upload"):
+        assert unavailable[name]["duration_seconds"] is None
+        assert unavailable[name]["reason"]
+
+
+def test_artifact_uploads_are_timed_before_the_evidence_upload(
+    evidence: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    order: list[str] = []
+    checkpoint = tmp_path / "best.ckpt"
+    checkpoint.write_bytes(b"ckpt")
+    (tmp_path / "epoch_metrics.json").write_text("[]")
+    monkeypatch.setattr(
+        evidence,
+        "_upload_checkpoint_create_only",
+        lambda path, uri: (
+            order.append("checkpoint") or {"uri": uri, "sha256": "0" * 64, "bytes": 4}
+        ),
+    )
+
+    def _upload(uri: str, data: bytes) -> None:
+        order.append(uri)
+        if uri.endswith("evidence.json"):
+            uploaded.update(json.loads(data))
+
+    uploaded: dict = {}
+    monkeypatch.setattr(evidence, "_upload_create_only", _upload)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "vertex_evidence.py",
+            "--run-root",
+            str(tmp_path),
+            "--evidence-uri",
+            "gs://b/p/evidence.json",
+            "--run-label",
+            "l",
+            "--source-sha",
+            "s",
+            "--image-digest",
+            "d",
+            "--profile",
+            "smoke",
+            "--epoch-metrics-uri",
+            "gs://b/p/epoch_metrics.json",
+            "--checkpoint-path",
+            str(checkpoint),
+            "--checkpoint-uri",
+            "gs://b/p/best.ckpt",
+        ],
+    )
+    evidence.main()
+    assert order == ["gs://b/p/epoch_metrics.json", "checkpoint", "gs://b/p/evidence.json"]
+    uploader = uploaded["phase_timings"]["uploader"]
+    assert set(uploader) == {"epoch_curve_upload", "checkpoint_hash_upload"}
+    assert all(seconds >= 0 for seconds in uploader.values())
+    assert "evidence_upload" not in uploader
+
+
 def _full_record(evidence: ModuleType, tmp_path: Path, summary: dict) -> dict:
     (tmp_path / "epoch_metrics.json").write_text(json.dumps([{}] * 20))
     (tmp_path / "full_summary.json").write_text(json.dumps(summary))
@@ -215,3 +349,40 @@ def test_bad_lr_schedule_in_summary_raises(
 ) -> None:
     with pytest.raises(ValueError, match="lr_schedule"):
         _full_record(evidence, tmp_path, {"max_epochs": 20, "lr_schedule": bad})
+
+
+def test_prebuilt_cache_keys_are_copied_into_scope_and_data_prep(
+    evidence: ModuleType, tmp_path: Path
+) -> None:
+    scope = {
+        "mode": "stream",
+        "cache_build_seconds": 0.0,
+        "patch_cache_source": "prebuilt",
+        "patch_cache_prefix": "gs://b/patch-cache/v1/abc",
+        "patch_cache_key": "abc",
+        "prebuilt_download_seconds": 3.0,
+        "prebuilt_verify_seconds": 1.0,
+        "prebuilt_load_seconds": 0.5,
+        "prebuilt_bytes": 100,
+        "prebuilt_shards": 4,
+        "prebuilt_commit_match": False,
+        "prebuilt_build_commit": "abc",
+        "prebuilt_running_commit": "def",
+    }
+    (tmp_path / "data_scope.json").write_text(json.dumps(scope))
+    _write_modeling_log(tmp_path, [])
+    record = _record(evidence, tmp_path)
+    for key, value in scope.items():
+        if key.startswith(("patch_cache", "prebuilt")):
+            assert record["data_scope"][key] == value
+            assert record["phase_timings"]["data_prep"][key] == value
+    assert (
+        "patch_cache_source"
+        not in _record_without_cache(evidence, tmp_path / "plain")["data_scope"]
+    )
+
+
+def _record_without_cache(evidence: ModuleType, run_root: Path) -> dict:
+    run_root.mkdir()
+    (run_root / "data_scope.json").write_text(json.dumps({"mode": "eager"}))
+    return _record(evidence, run_root)
