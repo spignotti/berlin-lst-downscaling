@@ -22,12 +22,16 @@ class V6ArmPlan:
     max_epochs: int
 
 
+_LR_SCHEDULES = ("constant", "cosine")
+
+
 @dataclass(frozen=True)
 class V6Matrix:
     arms: dict[str, V6ArmPlan]
     hours_per_epoch_estimate: float
     fixed_overhead_hours_estimate: float
     usd_per_hour: float
+    lr_schedule: str = "constant"
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,7 @@ class PlannedRun:
     config_name: str
     seed: int
     max_epochs: int
+    lr_schedule: str
 
 
 def _plain_int(value: object, label: str, *, minimum: int) -> int:
@@ -77,11 +82,18 @@ def parse_v6_matrix(raw: object) -> V6Matrix:
             f"v6 matrix arms differ from the registry: missing={sorted(expected - given)} "
             f"extra={sorted(given - expected)}"
         )
+    lr_schedule = raw.get("lr_schedule", "constant")
+    if lr_schedule not in _LR_SCHEDULES:
+        raise ValueError(f"lr_schedule must be one of {_LR_SCHEDULES}, got {lr_schedule!r}")
     arms: dict[str, V6ArmPlan] = {}
     for arm_id in V6_ABLATION_ARMS:
         entry = arms_raw[arm_id]
         if not isinstance(entry, Mapping):
             raise ValueError(f"arm {arm_id}: entry must be a mapping")
+        if "lr_schedule" in entry:
+            raise ValueError(
+                f"arm {arm_id}: lr_schedule is a matrix-level switch, not a per-arm key"
+            )
         seeds_raw = entry.get("seeds")
         if not isinstance(seeds_raw, (list, tuple)) or not seeds_raw:
             raise ValueError(f"arm {arm_id}: seeds must be a non-empty list")
@@ -99,6 +111,7 @@ def parse_v6_matrix(raw: object) -> V6Matrix:
             raw.get("fixed_overhead_hours_estimate"), "fixed_overhead_hours_estimate"
         ),
         usd_per_hour=_positive_float(raw.get("usd_per_hour"), "usd_per_hour"),
+        lr_schedule=lr_schedule,
     )
 
 
@@ -113,7 +126,9 @@ def load_v6_matrix(path: str | Path) -> V6Matrix:
 def plan_runs(matrix: V6Matrix) -> list[PlannedRun]:
     """Expand the matrix into one planned run per (arm, seed)."""
     return [
-        PlannedRun(arm_id, V6_ABLATION_ARMS[arm_id].config_name, seed, plan.max_epochs)
+        PlannedRun(
+            arm_id, V6_ABLATION_ARMS[arm_id].config_name, seed, plan.max_epochs, matrix.lr_schedule
+        )
         for arm_id, plan in matrix.arms.items()
         for seed in plan.seeds
     ]

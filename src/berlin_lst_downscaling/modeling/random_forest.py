@@ -36,7 +36,7 @@ import resource
 import time
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -71,6 +71,7 @@ from berlin_lst_downscaling.modeling.contracts import (
     REAL_PATCH_CELLS,
     REAL_PATCH_PX,
 )
+from berlin_lst_downscaling.modeling.evaluation_exports import score_patch_ssim_variants
 from berlin_lst_downscaling.modeling.metrics import (
     masked_abs_error_sums,
     masked_ssim_stats,
@@ -82,6 +83,11 @@ from berlin_lst_downscaling.modeling.patches import (
     RealSample,
     RealSourceConfig,
     patch_index_fingerprints,
+)
+from berlin_lst_downscaling.modeling.ssim_range import (
+    SsimDataRange,
+    check_ssim_range_fingerprints,
+    load_ssim_data_range,
 )
 
 _logger = logging.getLogger(__name__)
@@ -564,6 +570,8 @@ class EvalSplit:
     filled_feature_pixels: list[int]
     exclusions: dict[str, int]
     seconds: float
+    scene_ids: list[str]  # aligned with patch_ids
+    scene_dates: list[str | None]  # aligned with patch_ids
 
 
 def collect_eval_split(
@@ -578,6 +586,8 @@ def collect_eval_split(
     mask: list[np.ndarray] = []
     patch_ids: list[str] = []
     filled: list[int] = []
+    scene_ids: list[str] = []
+    scene_dates: list[str | None] = []
     before = Counter(reader.exclusions)
     started = time.monotonic()
     for position, ref in enumerate(refs):
@@ -602,6 +612,8 @@ def collect_eval_split(
         mask.append(sample.mask_100m[0])
         patch_ids.append(sample.meta.patch_id)
         filled.append(sample.meta.filled_feature_pixels)
+        scene_ids.append(sample.meta.scene_id)
+        scene_dates.append(sample.meta.scene_date)
     if not patch_ids:
         raise ValueError(f"split {split!r} evaluated no patch")
     return EvalSplit(
@@ -615,7 +627,15 @@ def collect_eval_split(
         filled_feature_pixels=filled,
         exclusions={k: v for k, v in (Counter(reader.exclusions) - before).items()},
         seconds=time.monotonic() - started,
+        scene_ids=scene_ids,
+        scene_dates=scene_dates,
     )
+
+
+def resolve_report_ssim_data_range(cfg: RealSourceConfig) -> SsimDataRange:
+    """Load the SSIM data range once, checked against the run's patch index."""
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
+    return load_ssim_data_range(expected_fingerprints=fingerprints)
 
 
 def score_stage(
@@ -623,6 +643,7 @@ def score_stage(
     model: RandomForestRegressor,
     stage: StageSelection,
     *,
+    ssim_range: SsimDataRange,
     aggregation: AggregationMethod = AGGREGATION_ARITHMETIC,
     n_feature_channels: int = N_FEATURE_CHANNELS,
 ) -> list[PatchRecord]:
@@ -648,7 +669,9 @@ def score_stage(
         mask = torch.from_numpy(cache.mask_100m[i][None, None])
         pooled = pool_10m_to_100m(prediction, aggregation, mask)
         error_sum, count = masked_abs_error_sums(pooled, target, mask)
-        ssim_sum, ssim_windows = masked_ssim_stats(pooled, target, mask)
+        ssim_sum, ssim_windows = masked_ssim_stats(
+            pooled, target, mask, data_range_k=ssim_range.data_range_k
+        )
         records.append(
             PatchRecord(
                 patch_id=patch_id,
@@ -658,6 +681,9 @@ def score_stage(
                 ssim_sum=float(ssim_sum),
                 ssim_windows=int(ssim_windows),
                 filled_feature_pixels=cache.filled_feature_pixels[i],
+                scene_id=cache.scene_ids[i],
+                scene_date=cache.scene_dates[i],
+                **asdict(score_patch_ssim_variants(pooled, target, mask)),
             )
         )
     return records
@@ -821,6 +847,7 @@ class RandomForestReport:
     git_revision: str
     written_at: str
     feature_schema_version: int = FEATURE_SCHEMA_VERSION
+    ssim_data_range: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -843,6 +870,7 @@ class RandomForestReport:
             "resource_usage": self.resource_usage,
             "git_revision": self.git_revision,
             "written_at": self.written_at,
+            "ssim_data_range": self.ssim_data_range,
         }
         # v1 payloads stay byte-identical: the field appears only for schema 5.
         if self.feature_schema_version != FEATURE_SCHEMA_VERSION:
@@ -866,9 +894,12 @@ def build_report(
     runtime_seconds: float,
     cache_bytes: int,
     git_revision: str,
+    ssim_range: SsimDataRange,
     feature_schema_version: int = FEATURE_SCHEMA_VERSION,
 ) -> RandomForestReport:
     """Assemble the writable artifact from the run's evidence."""
+    fingerprints = patch_index_fingerprints(cfg.patch_index_root)
+    check_ssim_range_fingerprints(ssim_range, fingerprints)
     return RandomForestReport(
         forest=spec.payload(),
         library_versions=library_versions(),
@@ -901,7 +932,8 @@ def build_report(
             "ard_root": cfg.ard_root,
             "aggregation": cfg.aggregation,
         },
-        fingerprints=patch_index_fingerprints(cfg.patch_index_root),
+        fingerprints=fingerprints,
+        ssim_data_range=ssim_range.payload(),
         resolved_config=resolved_config,
         runtime_seconds=runtime_seconds,
         resource_usage={
@@ -966,6 +998,7 @@ __all__ = [
     "probe_residuals",
     "reconstruct_10m_prediction",
     "resolve_stage_selection",
+    "resolve_report_ssim_data_range",
     "score_stage",
     "stage_inputs",
     "stage_matrix",

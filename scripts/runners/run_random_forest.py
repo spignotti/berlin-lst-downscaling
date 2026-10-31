@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -54,6 +55,11 @@ from berlin_lst_downscaling.modeling.channels import (
     ActiveChannelSelection,
     schema_version_from_config,
 )
+from berlin_lst_downscaling.modeling.evaluation_exports import (
+    EvaluationIdentity,
+    patch_export_filename,
+    write_patch_export,
+)
 from berlin_lst_downscaling.modeling.patches import (
     PatchRef,
     RealPatchReader,
@@ -76,6 +82,7 @@ from berlin_lst_downscaling.modeling.random_forest import (
     load_model,
     model_file_name,
     probe_residuals,
+    resolve_report_ssim_data_range,
     resolve_stage_selection,
     score_stage,
     stage_matrix,
@@ -85,6 +92,7 @@ from berlin_lst_downscaling.modeling.random_forest import (
     write_report,
     write_train_rows,
 )
+from berlin_lst_downscaling.modeling.ssim_range import SsimDataRange
 
 _logger = logging.getLogger(__name__)
 
@@ -161,6 +169,12 @@ def _resolve_splits(raw: object) -> tuple[str, ...]:
 def _probe_indices(cache: EvalSplit, per_split: int) -> list[int]:
     """Return the deterministic probe positions of one cached split."""
     return list(range(min(per_split, len(cache.patch_ids))))
+
+
+def _resolve_source_and_ssim(cfg: DictConfig) -> tuple[RealSourceConfig, SsimDataRange]:
+    """Build the source and load the SSIM data range once, before any data read."""
+    source = _source_config(cfg)
+    return source, resolve_report_ssim_data_range(source)
 
 
 @hydra.main(
@@ -248,7 +262,15 @@ def main(cfg: DictConfig) -> int:
             max_depth=spec.max_depth,
             n_jobs=spec.n_jobs,
         )
-        source = _source_config(cfg)
+        source, ssim_range = _resolve_source_and_ssim(cfg)
+        log_event(
+            _logger,
+            logging.INFO,
+            "ssim_data_range",
+            data_range_k=ssim_range.data_range_k,
+            version=ssim_range.version,
+            artifact_sha256=ssim_range.artifact_sha256,
+        )
         refs = load_patch_refs(source, splits=("train", *splits))
         for ref in refs:
             valid_year = (
@@ -380,6 +402,7 @@ def main(cfg: DictConfig) -> int:
                     cache,
                     model,
                     stage,
+                    ssim_range=ssim_range,
                     aggregation=source.aggregation,
                     n_feature_channels=n_feature_channels,
                 )
@@ -425,6 +448,7 @@ def main(cfg: DictConfig) -> int:
         probes = _write_probes(caches, stage_probes, probe_count, output_root, splits)
         report = build_report(
             cfg=source,
+            ssim_range=ssim_range,
             spec=spec,
             scope={
                 "wandb": {
@@ -497,6 +521,22 @@ def main(cfg: DictConfig) -> int:
         print(f"  Report: {uri}")
 
         _check_accounting(stage_results, splits, caches)
+        for stage in stages:
+            identity = EvaluationIdentity(
+                arm=f"random_forest_stage{stage.stage}",
+                seed=seed,
+                run_id=run_id,
+                checkpoint=model_file_name(stage.stage),
+            )
+            for split in splits:
+                write_patch_export(
+                    [asdict(r) for r in stage_results[stage.stage].patches if r.split == split],
+                    Path(output_root)
+                    / patch_export_filename(split, prefix=f"eval_stage{stage.stage}"),
+                    identity=identity,
+                    split=split,
+                    ssim_range=ssim_range,
+                )
         return 0
 
 

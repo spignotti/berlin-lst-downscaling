@@ -268,3 +268,60 @@ def test_invalid_early_stopping_flags_rejected(
     monkeypatch.setattr(sys, "argv", _argv("v6-l4", *flag))
     with pytest.raises(SystemExit, match=match):
         launcher.main()
+
+
+def test_non_v6_mode_rejects_lr_schedule(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv("stage4", "--lr-schedule", "cosine"))
+    with pytest.raises(SystemExit, match="--lr-schedule is only accepted by the v6 modes"):
+        launcher.main()
+
+
+def test_default_lr_schedule_is_constant_and_leaves_label_and_env_alone(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = _out(launcher, monkeypatch, capsys)
+    assert "trainer.lr_schedule.name=constant" in out
+    assert "lr schedule    : constant" in out
+    assert "unit-seed0-ep20\n" in out
+    assert "-cos" not in out
+    env = _submit_env(launcher, monkeypatch)
+    assert "VERTEX_LR_SCHEDULE" not in env
+    assert env["VERTEX_RUN_LABEL"] == "unit-seed0-ep20"
+
+
+def test_cosine_confirmation_run_wiring(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flags = ("--seed", "0", "--max-epochs", "40", "--lr-schedule", "cosine", "--skip-test")
+    out = _out(launcher, monkeypatch, capsys, *flags)
+    assert "run label      : unit-seed0-ep40-cos-notest" in out
+    overrides = next(
+        line for line in out.splitlines() if line.strip().startswith("hydra overrides:")
+    ).split()
+    for expected in (
+        "seed=0",
+        "trainer.max_epochs=40",
+        "trainer.lr_schedule.name=cosine",
+        "evaluate_test=false",
+    ):
+        assert expected in overrides
+    assert "early_stopping.enabled=true" not in overrides
+    assert "early stopping : off" in out
+    assert "lr schedule    : cosine (warmup 2, eta_min 0.0, per epoch, T_max=40)" in out
+    env = _submit_env(launcher, monkeypatch, *flags)
+    assert env["VERTEX_LR_SCHEDULE"] == "cosine"
+    assert env["VERTEX_SKIP_TEST"] == "1"
+    assert env["VERTEX_RUN_LABEL"] == "unit-seed0-ep40-cos-notest"
+
+
+def test_cosine_with_max_epochs_not_above_warmup_fails_before_submit(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(launcher, "_client", lambda region: pytest.fail("must not submit"))
+    argv = _argv("v6-l4", "--max-epochs", "2", "--lr-schedule", "cosine")
+    argv.remove("--preflight")
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises((SystemExit, ValueError)):
+        launcher.main()

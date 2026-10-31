@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 from hydra import compose, initialize_config_dir
 
 from berlin_lst_downscaling.modeling.channels import (
@@ -54,6 +55,8 @@ from berlin_lst_downscaling.modeling.v6_ablation_matrix import (
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = str(_REPO_ROOT / "configs" / "modeling")
 _MATRIX_PATH = _REPO_ROOT / "configs" / "ablation" / "v6_matrix.yaml"
+# Wiring-only SSIM data range on fake tensors; the production L comes from the committed artifact.
+_WIRING_SSIM_RANGE_K = 40.0
 
 
 def _compose(config_name: str, overrides: list[str] | None = None):
@@ -150,13 +153,16 @@ def _check_stage(config_name: str) -> list[str]:
         depth=4,
         residual_prior=True,
         loss_name=loss_name,
+        ssim_data_range_k=_WIRING_SSIM_RANGE_K,
     )
     task.eval()
     with torch.inference_mode():
         prediction = task(batch)
         pooled = pool_10m_to_100m(prediction)
         if loss_name == "thermal_aware":
-            loss = thermal_aware_loss(pooled, batch.target_100m, batch.mask_100m)
+            loss = thermal_aware_loss(
+                pooled, batch.target_100m, batch.mask_100m, data_range_k=_WIRING_SSIM_RANGE_K
+            )
         else:
             loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
     if not torch.isfinite(loss):
@@ -172,7 +178,7 @@ def _check_stage(config_name: str) -> list[str]:
         was_warn = torch.is_deterministic_algorithms_warn_only_enabled()
         try:
             torch.use_deterministic_algorithms(True)
-            loss_bwd = thermal_aware_loss(pred, target, mask)
+            loss_bwd = thermal_aware_loss(pred, target, mask, data_range_k=_WIRING_SSIM_RANGE_K)
             loss_bwd.backward()
         except RuntimeError as exc:
             failures.append(
@@ -205,6 +211,21 @@ def _check_v6_arm(arm_id: str) -> list[str]:
     except Exception as exc:  # noqa: BLE001 — report every guard failure
         return [f"{name}: guard failed: {exc}"]
     failures: list[str] = []
+    for schedule in ("constant", "cosine"):
+        sched_cfg = _compose(name, [f"trainer.lr_schedule.name={schedule}"])
+        try:
+            _guard_v6(sched_cfg, name)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{name}: lr_schedule={schedule} guard failed: {exc}")
+    for deviation in ("trainer.lr_schedule.warmup_epochs=3", "trainer.lr_schedule.eta_min=1e-6"):
+        dev_cfg = _compose(name, ["trainer.lr_schedule.name=cosine", deviation])
+        rejected = False
+        try:
+            assert_ablation_lock(dev_cfg)
+        except Exception:  # noqa: BLE001 — the lock must reject the deviation
+            rejected = True
+        if not rejected:
+            failures.append(f"{name}: lock accepted per-arm deviation {deviation}")
     selection = selection_from_config(cfg)
     if selection.names != arm.channels:
         return [f"{name}: channels {list(selection.names)} != expected {list(arm.channels)}"]
@@ -226,12 +247,15 @@ def _check_v6_arm(arm_id: str) -> list[str]:
         depth=4,
         residual_prior=True,
         loss_name=arm.loss,
+        ssim_data_range_k=_WIRING_SSIM_RANGE_K,
     )
     task.eval()
     with torch.inference_mode():
         pooled = pool_10m_to_100m(task(batch))
         if arm.loss == "thermal_aware":
-            loss = thermal_aware_loss(pooled, batch.target_100m, batch.mask_100m)
+            loss = thermal_aware_loss(
+                pooled, batch.target_100m, batch.mask_100m, data_range_k=_WIRING_SSIM_RANGE_K
+            )
         else:
             loss = masked_l1_loss(pooled, batch.target_100m, batch.mask_100m)
     if not torch.isfinite(loss):
@@ -249,9 +273,20 @@ def _check_v6_matrix() -> tuple[list[str], str]:
             f"v6 matrix/config mismatch: only in configs={sorted(config_files - matrix_configs)} "
             f"only in matrix={sorted(matrix_configs - config_files)}"
         )
+    for config_name in sorted(config_files):
+        raw = yaml.safe_load((Path(_CONFIG_DIR) / f"{config_name}.yaml").read_text("utf-8")) or {}
+        trainer_block = raw.get("trainer")
+        if isinstance(trainer_block, dict) and "lr_schedule" in trainer_block:
+            failures.append(f"{config_name}: locked profile must not set trainer.lr_schedule")
+        if any(str(key).startswith("trainer.lr_schedule") for key in raw):
+            failures.append(f"{config_name}: locked profile must not set trainer.lr_schedule")
     roots: dict[str, set[str]] = {}
     for run in plan_runs(matrix):
-        overrides = [f"seed={run.seed}", f"trainer.max_epochs={run.max_epochs}"]
+        overrides = [
+            f"seed={run.seed}",
+            f"trainer.max_epochs={run.max_epochs}",
+            f"trainer.lr_schedule.name={run.lr_schedule}",
+        ]
         cfg = _compose(run.config_name, overrides)
         try:
             _guard_v6(cfg, run.config_name)

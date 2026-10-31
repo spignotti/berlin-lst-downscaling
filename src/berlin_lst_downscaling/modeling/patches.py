@@ -39,8 +39,9 @@ import io
 import json
 import logging
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -163,6 +164,7 @@ class PatchRef:
     col: int  # global canonical 100 m anchor col
     n_eligible: int
     eligibility_mask: str
+    scene_date: str | None = None  # ISO date from an explicit index column, else None
 
 
 @dataclass(frozen=True)
@@ -314,6 +316,33 @@ def patch_index_fingerprints(patch_index_root: str) -> dict[str, str]:
     }
 
 
+_SCENE_DATE_COLUMNS: tuple[str, ...] = ("scene_date", "acquisition_date", "datetime")
+
+
+def _index_scene_date(row: Mapping[str, object]) -> str | None:
+    """Return an explicit index date as ``YYYY-MM-DD``, or None when absent.
+
+    Only a dedicated date column counts; the date is never inferred from the
+    year or parsed out of the scene ID.
+    """
+    for column in _SCENE_DATE_COLUMNS:
+        value = row.get(column)
+        if value is None:
+            continue
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+        except ValueError:
+            return date.fromisoformat(text).isoformat()
+    return None
+
+
 def load_patch_refs(
     cfg: RealSourceConfig,
     *,
@@ -373,6 +402,7 @@ def load_patch_refs(
                 col=int(r["col"]),
                 n_eligible=int(r["n_eligible"]),
                 eligibility_mask=str(r["eligibility_mask"]),
+                scene_date=_index_scene_date(r),
             )
         )
         if limit is not None and len(refs) >= limit:
@@ -704,6 +734,25 @@ class RealPatchReader:
             return self._record_exclusion(reason)
         return None
 
+    def read_target_and_mask(self, ref: PatchRef) -> tuple[np.ndarray, np.ndarray] | None:
+        """Read only the 100 m target and validity mask, or ``None`` after an exclusion.
+
+        Applies the same prior, footprint, and eligibility checks and records
+        the same exclusion as :meth:`admission_reason`; no feature window is read.
+        """
+        prior = self._prior_for(ref.scene_id)
+        if prior is None:
+            self._record_exclusion(NO_LANDSAT_REASON)
+            return None
+        if prior.window(row=ref.row, col=ref.col) is None:
+            self._record_exclusion(prior.unavailable_reason(row=ref.row, col=ref.col))
+            return None
+        target_mask, reason = self._read_target_and_mask(ref, prior)
+        if target_mask is None:
+            self._record_exclusion(reason)
+            return None
+        return target_mask.target, target_mask.mask
+
     # ── reading ───────────────────────────────────────────────────────
 
     def read_patch(self, ref: PatchRef) -> RealSample | None:
@@ -733,6 +782,7 @@ class RealPatchReader:
                 row=ref.row,
                 col=ref.col,
                 filled_feature_pixels=filled,
+                scene_date=ref.scene_date,
             ),
             features=features,
             lst_prior_k=prior_k[None].astype(np.float32),

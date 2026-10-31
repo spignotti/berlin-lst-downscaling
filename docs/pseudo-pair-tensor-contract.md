@@ -108,8 +108,12 @@ metric, computed identically for the model and the naive baseline.
   valid-cell counts do not carry equal weight.
 - SSIM at 100 m is logged as a **secondary** diagnostic only. It never
   enters the loss and never gates checkpoint selection. It is evaluated on
-  the pooled 100 m prediction with a fixed window and a fixed documented
-  Kelvin data range; only windows whose contributing cells are all valid
+  the pooled 100 m prediction with a fixed window and the fixed data range
+  L from the committed artifact `configs/modeling/ssim_data_range/v1.yaml`
+  (L = p99.5 − p0.5 of the valid 100 m targets of the train split
+  2017–2023 only, derived by `scripts/operators/derive_ssim_data_range.py`;
+  v1: L = 30.622 K). Production paths raise if the artifact is missing, a
+  placeholder, or not train-only; only windows whose contributing cells are all valid
   are counted, and the supported-window count is reported. When no window
   is supported the value is reported as unavailable, never as zero.
 - Huber, thermal-aware, and other loss families stay out of Stage 1.
