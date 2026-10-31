@@ -73,7 +73,11 @@ from berlin_lst_downscaling.modeling.guards import (
     guard_modeling_config,
 )
 from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
-from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
+from berlin_lst_downscaling.modeling.metrics import (
+    EVAL_PREDICTION_CLAMP_K,
+    MaskedMAE,
+    pool_10m_to_100m,
+)
 from berlin_lst_downscaling.modeling.patches import (
     RealSourceConfig,
     assert_scaler_matches_config,
@@ -576,6 +580,7 @@ def _score_test_once(
         "mae_100m": report["mae_100m"],
         "mae_100m_unclamped": float(metric.compute()),
         "test_report": report,
+        "prediction_clamp_k": [float(v) for v in EVAL_PREDICTION_CLAMP_K],
         "abs_error_sum": report["abs_error_sum"],
         "valid_cells": report["valid_cells"],
         "patches": int(patches.get("test", 0)) if isinstance(patches, dict) else 0,

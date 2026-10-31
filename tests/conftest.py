@@ -54,9 +54,7 @@ def _filled_ssim_artifact(tmp_path_factory, monkeypatch):  # noqa: ANN001, ANN20
     Tests that need the committed placeholder re-monkeypatch
     ``ssim_range.SSIM_DATA_RANGE_ARTIFACT`` to the real path.
     """
-    path = write_filled_ssim_artifact(
-        tmp_path_factory.mktemp("ssim_artifact") / "v1.yaml"
-    )
+    path = write_filled_ssim_artifact(tmp_path_factory.mktemp("ssim_artifact") / "v1.yaml")
     monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", path)
     return path
 

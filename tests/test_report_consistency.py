@@ -226,6 +226,7 @@ def test_score_test_once_reports_clamped_mae_matching_export(
     assert result["mae_100m"] == pytest.approx((10.0 + 100.0) / 2)
     assert result["mae_100m_unclamped"] == pytest.approx((10.0 + 300.0) / 2)
     assert result["mae_100m"] != pytest.approx(result["mae_100m_unclamped"])
+    assert result["prediction_clamp_k"] == [150.0, 400.0]
     table = pq.read_table(tmp_path / patch_export_filename("test"))
     pooled = sum(table.column("abs_error_sum").to_pylist()) / sum(
         table.column("valid_cells").to_pylist()
