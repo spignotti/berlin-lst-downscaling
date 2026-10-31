@@ -28,7 +28,7 @@ pushes and opens the PR; you commit on the current branch only.
   violations raise; they are never skipped, clamped, or defaulted silently. Resampling is always explicit.
 - **Evidence for every claim.** Each ticked acceptance criterion in a PR body names the test, validator, or
   command output that proves it (paste the relevant lines). "Should work" is not evidence.
-- **No secrets.** Never read `.env*` files, print tokens, or write credentials to code, configs, or logs.
+- **No secrets.** Never read `.env*` files, print tokens, or write credentials to code, configs, or logs. Secrets live only in Infisical (thesis project, env `dev`: `/operator`, `/data`, `/vertex`) and are reached only through `with-gcp-operator.sh`, `sync-vm-env.sh`, or the Vertex entrypoint.
   Use the environment variables the code already expects.
 - **Do not run pipelines.** No VM launchers, Vertex launches, GCS writes, or republishes from a coding run.
   Frozen docs (`docs/results/`, `docs/*-full-results.md`, `docs/stage1-*`, `docs/random-forest-*`) stay
