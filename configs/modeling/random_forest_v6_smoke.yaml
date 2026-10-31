@@ -1,4 +1,6 @@
 # @package _global_
+# WARNING: this config OPENS TEST 2025 (splits validation + test). Do not run it
+# before the v6 ablation matrix is frozen; use random_forest_v6_val_smoke instead.
 # Random-forest v6 residual baseline smoke (v3 data chain, feature schema 5): a bounded, deterministic subset of
 # the published patch index with deliberately small trees. Every method
 # constant (criterion, bootstrap, max_features, min_samples_leaf, seed) is

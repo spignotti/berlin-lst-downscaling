@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Run a committed RF smoke or full baseline, validate, secure artifacts, and stop.
-# Usage: run-random-forest-vm.sh <smoke|full|v6-smoke|v6-full> <branch> <hourly-rate-usd>
+# Usage: run-random-forest-vm.sh <smoke|full|v6-smoke|v6-full|v6-val-smoke|v6-val-full> <branch> <hourly-rate-usd>
 # Full mode requires operator inspection of smoke memory/throughput first.
+# v6-smoke/v6-full open test 2025; until the v6 ablation matrix is frozen use
+# v6-val-smoke/v6-val-full (validation 2024 only, never reads a test patch).
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
@@ -14,7 +16,9 @@ case "$MODE" in
   full) CONFIG="random_forest_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
   v6-smoke) CONFIG="random_forest_v6_smoke"; RUN_SECONDS=1800; TOTAL_SECONDS=3600 ;;
   v6-full) CONFIG="random_forest_v6_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
-  *) echo "Usage: $0 <smoke|full|v6-smoke|v6-full> <branch> <hourly-rate-usd>" >&2; exit 1 ;;
+  v6-val-smoke) CONFIG="random_forest_v6_val_smoke"; RUN_SECONDS=1800; TOTAL_SECONDS=3600 ;;
+  v6-val-full) CONFIG="random_forest_v6_val_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
+  *) echo "Usage: $0 <smoke|full|v6-smoke|v6-full|v6-val-smoke|v6-val-full> <branch> <hourly-rate-usd>" >&2; exit 1 ;;
 esac
 if [[ ! "$HOURLY_RATE" =~ ^[0-9]+([.][0-9]+)?$ ]] \
   || ! awk -v rate="$HOURLY_RATE" 'BEGIN { exit !(rate > 0 && rate * 8 <= 10) }'; then
@@ -63,6 +67,7 @@ fi
 vm_init_run "random-forest-$MODE"
 RUN_DIR="random-forest"
 if [[ "$MODE" == v6-* ]]; then RUN_DIR="random-forest-v6"; fi
+if [[ "$MODE" == v6-val-* ]]; then RUN_DIR="random-forest-v6-notest"; fi
 OUTPUT_REL="data/runs/$RUN_DIR/$WRAP_RUN_ID"
 REMOTE_OUTPUT="$APP_DIR/$OUTPUT_REL"
 REPO_ROOT="$(cd "$VM_SCRIPTS/../../.." && pwd)"
@@ -91,7 +96,7 @@ fi
 vm_push_deploy
 REMAINING=$(remaining_seconds)
 RESERVE=1200
-if [[ "$MODE" == "full" || "$MODE" == "v6-full" ]]; then RESERVE=3600; fi
+if [[ "$MODE" == "full" || "$MODE" == "v6-full" || "$MODE" == "v6-val-full" ]]; then RESERVE=3600; fi
 AVAILABLE=$((REMAINING - RESERVE))
 if (( AVAILABLE < 60 )); then
   echo "ERROR: deployment consumed the run budget; refusing to launch." >&2
