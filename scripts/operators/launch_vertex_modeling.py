@@ -8,6 +8,11 @@ temporal runs), and ``isolate-shadows`` / ``isolate-era5`` (issue #63
 single-family runs). All of those stay under the residual lock. Efficiency
 and verification modes are closed.
 
+``v6-val-rescore`` is a separate, fixed-scope mode: one job re-scores the 27
+frozen v6 ``best.ckpt`` files on validation 2024 only (no training, no test
+pass). It has its own handler, ``_main_v6_val_rescore``, and rejects every
+training, test and cache option.
+
 Server-side job limits, a single worker pool, no persistent resource, and no
 retries are set here so a disconnected client cannot leave an unbounded or
 repeated GPU job. The launcher never handles a secret: it passes only
@@ -77,6 +82,17 @@ from berlin_lst_downscaling.modeling.run import (
     contract_invariants,
     guard_modeling_config,
 )
+from berlin_lst_downscaling.modeling.v6_val_rescore import (
+    MATRIX_EVIDENCE_PREFIX,
+    MATRIX_SOURCE_SHA,
+    RESCORE_LABEL,
+    RESCORE_MANIFEST_URI,
+    RESCORE_PREFIX,
+    rescore_inventory,
+)
+from berlin_lst_downscaling.modeling.v6_val_rescore import (
+    compose_run_config as compose_rescore_run_config,
+)
 from berlin_lst_downscaling.modeling.verification_protocol import (
     VERIFICATION_MAX_HOURLY_RATE_USD,
     VERIFICATION_MAX_JOB_EXPOSURE_USD,
@@ -100,6 +116,8 @@ ACCELERATOR_TYPE = "NVIDIA_TESLA_T4"
 # which keeps its trailing slash so `.../modeling-evil` cannot pass the check.
 EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
 APPROVED_EVIDENCE_ROOT = "gs://berlin-lst-training-data/qa/modeling/"
+if EVIDENCE_PREFIX != MATRIX_EVIDENCE_PREFIX:
+    raise RuntimeError("launcher EVIDENCE_PREFIX diverged from the v6 matrix evidence prefix")
 
 # Server-side bounds (seconds). The job timeout is the run's hard cost ceiling.
 DEFAULT_TIMEOUT_SECONDS = 2700
@@ -112,6 +130,17 @@ PROBE_TIMEOUT_SECONDS = 10800
 # roughly 2x the heuristic full-run wall clock, not a measured runtime.
 FULL_TIMEOUT_SECONDS = 172800
 DEFAULT_MAX_WAIT_SECONDS = 600
+
+# Validation-only rescore of the frozen v6 matrix (one job, 27 checkpoints). The
+# hourly cap is a user authorization, not a verified list price.
+V6_VAL_RESCORE_MODE = "v6-val-rescore"
+VAL_RESCORE_TIMEOUT_SECONDS = 18000
+VAL_RESCORE_MAX_TIMEOUT_SECONDS = 21600
+VAL_RESCORE_MAX_HOURLY_RATE_USD = 1.00
+VAL_RESCORE_MAX_EXPOSURE_USD = 7.00
+VAL_RESCORE_MAX_WAIT_SECONDS = 1800
+VAL_RESCORE_PROFILE = "val-rescore"
+VAL_RESCORE_OUTPUT_ROOT = f"data/runs/v6-val-rescore/{RESCORE_LABEL}"
 
 # Full-run cost ceilings (issue #53). One on-demand n1-standard-4 + T4 for at
 # most 48h; the launcher refuses to submit above $50 projected compute. The
@@ -1020,13 +1049,204 @@ def _wait_self_check() -> int:
     return 0
 
 
+def _val_rescore_env(args: argparse.Namespace) -> list[tuple[str, str]]:
+    """Job env for the rescore mode: no training, test or cache variables."""
+    return [
+        ("VERTEX_RUN_LABEL", RESCORE_LABEL),
+        ("VERTEX_SOURCE_SHA", args.source_sha),
+        ("VERTEX_IMAGE_DIGEST", args.image_uri.split("@", 1)[1]),
+        ("VERTEX_EVIDENCE_URI", RESCORE_MANIFEST_URI),
+        ("VERTEX_PROFILE", VAL_RESCORE_PROFILE),
+        ("VERTEX_OUTPUT_ROOT", VAL_RESCORE_OUTPUT_ROOT),
+        ("INFISICAL_MACHINE_IDENTITY_ID", args.infisical_identity),
+        ("INFISICAL_PROJECT_ID", args.infisical_project),
+        ("INFISICAL_ENV", args.infisical_env),
+        ("INFISICAL_SECRET_PATH", args.infisical_path),
+    ]
+
+
+def _main_v6_val_rescore(args: argparse.Namespace) -> int:
+    mode = V6_VAL_RESCORE_MODE
+    rejected = {
+        "--seed": args.seed is not None,
+        "--max-epochs": args.max_epochs is not None,
+        "--lr-schedule": args.lr_schedule is not None,
+        "--early-stopping-patience": args.early_stopping_patience is not None,
+        "--early-stopping-min-delta": args.early_stopping_min_delta is not None,
+        "--patch-cache prebuilt": args.patch_cache != "job_local",
+        "--allow-job-local-fallback": args.allow_job_local_fallback,
+        "--efficiency-slot": args.efficiency_slot is not None,
+        "--efficiency-role": args.efficiency_role is not None,
+        "--projected-noncompute-total-usd": args.projected_noncompute_total_usd is not None,
+    }
+    for flag, given in rejected.items():
+        if given:
+            raise SystemExit(f"ERROR: {flag} is not accepted by --mode {mode}")
+    if args.skip_test:
+        raise SystemExit(
+            f"ERROR: --skip-test is not accepted by --mode {mode}: the mode is "
+            "validation-only by construction; there is no test pass to skip"
+        )
+    if args.evidence_prefix != EVIDENCE_PREFIX:
+        raise SystemExit(
+            f"ERROR: --evidence-prefix is fixed to {EVIDENCE_PREFIX} for --mode {mode}"
+        )
+    if args.run_label is not None and args.run_label != RESCORE_LABEL:
+        raise SystemExit(f"ERROR: --run-label is fixed to {RESCORE_LABEL} for --mode {mode}")
+
+    required = {
+        "--image-uri": args.image_uri,
+        "--source-sha": args.source_sha,
+        "--service-account": args.service_account,
+        "--infisical-identity": args.infisical_identity,
+        "--infisical-project": args.infisical_project,
+        "--hourly-rate-usd": args.hourly_rate_usd,
+    }
+    missing = [flag for flag, value in required.items() if value is None or value == ""]
+    if missing:
+        raise SystemExit(f"ERROR: missing required options: {', '.join(missing)}")
+    _validate_image_uri(args.image_uri)
+    if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
+        raise SystemExit("ERROR: --source-sha must be the full 40-character commit SHA")
+
+    hourly_rate = float(args.hourly_rate_usd)
+    _require_positive_finite("--hourly-rate-usd", hourly_rate)
+    if hourly_rate > VAL_RESCORE_MAX_HOURLY_RATE_USD:
+        raise SystemExit(
+            f"ERROR: --hourly-rate-usd exceeds the ${VAL_RESCORE_MAX_HOURLY_RATE_USD:.2f}/hour "
+            "user-authorized cap"
+        )
+    timeout_seconds = (
+        VAL_RESCORE_TIMEOUT_SECONDS if args.timeout_seconds is None else args.timeout_seconds
+    )
+    _require_positive_finite("--timeout-seconds", float(timeout_seconds))
+    if timeout_seconds > VAL_RESCORE_MAX_TIMEOUT_SECONDS:
+        raise SystemExit(
+            f"ERROR: --timeout-seconds {timeout_seconds} exceeds the "
+            f"{VAL_RESCORE_MAX_TIMEOUT_SECONDS}s ceiling"
+        )
+    max_wait_seconds = (
+        DEFAULT_MAX_WAIT_SECONDS if args.max_wait_seconds is None else args.max_wait_seconds
+    )
+    if not math.isfinite(float(max_wait_seconds)) or max_wait_seconds < 0:
+        raise SystemExit("ERROR: --max-wait-seconds must be a finite non-negative number")
+    if max_wait_seconds > VAL_RESCORE_MAX_WAIT_SECONDS:
+        raise SystemExit(f"ERROR: --max-wait-seconds cannot exceed {VAL_RESCORE_MAX_WAIT_SECONDS}")
+    max_exposure = (
+        VAL_RESCORE_MAX_EXPOSURE_USD if args.max_exposure_usd is None else args.max_exposure_usd
+    )
+    _require_positive_finite("--max-exposure-usd", float(max_exposure))
+    if max_exposure > VAL_RESCORE_MAX_EXPOSURE_USD:
+        raise SystemExit(
+            f"ERROR: --max-exposure-usd cannot exceed ${VAL_RESCORE_MAX_EXPOSURE_USD:.2f}"
+        )
+    exposure = _exposure_usd(hourly_rate, timeout_seconds, max_wait_seconds)
+    if not math.isfinite(exposure) or exposure > max_exposure:
+        raise SystemExit(
+            f"ERROR: projected exposure ${exposure:.2f} exceeds the "
+            f"${max_exposure:.2f} ceiling; refusing to submit"
+        )
+
+    runs = rescore_inventory()
+    for run in runs:
+        try:
+            compose_rescore_run_config(
+                run, output_root=f"{VAL_RESCORE_OUTPUT_ROOT}/runs/{run.run_label}"
+            )
+        except ValueError as exc:
+            raise SystemExit(f"ERROR: {run.config_name} is off-contract: {exc}") from exc
+
+    missing_ckpts = [run.checkpoint_uri for run in runs if not _evidence_exists(run.checkpoint_uri)]
+    if missing_ckpts:
+        raise SystemExit("ERROR: missing checkpoints:\n  " + "\n  ".join(missing_ckpts))
+    used = [
+        uri
+        for uri in (RESCORE_MANIFEST_URI, *(run.export_uri for run in runs))
+        if _evidence_exists(uri)
+    ]
+    if used:
+        raise SystemExit("ERROR: create-only destination already used:\n  " + "\n  ".join(used))
+
+    env = _val_rescore_env(args)
+
+    print("Planned Vertex Custom Job:")
+    print(f"  project/region : {PROJECT}/{REGION}")
+    print(f"  mode           : {mode}")
+    print(f"  machine        : {MACHINE_TYPE} + 1x {ACCELERATOR_TYPE} (on-demand)")
+    print("  jobs           : 1 (one custom job scores all 27 checkpoints sequentially)")
+    print(f"  image          : {args.image_uri}")
+    print(f"  service account: {args.service_account}")
+    print(
+        "  scope          : validation 2024 only; evaluate_test=false; no test 2025 ref, "
+        "metric, or export (mode cannot score test)"
+    )
+    print("  training       : none: inference only, no optimizer step, no new checkpoint")
+    print(
+        "  patch cache    : job-local rebuild once (validation-only, full v6 width), "
+        "reused read-only for all 27; no prebuilt/shared cache read or written"
+    )
+    print(f"  matrix source  : {MATRIX_SOURCE_SHA}")
+    print(f"  inventory      : {len(runs)} checkpoints")
+    for run in runs:
+        print(f"  {run.arm_id} seed{run.seed}  {run.checkpoint_uri} -> {run.export_uri}")
+    print(f"  destination    : {RESCORE_PREFIX}/")
+    print(f"  manifest       : {RESCORE_MANIFEST_URI}")
+    print(f"  timeout        : {timeout_seconds}s  max-wait: {max_wait_seconds}s")
+    print(
+        f"  exposure       : ~${exposure:.2f} (at ${hourly_rate:.2f}/h; cap "
+        f"${VAL_RESCORE_MAX_HOURLY_RATE_USD:.2f}/h user-authorized, not a list price)"
+    )
+
+    if args.preflight:
+        print("preflight only: no job submitted")
+        return 0
+
+    client = _client(REGION)
+    resource_name = _submit(
+        client,
+        display_name=f"{mode}-{RESCORE_LABEL}",
+        image_uri=args.image_uri,
+        env=env,
+        service_account=args.service_account,
+        timeout_seconds=timeout_seconds,
+        profile=mode,
+    )
+    print(f"submitted job: {resource_name}", flush=True)
+    submitted_at = time.monotonic()
+    start_deadline = submitted_at + max_wait_seconds
+    overall_deadline = start_deadline + timeout_seconds + CANCEL_CONFIRMATION_SECONDS
+    final, queue_deadline_missed = _poll_until_terminal(
+        client,
+        resource_name,
+        start_deadline=start_deadline,
+        max_wait_seconds=max_wait_seconds,
+        overall_deadline=overall_deadline,
+    )
+    print(f"final state: {final.name}")
+    if queue_deadline_missed:
+        print(
+            f"FAIL: {resource_name} missed the provisioning deadline; "
+            "do not resubmit without inspecting the destination prefix."
+        )
+        return 1
+    if final == JobState.JOB_STATE_SUCCEEDED:
+        print(f"SUCCESS: bounded vertex {mode} completed. Evidence: {RESCORE_MANIFEST_URI}")
+        return 0
+    print(f"FAIL: vertex {mode} ended {final.name}. Query with --status {resource_name}")
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-uri")
     parser.add_argument("--source-sha")
     parser.add_argument("--run-label")
     parser.add_argument("--service-account")
-    parser.add_argument("--mode", choices=sorted(MODE_CONFIG_NAME), default="smoke")
+    parser.add_argument(
+        "--mode",
+        choices=sorted([*MODE_CONFIG_NAME, V6_VAL_RESCORE_MODE]),
+        default="smoke",
+    )
     parser.add_argument(
         "--efficiency-slot",
         type=int,
@@ -1138,6 +1358,9 @@ def main() -> int:
 
     if args.status:
         return _print_status(args.status)
+
+    if args.mode == V6_VAL_RESCORE_MODE:
+        return _main_v6_val_rescore(args)
 
     required = {
         "--image-uri": args.image_uri,

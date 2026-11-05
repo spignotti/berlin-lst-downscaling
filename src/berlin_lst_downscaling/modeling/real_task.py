@@ -574,6 +574,52 @@ class RealPatchDataModule(LightningDataModule):
         PatchCache(cache_root, provenance)
         self._install_cached_datasets(cache_root, provenance)
 
+    def build_validation_only_cache(self, cache_root: Path, *, max_bytes: int) -> dict[str, object]:
+        """Write a validation-only, full-schema-width job-local cache; return its provenance.
+
+        Validation-only: the module must be set up with ``splits == ("validation",)``
+        and identity channel indices over the whole source stack, so each consumer
+        selects its own channels at collation time. The test split is never cached.
+        Used by the v6 validation rescore only; training paths keep ``_build_cache``.
+        """
+        if self.reader is None or not self._setup_done:
+            raise RuntimeError("setup() must run before build_validation_only_cache()")
+        if self.splits != ("validation",):
+            raise RuntimeError(
+                f"validation-only cache requires splits ('validation',), got {self.splits!r}"
+            )
+        if self.cache_root is not None:
+            raise RuntimeError("validation-only cache requires a module set up without a cache")
+        source_width = len(self.reader.scaler.channel_order)
+        if self.channel_indices != tuple(range(source_width)):
+            raise RuntimeError(
+                "validation-only cache requires identity channel indices over the "
+                f"{source_width}-channel source stack, got {self.channel_indices!r}"
+            )
+        refs = self._admitted.get("validation", [])
+        if not refs:
+            raise RuntimeError("cannot build an empty validation-only cache")
+        bad = sorted({ref.split for ref in refs if ref.split != "validation"})
+        if bad:
+            raise RuntimeError(f"validation-only cache refuses non-validation refs from {bad}")
+        if cache_root.exists():
+            raise RuntimeError(f"validation-only cache root {cache_root} already exists")
+        provenance, source_channels = self._cache_provenance(refs)
+        self.cache_max_bytes = max_bytes
+        with timed_phase(
+            "cache_build",
+            logger=logger,
+            cache_build_workers=self.cache_build_workers,
+            patch_count=len(refs),
+            cache_reused=False,
+        ):
+            started = time.perf_counter()
+            self._write_cache(cache_root, self.reader, refs, source_channels, provenance)
+            self.cache_build_seconds = time.perf_counter() - started
+        self.patch_cache_source = "job_local"
+        PatchCache(cache_root, provenance)
+        return provenance
+
     def _materialize_prebuilt(self) -> None:
         """Fetch the versioned prebuilt cache and install it as the split datasets."""
         if self.cache_root is None or self.reader is None or self.prebuilt_uri_root is None:

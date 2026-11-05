@@ -183,6 +183,10 @@ A modeling image rebuilt from this commit is required before any submit: the
 entrypoint passes `seed=` and `trainer.max_epochs=` overrides that older
 images do not contain.
 
+The frozen matrix's 27 best checkpoints are re-scored on validation 2024 only,
+without training or any test pass, by `--mode v6-val-rescore` (one job, create-only
+per-patch exports). See "v6 validation-only rescore" in `docs/vertex-gpu-training.md`.
+
 ## Baselines on the v3 chain
 
 `random_forest_v6_full.yaml` (and `random_forest_v6_smoke.yaml`) and
