@@ -26,6 +26,11 @@
 #   VERTEX_PATCH_CACHE_SOURCE ("", job_local or prebuilt; prebuilt appends
 #   +data.patch_cache.source=prebuilt) and VERTEX_PATCH_CACHE_FALLBACK=1 (only with
 #   prebuilt; +data.patch_cache.allow_job_local_fallback=true)
+#
+# VERTEX_PROFILE=val-rescore (v6 validation-only rescore of the 27 frozen
+# checkpoints): runs scripts/operators/rescore_v6_validation.py, which uploads its
+# own create-only exports and manifest; vertex_evidence.py is not called. The
+# training and cache variables above are rejected for this profile.
 set -euo pipefail
 
 VERTEX_CONTAINER_STARTED_AT_NS="$(date +%s%N)"
@@ -61,6 +66,9 @@ elif [[ "$PROFILE" == "verification" ]]; then
   mkdir -p "$(dirname "$OUTPUT_ROOT")"
   mkdir "$OUTPUT_ROOT"
   export VERTEX_VERIFICATION_OUTPUT_CLAIMED="$VERTEX_RUN_LABEL"
+elif [[ "$PROFILE" == "val-rescore" ]]; then
+  mkdir -p "$(dirname "$OUTPUT_ROOT")"
+  mkdir "$OUTPUT_ROOT"
 else
   mkdir -p "$OUTPUT_ROOT"
 fi
@@ -73,7 +81,22 @@ export INFISICAL_TOKEN
 INFISICAL_TOKEN="$(infisical login --method=gcp-id-token \
   --machine-identity-id="$INFISICAL_MACHINE_IDENTITY_ID" --plain --silent)"
 
-if [[ "$PROFILE" == "verification" ]]; then
+if [[ "$PROFILE" == "val-rescore" ]]; then
+  for forbidden in VERTEX_SEED VERTEX_MAX_EPOCHS VERTEX_LR_SCHEDULE \
+    VERTEX_EARLY_STOPPING_PATIENCE VERTEX_EARLY_STOPPING_MIN_DELTA VERTEX_SKIP_TEST \
+    VERTEX_PATCH_CACHE_SOURCE VERTEX_PATCH_CACHE_FALLBACK VERTEX_EPOCH_METRICS_URI; do
+    if [[ -n "${!forbidden:-}" ]]; then
+      echo "ERROR: $forbidden is not accepted by the val-rescore profile" >&2
+      exit 2
+    fi
+  done
+  run_command=(uv run python scripts/operators/rescore_v6_validation.py
+    --output-root "$OUTPUT_ROOT"
+    --source-sha "$VERTEX_SOURCE_SHA"
+    --image-digest "$VERTEX_IMAGE_DIGEST"
+    --manifest-uri "$VERTEX_EVIDENCE_URI"
+    --device cuda)
+elif [[ "$PROFILE" == "verification" ]]; then
   : "${VERTEX_VERIFICATION_SESSION:?VERTEX_VERIFICATION_SESSION is required}"
   : "${VERTEX_VERIFICATION_RATE_USD:?VERTEX_VERIFICATION_RATE_USD is required}"
   : "${VERTEX_VERIFICATION_RATE_SOURCE:?VERTEX_VERIFICATION_RATE_SOURCE is required}"
@@ -163,6 +186,15 @@ infisical run --projectId="$INFISICAL_PROJECT_ID" --env="$INFISICAL_ENV" \
   "${run_command[@]}" 2>&1 | tee "$RESULT_FILE"
 rc=${PIPESTATUS[0]}
 set -e
+
+if [[ "$PROFILE" == "val-rescore" ]]; then
+  if [[ "$rc" -ne 0 ]]; then
+    echo "vertex val-rescore run failed (rc=$rc); no manifest uploaded"
+    exit "$rc"
+  fi
+  echo "vertex val-rescore run completed; exports and manifest uploaded by the rescore script"
+  exit 0
+fi
 
 if [[ "$rc" -ne 0 && "$PROFILE" != "efficiency" && "$PROFILE" != "verification" ]]; then
   if [[ "$PROFILE" == "full" && -n "${VERTEX_EPOCH_METRICS_URI:-}" && -f "$OUTPUT_ROOT/epoch_metrics.json" ]]; then

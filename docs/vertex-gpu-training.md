@@ -456,6 +456,72 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 
 The resulting run label is `<label>-seed0-ep40-cos-notest`.
 
+### v6 validation-only rescore (`--mode v6-val-rescore`)
+
+Purpose: score the 27 frozen v6 `best.ckpt` files (9 arms x seeds 0/1/2, matrix
+source SHA `070b33ce4323834b7813db4609b5052702c4505f`, run labels
+`v6m-070b33c-<arm-lowercase>-seed<0|1|2>-ep40-cos`) on validation 2024 and
+export per-patch metrics. Inference only: no optimizer step, no new checkpoint.
+
+Scope:
+
+- Validation 2024 only. `evaluate_test=false` by construction; no test 2025 ref,
+  metric, or export is read or written. `--skip-test` is rejected as
+  meaningless (there is no test pass to skip), as are `--seed`, `--max-epochs`,
+  `--lr-schedule`, early-stopping flags, `--patch-cache prebuilt` and a custom
+  `--evidence-prefix` or `--run-label`.
+- One Vertex custom job (`n1-standard-4` + 1x `NVIDIA_TESLA_T4`, on-demand,
+  `europe-west3`, project `berlin-lst-training`) scores all 27 checkpoints
+  sequentially.
+- A job-local validation-only patch cache is built once at full v6 width and
+  reused read-only by all 27 arms (each arm selects its channels at collation).
+  The prebuilt GCS cache was deleted and is not used; no shared cache is read
+  or written.
+
+Identity checks per checkpoint: generation-pinned download plus sha256, strict
+load, hyperparameters compared with the locked arm config, and the stored
+`best_model_score` re-derived from the recomputed validation MAE within 1e-3
+relative. Any mismatch fails the job before the manifest is written.
+
+Outputs (create-only; the manifest is uploaded last; matrix evidence and
+checkpoints are never overwritten):
+
+```
+gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest/<run-label>/eval_validation_patches.parquet
+gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest/manifest.json
+```
+
+The export is the schema-version-2 per-patch input for `analysis.scene_bootstrap`
+and for the subsequent spatial analysis (pooled per-patch/scene sums; no
+cell-level predictions or raw 10 m tensors).
+
+Runtime and cost: 27 sequential inference passes, one validation-only cache
+build and provisioning. The estimate is well under 5 h, based on the measured L4
+cosine job (0.62 h for provisioning, the full train+validation cache build and
+post-fit). Timeout 18000 s. At the user-authorized cap of USD 1.00/h (not a
+verified list price) the maximum exposure is (18000 + 600)/3600 x 1.00 = USD 5.17.
+
+Preflight (submits nothing; validates the inventory, composes all 27 configs,
+checks that every checkpoint exists and no destination is used):
+
+```bash
+uv run --group operators python scripts/operators/launch_vertex_modeling.py \
+  --mode v6-val-rescore \
+  --image-uri europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@<post-merge-digest> \
+  --source-sha <post-merge-sha> \
+  --service-account berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com \
+  --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
+  --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
+  --infisical-env dev --infisical-path /vertex \
+  --hourly-rate-usd 1.00 --timeout-seconds 18000 --max-wait-seconds 600 \
+  --preflight
+```
+
+The submit is the same command without `--preflight`. It runs only after the
+merge and the image build, once. Reconnect with `--mode v6-val-rescore --status
+<resource-name>` (do not resubmit); cancel with
+`gcloud ai custom-jobs cancel <job-id> --region europe-west3 --project berlin-lst-training`.
+
 ### Prebuilt patch cache
 
 By default each v6 job builds its patch cache from the rasters (the threaded
