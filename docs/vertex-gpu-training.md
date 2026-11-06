@@ -456,6 +456,27 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 
 The resulting run label is `<label>-seed0-ep40-cos-notest`.
 
+### v6 matrix launcher (`scripts/runners/vertex/`)
+
+`scripts/runners/vertex/launch_v6_matrix.sh` wraps this launcher for the
+9-arm x 3-seed v6 matrix (40 epochs, cosine, prebuilt cache). It prints help
+by default, needs explicit image digest, source SHA, label prefix and run
+directory, and submits only through its `submit` / `submit-all` subcommands.
+Existing jobs are looked up by exact displayName: SUCCEEDED is skipped, an
+active job is waited on, FAILED/CANCELLED stops the loop without resubmitting.
+See [`scripts/runners/vertex/README.md`](../scripts/runners/vertex/README.md).
+
+### Epoch numbering (1-based summaries, 0-based Lightning)
+
+Evidence and summary fields (`best_epoch`, `stopped_epoch`, `epochs_completed`,
+`epoch_metrics.json`, `read_epoch_curve.py` output) count epochs from 1.
+Lightning's `trainer.current_epoch` and the checkpoint filename
+`best-<epoch>-<metric>.ckpt` count from 0; `_best_epoch_from_path` in
+`modeling/run.py` adds one. Example from the v6 matrix (L4, seed 0,
+`v6m-070b33c-l4-seed0-ep40-cos`): `max_epochs=40`, `epochs_completed=40`,
+`best_epoch=39`, `stopped_epoch=null`, so the best checkpoint is the 39th of 40
+epochs and its filename is `best-38-…`.
+
 ### v6 validation-only rescore (`--mode v6-val-rescore`)
 
 Purpose: score the 27 frozen v6 `best.ckpt` files (9 arms x seeds 0/1/2, matrix
