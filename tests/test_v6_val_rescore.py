@@ -625,15 +625,21 @@ class _FakeStore:
         self.objects: dict[str, bytes] = {}
         self.existing = existing or set()
         self.uploads: list[str] = []
+        self.fail_on: str | None = None
+        self.collide_on: str | None = None
 
     def exists(self, uri: str) -> bool:
         return uri in self.objects or uri in self.existing
 
-    def atomic_upload(
-        self, local: Path, uri: str, overwrite: bool = True, if_generation_match: int | None = None
-    ) -> str:
-        assert overwrite is False and if_generation_match == 0
+    def atomic_upload(self, *a: object, **k: object) -> str:
+        raise AssertionError("rescore must not use atomic_upload")
+
+    def create_only_upload(self, local: Path, uri: str) -> str:
         if self.exists(uri):
+            raise FileExistsError(uri)
+        if uri == self.fail_on:
+            raise RuntimeError("upload failed")
+        if uri == self.collide_on:
             raise FileExistsError(uri)
         self.objects[uri] = Path(local).read_bytes()
         self.uploads.append(uri)
@@ -827,6 +833,78 @@ def test_run_rescore_validates_identifiers(
             device="cpu",
         )
     assert harness.fetches == 0
+
+
+def test_export_upload_failure_leaves_no_manifest(harness: _Harness) -> None:
+    runs = rescore.rescore_inventory()
+    harness.store.fail_on = runs[5].export_uri
+    with pytest.raises(RuntimeError, match="upload failed"):
+        harness.run()
+    assert harness.store.uploads == [r.export_uri for r in runs[:5]]
+    assert rescore.RESCORE_MANIFEST_URI not in harness.store.objects
+    assert not (harness.tmp_path / "out" / "manifest.json").exists()
+
+
+def test_manifest_upload_collision_is_visible(harness: _Harness) -> None:
+    harness.store.collide_on = rescore.RESCORE_MANIFEST_URI
+    with pytest.raises(FileExistsError):
+        harness.run()
+    assert rescore.RESCORE_MANIFEST_URI not in harness.store.objects
+
+
+class _GcsBlob:
+    def __init__(self, bucket: _GcsBucket, name: str) -> None:
+        self.bucket, self.name = bucket, name
+
+    def exists(self) -> bool:
+        return self.name in self.bucket.objects
+
+    def upload_from_filename(
+        self, filename: str, *, if_generation_match: int | None = None, **kw: object
+    ) -> None:
+        self.bucket.calls.append(("upload_from_filename", self.name, if_generation_match))
+        self.bucket.objects[self.name] = Path(filename).read_bytes()
+
+    def delete(self, *a: object, **k: object) -> None:
+        self.bucket.calls.append(("delete", self.name, None))
+        raise AssertionError("delete called")
+
+
+class _GcsBucket:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.calls: list[tuple[str, str | None, int | None]] = []
+
+    def blob(self, name: str) -> _GcsBlob:
+        return _GcsBlob(self, name)
+
+    def copy_blob(self, *a: object, **k: object) -> None:
+        self.calls.append(("copy_blob", None, None))
+
+
+def test_upload_create_only_uses_direct_create_only_gcs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bucket = _GcsBucket()
+
+    class _Client:
+        def bucket(self, name: str) -> _GcsBucket:
+            assert name == "berlin-lst-training-data"
+            return bucket
+
+    monkeypatch.setattr(rescore.storage, "_gcs_client", lambda: _Client())
+    local = tmp_path / "eval_validation_patches.parquet"
+    local.write_bytes(b"parquet-bytes")
+    uri = rescore.RESCORE_PREFIX + "/arm/eval_validation_patches.parquet"
+    info = rescore.upload_create_only(local, uri)
+    key = uri.removeprefix("gs://berlin-lst-training-data/")
+    assert bucket.calls == [("upload_from_filename", key, 0)]
+    assert bucket.objects == {key: b"parquet-bytes"}
+    assert info == {
+        "uri": uri,
+        "sha256": hashlib.sha256(b"parquet-bytes").hexdigest(),
+        "bytes": len(b"parquet-bytes"),
+    }
 
 
 def test_upload_create_only_refuses_outside_the_prefix(tmp_path: Path) -> None:
