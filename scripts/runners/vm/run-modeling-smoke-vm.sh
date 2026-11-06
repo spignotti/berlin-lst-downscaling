@@ -35,9 +35,9 @@ POLL_MAX_SECONDS=2700
 REMOTE_CMD="uv run nox -s smoke-real-comparison"
 
 # Ephemeral local smoke roots the session writes on the VM.
-SMOKE_ROOTS="$APP_DIR/data/smoke/modeling-real $APP_DIR/data/smoke/baseline-real"
 
 vm_init_run "modeling-smoke"
+SMOKE_ROOTS="$APP_DIR/data/smoke/modeling-real $APP_DIR/data/smoke/baseline-real"
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
 
 # ── start VM + deploy ────────────────────────────────────────────────

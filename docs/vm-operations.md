@@ -482,7 +482,7 @@ they show thresholds, not current usage.
 Each `run-dynamic-vm.sh` execution writes an immutable run marker on the VM:
 
 ```
-/workspace/app/logs/runs/<config>-<timestamp>-<suffix>/marker.json
+/home/<OS Login user>/berlin-lst-app/logs/runs/<config>-<timestamp>-<suffix>/marker.json
 ```
 
 The marker contains: `run_id`, `config`, `branch`, `sha`, `started`, `pid`,
@@ -552,31 +552,49 @@ gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub
 path (default `~/.ssh/google_compute_engine`). `ssh-vm.sh --check` prints the user
 and its source.
 
-Foreign-owned `/workspace/app`: `/workspace/app` was created by the old
-metadata-key user, so it may be owned by a different uid than the OS Login user and
-plain git refuses it ("dubious ownership"). The launchers (`vm_push_deploy` and the
-RF idle probe) use `scripts/runners/vm/remote-git-lib.sh`, which checks and fails
-closed: the directory exists and is not a symlink; its realpath is exactly
-`/workspace/app`; `.git` is a real directory with the same non-root owner and is
-writable by the login user; the git toplevel and git dir match. Only after these
-checks git runs with the process-scoped `-c safe.directory=/workspace/app`; never
-`*`, never a written gitconfig, never sudo or an ownership change. Any failure
-aborts the deploy (the VM is stopped before launch) or makes the probe report
-`broken` (VM kept, exit 2), never `idle`. If the OS Login user cannot write `.git`,
-the deploy fails; the fix is the manual step below. `/workspace` being a symlink
-also fails closed on purpose.
+#### VM app dir (operator-owned)
 
-Optional, manual, separate ops step with its own OK; scripts never do this. Run
-over `ssh-vm.sh` (single quotes, so `id -un` expands on the VM):
+The deploy path is `/home/<OS Login user>/berlin-lst-app`, owned by the login user.
+The user name comes from the OS Login profile (the same source as `ssh-vm.sh`; live
+value 2026-11-06: `sa_112339984546984989849`, uid 3389514504). The uid is the
+`id -u` of the SSH session; `BERLIN_LST_VM_UID` is an optional extra pin. Both are
+taken from outside the tree, never from the tree's own owner.
 
-```bash
-scripts/runners/vm/ssh-vm.sh -- 'sudo chown -R "$(id -un)" /workspace /workspace/app'
-scripts/runners/vm/ssh-vm.sh -- 'uv --version'
-```
+Before any git or uv call, `scripts/runners/vm/remote-git-lib.sh` checks on the VM
+and fails closed (exit 3): `id -u` is not 0 and matches the pin; `id -un` matches
+the expected user; `HOME` equals `/home/<user>` exactly; home, app dir, `.git`, and
+any of `.venv`, `data`, `logs` are real directories (no symlinks), owned by the
+login uid, and writable; the realpath of home and app dir is unchanged; the git
+toplevel and git dir match; `origin` equals the pinned URL
+`https://github.com/spignotti/berlin-lst-downscaling.git`. Git runs with no
+`safe.directory` and no global or system config change. Git's own ownership
+protection stays on.
 
-(Or use a shared group.) `/usr/local/bin/uv` was linked into the old user's
-`~/.local/bin`; if `uv --version` fails for the new user, install uv for it and
-re-link (see "One-time provisioning" below).
+Bootstrap: if the app dir is missing, the deploy checks `uv --version`, then runs
+`git clone` of the pinned URL into a temp dir in home (umask 077), renames it into
+place, and re-checks. No sudo. If the repository needs credentials, the clone
+fails closed.
+
+Deploy scope: clone if missing, then the dirty guard (`git status --porcelain`
+non-empty aborts with exit 6, a failing probe with exit 3; either way nothing is
+reset and the VM is stopped by the pre-launch cleanup), fetch the pinned branch, `checkout -B` and `reset --hard` to the pushed
+remote ref, `HEAD` equals the exact pushed SHA, `uv sync --frozen`, clean again,
+then a provenance readback (`git rev-parse HEAD` plus empty `git status
+--porcelain` in the job cwd) that must equal the pushed SHA. Ignored output dirs
+(`data/`, `logs/`) do not count as dirty.
+
+Post-run, the RF and naive launchers run
+`scripts/validators/validate_run_provenance.py`, which rejects a report or run
+context whose git commit is missing, `unknown`, different from the deployed SHA, or
+dirty. The RF launcher then keeps the remote output.
+
+RF probe states: `idle`, `dirty`, `absent` (app dir not bootstrapped yet; the
+deploy creates it), `occupied`, `broken` (any check or git error; the VM is kept,
+exit 2). `sync-vm-env.sh` writes `<app dir>/.env` and needs a prior deploy. Repo-local
+inputs under the legacy `/workspace/app` tree are not visible to the launchers; missing
+inputs fail closed. The legacy `/workspace/app` (owned `silas:silas`) is left untouched
+and read-only legacy: no script reads it for trust, modifies, resets, chowns, or
+deletes it, and no manual migration is needed for the val chain.
 
 If no independent fingerprint source exists: **halt**, do not trust the key.
 
@@ -598,11 +616,10 @@ mount are needed for these steps. Every command below is wrapped as
    gate; `BERLIN_LST_SSH_IDENTITY_FILE` overrides the key path; OS Login key
    registration is a separate step, not done by these helpers).
 5. **[Run OK required, VM already running]** short login read:
-   `scripts/runners/vm/ssh-vm.sh -- 'id -un; ls -ld /workspace /workspace/app'`
+   `scripts/runners/vm/ssh-vm.sh -- 'id -un; id -u'`
 6. **[Run OK required]** `scripts/runners/vm/stop-vm.sh`
-7. Separately, later, and with their own OK (optional since #130; the launchers
-   work on a foreign-owned tree when `.git` is writable): the `/workspace/app` chown
-   migration and `sync-vm-env.sh`. They are **not** done by this path.
+7. Separately, later, and with its own OK: `sync-vm-env.sh` (after the first
+   deploy has bootstrapped the app dir). It is **not** done by this path.
 8. Val-only baselines: `val-baselines-vm.sh plan <branch> <rate>`, then one
    `--execute` step per Run OK in the order rf-smoke → inspect smoke
    memory/throughput → rf-full → naive; never concurrent (a lock plus a
@@ -624,10 +641,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # uv's default ~/.local/bin is NOT reachable from the launchers.
 sudo ln -sf "$HOME/.local/bin/uv" /usr/local/bin/uv
 sudo ln -sf "$HOME/.local/bin/uvx" /usr/local/bin/uvx
-sudo mkdir -p /workspace && sudo chown "$(id -u):$(id -g)" /workspace
-git clone https://github.com/spignotti/berlin-lst-downscaling.git /workspace/app
-cd /workspace/app && uv sync --frozen
 ```
+
+The app dir itself is created by the first deploy (see "VM app dir (operator-owned)").
 
 Then write `.env` from the operator machine (not inside the VM):
 
@@ -635,7 +651,7 @@ Then write `.env` from the operator machine (not inside the VM):
 scripts/runners/vm/sync-vm-env.sh          # or --check to list names only
 ```
 
-It writes `/workspace/app/.env` (mode 0600) with `EARTHDATA_TOKEN`,
+It writes `<app dir>/.env` (mode 0600) with `EARTHDATA_TOKEN`,
 `EARTHDATA_USERNAME`, and `EARTHDATA_PASSWORD` from Infisical `dev` `/data` over
 ssh stdin. Values are never printed. It replaces the whole file.
 

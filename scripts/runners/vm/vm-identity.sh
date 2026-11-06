@@ -155,3 +155,51 @@ vm_external_ip() {
     --format="get(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null \
     || true
 }
+
+# ── login user and operator-owned app dir ───────────────────────────────────
+# The deploy app dir lives in the OS Login user's home. The origin URL is
+# pinned; the legacy workspace app dir is never read or written by scripts.
+VM_APP_DIR_NAME="berlin-lst-app"
+VM_APP_ORIGIN_URL="https://github.com/spignotti/berlin-lst-downscaling.git"
+
+vm_resolve_ssh_user() {
+  # Sets SSH_USER and SSH_USER_SOURCE. Returns 1 on failure (callers decide).
+  if [[ -n "${BERLIN_LST_SSH_USER:-}" ]]; then
+    SSH_USER="$BERLIN_LST_SSH_USER"
+    SSH_USER_SOURCE="BERLIN_LST_SSH_USER"
+  else
+    SSH_USER=$(gcloud compute os-login describe-profile \
+      --format='value(posixAccounts[0].username)' 2>/dev/null) || SSH_USER=""
+    SSH_USER_SOURCE="OS Login profile of the active gcloud account"
+    if [[ -z "$SSH_USER" ]]; then
+      echo "ERROR: no OS Login POSIX account for the active gcloud account" >&2
+      echo "  (or describe-profile failed: check gcloud auth)." >&2
+      echo "  Register the public key once (creates the POSIX account):" >&2
+      echo "    gcloud compute os-login ssh-keys add --key-file ${SSH_IDENTITY_FILE:-~/.ssh/google_compute_engine}.pub --ttl 30d" >&2
+      echo "  or set BERLIN_LST_SSH_USER." >&2
+      return 1
+    fi
+  fi
+
+  if [[ ! "$SSH_USER" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+    echo "ERROR: invalid SSH user name from $SSH_USER_SOURCE." >&2
+    return 1
+  fi
+}
+
+vm_resolve_app_dir() {
+  # Sets VM_LOGIN_USER, VM_HOME, APP_DIR, VM_PIN_UID. Idempotent.
+  if [[ -n "${APP_DIR:-}" && -n "${VM_LOGIN_USER:-}" && "${VM_HOME:-}" == "/home/$VM_LOGIN_USER" \
+    && "$APP_DIR" == "$VM_HOME/$VM_APP_DIR_NAME" && -n "${VM_PIN_UID+x}" ]]; then
+    return 0
+  fi
+  vm_resolve_ssh_user || return 1
+  VM_LOGIN_USER="$SSH_USER"
+  VM_HOME="/home/$SSH_USER"
+  VM_PIN_UID="${BERLIN_LST_VM_UID:-}"
+  if [[ -n "$VM_PIN_UID" ]] && { [[ ! "$VM_PIN_UID" =~ ^[0-9]+$ ]] || [[ "$VM_PIN_UID" == "0" ]]; }; then
+    echo "ERROR: BERLIN_LST_VM_UID must be a positive integer (not 0)." >&2
+    return 1
+  fi
+  APP_DIR="$VM_HOME/$VM_APP_DIR_NAME"
+}

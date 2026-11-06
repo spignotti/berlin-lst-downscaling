@@ -38,6 +38,11 @@ __pycache__/
 /data/runs/.stage1-efficiency-control/
 /data/runs/.stage1-verification-control/
 /data/runs/random-forest/
+/data/runs/random-forest-v6/
+/data/runs/random-forest-v6-notest/
+/data/runs/baseline-full/
+/data/runs/baseline-v6-full/
+/data/runs/baseline-v6-notest/
 logs/
 node_modules/
 outputs/
