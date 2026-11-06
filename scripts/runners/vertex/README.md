@@ -34,9 +34,18 @@ Run `preflight` first. Only `submit` and `submit-all` can create a job.
 A missing or malformed value exits 2 before any `gcloud` or launcher call. Optional
 overrides (project, region, service account, Infisical IDs, rate, timeouts, poll
 intervals, `V6M_GCLOUD`) are listed in the script header; defaults match
-`docs/vertex-gpu-training.md`. The script holds no secrets: credentials come from
-Infisical through `with-gcp-operator.sh`, and `gcloud` lookups use the operator's
-existing `gcloud` login.
+`docs/vertex-gpu-training.md`. `V6M_PROJECT` / `V6M_REGION` must equal the launcher
+pin (`berlin-lst-training` / `europe-west3`); any other value exits 2 before any call.
+The script passes the same `--project` / `--region` to the launcher and to every
+`gcloud` call.
+
+The script holds no secrets. Every launcher run and every `gcloud` call (lookup, poll,
+cancel) goes through `scripts/operators/with-gcp-operator.sh -- …`: the operator SA key
+comes from Infisical `/operator` into a temp file for that one command, via the
+per-command credential override (never `--activate`, so the operator's `gcloud` login
+is not changed). Each `gcloud` call fetches the key again, so a status poll costs one
+Infisical read. A missing or non-executable wrapper exits 2; a wrapper that fails counts
+as a failed `gcloud` call (retried within the usual bounds, then stop).
 
 ### Idempotency
 
@@ -51,8 +60,18 @@ Before every submit attempt the script lists jobs with the exact displayName
 - lookup impossible: stop.
 
 After submit, the job is polled independently of the launcher process (transient
-`gcloud` errors tolerated; the queue allowance `V6M_MAX_WAIT_SECONDS` is enforced by
-cancel + stop). Only SUCCEEDED continues `submit-all`.
+`gcloud` errors tolerated). Only `JOB_STATE_SUCCEEDED` continues `submit-all`.
+
+### Queue deadline (`V6M_MAX_WAIT_SECONDS`)
+
+- Not started within `MAX_WAIT` of creation (no `startTime`, not `RUNNING`): the script
+  requests cancellation, logs `QUEUE_DEADLINE_VIOLATION`, reports `QUEUE_DEADLINE_MISSED`
+  and stops. This cost guard is the same rule the launcher applies.
+- A job in a terminal state is never cancelled, and the script reports its real Vertex
+  state (`JOB_STATE_SUCCEEDED`, `JOB_STATE_FAILED`, `JOB_STATE_CANCELLED`, …). A start more
+  than `MAX_WAIT` after creation only adds a `QUEUE_DEADLINE_VIOLATION` log line.
+- So a late-start `JOB_STATE_SUCCEEDED` counts as success: `submit-all` continues, and a
+  later run skips that pair, as for any other SUCCEEDED job.
 
 ### Not shipped
 

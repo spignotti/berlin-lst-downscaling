@@ -16,7 +16,7 @@
 #     V6M_LABEL_PREFIX  run-label prefix, ^[a-z0-9][a-z0-9-]*$
 #     V6M_RUN_DIR       (submit, submit-all) existing directory OUTSIDE the repo for logs/temp files
 #   Optional (default):
-#     V6M_PROJECT (berlin-lst-training)  V6M_REGION (europe-west3)
+#     V6M_PROJECT (berlin-lst-training)  V6M_REGION (europe-west3)   must equal the launcher pin
 #     V6M_SERVICE_ACCOUNT (berlin-lst-vertex-smoke@berlin-lst-training.iam.gserviceaccount.com)
 #     V6M_INFISICAL_IDENTITY (7ba603e5-b94d-42d1-bc57-d64658dde09d)   public identifier
 #     V6M_INFISICAL_PROJECT (5da7dfb7-954d-4736-ba2e-4471ade9d766)    public identifier
@@ -39,8 +39,15 @@
 #  - The launcher runs in the background; as soon as its job exists (id in its output or found by
 #    displayName) this script polls the job itself. On a terminal state the launcher gets a grace
 #    period and is then killed (process tree). A launcher showing no job after CREATE_WAIT is killed.
-#  - Every gcloud call runs under `timeout` and with --project.
-#  - Only SUCCEEDED continues the loop; anything else stops it cleanly with a STOP log line.
+#  - Every gcloud call (lookup, poll, cancel) runs through scripts/operators/with-gcp-operator.sh
+#    (operator SA, per-command credential override, never --activate), under `timeout`, with
+#    --project/--region. The launcher gets the same --project/--region; V6M_PROJECT/V6M_REGION
+#    must equal its pin (berlin-lst-training/europe-west3), otherwise the script exits 2.
+#  - Queue rule: a job that has not started within MAX_WAIT of creation is cancelled and the loop
+#    stops (final token QUEUE_DEADLINE_MISSED). A job that reached a terminal state is never
+#    cancelled and always reports its real Vertex state; a late start only adds a
+#    QUEUE_DEADLINE_VIOLATION log line, so a late-start SUCCEEDED still continues the loop.
+#  - Only JOB_STATE_SUCCEEDED continues the loop; anything else stops it cleanly with a STOP log line.
 # Needs bash 4+ and GNU date (`date -d`), i.e. a Linux operator machine.
 set -euo pipefail
 
@@ -50,6 +57,10 @@ SELF="$(basename "$0")"
 declare -A MODE=( [L1]=v6-l1 [L2]=v6-l2 [L3]=v6-l3 [L4]=v6-l4 [L5]=v6-l5 [LOO-M]=v6-loo-morph
   [LOO-S]=v6-loo-shadow [NO-NDVI-NDWI]=v6-no-ndvi-ndwi [NO-RED-NIR-IDX]=v6-no-red-nir-index )
 ARMS=(L1 L2 L3 L4 L5 LOO-M LOO-S NO-NDVI-NDWI NO-RED-NIR-IDX)
+# pinned in scripts/operators/launch_vertex_modeling.py (PROJECT/REGION)
+PIN_PROJECT=berlin-lst-training
+PIN_REGION=europe-west3
+OPERATOR_WRAPPER="$REPO_ROOT/scripts/operators/with-gcp-operator.sh"
 
 usage() {
   cat <<USAGE
@@ -66,7 +77,8 @@ preflight/submit/submit-all need a clean checkout at V6M_SOURCE_SHA. submit/subm
 Required env: V6M_IMAGE_URI (repo/name@sha256:<64 hex>), V6M_SOURCE_SHA (40 hex),
   V6M_LABEL_PREFIX ([a-z0-9][a-z0-9-]*), V6M_RUN_DIR (submit/submit-all; existing dir outside the repo).
   state needs only V6M_LABEL_PREFIX; preflight needs no V6M_RUN_DIR.
-Optional env (default): V6M_PROJECT (berlin-lst-training), V6M_REGION (europe-west3),
+Optional env (default): V6M_PROJECT (berlin-lst-training), V6M_REGION (europe-west3); both must
+  equal the launcher pin.
   V6M_SERVICE_ACCOUNT, V6M_INFISICAL_IDENTITY, V6M_INFISICAL_PROJECT, V6M_HOURLY_RATE_USD (1.00),
   V6M_TIMEOUT_SECONDS (14400), V6M_MAX_WAIT_SECONDS (1800), V6M_MAX_EPOCHS (40), V6M_POLL_SECONDS (60),
   V6M_GCLOUD_TIMEOUT (120), V6M_LAUNCHER_GRACE (120), V6M_CREATE_WAIT (900), V6M_SUBMIT_ATTEMPTS (3),
@@ -113,6 +125,10 @@ load_config() {  # needs: $1 = "run" if V6M_RUN_DIR is required
   [[ "$RESUBMIT_FAILED" =~ ^[01]$ ]] || die "V6M_RESUBMIT_FAILED must be 0 or 1"
   [[ -n "$PROJECT" && -n "$REGION" && -n "$SA" && -n "$INF_ID" && -n "$INF_PROJECT" ]] \
     || die "V6M_PROJECT/REGION/SERVICE_ACCOUNT/INFISICAL_* must not be empty"
+  [[ "$PROJECT" == "$PIN_PROJECT" && "$REGION" == "$PIN_REGION" ]] \
+    || die "V6M_PROJECT/V6M_REGION ($PROJECT/$REGION) must equal the launcher pin $PIN_PROJECT/$PIN_REGION"
+  [[ -f "$OPERATOR_WRAPPER" && -x "$OPERATOR_WRAPPER" ]] \
+    || die "operator wrapper missing or not executable: $OPERATOR_WRAPPER"
   LABEL_PREFIX="${V6M_LABEL_PREFIX:-}"
   [[ "$LABEL_PREFIX" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "V6M_LABEL_PREFIX missing or invalid"
   if [[ "${1:-}" == image ]] || [[ "${1:-}" == run ]]; then
@@ -152,18 +168,20 @@ run() {  # arm seed [--preflight]
   local label="${LABEL_PREFIX}-$(lower "$arm")"
   cd "$REPO_ROOT"
   # operator SA key from Infisical /operator into a 0600 temp file for this command only
-  "$REPO_ROOT/scripts/operators/with-gcp-operator.sh" -- \
+  "$OPERATOR_WRAPPER" -- \
     uv run --group operators python scripts/operators/launch_vertex_modeling.py \
     --mode "${MODE[$arm]}" --seed "$seed" --max-epochs "$MAX_EPOCHS" --lr-schedule cosine \
     --patch-cache prebuilt \
     --image-uri "$IMAGE" --source-sha "$SHA" --run-label "$label" \
-    --service-account "$SA" \
+    --service-account "$SA" --project "$PROJECT" --region "$REGION" \
     --infisical-identity "$INF_ID" --infisical-project "$INF_PROJECT" \
     --infisical-env dev --infisical-path /vertex \
     --hourly-rate-usd "$RATE" --timeout-seconds "$TIMEOUT" --max-wait-seconds "$MAX_WAIT" "$@"
 }
 
-gc() { timeout "$GCLOUD_TIMEOUT" "$GCLOUD" "$@" --project "$PROJECT"; }
+# gcloud as the operator SA for this command only (same wrapper as run(), no --activate);
+# `timeout` covers the credential fetch as well as the gcloud call.
+gc() { timeout -k 10 "$GCLOUD_TIMEOUT" "$OPERATOR_WRAPPER" -- "$GCLOUD" "$@" --project "$PROJECT"; }
 
 # Existing jobs for a displayName: lines "id<TAB>state". Retries; returns 1 if lookup impossible.
 lookup() {
@@ -178,7 +196,9 @@ lookup() {
   return 1
 }
 
-# Poll one job until terminal; echoes final state on stdout (last line). Logs go to stderr.
+# Poll one job until terminal; echoes the real Vertex terminal state on stdout (last line), or
+# QUEUE_DEADLINE_MISSED (not started within MAX_WAIT, cancel requested), WAIT_EXPIRED,
+# STATUS_UNKNOWN. A terminal job is never cancelled. Logs go to stderr.
 poll_job() {
   local id=$1 out state ct st err_since="" last="" now ct_s
   while true; do
@@ -189,16 +209,15 @@ poll_job() {
       [[ "$state" != "$last" ]] && { log "job $id state: $state" >&2; last=$state; }
       case "$state" in
         JOB_STATE_SUCCEEDED|JOB_STATE_FAILED|JOB_STATE_CANCELLED|JOB_STATE_EXPIRED|JOB_STATE_PARTIALLY_SUCCEEDED)
-          if [[ "$state" == JOB_STATE_SUCCEEDED && -n "${st:-}" ]] &&
-             (( $(date -d "$st" +%s) > $(date -d "$ct" +%s) + MAX_WAIT )); then
-            echo "QUEUE_DEADLINE_MISSED"; return 0
+          if [[ -n "${st:-}" ]] && (( $(date -d "$st" +%s) > $(date -d "$ct" +%s) + MAX_WAIT )); then
+            log "QUEUE_DEADLINE_VIOLATION: job $id started at $st, more than ${MAX_WAIT}s after creation ($ct); terminal state $state is reported as is, no cancel" >&2
           fi
           echo "$state"; return 0 ;;
       esac
       now=$(date +%s); ct_s=$(date -d "$ct" +%s)
       if [[ -z "${st:-}" && "$state" != JOB_STATE_RUNNING ]] && (( now > ct_s + MAX_WAIT )); then
         # same rule as the launcher: not started within max-wait -> cancel, never replace
-        log "job $id not started within ${MAX_WAIT}s of creation; requesting cancellation (launcher queue rule)" >&2
+        log "QUEUE_DEADLINE_VIOLATION: job $id ($state) not started within ${MAX_WAIT}s of creation; requesting cancellation (launcher queue rule)" >&2
         gc ai custom-jobs cancel "$id" --region "$REGION" >&2 2>&1 || log "cancel request for $id returned an error; inspect manually" >&2
         echo "QUEUE_DEADLINE_MISSED"; return 0
       fi
