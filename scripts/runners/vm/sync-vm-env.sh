@@ -2,9 +2,11 @@
 # Write the VM app .env from Infisical (thesis project, env dev, folder /data).
 #
 # Fetches EARTHDATA_TOKEN, EARTHDATA_USERNAME and EARTHDATA_PASSWORD and replaces
-# /workspace/app/.env on berlin-lst-vm with exactly these names (mode 0600). The
+# <app dir>/.env on berlin-lst-vm with exactly these names (mode 0600). The
 # content travels over ssh-vm.sh stdin only: values never appear on argv, in the
 # terminal, or in logs. Infisical auth: see scripts/operators/_infisical_auth.sh.
+# The app dir is the operator-owned /home/<OS Login user>/berlin-lst-app; a deploy must have
+# bootstrapped it first, otherwise this script fails closed.
 # gcloud must be able to describe the VM (wrap in with-gcp-operator.sh if needed).
 #
 # Usage: scripts/runners/vm/sync-vm-env.sh [--check]
@@ -19,13 +21,16 @@ source "$SCRIPTS_DIR/../../operators/_infisical_auth.sh"
 
 SECRET_PATH="/data"
 SECRET_NAMES=(EARTHDATA_TOKEN EARTHDATA_USERNAME EARTHDATA_PASSWORD)
-APP_DIR="/workspace/app"  # same as vm-runner-common.sh
+source "$SCRIPTS_DIR/vm-identity.sh"
+source "$SCRIPTS_DIR/remote-git-lib.sh"
 
 case "${1:-}" in
   "") CHECK_ONLY=false ;;
   --check) CHECK_ONLY=true ;;
   *) echo "Usage: $0 [--check]" >&2; exit 2 ;;
 esac
+
+vm_resolve_app_dir || exit 1
 
 if [[ "$CHECK_ONLY" == "true" ]]; then
   echo "Would write $APP_DIR/.env (mode 0600) on the VM from Infisical env ${INFISICAL_THESIS_ENV:-dev}, path $SECRET_PATH:"
@@ -69,7 +74,8 @@ for name in "${SECRET_NAMES[@]}"; do
 done
 
 # One remote string; ssh passes it to the VM's login shell.
-REMOTE_CMD="set -eu; umask 077; cd $APP_DIR; tmp=\$(mktemp .env.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; cat >\"\$tmp\"; chmod 600 \"\$tmp\"; mv -f \"\$tmp\" .env"
+REMOTE_CMD="$(vm_remote_app_cd_cmd "$VM_HOME" "$VM_LOGIN_USER" "$VM_APP_ORIGIN_URL" "$VM_PIN_UID")
+set -eu; umask 077; tmp=\$(mktemp .env.XXXXXX); trap 'rm -f \"\$tmp\"' EXIT; cat >\"\$tmp\"; chmod 600 \"\$tmp\"; mv -f \"\$tmp\" .env"
 "$SCRIPTS_DIR/ssh-vm.sh" -- "$REMOTE_CMD" <"$ENV_FILE"
 
 echo "Wrote $APP_DIR/.env (mode 0600) on the VM: ${SECRET_NAMES[*]}"

@@ -83,12 +83,14 @@ REMOTE_CMD="set -f; OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 t
 
 echo "$PIPELINE_LABEL | run=$WRAP_RUN_ID | maximum compute exposure: $(awk -v r="$HOURLY_RATE" 'BEGIN { printf "%.2f USD", r * 8 }')"
 vm_start_and_wait_ssh
-if ! REMOTE_STATE=$(ssh_cmd "if pgrep -f '[p]ython scripts/(runners|operators)/' >/dev/null; then echo occupied; elif test -n \"\$(git -C '$APP_DIR' status --porcelain)\"; then echo dirty; else echo idle; fi"); then
+# Probe fails closed: any git/app-dir error yields `broken`, never `idle`.
+PROBE_CMD=$(vm_remote_idle_probe_cmd "$VM_HOME" "$VM_LOGIN_USER" "$VM_APP_ORIGIN_URL" "$VM_PIN_UID")
+if ! REMOTE_STATE=$(ssh_cmd "$PROBE_CMD"); then
   echo "ERROR: remote preflight lost contact; preserving the VM." >&2
   leave_running=1
   exit 2
 fi
-if [[ "$REMOTE_STATE" != "idle" ]]; then
+if [[ "$REMOTE_STATE" != "idle" && "$REMOTE_STATE" != "absent" ]]; then
   echo "ERROR: remote workspace is $REMOTE_STATE; preserving the VM and existing work." >&2
   leave_running=1
   exit 2
@@ -148,12 +150,20 @@ if [[ -z "$REMOTE_SHA" || "$REMOTE_SHA" != "$LOCAL_SHA" ]]; then
 fi
 tar -xzf "$LOCAL_DIR/artifact.tgz" -C "$LOCAL_DIR"
 printf '%s\n' "$REMOTE_SHA" > "$LOCAL_DIR/artifact.sha256"
+PROVENANCE_RC=0
+python3 "$REPO_ROOT/scripts/validators/validate_run_provenance.py" \
+  --report "$LOCAL_DIR/random_forest_report.json" --expected-sha "$DEPLOYED_SHA" \
+  --context-dir "$LOCAL_DIR/logs/random_forest" || PROVENANCE_RC=$?
 leave_running=0
 
-if [[ "$VALIDATION_RC" -eq 0 ]]; then
+if [[ "$VALIDATION_RC" -eq 0 && "$PROVENANCE_RC" -eq 0 ]]; then
   ssh_cmd "rm -rf '$REMOTE_OUTPUT' && rm -f '$ARCHIVE'"
 fi
 vm_stop
+if [[ "$PROVENANCE_RC" -ne 0 ]]; then
+  echo "FAIL: RF provenance missing/mismatched; secured at $LOCAL_DIR." >&2
+  exit 1
+fi
 if [[ "$VALIDATION_RC" -ne 0 ]]; then
   echo "FAIL: independent validator rejected RF artifacts; secured at $LOCAL_DIR." >&2
   exit 1

@@ -14,7 +14,6 @@ set -euo pipefail
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPTS_DIR/vm-identity.sh"
 
-APP_DIR="/workspace/app"
 RUN_ID=""
 
 # ── parse args ──────────────────────────────────────────────────────────────
@@ -31,6 +30,7 @@ if [[ -z "$RUN_ID" ]]; then
   exit 1
 fi
 
+vm_resolve_app_dir || exit 1
 RUN_DIR="$APP_DIR/logs/runs/$RUN_ID"
 MARKER="$RUN_DIR/marker.json"
 

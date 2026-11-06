@@ -11,6 +11,7 @@
 set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPTS_DIR/vm-identity.sh"
 MODE=""
 RUN_ID=""
 REFRESH_INTERVAL="${REFRESH_INTERVAL:-30}"
@@ -100,7 +101,8 @@ monitor_run() {
   _separator
   echo "LAST 10 LOG LINES"
   _separator
-  REMOTE_LOG="/workspace/app/logs/runs/$RUN_ID/nohup.log"
+  vm_resolve_app_dir || { echo "cannot resolve app dir"; return 0; }
+  REMOTE_LOG="$APP_DIR/logs/runs/$RUN_ID/nohup.log"
   if [[ -f "$SCRIPTS_DIR/ssh-vm.sh" ]]; then
     bash "$SCRIPTS_DIR/ssh-vm.sh" -- tail -10 "$REMOTE_LOG" 2>&1 || true
   else

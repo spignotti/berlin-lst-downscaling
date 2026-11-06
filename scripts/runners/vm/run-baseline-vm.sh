@@ -90,7 +90,7 @@ EVIDENCE_OK=1
 
 echo "Running independent baseline validation on the VM..."
 VALIDATION_OUT=""
-if VALIDATION_OUT=$(ssh_cmd "cd $APP_DIR && uv run python scripts/validators/validate_baseline.py --report '$REMOTE_REPORT' --max-patches $VALIDATOR_PATCHES" 2>&1); then
+if VALIDATION_OUT=$(ssh_cmd "cd '$APP_DIR' && uv run python scripts/validators/validate_baseline.py --report '$REMOTE_REPORT' --max-patches $VALIDATOR_PATCHES" 2>&1); then
   VALIDATION_RC=0
 else
   VALIDATION_RC=$?
@@ -111,7 +111,12 @@ if [[ -s "$LOCAL_DIR/baseline_report.json" && -n "$REMOTE_REPORT_SHA" && "$LOCAL
   TRANSFER_OK=0
 fi
 
+PROVENANCE_RC=1
 if [[ "$TRANSFER_OK" -eq 0 ]]; then
+  PROVENANCE_RC=0
+  python3 "$REPO_ROOT/scripts/validators/validate_run_provenance.py" \
+    --report "$LOCAL_DIR/baseline_report.json" --expected-sha "$DEPLOYED_SHA" \
+    --context-dir "$LOCAL_DIR/logs/baseline" || PROVENANCE_RC=$?
   REPORT_METHOD=$(jq -r '.method' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   REPORT_SPLITS=$(jq -r '.splits | keys | join(",")' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
   REPORT_REV=$(jq -r '.git_revision' "$LOCAL_DIR/baseline_report.json" 2>/dev/null || echo INVALID)
@@ -138,6 +143,7 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
   TEST_CELLS_OK=0
   if [[ "$EVAL_SPLITS" == *test* && ! "$VALID_CELLS_TEST" -gt 0 ]]; then TEST_CELLS_OK=1; fi
   if [[ "$VALIDATION_RC" -eq 0 \
+    && "$PROVENANCE_RC" -eq 0 \
     && "$FULL_COVERAGE" -eq 0 \
     && "$REPORT_METHOD" == "naive_prior_expand" \
     && "$REPORT_SPLITS" == "$EXPECTED_SPLITS" \

@@ -37,10 +37,10 @@ PIPELINE_LABEL="Patch read timing"
 MARKER_CONFIG="patch_read_timing"
 POLL_MAX_SECONDS=3600
 REPORT_REL="data/smoke/patch-read-timing/report.json"
-REPORT_PATH="$APP_DIR/$REPORT_REL"
 REMOTE_CMD="uv run python scripts/validators/measure_patch_reads.py --output $REPORT_REL $EXTRA_ARGS"
 
 vm_init_run "patch-read-timing"
+REPORT_PATH="$APP_DIR/$REPORT_REL"
 echo "$PIPELINE_LABEL | Branch: $BRANCH | Run: $WRAP_RUN_ID"
 
 # ── start VM + deploy ────────────────────────────────────────────────

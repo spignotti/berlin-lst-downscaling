@@ -43,8 +43,12 @@ fi
 
 VM_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$VM_SCRIPTS/vm-identity.sh"
+# shellcheck source=remote-git-lib.sh
+source "$VM_SCRIPTS/remote-git-lib.sh"
 
-APP_DIR="/workspace/app"
+# Resolved by vm_resolve_app_dir (vm-identity.sh) to the operator-owned dir in the
+# OS Login user's home. The legacy workspace app dir is never read or written.
+APP_DIR=""
 CONNECTION_RETRIES=5
 CONNECTION_RETRY_WAIT=30
 LAUNCH_WAIT_SECONDS=60
@@ -112,6 +116,7 @@ vm_init_run() {
     echo "ERROR: invalid branch name: $BRANCH"
     exit 1
   fi
+  vm_resolve_app_dir || { echo "ERROR: cannot resolve the VM app dir"; exit 1; }
   local suffix
   if command -v uuidgen >/dev/null 2>&1; then
     suffix=$(uuidgen | tr -d "-" | cut -c1-8)
@@ -185,16 +190,17 @@ vm_push_deploy() {
   # A never-deployed feature branch needs an explicit fetch refspec (the
   # default fetch may only track main); create/reset the local branch
   # from that ref so the new code actually runs.
-  ssh_cmd_retry "
-    cd $APP_DIR && \
-    git fetch origin $BRANCH:refs/remotes/origin/$BRANCH && \
-    git checkout -B $BRANCH refs/remotes/origin/$BRANCH && \
-    git reset --hard refs/remotes/origin/$BRANCH && \
-    uv sync --frozen --quiet
-  "
-  DEPLOYED_SHA=$(ssh_cmd_retry "cd $APP_DIR && git rev-parse HEAD")
-  if [[ "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
-    echo "ERROR: deployed SHA $DEPLOYED_SHA != local SHA $LOCAL_SHA — refusing to launch."
+  # A failing remote check exits non-zero, so ssh_cmd_retry fails and set -e
+  # aborts before launch (vm_cleanup stops the VM). Retries repeat a
+  # deterministic failure, which still ends as a failure. Nothing is ever
+  # reset when the tree is dirty.
+  local deploy_cmd prov_cmd
+  deploy_cmd=$(vm_remote_deploy_cmd "$VM_HOME" "$VM_LOGIN_USER" "$VM_APP_ORIGIN_URL" "$VM_PIN_UID" "$BRANCH" "$LOCAL_SHA")
+  ssh_cmd_retry "$deploy_cmd"
+  prov_cmd=$(vm_remote_provenance_cmd "$VM_HOME" "$VM_LOGIN_USER" "$VM_APP_ORIGIN_URL" "$VM_PIN_UID")
+  DEPLOYED_SHA=$(ssh_cmd_retry "$prov_cmd")
+  if [[ ! "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ || "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
+    echo "ERROR: deployed SHA/provenance check failed ($DEPLOYED_SHA != $LOCAL_SHA) — refusing to launch."
     exit 1
   fi
   echo "  Deployed SHA verified: $DEPLOYED_SHA"
@@ -242,7 +248,7 @@ vm_launch_detached() {
   # occupied.
   # shellcheck disable=SC2153  # REMOTE_CMD is set by the launcher
   ssh_cmd "
-    cd $APP_DIR && \
+    cd '$APP_DIR' && \
     nohup sh -c '$REMOTE_CMD; rc=\$?; echo \"\$rc\" > $STATUS_FILE' \
       > $REMOTE_LOG 2>&1 < /dev/null &
     PID=\$! && echo \$PID > $REMOTE_PID_FILE
