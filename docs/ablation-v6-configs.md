@@ -219,6 +219,8 @@ scripts/runners/vm/run-random-forest-vm.sh v6-val-full <branch> <hourly-rate-usd
 scripts/runners/vm/run-baseline-vm.sh <branch> baseline_v6_val
 ```
 
+The Box sequence for these steps lives in `docs/vm-operations.md` § "Box operator path" via `val-baselines-vm.sh`.
+
 The RF runner accepts exactly `splits: ["validation", "test"]` or
 `["validation"]`. A validation-only run is named `rf-<profile>-notest-<id>` in
 W&B and its report records `scope.test_split: "skipped"`;
