@@ -372,6 +372,13 @@ retry, no fallback, no creation.
   writes known-hosts, generates keys, or provisions metadata keys.
 - `status-vm.sh` is a read-only probe that reports identity, state, disk
   attachment, protection, external IP, and SSH host-key readiness.
+- `bootstrap-vm-hostkey.sh` is dry-run by default (read-only `describe` only).
+  `--execute` (human Run OK) starts a stopped VM, reads the host keys from the
+  serial console, restores and verifies the instance metadata, and pins the
+  key; it refuses a RUNNING VM, `startup-script-url`, and a changed key.
+- `val-baselines-vm.sh` prints the plan by default. `--execute` runs exactly one
+  val-only baseline step through its existing launcher, under a lock and only
+  when the VM is TERMINATED/STOPPED. Test-opening modes are rejected.
 
 ### Pinned identity constants (vm-identity.sh)
 
@@ -508,7 +515,10 @@ authenticated channel — never by accepting whatever the VM presents.
      mount the clone read-only and inspect `/etc/ssh/ssh_host_*_key.pub`.
    - Or use an authenticated GCP console session to read guest attributes
      (requires guest attributes enabled on the instance).
-   - Or, as done for the 2026-09-26 new VM, add a startup script that prints
+   - Automated on the Box by `bootstrap-vm-hostkey.sh` (dry-run default;
+     `--execute` only after a human Run OK); see
+     [Box operator path](#box-operator-path-host-key--val-only-baselines).
+     The manual form, as done for the 2026-09-26 new VM: add a startup script that prints
      `/etc/ssh/ssh_host_*_key.pub` to the serial console, read it with
      `gcloud compute instances get-serial-port-output` from an authenticated
      project session, then remove the `startup-script` metadata. The trust
@@ -558,6 +568,38 @@ re-link (see "One-time provisioning" below).
 
 If no independent fingerprint source exists: **halt**, do not trust the key.
 
+### Box operator path (host key → val-only baselines)
+
+Prerequisites on the Box (Linux): `gcloud`, `ssh-keygen`, `python3`, `flock`,
+`shasum`, and `scripts/operators/with-gcp-operator.sh`. No Mac and no rclone
+mount are needed for these steps. Every command below is wrapped as
+`scripts/operators/with-gcp-operator.sh -- <command>`.
+
+1. **[read-only]** `scripts/runners/vm/status-vm.sh`
+2. **[read-only]** `scripts/runners/vm/bootstrap-vm-hostkey.sh` (dry-run plan)
+3. **[Run OK required]** `scripts/runners/vm/bootstrap-vm-hostkey.sh --execute`
+   starts the VM, pins the key, and leaves the VM RUNNING. Exit codes: 0 ok,
+   1 usage/pin/refusal, 2 malformed key, 3 metadata restore not verified,
+   4 changed host key, 5 serial timeout. The trust basis is the authenticated
+   GCP serial API; no SSH connection is made.
+4. **[read-only]** `scripts/runners/vm/ssh-vm.sh --check` (unchanged strict
+   gate; `BERLIN_LST_SSH_IDENTITY_FILE` overrides the key path; OS Login key
+   registration is a separate step, not done by these helpers).
+5. **[Run OK required, VM already running]** short login read:
+   `scripts/runners/vm/ssh-vm.sh -- 'id -un; ls -ld /workspace /workspace/app'`
+6. **[Run OK required]** `scripts/runners/vm/stop-vm.sh`
+7. Separately, later, and with their own OK: the `/workspace/app` chown
+   migration and `sync-vm-env.sh`. They are **not** done by this path.
+8. Val-only baselines: `val-baselines-vm.sh plan <branch> <rate>`, then one
+   `--execute` step per Run OK in the order rf-smoke → inspect smoke
+   memory/throughput → rf-full → naive; never concurrent (a lock plus a
+   TERMINATED/STOPPED-VM precondition). The RF launcher gate is "8-hour
+   exposure ≤ 10 USD at the given rate"; it is an exposure gate, not a hard
+   total budget. On connection loss or poll expiry the launchers leave the VM
+   RUNNING by design, so cost continues until a human runs `stop-vm.sh`.
+   The modes `smoke`, `full`, `v6-smoke`, `v6-full`, `baseline_full`,
+   `baseline_v6_full`, and `test*` are rejected because they open test 2025.
+
 ### One-time provisioning (inside the VM)
 
 ```bash
@@ -588,9 +630,11 @@ ssh stdin. Values are never printed. It replaces the whole file.
 
 | State | Cost |
 |-------|------|
-| RUNNING (On-Demand, n2-highmem-2) | ~$0.065/h |
+| RUNNING (On-Demand, n2-highmem-2) | 0.168788 USD/h (europe-west3 n2-highmem-2 On-Demand list price; re-verify against current list price before any paid run) |
 | STOPPED (disk preserved) | ~$1.50/month for 50-GB pd-balanced |
 | DELETE | $0 (but loses disk + setup) |
+
+Launchers take the hourly rate as an explicit argument; no budget is pre-approved.
 
 Stop the VM when not actively running the pipeline. Start it again when you
 need to resume a run.
