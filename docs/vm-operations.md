@@ -552,10 +552,22 @@ gcloud compute os-login ssh-keys add --key-file ~/.ssh/google_compute_engine.pub
 path (default `~/.ssh/google_compute_engine`). `ssh-vm.sh --check` prints the user
 and its source.
 
-One-time migration (owner, manual): `/workspace/app` was created by the old
-metadata-key user, and the OS Login user (`osAdminLogin` = sudo) may not own it.
-Run once over `ssh-vm.sh` (single quotes, so `id -un` expands on the VM); scripts
-never do this automatically:
+Foreign-owned `/workspace/app`: `/workspace/app` was created by the old
+metadata-key user, so it may be owned by a different uid than the OS Login user and
+plain git refuses it ("dubious ownership"). The launchers (`vm_push_deploy` and the
+RF idle probe) use `scripts/runners/vm/remote-git-lib.sh`, which checks and fails
+closed: the directory exists and is not a symlink; its realpath is exactly
+`/workspace/app`; `.git` is a real directory with the same non-root owner and is
+writable by the login user; the git toplevel and git dir match. Only after these
+checks git runs with the process-scoped `-c safe.directory=/workspace/app`; never
+`*`, never a written gitconfig, never sudo or an ownership change. Any failure
+aborts the deploy (the VM is stopped before launch) or makes the probe report
+`broken` (VM kept, exit 2), never `idle`. If the OS Login user cannot write `.git`,
+the deploy fails; the fix is the manual step below. `/workspace` being a symlink
+also fails closed on purpose.
+
+Optional, manual, separate ops step with its own OK; scripts never do this. Run
+over `ssh-vm.sh` (single quotes, so `id -un` expands on the VM):
 
 ```bash
 scripts/runners/vm/ssh-vm.sh -- 'sudo chown -R "$(id -un)" /workspace /workspace/app'
@@ -588,7 +600,8 @@ mount are needed for these steps. Every command below is wrapped as
 5. **[Run OK required, VM already running]** short login read:
    `scripts/runners/vm/ssh-vm.sh -- 'id -un; ls -ld /workspace /workspace/app'`
 6. **[Run OK required]** `scripts/runners/vm/stop-vm.sh`
-7. Separately, later, and with their own OK: the `/workspace/app` chown
+7. Separately, later, and with their own OK (optional since #130; the launchers
+   work on a foreign-owned tree when `.git` is writable): the `/workspace/app` chown
    migration and `sync-vm-env.sh`. They are **not** done by this path.
 8. Val-only baselines: `val-baselines-vm.sh plan <branch> <rate>`, then one
    `--execute` step per Run OK in the order rf-smoke → inspect smoke

@@ -43,6 +43,8 @@ fi
 
 VM_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$VM_SCRIPTS/vm-identity.sh"
+# shellcheck source=remote-git-lib.sh
+source "$VM_SCRIPTS/remote-git-lib.sh"
 
 APP_DIR="/workspace/app"
 CONNECTION_RETRIES=5
@@ -185,14 +187,20 @@ vm_push_deploy() {
   # A never-deployed feature branch needs an explicit fetch refspec (the
   # default fetch may only track main); create/reset the local branch
   # from that ref so the new code actually runs.
-  ssh_cmd_retry "
-    cd $APP_DIR && \
-    git fetch origin $BRANCH:refs/remotes/origin/$BRANCH && \
-    git checkout -B $BRANCH refs/remotes/origin/$BRANCH && \
-    git reset --hard refs/remotes/origin/$BRANCH && \
-    uv sync --frozen --quiet
+  # A failing preamble exits the remote shell 3, so ssh_cmd_retry fails and
+  # set -e aborts before launch (vm_cleanup stops the VM). Retries also repeat
+  # a deterministic check failure, which still ends as a failure.
+  local preamble
+  preamble=$(vm_remote_git_preamble "$APP_DIR")
+  ssh_cmd_retry "$preamble
+  rgit fetch origin $BRANCH:refs/remotes/origin/$BRANCH && \
+  rgit checkout -B $BRANCH refs/remotes/origin/$BRANCH && \
+  rgit reset --hard refs/remotes/origin/$BRANCH && \
+  cd \"\$APP_REAL\" && \
+  uv sync --frozen --quiet
   "
-  DEPLOYED_SHA=$(ssh_cmd_retry "cd $APP_DIR && git rev-parse HEAD")
+  DEPLOYED_SHA=$(ssh_cmd_retry "$preamble
+  rgit rev-parse HEAD")
   if [[ "$DEPLOYED_SHA" != "$LOCAL_SHA" ]]; then
     echo "ERROR: deployed SHA $DEPLOYED_SHA != local SHA $LOCAL_SHA — refusing to launch."
     exit 1
