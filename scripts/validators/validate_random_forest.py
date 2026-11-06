@@ -615,9 +615,11 @@ def _compare_naive_split(
 # ── main ──────────────────────────────────────────────────────────────
 
 
-def _find_naive_report(explicit: str | None) -> str | None:
+def _find_naive_report(explicit: str | None, *, require_explicit: bool = False) -> str | None:
     if explicit:
         return explicit
+    if require_explicit:
+        return None
     repo_root = Path(__file__).resolve().parents[2]
     local_smoke = repo_root / "data" / "smoke" / "baseline-real" / "baseline_report.json"
     candidates = sorted(
@@ -626,6 +628,35 @@ def _find_naive_report(explicit: str | None) -> str | None:
     if candidates:
         return str(candidates[-1])
     return str(local_smoke) if local_smoke.is_file() else None
+
+
+def _naive_requires_explicit(report: dict) -> bool:
+    """v6 and val-only reports never auto-select naive evidence."""
+    version = report.get("feature_schema_version")
+    if version is not None and int(version) == FEATURE_SCHEMA_VERSION_V6:
+        return True
+    return report.get("scope", {}).get("test_split") == "skipped"
+
+
+def _resolve_naive_path(
+    report: dict, *, naive_report: str | None, skip_naive: bool, errors: list[str]
+) -> str | None:
+    full = report.get("scope", {}).get("profile") == "full"
+    if skip_naive and full:
+        errors.append("full validation cannot skip the naive evidence comparison")
+        return None
+    if skip_naive:
+        return None
+    explicit_only = _naive_requires_explicit(report)
+    path = _find_naive_report(naive_report, require_explicit=explicit_only)
+    if path is None:
+        if explicit_only:
+            errors.append(
+                "v6/val-only report requires an explicit --naive-report (no auto-selection)"
+            )
+        else:
+            errors.append("no naive baseline evidence found; pass --naive-report or --skip-naive")
+    return path
 
 
 def _native_inputs(
@@ -956,53 +987,54 @@ def main() -> int:
 
     # ── naive universe comparison ─────────────────────────────────────
     full = report.get("scope", {}).get("profile") == "full"
-    if args.skip_naive and full:
-        errors.append("full validation cannot skip the naive evidence comparison")
-    if not args.skip_naive:
-        naive_path = _find_naive_report(args.naive_report)
-        if naive_path is None:
-            errors.append("no naive baseline evidence found; pass --naive-report or --skip-naive")
-        else:
-            naive = _read_json(naive_path)
-            naive["_require_full"] = full
-            print(f"  naive evidence: {naive_path}")
-            try:
-                naive_agg = resolve_report_aggregation(naive)
-            except ValueError as exc:
-                errors.append(str(exc))
-                naive_agg = aggregation
-            if naive_agg != aggregation:
+    naive_path = _resolve_naive_path(
+        report, naive_report=args.naive_report, skip_naive=args.skip_naive, errors=errors
+    )
+    if naive_path is not None:
+        naive = _read_json(naive_path)
+        naive["_require_full"] = full
+        print(f"  naive evidence: {naive_path}")
+        try:
+            naive_agg = resolve_report_aggregation(naive)
+        except ValueError as exc:
+            errors.append(str(exc))
+            naive_agg = aggregation
+        if naive_agg != aggregation:
+            errors.append(
+                f"aggregation {aggregation!r} != naive baseline {naive_agg!r} — "
+                "incompatible comparison"
+            )
+        for key in ("index_policy_hash", "source_policy_hash", "patches_total"):
+            if str(naive.get("fingerprints", {}).get(key, "")) != str(
+                report["fingerprints"].get(key, "")
+            ):
                 errors.append(
-                    f"aggregation {aggregation!r} != naive baseline {naive_agg!r} — "
-                    "incompatible comparison"
+                    f"naive evidence fingerprint {key} "
+                    f"{naive.get('fingerprints', {}).get(key, '')!r} != report "
+                    f"{report['fingerprints'].get(key, '')!r}"
                 )
-            for key in ("index_policy_hash", "source_policy_hash", "patches_total"):
-                if str(naive.get("fingerprints", {}).get(key, "")) != str(
-                    report["fingerprints"].get(key, "")
-                ):
-                    errors.append(f"naive evidence fingerprint {key} differs from this report")
-            naive_by_split: dict[str, list[dict]] = {}
-            for record in naive.get("patches", []):
-                naive_by_split.setdefault(str(record["split"]), []).append(record)
-            for split in splits:
-                if reference_stage is None:
-                    continue
-                summary = stages[str(reference_stage)]["splits"].get(split)
-                records = [
-                    r for r in stages[str(reference_stage)]["patches"] if str(r["split"]) == split
-                ]
-                if summary is None:
-                    continue
-                _compare_naive_split(
-                    split,
-                    int(summary["requested_patches"]),
-                    summary,
-                    records,
-                    _split_index_ids(index_rows, split),
-                    naive,
-                    naive_by_split,
-                    errors,
-                )
+        naive_by_split: dict[str, list[dict]] = {}
+        for record in naive.get("patches", []):
+            naive_by_split.setdefault(str(record["split"]), []).append(record)
+        for split in splits:
+            if reference_stage is None:
+                continue
+            summary = stages[str(reference_stage)]["splits"].get(split)
+            records = [
+                r for r in stages[str(reference_stage)]["patches"] if str(r["split"]) == split
+            ]
+            if summary is None:
+                continue
+            _compare_naive_split(
+                split,
+                int(summary["requested_patches"]),
+                summary,
+                records,
+                _split_index_ids(index_rows, split),
+                naive,
+                naive_by_split,
+                errors,
+            )
 
     if errors:
         for error in errors[:_MAX_REPORTED]:

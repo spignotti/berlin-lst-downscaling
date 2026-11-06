@@ -15,6 +15,8 @@ SCRIPT = REPO / "scripts" / "runners" / "vm" / "val-baselines-vm.sh"
 BASH = shutil.which("bash")
 PYTHON3 = shutil.which("python3", path="/usr/bin:/bin")
 
+BIND = ("--naive-report", "/box/r.json", "--naive-sha256", "a" * 64)
+
 pytestmark = pytest.mark.skipif(
     BASH is None or PYTHON3 is None, reason="bash and python3 (in /usr/bin:/bin) are required"
 )
@@ -69,16 +71,24 @@ def test_plan_is_default_and_offline(tmp_path: Path) -> None:
     r = _run(tmp_path, "plan", "main", "0.168788")
     assert r.returncode == 0, r.stderr
     out = r.stdout
-    assert out.index("rf-smoke") < out.index("rf-full") < out.index("naive")
+    assert (
+        out.index("step 1/3: naive")
+        < out.index("step 2/3: rf-smoke")
+        < out.index("step 3/3: rf-full")
+    )
+    assert "--naive-report" in out
     assert "0.168788" in out
     assert "re-verify" in out
     assert not (tmp_path / "gcloud.log").exists()
 
 
 def test_step_dry_run_prints_command_and_exposure(tmp_path: Path) -> None:
-    r = _run(tmp_path, "rf-full", "main", "0.168788")
+    r = _run(tmp_path, "rf-full", "main", "0.168788", *BIND)
     assert r.returncode == 0, r.stderr
-    assert "run-random-forest-vm.sh v6-val-full main 0.168788" in r.stdout
+    assert (
+        "run-random-forest-vm.sh v6-val-full main 0.168788 "
+        f"--naive-report /box/r.json --naive-sha256 {'a' * 64}"
+    ) in r.stdout
     assert "1.35 USD" in r.stdout
     assert "not a hard cap" in r.stdout
     assert "[dry-run]" in r.stdout
@@ -102,7 +112,7 @@ def test_requires_valid_rate(tmp_path: Path, rate: str) -> None:
 
 
 def test_execute_refuses_running_vm(tmp_path: Path) -> None:
-    r = _run(tmp_path, "rf-smoke", "main", "0.168788", "--execute", status="RUNNING")
+    r = _run(tmp_path, "rf-smoke", "main", "0.168788", *BIND, "--execute", status="RUNNING")
     assert r.returncode == 1
     assert "start" not in _verbs(tmp_path)
     assert set(_verbs(tmp_path)) == {"describe"}
@@ -112,7 +122,7 @@ def test_execute_refuses_concurrent_step(tmp_path: Path) -> None:
     lock = tmp_path / "berlin-lst-val-baselines.lock"
     with lock.open("w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        r = _run(tmp_path, "rf-smoke", "main", "0.168788", "--execute")
+        r = _run(tmp_path, "rf-smoke", "main", "0.168788", *BIND, "--execute")
     assert r.returncode == 1
     assert "another val-baseline step" in r.stderr
     assert not (tmp_path / "gcloud.log").exists()
@@ -122,3 +132,34 @@ def test_naive_maps_to_baseline_v6_val_only(tmp_path: Path) -> None:
     r = _run(tmp_path, "naive", "main", "0.168788")
     assert r.returncode == 0, r.stderr
     assert "run-baseline-vm.sh main baseline_v6_val" in r.stdout
+
+
+@pytest.mark.parametrize("step", ["rf-smoke", "rf-full"])
+def test_rf_step_requires_binding(tmp_path: Path, step: str) -> None:
+    r = _run(tmp_path, step, "main", "0.168788")
+    assert r.returncode == 1
+    assert "--naive-report" in r.stderr
+    assert not (tmp_path / "gcloud.log").exists()
+
+
+def test_rejects_bad_sha_format(tmp_path: Path) -> None:
+    r = _run(
+        tmp_path,
+        "rf-smoke",
+        "main",
+        "0.168788",
+        "--naive-report",
+        "/box/r.json",
+        "--naive-sha256",
+        "ABC",
+    )
+    assert r.returncode == 1
+    assert "64 lowercase hex" in r.stderr
+    assert not (tmp_path / "gcloud.log").exists()
+
+
+def test_naive_rejects_binding_flags(tmp_path: Path) -> None:
+    r = _run(tmp_path, "naive", "main", "0.168788", *BIND)
+    assert r.returncode == 1
+    assert "does not take" in r.stderr
+    assert not (tmp_path / "gcloud.log").exists()
