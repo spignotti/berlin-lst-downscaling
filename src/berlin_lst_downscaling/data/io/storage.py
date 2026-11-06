@@ -394,6 +394,33 @@ def _atomic_upload_gcs(
     )
 
 
+def create_only_upload(local_path: Path | str, dst: str) -> str:
+    """Upload a local file to *dst* only if *dst* does not exist yet.
+
+    For **GCS paths** the file is uploaded directly to the final object with
+    ``if_generation_match=0``: no temp object, no copy, no delete. The caller
+    therefore needs only object-create permission. An existing object raises
+    :class:`FileExistsError` before the upload; a concurrent creation is caught
+    by the precondition and the library's ``PreconditionFailed`` (412) is
+    propagated unchanged. Upload errors are never swallowed.
+
+    For **local paths** this is ``atomic_upload(..., overwrite=False)``.
+    """
+    loc = _as_loc(dst)
+    src_path = Path(local_path)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"Source file not found: {src_path}")
+    if loc.scheme != "gcs":
+        _atomic_upload_local(src_path, loc.uri, overwrite=False)
+        return dst
+    bucket_name, key = _parse_gs_uri(loc.uri)
+    blob = _gcs_client().bucket(bucket_name).blob(key)
+    if blob.exists():
+        raise FileExistsError(dst)
+    blob.upload_from_filename(str(src_path), if_generation_match=0)
+    return dst
+
+
 # ── publish lock ─────────────────────────────────────────────────────
 
 
@@ -539,6 +566,7 @@ __all__ = [
     "PublishLock",
     "atomic_write",
     "atomic_upload",
+    "create_only_upload",
     "exists",
     "publish_lock",
     "read_bytes",

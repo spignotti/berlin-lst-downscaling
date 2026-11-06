@@ -21,7 +21,7 @@ _DIGEST = "sha256:" + "a" * 64
 _IMAGE = "example.invalid/repo/image@" + _DIGEST
 _SHA = "0" * 40
 _MODE = "v6-val-rescore"
-_LABEL = "v6m-070b33c-val-rescore-notest"
+_LABEL = "v6m-070b33c-val-rescore-notest-r2"
 _PREFIX = f"gs://berlin-lst-training-data/qa/modeling/vertex-smoke/{_LABEL}"
 _MANIFEST = f"{_PREFIX}/manifest.json"
 

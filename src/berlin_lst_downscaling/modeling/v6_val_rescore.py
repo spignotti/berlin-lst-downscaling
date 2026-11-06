@@ -109,7 +109,7 @@ _logger = logging.getLogger(__name__)
 MATRIX_SOURCE_SHA = "070b33ce4323834b7813db4609b5052702c4505f"
 MATRIX_LABEL_PREFIX = "v6m-070b33c"
 MATRIX_EVIDENCE_PREFIX = "gs://berlin-lst-training-data/qa/modeling/vertex-smoke"
-RESCORE_LABEL = "v6m-070b33c-val-rescore-notest"
+RESCORE_LABEL = "v6m-070b33c-val-rescore-notest-r2"
 RESCORE_PREFIX = f"{MATRIX_EVIDENCE_PREFIX}/{RESCORE_LABEL}"
 RESCORE_MANIFEST_URI = f"{RESCORE_PREFIX}/manifest.json"
 RESCORE_SPLIT = "validation"
@@ -519,10 +519,13 @@ def score_validation(
 
 
 def upload_create_only(local: Path, uri: str) -> dict[str, object]:
-    """Upload ``local`` to ``uri`` under the rescore prefix; never overwrite."""
+    """Upload ``local`` to ``uri`` under the rescore prefix.
+
+    Create-only, never overwrite, never delete.
+    """
     if not uri.startswith(RESCORE_PREFIX + "/"):
         raise ValueError(f"{uri} is outside the rescore prefix {RESCORE_PREFIX}/")
-    storage.atomic_upload(local, uri, overwrite=False, if_generation_match=0)
+    storage.create_only_upload(local, uri)
     return {"uri": uri, "sha256": _sha256_file(local), "bytes": local.stat().st_size}
 
 

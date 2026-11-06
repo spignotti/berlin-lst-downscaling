@@ -505,11 +505,13 @@ load, hyperparameters compared with the locked arm config, and the stored
 relative. Any mismatch fails the job before the manifest is written.
 
 Outputs (create-only; the manifest is uploaded last; matrix evidence and
-checkpoints are never overwritten):
+checkpoints are never overwritten). Each upload goes straight to the final
+object with `if_generation_match=0` (`storage.create_only_upload`): no temp
+object, no copy, no delete, so the job SA needs only object create.
 
 ```
-gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest/<run-label>/eval_validation_patches.parquet
-gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest/manifest.json
+gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest-r2/<run-label>/eval_validation_patches.parquet
+gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest-r2/manifest.json
 ```
 
 The export is the schema-version-2 per-patch input for `analysis.scene_bootstrap`
@@ -542,6 +544,30 @@ The submit is the same command without `--preflight`. It runs only after the
 merge and the image build, once. Reconnect with `--mode v6-val-rescore --status
 <resource-name>` (do not resubmit); cancel with
 `gcloud ai custom-jobs cancel <job-id> --region europe-west3 --project berlin-lst-training`.
+
+#### Restart after the delete-403 failure (#127)
+
+- What happened: the first job wrote to
+  `gs://berlin-lst-training-data/qa/modeling/vertex-smoke/v6m-070b33c-val-rescore-notest/`
+  through `storage.atomic_upload` (temp object, copy, delete). The temp delete
+  returned 403 for the `berlin-lst-vertex-smoke` SA, and the job stopped after
+  the first export without a manifest.
+- Old prefix: incomplete and abandoned. It is not resumed, deleted, or read.
+  Consumers trust only a prefix that holds a `manifest.json`.
+- New prefix: the restart uses `.../v6m-070b33c-val-rescore-notest-r2/`
+  (label rename only; method, inventory, and fingerprints are unchanged).
+  Preflight refuses it if any destination object already exists there. A
+  partial `-r2` prefix is not resumed either; a further restart needs a new label.
+- SA unchanged: no `storage.objects.delete` grant and no IAM change.
+- Restart sequence:
+  1. Merge the #127 fix.
+  2. Build the modeling-vertex image from the merge commit.
+  3. Run the preflight command above with `--source-sha <merge sha>` and
+     `--image-uri …@<digest of that build>`.
+  4. Submit once (same command without `--preflight`).
+  5. Reconnect with `--mode v6-val-rescore --status <resource-name>`.
+- Old images: an image built before this fix still deletes and must not be used.
+- The fix PR itself builds, pushes, and submits nothing.
 
 ### Prebuilt patch cache
 
