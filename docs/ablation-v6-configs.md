@@ -136,6 +136,12 @@ prints no `--skip-test`.
   `scripts/operators/read_epoch_curve.py <evidence-or-epoch-metrics>` prints
   epoch, train and validation MAE and marks the best epoch; it never reads test
   metrics.
+- Epoch numbers in evidence (`best_epoch`, `stopped_epoch`,
+  `epochs_completed`) and printed curves are 1-based; Lightning
+  `current_epoch` and checkpoint filenames `best-<epoch>-…` are 0-based. Matrix
+  L4 seed 0: `max_epochs=40`, `epochs_completed=40`, `best_epoch=39` (the 39th
+  of 40 epochs), filename `best-38-…`. See
+  [Epoch numbering](vertex-gpu-training.md#epoch-numbering-1-based-summaries-0-based-lightning).
 
 ## Read preflight (mandatory)
 
