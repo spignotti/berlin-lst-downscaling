@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 from berlin_lst_downscaling.data.features.contracts import FEATURE_SCHEMA_VERSION_V6
 
@@ -78,3 +81,27 @@ def test_full_profile_cannot_skip_naive() -> None:
 def test_launchers_never_skip_naive() -> None:
     for name in ("run-random-forest-vm.sh", "naive-evidence-lib.sh", "val-baselines-vm.sh"):
         assert "--skip-naive" not in (VM / name).read_text()
+
+
+@pytest.mark.parametrize("value", ["six", 6.5, True, [6]])
+def test_non_integer_schema_version_layout_raises(value: object) -> None:
+    with pytest.raises(ValueError, match="feature_schema_version must be an integer"):
+        vrf._layout_for({"feature_schema_version": value})
+
+
+def test_non_integer_schema_version_requires_explicit_naive() -> None:
+    path, errors = _resolve({"feature_schema_version": "six", "scope": {"profile": "smoke"}})
+    assert path is None
+    assert any("explicit --naive-report" in e for e in errors)
+
+
+def test_main_rejects_non_integer_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "random_forest_report.json"
+    report.write_text(json.dumps({"feature_schema_version": "six"}))
+    monkeypatch.setattr(sys, "argv", ["validate_random_forest.py", "--report", str(report)])
+    assert vrf.main() == 1
+    out = capsys.readouterr().out
+    assert "feature_schema_version must be an integer" in out
+    assert "FAIL" in out

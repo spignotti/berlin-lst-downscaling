@@ -3,7 +3,7 @@
 # Usage: run-random-forest-vm.sh <smoke|full|v6-smoke|v6-full|v6-val-smoke|v6-val-full> <branch> <hourly-rate-usd>
 #          [--naive-report PATH --naive-sha256 HEX]
 # Every v6 mode requires the naive evidence binding (run the naive baseline_v6_val first and pass
-# the secured baseline_report.json with the sha256 it printed). Legacy smoke|full reject it and
+# the secured baseline_report.json with the sha256 of the naive_evidence_manifest.sha256 next to it). Legacy smoke|full reject it and
 # keep the legacy validator lookup. The evidence is verified locally before any VM call, uploaded
 # with a remote sha256 check, and passed to the validator as an explicit --naive-report.
 # Full mode requires operator inspection of smoke memory/throughput first.
@@ -31,6 +31,8 @@ while (( $# > 0 )); do
   esac
 done
 NAIVE_SPLITS=""
+NAIVE_REPORT_SHA=""
+NAIVE_MANIFEST=""
 case "$MODE" in
   smoke) CONFIG="random_forest_smoke"; RUN_SECONDS=1800; TOTAL_SECONDS=3600 ;;
   full) CONFIG="random_forest_full"; RUN_SECONDS=21600; TOTAL_SECONDS=25200 ;;
@@ -65,6 +67,11 @@ if [[ -n "$NAIVE_SPLITS" ]]; then
       --report "$NAIVE_REPORT" --sha256 "$NAIVE_SHA256" --config-name "$CONFIG" \
       --expected-splits "$NAIVE_SPLITS"); then
     echo "ERROR: naive evidence binding rejected; VM not started." >&2
+    exit 1
+  fi
+  NAIVE_MANIFEST="$(dirname "$NAIVE_REPORT")/naive_evidence_manifest.sha256"
+  if ! NAIVE_REPORT_SHA=$(naive_manifest_report_sha "$NAIVE_MANIFEST" "$NAIVE_SHA256"); then
+    echo "ERROR: naive evidence manifest changed after verification; VM not started." >&2
     exit 1
   fi
 fi
@@ -165,7 +172,7 @@ fi
 if (( RUN_SECONDS > AVAILABLE )); then RUN_SECONDS=$AVAILABLE; fi
 REMOTE_CMD="set -f; OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s ${RUN_SECONDS}s uv run python scripts/runners/run_random_forest.py --config-name $CONFIG output_root=$OUTPUT_REL"
 if [[ -n "$NAIVE_SPLITS" ]]; then
-  if ! naive_evidence_push "$NAIVE_REPORT" "$NAIVE_SHA256" "$REMOTE_NAIVE"; then
+  if ! naive_evidence_push "$NAIVE_REPORT" "$NAIVE_REPORT_SHA" "$REMOTE_NAIVE"; then
     echo "ERROR: naive evidence transfer failed; refusing to launch." >&2
     exit 1
   fi
@@ -194,7 +201,7 @@ VALIDATION_RC=0
 NAIVE_ARG=""
 VALIDATION_OUT=""
 if [[ -n "$NAIVE_SPLITS" ]]; then
-  if naive_evidence_check_remote "$NAIVE_SHA256" "$REMOTE_NAIVE"; then
+  if naive_evidence_check_remote "$NAIVE_REPORT_SHA" "$REMOTE_NAIVE"; then
     NAIVE_ARG="$REMOTE_NAIVE"
   else
     VALIDATION_RC=1
@@ -216,7 +223,7 @@ fi
 leave_running=1
 mkdir -p "$LOCAL_DIR"
 if [[ -n "$NAIVE_SPLITS" ]]; then
-  printf '%s  %s\n' "$NAIVE_SHA256" "$NAIVE_REPORT" > "$LOCAL_DIR/naive_evidence.sha256"
+  printf '%s  %s\n%s  %s\n' "$NAIVE_SHA256" "$NAIVE_MANIFEST" "$NAIVE_REPORT_SHA" "$NAIVE_REPORT" > "$LOCAL_DIR/naive_evidence.sha256"
 fi
 printf '%s\n' "$VALIDATION_OUT" > "$LOCAL_DIR/validation.txt"
 ARCHIVE="$APP_DIR/data/runs/$RUN_DIR/$WRAP_RUN_ID-artifact.tgz"

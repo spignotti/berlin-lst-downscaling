@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -139,12 +140,24 @@ def _v6_layout() -> _Layout:
     return _Layout(names, indices, order)
 
 
+def _schema_version(report: dict) -> int | None:
+    """feature_schema_version as int; None when absent. Non-integers raise ValueError."""
+    version = report.get("feature_schema_version")
+    if version is None:
+        return None
+    if isinstance(version, int) and not isinstance(version, bool):
+        return version
+    if isinstance(version, str) and re.fullmatch(r"-?[0-9]+", version.strip()):
+        return int(version)
+    raise ValueError(f"feature_schema_version must be an integer, got {version!r}")
+
+
 def _layout_for(report: dict) -> _Layout:
     """Pick the layout from the report; reports without the field are v1 (V3)."""
-    version = report.get("feature_schema_version")
-    if version is None or int(version) == FEATURE_SCHEMA_VERSION:
+    version = _schema_version(report)
+    if version is None or version == FEATURE_SCHEMA_VERSION:
         return _V3_LAYOUT
-    if int(version) == FEATURE_SCHEMA_VERSION_V6:
+    if version == FEATURE_SCHEMA_VERSION_V6:
         return _v6_layout()
     raise ValueError(f"unsupported feature_schema_version {version!r}")
 
@@ -632,8 +645,11 @@ def _find_naive_report(explicit: str | None, *, require_explicit: bool = False) 
 
 def _naive_requires_explicit(report: dict) -> bool:
     """v6 and val-only reports never auto-select naive evidence."""
-    version = report.get("feature_schema_version")
-    if version is not None and int(version) == FEATURE_SCHEMA_VERSION_V6:
+    try:
+        version = _schema_version(report)
+    except ValueError:
+        return True
+    if version == FEATURE_SCHEMA_VERSION_V6:
         return True
     return report.get("scope", {}).get("test_split") == "skipped"
 
@@ -801,6 +817,12 @@ def main() -> int:
     report_dir = report_path.parent
     report = _read_json(str(report_path))
     print(f"Validating random forest report: {args.report}")
+    try:
+        _schema_version(report)
+    except ValueError as exc:
+        print(f"  ✗ {exc}")
+        print("FAIL: 1 finding(s); model replay refused")
+        return 1
 
     try:
         aggregation = resolve_report_aggregation(report)

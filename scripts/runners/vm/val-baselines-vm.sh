@@ -7,7 +7,7 @@
 #
 # Order: naive -> rf-smoke -> (human inspects smoke memory/throughput) -> rf-full,
 # all on the same VM and never concurrently. The rf steps need the binding (secured
-# baseline_report.json path and sha256) printed by the naive step. One step runs per invocation and
+# baseline_report.json path and manifest sha256) printed by the naive step. One step runs per invocation and
 # nothing chains automatically. The default prints the plan only: no gcloud,
 # no git, no VM start. --execute (human Run OK) runs exactly one step through
 # the existing launcher; the caller wraps this whole script with
@@ -98,7 +98,7 @@ if [[ "$STEP" == "plan" ]]; then
     echo "ERROR: 'plan' cannot be combined with --execute." >&2
     exit 1
   fi
-  BIND_ARGS="--naive-report <secured baseline_report.json> --naive-sha256 <sha256 printed by naive>"
+  BIND_ARGS="--naive-report <secured baseline_report.json> --naive-sha256 <manifest sha256 printed by naive>"
   print_step 1 naive "run-baseline-vm.sh $BRANCH baseline_v6_val" 2 baseline_v6_val
   print_step 2 rf-smoke "run-random-forest-vm.sh v6-val-smoke $BRANCH $RATE $BIND_ARGS" 1 random_forest_v6_val_smoke
   print_step 3 rf-full "run-random-forest-vm.sh v6-val-full $BRANCH $RATE $BIND_ARGS" 8 random_forest_v6_val_full

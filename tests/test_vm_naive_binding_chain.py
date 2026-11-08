@@ -60,10 +60,16 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@pytest.fixture
-def sandbox(tmp_path: Path) -> Path:
+RELS = ["baseline_report.json", "validation.txt", "logs/baseline/synthetic.context.json"]
+
+
+def _make_sandbox(
+    tmp_path: Path, vm_fakes: dict[str, str] | None = None, *, with_origin: bool = False
+) -> Path:
     repo = tmp_path / "repo"
     shutil.copytree(VM_DIR, repo / "scripts" / "runners" / "vm")
+    for name, text in (vm_fakes or {}).items():
+        write_exec(repo / "scripts" / "runners" / "vm" / name, text)
     val = repo / "scripts" / "validators"
     val.mkdir(parents=True)
     for name in ("verify_naive_binding.py", "validate_run_provenance.py"):
@@ -74,7 +80,13 @@ def sandbox(tmp_path: Path) -> Path:
     git(repo, "config", "user.name", "t")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "sandbox")
-    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    if with_origin:
+        bare = tmp_path / "origin.git"
+        git(tmp_path, "init", "--bare", "-q", str(bare))
+        git(repo, "remote", "add", "origin", str(bare))
+        git(repo, "push", "-q", "origin", "main")
+    else:
+        git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     write_exec(bin_dir / "gcloud", FAKE_GCLOUD)
@@ -82,6 +94,25 @@ def sandbox(tmp_path: Path) -> Path:
     write_exec(bin_dir / "ssh", FAKE_SSH)
     (tmp_path / "home").mkdir()
     return repo
+
+
+@pytest.fixture
+def sandbox(tmp_path: Path) -> Path:
+    return _make_sandbox(tmp_path)
+
+
+def _record(evidence_dir: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603
+        [BASH or "", "-c", f'source "{LIB}"; naive_evidence_record "$1"', "_", str(evidence_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": BIN_PATH},
+    )
+
+
+def _manifest_sha(evidence_dir: Path) -> str:
+    return _sha(evidence_dir / "naive_evidence_manifest.sha256")
 
 
 def _env(repo: Path) -> dict[str, str]:
@@ -125,17 +156,13 @@ def _verbs(tmp: Path) -> list[str]:
 def test_chain_naive_secures_then_rf_binds(sandbox: Path) -> None:
     tmp = sandbox.parent
     report = _box_copy(tmp)
-    sha = _sha(report)
-    rec = subprocess.run(  # noqa: S603
-        [BASH or "", "-c", f'source "{LIB}"; naive_evidence_record "$1"', "_", str(report)],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={"PATH": BIN_PATH},
-    )
+    rec = _record(report.parent)
     assert rec.returncode == 0, rec.stderr
-    assert (report.parent / "baseline_report.json.sha256").read_text().split()[0] == sha
+    sha = _manifest_sha(report.parent)
+    manifest_lines = (report.parent / "naive_evidence_manifest.sha256").read_text().splitlines()
+    assert manifest_lines == [f"{_sha(report.parent / r)}  {r}" for r in RELS]
     assert f"--naive-sha256 {sha}" in rec.stdout
+    assert "Do not delete or modify" in rec.stdout
     for mode in ("v6-val-smoke", "v6-val-full"):
         (tmp / "gcloud.log").unlink(missing_ok=True)
         r = _launch(
@@ -166,6 +193,11 @@ def _wrong_dataset(report: Path) -> None:
     [
         "missing_report",
         "wrong_sha",
+        "report_sha_instead_of_manifest",
+        "validation_swapped_after_record",
+        "context_swapped_after_record",
+        "unlisted_context",
+        "manifest_missing",
         "wrong_dataset",
         "stale_v3",
         "missing_flags",
@@ -177,16 +209,28 @@ def _wrong_dataset(report: Path) -> None:
 def test_invalid_binding_stops_before_any_gcloud(sandbox: Path, case: str) -> None:
     tmp = sandbox.parent
     report = _box_copy(tmp)
-    sha = _sha(report)
+    ev = report.parent
+    if case in ("wrong_dataset", "stale_v3"):
+        (_wrong_dataset if case == "wrong_dataset" else _stale)(report)
+    assert _record(ev).returncode == 0
+    sha = _manifest_sha(ev)
     mode = "v6-val-full"
     args: list[str] = ["--naive-report", str(report), "--naive-sha256", sha]
+    ctx = ev / "logs" / "baseline"
     if case == "missing_report":
         args = ["--naive-report", str(tmp / "absent.json"), "--naive-sha256", sha]
     elif case == "wrong_sha":
         args = ["--naive-report", str(report), "--naive-sha256", "a" * 64]
-    elif case in ("wrong_dataset", "stale_v3"):
-        (_wrong_dataset if case == "wrong_dataset" else _stale)(report)
+    elif case == "report_sha_instead_of_manifest":
         args = ["--naive-report", str(report), "--naive-sha256", _sha(report)]
+    elif case == "validation_swapped_after_record":
+        (ev / "validation.txt").write_text("  selection validation: full\n")
+    elif case == "context_swapped_after_record":
+        (ctx / "synthetic.context.json").write_text("{}")
+    elif case == "unlisted_context":
+        shutil.copy(ctx / "synthetic.context.json", ctx / "other.context.json")
+    elif case == "manifest_missing":
+        (ev / "naive_evidence_manifest.sha256").unlink()
     elif case == "missing_flags":
         args = []
     elif case == "legacy_with_binding":
@@ -333,5 +377,100 @@ def test_launcher_validation_only_after_remote_check() -> None:
     text = LAUNCHER.read_text()
     assert text.index("naive_evidence_push") < text.index("vm_launch_detached")
     assert text.rindex("naive_evidence_check_remote") < text.index('rf_validation_remote_cmd "')
+    assert text.index("naive_manifest_report_sha") < text.index("DEADLINE=")
+    assert 'naive_evidence_push "$NAIVE_REPORT" "$NAIVE_REPORT_SHA"' in text
     assert text.count("validate_random_forest.py") == 0
     assert "--skip-naive" not in text
+
+
+def test_record_requires_exactly_one_context(tmp_path: Path) -> None:
+    for extra in ("two", "zero"):
+        ev = _box_copy(tmp_path / extra).parent
+        ctx = ev / "logs" / "baseline"
+        if extra == "two":
+            shutil.copy(ctx / "synthetic.context.json", ctx / "other.context.json")
+        else:
+            (ctx / "synthetic.context.json").unlink()
+        r = _record(ev)
+        assert r.returncode != 0, extra
+        assert not (ev / "naive_evidence_manifest.sha256").exists()
+
+
+def test_manifest_report_sha_helper(tmp_path: Path) -> None:
+    ev = _box_copy(tmp_path).parent
+    assert _record(ev).returncode == 0
+    manifest = ev / "naive_evidence_manifest.sha256"
+    sha = _sha(manifest)
+    script = f'source "{LIB}"; naive_manifest_report_sha "$1" "$2"'
+    good = _bash(script, tmp_path, str(manifest), sha)
+    assert good.returncode == 0, good.stderr
+    assert good.stdout.strip() == _sha(ev / "baseline_report.json")
+    assert _bash(script, tmp_path, str(manifest), "a" * 64).returncode != 0
+    manifest.write_text("".join(ln + "\n" for ln in manifest.read_text().splitlines()[1:]))
+    assert _bash(script, tmp_path, str(manifest), _sha(manifest)).returncode != 0
+
+
+FAKE_START = '#!/bin/bash\necho start >> "$FAKE_TMP/vm.log"\n'
+FAKE_STOP = '#!/bin/bash\necho stop >> "$FAKE_TMP/vm.log"\n'
+FAKE_SSH_VM = r"""#!/bin/bash
+[ "$1" = "--" ] && shift
+cmd="$1"; printf '%s\n----\n' "$cmd" >> "$FAKE_TMP/ssh.log"
+case "$cmd" in
+  "echo ready") echo ready ;;
+  *"pgrep -f"*) echo idle ;;
+  *'_h=$(git rev-parse HEAD)'*) echo "$FAKE_SHA" ;;
+  *"cat > "*"-naive/baseline_report.json"*)
+    [ "$FAKE_CASE" = upload_fails ] && exit 1
+    cat > "$FAKE_TMP/remote_naive.json" ;;
+  *"sha256sum "*)
+    if [ "$FAKE_CASE" = remote_sha_mismatch ]; then echo "$(printf '0%.0s' {1..64})  x"
+    else sha256sum "$FAKE_TMP/remote_naive.json"; fi ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+@pytest.mark.parametrize("case", ["upload_fails", "remote_sha_mismatch"])
+def test_vm_stopped_when_naive_upload_or_remote_check_fails(tmp_path: Path, case: str) -> None:
+    repo = _make_sandbox(
+        tmp_path,
+        {"start-vm.sh": FAKE_START, "stop-vm.sh": FAKE_STOP, "ssh-vm.sh": FAKE_SSH_VM},
+        with_origin=True,
+    )
+    report = _box_copy(tmp_path)
+    assert _record(report.parent).returncode == 0
+    sha = _manifest_sha(report.parent)
+    env = _env(repo)
+    env.update(
+        {
+            "FAKE_STATUS": "TERMINATED",
+            "BERLIN_LST_SSH_USER": "tester",
+            "FAKE_SHA": git(repo, "rev-parse", "HEAD"),
+            "FAKE_CASE": case,
+        }
+    )
+    r = subprocess.run(  # noqa: S603
+        [
+            BASH or "",
+            str(repo / "scripts" / "runners" / "vm" / "run-random-forest-vm.sh"),
+            "v6-val-smoke",
+            "main",
+            "0.168788",
+            "--naive-report",
+            str(report),
+            "--naive-sha256",
+            sha,
+        ],
+        env=env,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "naive evidence transfer failed" in r.stderr, r.stdout + r.stderr
+    assert (tmp_path / "vm.log").read_text().split() == ["start", "stop"]
+    assert "Stopping VM (cleanup on pre-launch failure)" in r.stdout
+    ssh_log = (tmp_path / "ssh.log").read_text()
+    for forbidden in ("marker.json", "run_random_forest.py", "validate_random_forest.py"):
+        assert forbidden not in ssh_log
