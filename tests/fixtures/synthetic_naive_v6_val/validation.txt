@@ -1,0 +1,1 @@
+  selection validation: full, 2 scored, 0 missing, 0 recorded exclusions

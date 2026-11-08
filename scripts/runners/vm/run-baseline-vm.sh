@@ -25,10 +25,13 @@
 #
 # baseline_full and baseline_v6_full open test 2025. Until the v6 ablation
 # matrix is frozen use baseline_v6_val (validation 2024 only, no test ref).
+# For baseline_v6_val this runs FIRST: the secured box copy plus the manifest sha256 (printed as
+# "Naive sha256") are what run-random-forest-vm.sh binds with --naive-report PATH --naive-sha256 HEX.
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_logging.sh"
 source "$(cd "$(dirname "$0")" && pwd)/vm-runner-common.sh"
+source "$(cd "$(dirname "$0")" && pwd)/naive-evidence-lib.sh"
 
 BRANCH="${1:-main}"
 BASELINE_CONFIG="${2:-baseline_full}"
@@ -166,6 +169,10 @@ if [[ "$TRANSFER_OK" -eq 0 ]]; then
     echo "  Deployed SHA: $DEPLOYED_SHA"
     echo "  Artifact:     $LOCAL_DIR"
     echo "  Remote log:   $REMOTE_LOG"
+    if ! naive_evidence_record "$LOCAL_DIR"; then
+      echo "FAIL: evidence manifest could not be written; do not bind this run."
+      exit 1
+    fi
   else
     echo "FAIL: baseline completed but its evidence checks did not pass."
     echo "  Run ID:       $WRAP_RUN_ID"

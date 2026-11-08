@@ -1,0 +1,36 @@
+{
+  "method": "naive_prior_expand",
+  "git_revision": "1234567890abcdef1234567890abcdef12345678",
+  "fingerprints": {
+    "index_policy_hash": "79add7e6a0736fb9",
+    "source_policy_hash": "193fa9b23943a839",
+    "patches_total": "8078",
+    "published_at": "2026-10-25T21:16:47.094608+00:00"
+  },
+  "splits": {
+    "validation": {
+      "requested_patches": 2,
+      "evaluated_patches": 2,
+      "valid_cells": 10,
+      "exclusions": {},
+      "mae": 1.0,
+      "ssim": 0.9
+    }
+  },
+  "patches": [
+    {
+      "patch_id": "synthetic-0001",
+      "split": "validation",
+      "valid_cells": 5,
+      "filled_feature_pixels": 0
+    },
+    {
+      "patch_id": "synthetic-0002",
+      "split": "validation",
+      "valid_cells": 5,
+      "filled_feature_pixels": 0
+    }
+  ],
+  "exclusions": {},
+  "source": {}
+}

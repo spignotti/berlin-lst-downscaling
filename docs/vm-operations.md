@@ -587,6 +587,8 @@ Post-run, the RF and naive launchers run
 `scripts/validators/validate_run_provenance.py`, which rejects a report or run
 context whose git commit is missing, `unknown`, different from the deployed SHA, or
 dirty. The RF launcher then keeps the remote output.
+The RF validator receives the bound naive evidence explicitly (`--naive-report`), never
+by newest-file auto-selection.
 
 RF probe states: `idle`, `dirty`, `absent` (app dir not bootstrapped yet; the
 deploy creates it), `occupied`, `broken` (any check or git error; the VM is kept,
@@ -621,9 +623,53 @@ mount are needed for these steps. Every command below is wrapped as
 7. Separately, later, and with its own OK: `sync-vm-env.sh` (after the first
    deploy has bootstrapped the app dir). It is **not** done by this path.
 8. Val-only baselines: `val-baselines-vm.sh plan <branch> <rate>`, then one
-   `--execute` step per Run OK in the order rf-smoke → inspect smoke
-   memory/throughput → rf-full → naive; never concurrent (a lock plus a
-   TERMINATED/STOPPED-VM precondition). The RF launcher gate is "8-hour
+   `--execute` step per Run OK in the order naive → rf-smoke → inspect smoke
+   memory/throughput → rf-full; never concurrent (a lock plus a
+   TERMINATED/STOPPED-VM precondition). The naive step secures
+   the evidence dir on the Box and writes `naive_evidence_manifest.sha256`, a
+   `sha256sum`-format manifest covering `baseline_report.json`, `validation.txt`
+   and the single `logs/baseline/*.context.json`. It prints the `Naive evidence`
+   path and `Naive sha256`, the sha256 of the manifest, which is the value for
+   `--naive-sha256`. Both RF steps must bind exactly that evidence. Do not delete
+   or modify the naive evidence dir until rf-smoke and rf-full are done. Evidence
+   secured before the manifest existed is rejected; re-run the naive step:
+
+   ```bash
+   val-baselines-vm.sh naive <branch> <rate> --execute
+   val-baselines-vm.sh rf-smoke <branch> <rate> \
+     --naive-report <secured baseline_report.json> --naive-sha256 <manifest sha256> --execute
+   val-baselines-vm.sh rf-full <branch> <rate> \
+     --naive-report <secured baseline_report.json> --naive-sha256 <manifest sha256> --execute
+   ```
+
+   Before any `gcloud` call, `run-random-forest-vm.sh` runs
+   `scripts/validators/verify_naive_binding.py` locally. It checks that the
+   manifest sha256 equals the bound value; every covered file exists and matches
+   its entry; the manifest has exactly the three entries and none points outside
+   the evidence dir; there is no unlisted `*.context.json`; and the content checks
+   below run on the hashed bytes (all covered files are re-hashed after the
+   provenance check). The report is valid JSON,
+   `method == naive_prior_expand`, the split set is exactly `validation` (no
+   `test`) with valid cells, and the fingerprints (`index_policy_hash`,
+   `source_policy_hash`, `patches_total`) equal the committed pin
+   `configs/modeling/ssim_data_range/v1.yaml`, whose `patch_index_root` must equal
+   the RF config's. It also requires full coverage (`selection validation: full`
+   in the secured `validation.txt`, the naive launcher's own test) and clean git
+   provenance via `validate_run_provenance.py`. Any failure exits before the VM
+   starts. Every RF run checks the pin's `index_policy_hash` and
+   `source_policy_hash` against the live index marker before training. The
+   pinned `patches_total` is checked only after training, when the validator
+   compares the naive evidence with the RF report's live-marker value. The launcher uploads only
+   `baseline_report.json` (the file the validator reads; its sha256 comes from the
+   bound manifest) with a remote sha256 check before launch (a failed upload means it refuses to launch and
+   stops the VM), checks the sha256 again before validation (if that fails, the
+   validator does not run and the outputs are kept), and passes it as an explicit
+   `--naive-report`. The validator never auto-selects naive evidence for v6 or
+   val-only reports, and a `full` profile can never skip the naive comparison.
+   The test-opening `v6-smoke`/`v6-full` modes also require a binding: a manifest
+   from a `baseline_v6_full` naive run with splits `test,validation`. A val-only
+   binding is rejected, so these modes stay fail-closed until such evidence exists
+   and is bound; their behaviour is otherwise unchanged. Legacy `smoke`/`full` keep their old lookup. The RF launcher gate is "8-hour
    exposure ≤ 10 USD at the given rate"; it is an exposure gate, not a hard
    total budget. On connection loss or poll expiry the launchers leave the VM
    RUNNING by design, so cost continues until a human runs `stop-vm.sh`.

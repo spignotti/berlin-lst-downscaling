@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -139,12 +140,24 @@ def _v6_layout() -> _Layout:
     return _Layout(names, indices, order)
 
 
+def _schema_version(report: dict) -> int | None:
+    """feature_schema_version as int; None when absent. Non-integers raise ValueError."""
+    version = report.get("feature_schema_version")
+    if version is None:
+        return None
+    if isinstance(version, int) and not isinstance(version, bool):
+        return version
+    if isinstance(version, str) and re.fullmatch(r"-?[0-9]+", version.strip()):
+        return int(version)
+    raise ValueError(f"feature_schema_version must be an integer, got {version!r}")
+
+
 def _layout_for(report: dict) -> _Layout:
     """Pick the layout from the report; reports without the field are v1 (V3)."""
-    version = report.get("feature_schema_version")
-    if version is None or int(version) == FEATURE_SCHEMA_VERSION:
+    version = _schema_version(report)
+    if version is None or version == FEATURE_SCHEMA_VERSION:
         return _V3_LAYOUT
-    if int(version) == FEATURE_SCHEMA_VERSION_V6:
+    if version == FEATURE_SCHEMA_VERSION_V6:
         return _v6_layout()
     raise ValueError(f"unsupported feature_schema_version {version!r}")
 
@@ -615,9 +628,11 @@ def _compare_naive_split(
 # ── main ──────────────────────────────────────────────────────────────
 
 
-def _find_naive_report(explicit: str | None) -> str | None:
+def _find_naive_report(explicit: str | None, *, require_explicit: bool = False) -> str | None:
     if explicit:
         return explicit
+    if require_explicit:
+        return None
     repo_root = Path(__file__).resolve().parents[2]
     local_smoke = repo_root / "data" / "smoke" / "baseline-real" / "baseline_report.json"
     candidates = sorted(
@@ -626,6 +641,38 @@ def _find_naive_report(explicit: str | None) -> str | None:
     if candidates:
         return str(candidates[-1])
     return str(local_smoke) if local_smoke.is_file() else None
+
+
+def _naive_requires_explicit(report: dict) -> bool:
+    """v6 and val-only reports never auto-select naive evidence."""
+    try:
+        version = _schema_version(report)
+    except ValueError:
+        return True
+    if version == FEATURE_SCHEMA_VERSION_V6:
+        return True
+    return report.get("scope", {}).get("test_split") == "skipped"
+
+
+def _resolve_naive_path(
+    report: dict, *, naive_report: str | None, skip_naive: bool, errors: list[str]
+) -> str | None:
+    full = report.get("scope", {}).get("profile") == "full"
+    if skip_naive and full:
+        errors.append("full validation cannot skip the naive evidence comparison")
+        return None
+    if skip_naive:
+        return None
+    explicit_only = _naive_requires_explicit(report)
+    path = _find_naive_report(naive_report, require_explicit=explicit_only)
+    if path is None:
+        if explicit_only:
+            errors.append(
+                "v6/val-only report requires an explicit --naive-report (no auto-selection)"
+            )
+        else:
+            errors.append("no naive baseline evidence found; pass --naive-report or --skip-naive")
+    return path
 
 
 def _native_inputs(
@@ -770,6 +817,12 @@ def main() -> int:
     report_dir = report_path.parent
     report = _read_json(str(report_path))
     print(f"Validating random forest report: {args.report}")
+    try:
+        _schema_version(report)
+    except ValueError as exc:
+        print(f"  ✗ {exc}")
+        print("FAIL: 1 finding(s); model replay refused")
+        return 1
 
     try:
         aggregation = resolve_report_aggregation(report)
@@ -956,53 +1009,54 @@ def main() -> int:
 
     # ── naive universe comparison ─────────────────────────────────────
     full = report.get("scope", {}).get("profile") == "full"
-    if args.skip_naive and full:
-        errors.append("full validation cannot skip the naive evidence comparison")
-    if not args.skip_naive:
-        naive_path = _find_naive_report(args.naive_report)
-        if naive_path is None:
-            errors.append("no naive baseline evidence found; pass --naive-report or --skip-naive")
-        else:
-            naive = _read_json(naive_path)
-            naive["_require_full"] = full
-            print(f"  naive evidence: {naive_path}")
-            try:
-                naive_agg = resolve_report_aggregation(naive)
-            except ValueError as exc:
-                errors.append(str(exc))
-                naive_agg = aggregation
-            if naive_agg != aggregation:
+    naive_path = _resolve_naive_path(
+        report, naive_report=args.naive_report, skip_naive=args.skip_naive, errors=errors
+    )
+    if naive_path is not None:
+        naive = _read_json(naive_path)
+        naive["_require_full"] = full
+        print(f"  naive evidence: {naive_path}")
+        try:
+            naive_agg = resolve_report_aggregation(naive)
+        except ValueError as exc:
+            errors.append(str(exc))
+            naive_agg = aggregation
+        if naive_agg != aggregation:
+            errors.append(
+                f"aggregation {aggregation!r} != naive baseline {naive_agg!r} — "
+                "incompatible comparison"
+            )
+        for key in ("index_policy_hash", "source_policy_hash", "patches_total"):
+            if str(naive.get("fingerprints", {}).get(key, "")) != str(
+                report["fingerprints"].get(key, "")
+            ):
                 errors.append(
-                    f"aggregation {aggregation!r} != naive baseline {naive_agg!r} — "
-                    "incompatible comparison"
+                    f"naive evidence fingerprint {key} "
+                    f"{naive.get('fingerprints', {}).get(key, '')!r} != report "
+                    f"{report['fingerprints'].get(key, '')!r}"
                 )
-            for key in ("index_policy_hash", "source_policy_hash", "patches_total"):
-                if str(naive.get("fingerprints", {}).get(key, "")) != str(
-                    report["fingerprints"].get(key, "")
-                ):
-                    errors.append(f"naive evidence fingerprint {key} differs from this report")
-            naive_by_split: dict[str, list[dict]] = {}
-            for record in naive.get("patches", []):
-                naive_by_split.setdefault(str(record["split"]), []).append(record)
-            for split in splits:
-                if reference_stage is None:
-                    continue
-                summary = stages[str(reference_stage)]["splits"].get(split)
-                records = [
-                    r for r in stages[str(reference_stage)]["patches"] if str(r["split"]) == split
-                ]
-                if summary is None:
-                    continue
-                _compare_naive_split(
-                    split,
-                    int(summary["requested_patches"]),
-                    summary,
-                    records,
-                    _split_index_ids(index_rows, split),
-                    naive,
-                    naive_by_split,
-                    errors,
-                )
+        naive_by_split: dict[str, list[dict]] = {}
+        for record in naive.get("patches", []):
+            naive_by_split.setdefault(str(record["split"]), []).append(record)
+        for split in splits:
+            if reference_stage is None:
+                continue
+            summary = stages[str(reference_stage)]["splits"].get(split)
+            records = [
+                r for r in stages[str(reference_stage)]["patches"] if str(r["split"]) == split
+            ]
+            if summary is None:
+                continue
+            _compare_naive_split(
+                split,
+                int(summary["requested_patches"]),
+                summary,
+                records,
+                _split_index_ids(index_rows, split),
+                naive,
+                naive_by_split,
+                errors,
+            )
 
     if errors:
         for error in errors[:_MAX_REPORTED]:
