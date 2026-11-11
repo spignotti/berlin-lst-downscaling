@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import uuid
 
 from berlin_lst_downscaling.data.ard.publish_guard import assert_tessera_output_root
 from berlin_lst_downscaling.data.embeddings.product import (
@@ -103,7 +104,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"REFUSED: {exc}", file=sys.stderr)
             return 2
 
-    session = RunLogSession(output_root, "tessera_embeddings")
+    session = RunLogSession(
+        output_root,
+        pipeline="tessera_embeddings",
+        run_id=uuid.uuid4().hex[:8],
+    )
     with session:
         log_event(
             session,
