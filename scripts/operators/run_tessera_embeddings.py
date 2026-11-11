@@ -10,6 +10,7 @@
 #     "icechunk>=2.0",
 #     "numcodecs[pcodec]>=0.16",
 #     "numpy",
+#     "tenacity>=8.0",
 #     "odc-geo>=0.4.0",
 #     "rasterio>=1.4.3",
 # ]
@@ -111,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     with session:
         log_event(
-            session,
+            _logger,
+            logging.INFO,
             "tessera_read_start",
             year=int(args.year),
             bbox=list(TESSERA_BBOX),
@@ -122,7 +124,8 @@ def main(argv: list[str] | None = None) -> int:
             quality_threshold=float(args.quality_threshold),
         )
         log_event(
-            session,
+            _logger,
+            logging.INFO,
             "tessera_read_done",
             year=int(args.year),
             quantized=bool(read.quantized is not None),
@@ -142,7 +145,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         valid_canon = __import__("numpy").isfinite(scale_canon)
         log_event(
-            session,
+            _logger,
+            logging.INFO,
             "tessera_reproject_done",
             year=int(args.year),
             shape=[int(shape[0]), int(shape[1])],
@@ -182,7 +186,13 @@ def main(argv: list[str] | None = None) -> int:
                     overwrite=False,
                 )
             print(f"Published TESSERA year {int(args.year)} to {year_root}/")
-            log_event(session, "tessera_publish_done", year=int(args.year), root=year_root)
+            log_event(
+                _logger,
+                logging.INFO,
+                "tessera_publish_done",
+                year=int(args.year),
+                root=year_root,
+            )
         else:
             from berlin_lst_downscaling.data.embeddings.product import (
                 write_tessera_year_product,

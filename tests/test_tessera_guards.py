@@ -58,3 +58,12 @@ def test_operator_opens_run_log_with_keywords() -> None:
     keywords = {kw.arg for kw in calls[0].keywords}
     assert {"pipeline", "run_id"} <= keywords
     assert len(calls[0].args) == 1
+    log_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "log_event"
+    ]
+    assert len(log_calls) == 4
+    assert all(len(call.args) == 3 for call in log_calls)
