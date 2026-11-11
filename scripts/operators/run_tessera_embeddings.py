@@ -122,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         read = read_tessera_region(
             int(args.year),
             quality_threshold=float(args.quality_threshold),
+            dequantize=False,
         )
         log_event(
             _logger,

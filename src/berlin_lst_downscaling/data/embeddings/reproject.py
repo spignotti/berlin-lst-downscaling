@@ -133,7 +133,9 @@ def reproject_quantized_to_canonical(
     # Nearest on int8 codes with no nodata masking: every code is a valid
     # embedding value (including 127), and invalid pixels are carried by
     # the reprojected scale (NaN → invalid after dequantization).
-    q_work = np.moveaxis(q.astype(np.float32), 2, 0)
+    # Channel chunks keep the float32 working set under the 16 GB VM.
+    # Nearest resampling is per channel, so the result matches one full pass.
+    q_work = np.moveaxis(q, 2, 0)
     s = np.asarray(scale)
     if s.ndim == 3:
         s = s[:, :, 0] if s.shape[2] == 1 else np.nanmean(s, axis=2)
@@ -145,17 +147,27 @@ def reproject_quantized_to_canonical(
         dst_transform = canon_transform if dst_transform is None else dst_transform
     dst_h, dst_w = int(dst_shape[0]), int(dst_shape[1])
 
-    q_out = np.full((128, dst_h, dst_w), np.nan, dtype=np.float32)
+    q_int = np.zeros((dst_h, dst_w, 128), dtype=np.int8)
     s_out = np.full((1, dst_h, dst_w), np.nan, dtype=np.float32)
-    reproject(
-        source=q_work,
-        destination=q_out,
-        src_transform=src_transform,
-        src_crs=CRS.from_string(str(src_crs)),
-        dst_transform=dst_transform,
-        dst_crs=CRS.from_string(str(dst_crs)),
-        resampling=Resampling.nearest,
-    )
+    src_crs_obj = CRS.from_string(str(src_crs))
+    dst_crs_obj = CRS.from_string(str(dst_crs))
+    chunk = 16
+    for start in range(0, q_work.shape[0], chunk):
+        stop = min(start + chunk, q_work.shape[0])
+        q_chunk = np.ascontiguousarray(q_work[start:stop].astype(np.float32))
+        q_dest = np.full((stop - start, dst_h, dst_w), np.nan, dtype=np.float32)
+        reproject(
+            source=q_chunk,
+            destination=q_dest,
+            src_transform=src_transform,
+            src_crs=src_crs_obj,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs_obj,
+            resampling=Resampling.nearest,
+        )
+        q_back = np.moveaxis(q_dest, 0, 2)
+        q_int[:, :, start:stop] = np.where(np.isfinite(q_back), np.rint(q_back), 0).astype(np.int8)
+        del q_chunk, q_dest, q_back
     reproject(
         source=s_work,
         destination=s_out,
@@ -167,11 +179,9 @@ def reproject_quantized_to_canonical(
         src_nodata=float("nan"),
         dst_nodata=float("nan"),
     )
-    q_back = np.moveaxis(q_out, 0, 2)
-    # Outside-footprint codes stay NaN from the pre-fill and become 0 here;
-    # they are invalid via the NaN scale. Inside-footprint codes (including
-    # the 127 extreme) round-trip exactly with no sentinel loss.
-    q_int = np.where(np.isfinite(q_back), np.rint(q_back), 0).astype(np.int8)
+    # Outside-footprint codes stay 0 from the pre-fill; they are invalid via
+    # the NaN scale. Inside-footprint codes (including the 127 extreme)
+    # round-trip exactly with no sentinel loss.
     s_back = s_out[0]
     q_int[~np.isfinite(s_back)] = 0
     return q_int, s_back
