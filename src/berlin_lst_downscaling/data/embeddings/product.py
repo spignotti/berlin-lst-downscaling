@@ -122,6 +122,9 @@ def write_tessera_year_product(
         "tiled": True,
         "blockxsize": 512,
         "blockysize": 512,
+        # 128 bands of the Berlin grid cross the classic 4 GiB TIFF limit
+        # while flushing later bands. BigTIFF is required, not optional.
+        "BIGTIFF": "YES",
     }
     int8_path = os.path.join(output_dir, f"tessera_{int(year)}_int8.tif")
     with rasterio.open(int8_path, "w", **profile_int8) as dst:
