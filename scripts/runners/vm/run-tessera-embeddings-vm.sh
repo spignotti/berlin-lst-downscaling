@@ -8,7 +8,8 @@
 # then runs the independent validator. The VM is stopped on completion or on
 # a pre-launch failure. A lost connection leaves the VM running.
 #
-# Code only in this PR: this launcher is not executed here.
+# Years 2017-2025 under RELEASE_ROOT are published and frozen. This launcher
+# fails closed on that prefix. A new release needs a new prefix.
 #
 # Usage:
 #   run-tessera-embeddings-vm.sh [branch] [year]

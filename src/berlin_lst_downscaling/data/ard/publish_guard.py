@@ -72,11 +72,8 @@ _FROZEN_FEATURE_ROOTS = frozenset(
 )
 
 
-# Canonical TESSERA embedding product prefix (new in the TESSERA arm).
-# Nothing is published there yet; the operator publishes each year once via
-# scripts/operators/run_tessera_embeddings.py. After a year is published,
-# add its directory URI to _FROZEN_TESSERA_ROOTS so republish paths fail
-# closed instead of overwriting the canonical product.
+# Canonical TESSERA embedding product prefix. Years 2017–2025 are published
+# and frozen. A new release needs a new prefix; do not append years here.
 TESSERA_PRODUCT_PREFIX = "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
 
 # Published 2017–2025 products. Immutable; a new release needs a new prefix.
@@ -178,11 +175,11 @@ def assert_manifests_output_root(output_root: str) -> None:
 
 
 def assert_tessera_output_root(output_root: str) -> None:
-    """Block embedding writes into an already-published TESSERA year prefix.
+    """Block embedding writes into a published TESSERA year prefix.
 
-    The canonical prefix itself stays writable until the operator publishes;
-    once a year's ``complete.json`` is published, its directory URI belongs
-    in :data:`_FROZEN_TESSERA_ROOTS` and any further write there raises.
+    Years 2017–2025 under the canonical prefix are in
+    :data:`_FROZEN_TESSERA_ROOTS`. A write to one of those directories raises.
+    A new release uses a new prefix and is not in the set.
     """
     if _normalize(output_root) in _FROZEN_TESSERA_ROOTS:
         raise FrozenPrefixError(

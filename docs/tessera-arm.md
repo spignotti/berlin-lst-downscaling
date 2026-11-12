@@ -89,17 +89,17 @@ Int8 + scale ≈ 2.3 GB per year on the Berlin bbox. Canonical product
         tessera_<year>_int8.tif, tessera_<year>_scale.tif,
         tessera_<year>_valid.tif, provenance.json, complete.json (last)
 
-`publish_guard` adds protection for the new prefix once published: after a
-year's `complete.json` is published, add its directory URI to
-`_FROZEN_TESSERA_ROOTS` so republish paths fail closed.
+Years 2017–2025 are published and listed in `_FROZEN_TESSERA_ROOTS`.
+Republish paths fail closed. A new release needs a new prefix.
 
 ## How to run the operator later
 
-Code only in this PR; nothing is executed or published here.
+The 2017–2025 products are already in the bucket. Do not republish them.
+A later release uses a new prefix, then the same launcher.
 
-1. From a clean checkout of this branch, run on the On-Demand VM (one year
-   at a time, 2017–2025):
-   `scripts/runners/vm/run-tessera-embeddings-vm.sh feat/tessera-arm 2024`.
+1. Do not rerun 2017–2025 on the canonical prefix; the launcher fails closed.
+   A new release points `RELEASE_ROOT` at a new prefix, then runs one year
+   at a time on the On-Demand VM.
    The launcher runs the acquisition operator in an ISOLATED uv script env
    (PEP 723 block at the top of `scripts/operators/run_tessera_embeddings.py`:
    `geotessera` / `icechunk` / `zarr>=3`, with `PYTHONPATH=src`), leaving the
