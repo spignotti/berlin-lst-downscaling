@@ -80,9 +80,7 @@ _FROZEN_FEATURE_ROOTS = frozenset(
 TESSERA_PRODUCT_PREFIX = "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
 
 # Published 2017–2025 products. Immutable; a new release needs a new prefix.
-_FROZEN_TESSERA_ROOTS = frozenset(
-    f"{TESSERA_PRODUCT_PREFIX}/{year}" for year in range(2017, 2026)
-)
+_FROZEN_TESSERA_ROOTS = frozenset(f"{TESSERA_PRODUCT_PREFIX}/{year}" for year in range(2017, 2026))
 
 
 class FrozenPrefixError(RuntimeError):

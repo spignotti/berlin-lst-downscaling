@@ -259,9 +259,7 @@ def _native_read(
             )
         quantized_arr = np.asarray(quantized, dtype=np.int8)
         scale_arr = np.asarray(scale)
-        embedding = (
-            dequantize_tessera(quantized_arr, scale_arr) if dequantize else None
-        )
+        embedding = dequantize_tessera(quantized_arr, scale_arr) if dequantize else None
         return (
             quantized_arr,
             scale_arr,
