@@ -24,23 +24,23 @@ canonical product under::
 
     gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate/<year>/
 
-Code only in this PR: the operator is NOT executed here. The VM launcher
-``scripts/runners/vm/run-tessera-embeddings-vm.sh``
-runs this script on the On-Demand VM via ``uv run --script`` with
-``PYTHONPATH=src`` (isolated acquisition env, see the ``/// script``
-block above). Never run against the canonical prefix from a workstation.
+Years 2017–2025 are already published under the canonical prefix and frozen.
+This operator fails closed on that prefix. A new release needs a new prefix.
+The VM launcher ``scripts/runners/vm/run-tessera-embeddings-vm.sh`` runs this
+script on the On-Demand VM via ``uv run --script`` with ``PYTHONPATH=src``
+(isolated acquisition env, see the ``/// script`` block above). Never run
+against the canonical prefix from a workstation.
 
-Usage (on the VM only)
-----------------------
+Usage (on the VM only, and only for a prefix that is not frozen)
+-----------------------------------------------------------------
     PYTHONPATH=src uv run --script scripts/operators/run_tessera_embeddings.py \
-        --year 2024 --output-root gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate
+        --year 2024 --output-root gs://berlin-lst-training-data/embeddings/tessera/<new-prefix>
     PYTHONPATH=src uv run --script scripts/operators/run_tessera_embeddings.py \
         --year 2024 --output-root /workspace/tessera-out  # dry-run to local disk
 
 The local-disk form is the only offline-safe path; GCS writes require ADC
-and the operator run. After a year is published, add its directory URI to
-``_FROZEN_TESSERA_ROOTS`` in ``data/ard/publish_guard.py`` so republish
-paths fail closed.
+and the operator run. The canonical year directories are already in
+``_FROZEN_TESSERA_ROOTS``.
 """
 
 from __future__ import annotations

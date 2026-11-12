@@ -81,12 +81,13 @@ def test_product_uri_helpers_use_canonical_prefix() -> None:
     assert product_completion_uri(TESSERA_PRODUCT_PREFIX, 2024).endswith("complete.json")
 
 
-def test_publish_guard_blocks_published_year_prefix(monkeypatch) -> None:
+def test_publish_guard_blocks_published_year_prefix() -> None:
     import berlin_lst_downscaling.data.ard.publish_guard as guard
 
-    frozen = frozenset({f"{TESSERA_PRODUCT_PREFIX}/2024"})
-    monkeypatch.setattr(guard, "_FROZEN_TESSERA_ROOTS", frozen)
-    with pytest.raises(FrozenPrefixError, match="published TESSERA"):
-        assert_tessera_output_root(f"{TESSERA_PRODUCT_PREFIX}/2024")
-    # Unpublished years stay writable for the first operator publish.
-    assert_tessera_output_root(f"{TESSERA_PRODUCT_PREFIX}/2025")
+    expected = frozenset(f"{TESSERA_PRODUCT_PREFIX}/{year}" for year in range(2017, 2026))
+    assert guard._FROZEN_TESSERA_ROOTS == expected
+    for year in range(2017, 2026):
+        with pytest.raises(FrozenPrefixError, match="published TESSERA"):
+            assert_tessera_output_root(f"{TESSERA_PRODUCT_PREFIX}/{year}/")
+    new_prefix = TESSERA_PRODUCT_PREFIX.replace("v1.1-dclimate", "v1.2-dclimate")
+    assert_tessera_output_root(f"{new_prefix}/2017")
