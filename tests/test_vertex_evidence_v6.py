@@ -172,6 +172,45 @@ def test_v1_full_record_has_no_test_skipped_key(evidence: ModuleType, tmp_path: 
     )
     assert record["full"]["epochs_complete"] is True
     assert "test_skipped" not in record["full"]
+    assert not any(str(key).startswith("test") for key in record["full"]["summary"])
+    assert "sealed_test" in record["full"]
+    assert record["full"]["sealed_test"]["sha256"]
+
+
+def test_full_summary_seals_test_block_and_keeps_val_keys(
+    evidence: ModuleType, tmp_path: Path
+) -> None:
+    (tmp_path / "epoch_metrics.json").write_text(json.dumps([{}] * 20))
+    (tmp_path / "full_summary.json").write_text(
+        json.dumps(
+            {
+                "max_epochs": 20,
+                "best_epoch": 7,
+                "best_metric": 0.1,
+                "test": {"marker": "sealed-fixture"},
+                "test_report": {"marker": "sealed-fixture"},
+            }
+        )
+    )
+    record = evidence.build_record(
+        tmp_path,
+        run_label="l",
+        source_sha="s",
+        image_digest="d",
+        result_file=None,
+        profile="full",
+    )
+    summary = record["full"]["summary"]
+    assert not any(str(key).startswith("test") for key in summary)
+    assert summary["best_epoch"] == 7
+    assert "sealed-fixture" not in json.dumps(record)
+    _public, sealed = evidence.partition_test_block(
+        json.loads((tmp_path / "full_summary.json").read_text())
+    )
+    assert sealed is not None
+    digest = evidence.hashlib.sha256(evidence.sealed_test_bytes(sealed)).hexdigest()
+    assert record["full"]["sealed_test"]["sha256"] == digest
+    assert evidence.sealed_test_uri("gs://b/p/evidence.json") == "gs://b/p/sealed/test.json"
 
 
 def _write_modeling_log(run_root: Path, records: list[dict]) -> None:
