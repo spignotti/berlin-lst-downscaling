@@ -54,6 +54,11 @@ def test_writer_emits_int8_scale_valid_provenance_complete(tmp_path) -> None:
     with rasterio.open(artifacts["int8"]) as src:
         assert src.count == 128
         assert src.dtypes[0] == "int8"
+    # BigTIFF magic is 43, classic TIFF is 42. Rasterio does not round-trip the flag.
+    with open(artifacts["int8"], "rb") as fh:
+        header = fh.read(4)
+    endian = "little" if header[:2] == b"II" else "big"
+    assert int.from_bytes(header[2:4], endian) == 43
     with rasterio.open(artifacts["scale"]) as src:
         assert src.count == 1
         assert src.dtypes[0] == "float32"

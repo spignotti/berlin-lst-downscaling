@@ -241,7 +241,9 @@ def _native_read(
     reader: Any,
     bbox: tuple[float, float, float, float],
     year: int,
-) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray, Any, str, bool, tuple[str, ...]]:
+    *,
+    dequantize: bool = True,
+) -> tuple:
     """Run the preferred quantized path, falling back to the float path."""
     if hasattr(reader, "read_region_quantized"):
         result = reader.read_region_quantized(bbox, year=year)
@@ -255,10 +257,12 @@ def _native_read(
             raise ValueError(
                 "read_region_quantized must return (quantized, scale, transform, crs[, meta])"
             )
-        embedding = dequantize_tessera(np.asarray(quantized, dtype=np.int8), np.asarray(scale))
+        quantized_arr = np.asarray(quantized, dtype=np.int8)
+        scale_arr = np.asarray(scale)
+        embedding = dequantize_tessera(quantized_arr, scale_arr) if dequantize else None
         return (
-            np.asarray(quantized, dtype=np.int8),
-            np.asarray(scale),
+            quantized_arr,
+            scale_arr,
             embedding,
             transform,
             str(crs),
@@ -305,6 +309,7 @@ def read_tessera_region(
     reader: TesseraReader | None = None,
     quality: np.ndarray | None = None,
     quality_threshold: float = TESSERA_QUALITY_THRESHOLD_DEFAULT,
+    dequantize: bool = True,
 ) -> TesseraRead:
     """Read the annual TESSERA embedding for the Berlin bbox and one year.
 
@@ -342,7 +347,10 @@ def read_tessera_region(
         reader = GeoTesseraZarr()
 
     quantized, scale, embedding, transform, crs, used_quantized, source_ids = _native_read(
-        reader, (float(region[0]), float(region[1]), float(region[2]), float(region[3])), int(year)
+        reader,
+        (float(region[0]), float(region[1]), float(region[2]), float(region[3])),
+        int(year),
+        dequantize=dequantize,
     )
     if scale is not None:
         invalid = tessera_invalid_mask(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -41,3 +42,28 @@ def test_tessera_arm_config_reuses_eval_path() -> None:
     assert cfg.contract.feature_order == "v6_registry"
     assert cfg.data.tessera_enabled is True
     assert cfg.model.tessera_adapter_width == 8
+
+
+def test_operator_opens_run_log_with_keywords() -> None:
+    source = (_REPO / "scripts" / "operators" / "run_tessera_embeddings.py").read_text()
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "RunLogSession"
+    ]
+    assert len(calls) == 1
+    keywords = {kw.arg for kw in calls[0].keywords}
+    assert {"pipeline", "run_id"} <= keywords
+    assert len(calls[0].args) == 1
+    log_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "log_event"
+    ]
+    assert len(log_calls) == 4
+    assert all(len(call.args) == 3 for call in log_calls)
