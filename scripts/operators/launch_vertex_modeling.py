@@ -164,6 +164,12 @@ EFFICIENCY_SLOT_ROLE = EFFICIENCY_SLOT_ROLES
 # and image share this region, so no cross-region transfer applies.
 DEFAULT_HOURLY_RATE_USD = 0.75
 DEFAULT_MAX_EXPOSURE_USD = 3.0
+# Three validation-only TESSERA seeds share a $15 authorization. Each job
+# stops at $5 (4 h 50 min + 10 min queue at the $1/h cap).
+TESSERA_MODE = "tessera"
+TESSERA_TIMEOUT_SECONDS = 17400
+TESSERA_MAX_EXPOSURE_USD = 5.0
+TESSERA_MAX_HOURLY_RATE_USD = 1.0
 POLL_SECONDS = 20
 CANCEL_CONFIRMATION_SECONDS = 300
 
@@ -194,6 +200,7 @@ MODE_CONFIG_NAME = {
     "v6-loo-shadow": "v6_loo_shadow_locked",
     "v6-no-ndvi-ndwi": "v6_no_ndvi_ndwi_locked",
     "v6-no-red-nir-index": "v6_no_red_nir_index_locked",
+    TESSERA_MODE: "tessera_arm",
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
@@ -236,7 +243,7 @@ _ABLATION_MODES = (
     *_V6_ABLATION_MODES,
 )
 # Modes that require the verified regional rate before submitting.
-_RATE_REQUIRED_MODES = ("probe", "probe-lr3", *_FULL_TEMPORAL_MODES)
+_RATE_REQUIRED_MODES = ("probe", "probe-lr3", TESSERA_MODE, *_FULL_TEMPORAL_MODES)
 MODE_EVIDENCE_PROFILE = {
     "smoke": "smoke",
     "probe": "probe-residual",
@@ -257,6 +264,7 @@ MODE_EVIDENCE_PROFILE = {
     "v6-loo-shadow": "full",
     "v6-no-ndvi-ndwi": "full",
     "v6-no-red-nir-index": "full",
+    TESSERA_MODE: "full",
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -285,7 +293,8 @@ def check_bounds(
         if efficiency_role is not None:
             compose_overrides.append(f"stage1_efficiency_role={efficiency_role}")
         cfg = compose(config_name=config_name, overrides=compose_overrides)
-    if config_name in {MODE_CONFIG_NAME[m] for m in _V6_ABLATION_MODES}:
+    seeded = {MODE_CONFIG_NAME[m] for m in _V6_ABLATION_MODES} | {"tessera_arm"}
+    if config_name in seeded:
         guard_modeling_config(cfg, config_name)
         contract_invariants(cfg)
     elif config_name == MODE_CONFIG_NAME["probe"]:
@@ -1375,26 +1384,31 @@ def main() -> int:
         raise SystemExit(f"ERROR: missing required options: {', '.join(missing)}")
 
     config_name = MODE_CONFIG_NAME[args.mode]
-    is_v6 = args.mode in _V6_ABLATION_MODES
-    if not is_v6 and (args.seed is not None or args.max_epochs is not None):
+    is_seeded = args.mode in _V6_ABLATION_MODES
+    is_tessera = args.mode == TESSERA_MODE
+    is_seeded = is_seeded or is_tessera
+    if is_tessera and not args.skip_test:
+        raise SystemExit("ERROR: --mode tessera requires --skip-test; test 2025 stays sealed")
+    if not is_seeded and (args.seed is not None or args.max_epochs is not None):
         raise SystemExit(
-            f"ERROR: --seed and --max-epochs are only accepted by the v6 modes, not {args.mode!r}"
+            "ERROR: --seed and --max-epochs are only accepted by the v6 and tessera "
+            f"modes, not {args.mode!r}"
         )
-    if not is_v6 and args.lr_schedule is not None:
+    if not is_seeded and args.lr_schedule is not None:
         raise SystemExit(
-            f"ERROR: --lr-schedule is only accepted by the v6 modes, not {args.mode!r}"
+            f"ERROR: --lr-schedule is only accepted by the v6 and tessera modes, not {args.mode!r}"
         )
     lr_schedule = "constant" if args.lr_schedule is None else args.lr_schedule
     es_patience = args.early_stopping_patience
     es_min_delta = args.early_stopping_min_delta
-    if not is_v6 and (es_patience is not None or es_min_delta is not None or args.skip_test):
+    if not is_seeded and (es_patience is not None or es_min_delta is not None or args.skip_test):
         raise SystemExit(
             "ERROR: --early-stopping-patience, --early-stopping-min-delta and --skip-test "
-            f"are only accepted by the v6 modes, not {args.mode!r}"
+            f"are only accepted by the v6 and tessera modes, not {args.mode!r}"
         )
-    if not is_v6 and args.patch_cache != "job_local":
+    if not is_seeded and args.patch_cache != "job_local":
         raise SystemExit(
-            f"ERROR: --patch-cache is only accepted by the v6 modes, not {args.mode!r}"
+            f"ERROR: --patch-cache is only accepted by the v6 and tessera modes, not {args.mode!r}"
         )
     if args.allow_job_local_fallback and args.patch_cache != "prebuilt":
         raise SystemExit("ERROR: --allow-job-local-fallback requires --patch-cache prebuilt")
@@ -1408,22 +1422,22 @@ def main() -> int:
         )
     seed = V6_DEFAULT_SEED if args.seed is None else args.seed
     max_epochs = V6_DEFAULT_MAX_EPOCHS if args.max_epochs is None else args.max_epochs
-    run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_v6 else args.run_label
-    if is_v6 and lr_schedule == "cosine":
+    run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_seeded else args.run_label
+    if is_seeded and lr_schedule == "cosine":
         run_label += "-cos"
-    if is_v6 and args.skip_test:
+    if is_seeded and args.skip_test:
         run_label += "-notest"
     job_output_root = (
         f"data/runs/{args.mode}/{run_label}/seed-{seed}"
-        if is_v6
+        if is_seeded
         else f"data/runs/{args.mode}/{run_label}"
     )
     hydra_overrides = (
         [f"seed={seed}", f"trainer.max_epochs={max_epochs}", f"output_root={job_output_root}"]
-        if is_v6
+        if is_seeded
         else []
     )
-    if is_v6:
+    if is_seeded:
         hydra_overrides.append(f"trainer.lr_schedule.name={lr_schedule}")
     if es_patience is not None:
         hydra_overrides += ["early_stopping.enabled=true", f"early_stopping.patience={es_patience}"]
@@ -1445,6 +1459,8 @@ def main() -> int:
         timeout_seconds = VERIFICATION_TIMEOUT_SECONDS
     elif args.mode in _PROBE_MODES:
         timeout_seconds = PROBE_TIMEOUT_SECONDS
+    elif args.mode == TESSERA_MODE:
+        timeout_seconds = TESSERA_TIMEOUT_SECONDS
     else:
         timeout_seconds = DEFAULT_TIMEOUT_SECONDS
     max_wait_seconds = (
@@ -1481,7 +1497,11 @@ def main() -> int:
                 else (
                     FULL_MAX_EXPOSURE_USD
                     if args.mode in _FULL_TEMPORAL_MODES
-                    else DEFAULT_MAX_EXPOSURE_USD
+                    else (
+                        TESSERA_MAX_EXPOSURE_USD
+                        if args.mode == TESSERA_MODE
+                        else DEFAULT_MAX_EXPOSURE_USD
+                    )
                 )
             )
         )
@@ -1514,6 +1534,18 @@ def main() -> int:
                 f"ERROR: --mode {args.mode} rate exceeds the "
                 f"${FULL_MAX_HOURLY_RATE_USD:.2f}/hour cap"
             )
+
+    if args.mode == TESSERA_MODE:
+        if timeout_seconds > TESSERA_TIMEOUT_SECONDS:
+            raise SystemExit(
+                f"ERROR: tessera timeout cannot exceed {TESSERA_TIMEOUT_SECONDS} seconds"
+            )
+        if max_exposure > TESSERA_MAX_EXPOSURE_USD:
+            raise SystemExit(
+                f"ERROR: tessera per-job exposure cannot exceed ${TESSERA_MAX_EXPOSURE_USD:.2f}"
+            )
+        if hourly_rate > TESSERA_MAX_HOURLY_RATE_USD:
+            raise SystemExit("ERROR: tessera rate exceeds the user-authorized $1.00/hour cap")
 
     if args.mode == "efficiency":
         if timeout_seconds > EFFICIENCY_TIMEOUT_SECONDS:
@@ -1552,7 +1584,7 @@ def main() -> int:
     try:
         check_bounds(config_name, efficiency_role=args.efficiency_role, overrides=hydra_overrides)
     except ValueError as exc:
-        if not is_v6:
+        if not is_seeded:
             raise
         raise SystemExit(f"ERROR: {config_name} is off-contract: {exc}") from exc
 
@@ -1622,8 +1654,10 @@ def main() -> int:
             "must never be reused (the create-only upload would fail after the run)"
         )
     run_prefix = evidence_uri.rsplit("/", 1)[0]
-    _checkpoint_uploading = args.mode in _FULL_TEMPORAL_MODES or (
-        args.mode == "efficiency" and args.efficiency_role in ("baseline", "final")
+    _checkpoint_uploading = (
+        args.mode in _FULL_TEMPORAL_MODES
+        or args.mode == TESSERA_MODE
+        or (args.mode == "efficiency" and args.efficiency_role in ("baseline", "final"))
     )
     if _checkpoint_uploading and _evidence_exists(f"{run_prefix}/best.ckpt"):
         # A previous run may have died after the checkpoint upload but
@@ -1646,7 +1680,7 @@ def main() -> int:
         ("INFISICAL_ENV", args.infisical_env),
         ("INFISICAL_SECRET_PATH", args.infisical_path),
     ]
-    if is_v6:
+    if is_seeded:
         env.extend([("VERTEX_SEED", str(seed)), ("VERTEX_MAX_EPOCHS", str(max_epochs))])
         if lr_schedule == "cosine":
             env.append(("VERTEX_LR_SCHEDULE", lr_schedule))
@@ -1718,7 +1752,7 @@ def main() -> int:
             f"~${EFFICIENCY_MAX_TOTAL_COMPUTE_USD + EFFICIENCY_MAX_NONCOMPUTE_USD:.2f} "
             "including preserved failure and all four replacement slots"
         )
-    if is_v6:
+    if is_seeded:
         print(f"  seed/epochs    : {seed} / {max_epochs}")
         print(
             "  lr schedule    : "

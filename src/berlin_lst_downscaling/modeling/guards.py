@@ -1157,9 +1157,10 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "early_stopping.enabled=true is only admitted on the v6 ablation configs; "
             "v1 locks stay frozen"
         )
-    if not evaluate_test_from_config(cfg) and not v6_config:
+    if not evaluate_test_from_config(cfg) and not v6_config and config_name != "tessera_arm":
         raise ValueError(
-            "evaluate_test=false is only admitted on the v6 ablation configs; v1 locks stay frozen"
+            "evaluate_test=false is only admitted on the v6 ablation configs "
+            "and tessera_arm; v1 locks stay frozen"
         )
     if lr_schedule_from_config(cfg).name == "cosine" and config_name in {
         STAGE1_LOCKED_CONFIG_NAME,
