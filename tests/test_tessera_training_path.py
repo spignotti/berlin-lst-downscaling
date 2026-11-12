@@ -15,6 +15,7 @@ from berlin_lst_downscaling.data.embeddings.loader import (
     select_kept_features,
 )
 from berlin_lst_downscaling.modeling.contracts import RealBatch, RealSampleMeta
+from berlin_lst_downscaling.modeling.patches import RealSample, collate_real_batch
 from berlin_lst_downscaling.modeling.tessera_adapter import (
     TesseraRealLSTTask,
     tessera_kept_channel_indices,
@@ -94,6 +95,36 @@ def test_build_inputs_and_tessera_task_forward_cpu() -> None:
         out = task(batch)
     # Tessera arm predicts at 10 m like the main arm (160x160 contract patch).
     assert tuple(out.shape) == (2, 1, 160, 160)
+
+
+def test_collate_attaches_embedding_and_keeps_14(monkeypatch) -> None:
+    features = np.arange(22 * 8 * 8, dtype=np.float32).reshape(22, 8, 8)
+    sample = RealSample(
+        meta=_patch_meta(),
+        features=features,
+        lst_prior_k=np.zeros((1, 8, 8), dtype=np.float32),
+        target_100m=np.full((1, 2, 2), 290.0, dtype=np.float32),
+        mask_100m=np.ones((1, 2, 2), dtype=bool),
+    )
+
+    def _fake_window(root: str, year: int, *, row_100m: int, col_100m: int) -> tuple:
+        assert root == "gs://example/tessera"
+        assert year == 2024
+        return np.ones((8, 8, 128), dtype=np.float32), np.ones((8, 8), dtype=bool)
+
+    monkeypatch.setattr(
+        "berlin_lst_downscaling.data.embeddings.loader.load_patch_embedding",
+        _fake_window,
+    )
+    batch = collate_real_batch(
+        [sample], n_active_channels=22, embeddings_root="gs://example/tessera"
+    )
+    assert batch.features.shape == (1, 14, 8, 8)
+    assert batch.tessera_embedding is not None
+    assert batch.tessera_embedding.shape == (1, 128, 8, 8)
+    plain = collate_real_batch([sample], n_active_channels=22)
+    assert plain.tessera_embedding is None
+    assert plain.features.shape == (1, 22, 8, 8)
 
 
 def test_modeling_run_reads_tessera_enabled() -> None:

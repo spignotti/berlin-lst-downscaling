@@ -140,7 +140,7 @@ def test_non_v6_mode_rejects_seed_and_epochs(
     launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, flag: list[str]
 ) -> None:
     monkeypatch.setattr(sys, "argv", _argv("stage4", *flag))
-    with pytest.raises(SystemExit, match="only accepted by the v6 modes"):
+    with pytest.raises(SystemExit, match="only accepted by the v6 and tessera modes"):
         launcher.main()
 
 
@@ -247,7 +247,7 @@ def test_non_v6_mode_rejects_new_flags(
     launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, flag: list[str]
 ) -> None:
     monkeypatch.setattr(sys, "argv", _argv("stage4", *flag))
-    with pytest.raises(SystemExit, match="only accepted by the v6 modes"):
+    with pytest.raises(SystemExit, match="only accepted by the v6 and tessera modes"):
         launcher.main()
 
 
@@ -274,7 +274,9 @@ def test_non_v6_mode_rejects_lr_schedule(
     launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "argv", _argv("stage4", "--lr-schedule", "cosine"))
-    with pytest.raises(SystemExit, match="--lr-schedule is only accepted by the v6 modes"):
+    with pytest.raises(
+        SystemExit, match="--lr-schedule is only accepted by the v6 and tessera modes"
+    ):
         launcher.main()
 
 
@@ -374,5 +376,43 @@ def test_non_v6_mode_rejects_prebuilt_patch_cache(
     launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "argv", _argv("stage4", "--patch-cache", "prebuilt"))
-    with pytest.raises(SystemExit, match="--patch-cache is only accepted by the v6 modes"):
+    with pytest.raises(
+        SystemExit, match="--patch-cache is only accepted by the v6 and tessera modes"
+    ):
+        launcher.main()
+
+
+def test_tessera_preflight_is_validation_only(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv(
+            "tessera",
+            "--seed",
+            "1",
+            "--max-epochs",
+            "40",
+            "--lr-schedule",
+            "cosine",
+            "--skip-test",
+            "--max-exposure-usd",
+            "5",
+        ),
+    )
+    assert launcher.main() == 0
+    out = capsys.readouterr().out
+    assert "tessera / tessera_arm" in out
+    assert "test pass      : skipped" in out
+    assert "evaluate_test=false" in out
+    assert "unit-seed1-ep40-cos-notest" in out
+    assert "~$5.00" in out
+
+
+def test_tessera_without_skip_test_is_refused(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv("tessera", "--seed", "0", "--max-epochs", "40"))
+    with pytest.raises(SystemExit, match="requires --skip-test"):
         launcher.main()

@@ -1230,6 +1230,11 @@ def build_real_datamodule(
         "prebuilt_download_workers": patch_cache["download_workers"],
         "prebuilt_download_retries": patch_cache["download_retries"],
     }
+    if bool(cfg.data.get("tessera_enabled")):
+        root = str(cfg.data.get("tessera_embeddings_root") or "")
+        if not root:
+            raise ValueError("tessera arm requires data.tessera_embeddings_root")
+        kwargs["tessera_embeddings_root"] = root
     kwargs.update(overrides)
     return RealPatchDataModule(source, **kwargs)
 

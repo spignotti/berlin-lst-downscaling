@@ -168,6 +168,42 @@ def _check_ablation_channels(
         )
 
 
+def assert_tessera_training_lock(cfg: DictConfig) -> None:
+    """Fail closed unless the config is the real TESSERA seed arm on the v6 lock."""
+    from berlin_lst_downscaling.data.embeddings.product import TESSERA_PRODUCT_PREFIX
+
+    problems: list[str] = []
+    if cfg.get("ablation_lock") is not True or cfg.get("ablation_release") != "v6":
+        problems.append("tessera arm must keep the v6 ablation lock")
+    if not bool(OmegaConf.select(cfg, "data.tessera_enabled")):
+        problems.append("data.tessera_enabled must be true")
+    root = str(OmegaConf.select(cfg, "data.tessera_embeddings_root") or "")
+    if root != TESSERA_PRODUCT_PREFIX:
+        problems.append(f"data.tessera_embeddings_root={root!r}")
+    arm = V6_ABLATION_ARMS.get("L4")
+    if arm is None:
+        problems.append("L4 arm missing")
+    else:
+        _check_ablation_channels(
+            problems,
+            cfg,
+            label="tessera arm",
+            expected_names=list(arm.channels),
+            expected_loss=arm.loss,
+        )
+    for key, expected in _V6_LOCK_EXPECTED.items():
+        actual = OmegaConf.select(cfg, key)
+        if actual != expected or isinstance(actual, bool) != isinstance(expected, bool):
+            problems.append(f"{key}={actual!r} (expected {expected!r})")
+    if list(cfg.data.get("splits") or []) != ["train", "validation"]:
+        problems.append("tessera data.splits must be exactly ['train', 'validation']")
+    output_root = str(cfg.get("output_root", ""))
+    if not output_root or output_root.startswith("gs://") or "/runs/" not in output_root:
+        problems.append(f"output_root={output_root!r}")
+    if problems:
+        raise ValueError("tessera training lock is off-contract: " + "; ".join(problems))
+
+
 def assert_ablation_lock(cfg: DictConfig) -> None:
     """Fail closed unless the config is an ablation lock (v1 Tag-11 or v6)."""
     release = cfg.get("ablation_release")
@@ -1134,6 +1170,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         STAGE1_PROBE_LR3_CONFIG_NAME,
         *ABLATION_LOCKED_CONFIG_NAMES,
         *V6_ABLATION_LOCKED_CONFIG_NAMES,
+        "tessera_arm",
     }
     if bool(cfg.get("stage1_residual_prior", False)) and config_name not in _residual_prior_configs:
         raise ValueError(
@@ -1146,7 +1183,11 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             f"(issue #53) but is set on config {config_name!r}; refusing to run"
         )
     _ablation_names = (*ABLATION_LOCKED_CONFIG_NAMES, *V6_ABLATION_LOCKED_CONFIG_NAMES)
-    if bool(cfg.get("ablation_lock", False)) and config_name not in _ablation_names:
+    if (
+        bool(cfg.get("ablation_lock", False))
+        and config_name not in _ablation_names
+        and config_name != "tessera_arm"
+    ):
         raise ValueError(
             "ablation_lock is the Tag-11 ablation marker (issue #57) but is set on "
             f"config {config_name!r}; refusing to run"
@@ -1157,9 +1198,10 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "early_stopping.enabled=true is only admitted on the v6 ablation configs; "
             "v1 locks stay frozen"
         )
-    if not evaluate_test_from_config(cfg) and not v6_config:
+    if not evaluate_test_from_config(cfg) and not v6_config and config_name != "tessera_arm":
         raise ValueError(
-            "evaluate_test=false is only admitted on the v6 ablation configs; v1 locks stay frozen"
+            "evaluate_test=false is only admitted on the v6 ablation configs "
+            "and tessera_arm; v1 locks stay frozen"
         )
     if lr_schedule_from_config(cfg).name == "cosine" and config_name in {
         STAGE1_LOCKED_CONFIG_NAME,
@@ -1190,11 +1232,13 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
                 f"config {config_name!r} requires ablation_release='v6' and its own "
                 f"ablation_arm; got release={release!r} arm={arm_id!r}"
             )
-    elif release is not None:
+    elif release is not None and config_name != "tessera_arm":
         raise ValueError(
             f"ablation_release={release!r} is only admitted on the v6 ablation configs; "
             f"got config {config_name!r}"
         )
+    if config_name == "tessera_arm":
+        assert_tessera_training_lock(cfg)
     if config_name in _ablation_names:
         assert_ablation_lock(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
