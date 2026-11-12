@@ -270,6 +270,7 @@ class RealPatchDataModule(LightningDataModule):
         allow_job_local_fallback: bool = False,
         prebuilt_download_workers: int = 8,
         prebuilt_download_retries: int = 3,
+        tessera_embeddings_root: str | None = None,
     ) -> None:
         super().__init__()
         self.reuse_ready_cache = reuse_ready_cache
@@ -301,6 +302,7 @@ class RealPatchDataModule(LightningDataModule):
                     f"channel_indices length {len(resolved_indices)} != "
                     f"n_active_channels {n_active_channels}"
                 )
+        self.tessera_embeddings_root = tessera_embeddings_root or None
         self.source = source
         self.batch_size = batch_size
         self.n_active_channels = n_active_channels
@@ -731,6 +733,18 @@ class RealPatchDataModule(LightningDataModule):
         admitted: list[PatchRef] = []
         for ref in refs:
             reason = reader.admission_reason(ref)
+            if reason is None and self.tessera_embeddings_root:
+                from berlin_lst_downscaling.data.embeddings.loader import (
+                    tessera_window_fully_valid,
+                )
+
+                if not tessera_window_fully_valid(
+                    self.tessera_embeddings_root,
+                    ref.year,
+                    row_100m=ref.row,
+                    col_100m=ref.col,
+                ):
+                    reason = "tessera_invalid"
             if reason is None:
                 admitted.append(ref)
             else:
@@ -847,6 +861,7 @@ class RealPatchDataModule(LightningDataModule):
                         chunk,
                         n_active_channels=self.n_active_channels,
                         channel_indices=self.channel_indices,
+                        embeddings_root=self.tessera_embeddings_root,
                     )
                 )
                 chunk = []
@@ -856,6 +871,7 @@ class RealPatchDataModule(LightningDataModule):
                     chunk,
                     n_active_channels=self.n_active_channels,
                     channel_indices=self.channel_indices,
+                    embeddings_root=self.tessera_embeddings_root,
                 )
             )
         return batches
@@ -874,12 +890,17 @@ class RealPatchDataModule(LightningDataModule):
         # yield the release's full stack (28 for V3, 22 for v6) and need the
         # configured indices.
         if isinstance(dataset, CachedRealPatchDataset):
-            collate_fn = partial(collate_real_batch, n_active_channels=self.n_active_channels)
+            collate_fn = partial(
+                collate_real_batch,
+                n_active_channels=self.n_active_channels,
+                embeddings_root=self.tessera_embeddings_root,
+            )
         else:
             collate_fn = partial(
                 collate_real_batch,
                 n_active_channels=self.n_active_channels,
                 channel_indices=self.channel_indices,
+                embeddings_root=self.tessera_embeddings_root,
             )
         loader = DataLoader(
             dataset,

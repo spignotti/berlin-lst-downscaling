@@ -26,6 +26,7 @@ import numpy as np
 from berlin_lst_downscaling.data.embeddings.product import (
     product_cog_uri,
     product_scale_uri,
+    product_valid_uri,
 )
 from berlin_lst_downscaling.data.embeddings.tessera import (
     TESSERA_N_CHANNELS,
@@ -134,6 +135,46 @@ def build_tessera_model_inputs(
     return kept, emb_chw
 
 
+_OPEN_YEAR: dict[tuple[str, int, str], Any] = {}
+
+
+def _year_dataset(embeddings_root: str, year: int, kind: str) -> Any:
+    """Reuse one open COG per year and kind inside this process."""
+    key = (str(embeddings_root), int(year), kind)
+    dataset = _OPEN_YEAR.get(key)
+    if dataset is not None:
+        return dataset
+    import rasterio
+
+    uri = {
+        "int8": product_cog_uri(str(embeddings_root), int(year)),
+        "scale": product_scale_uri(str(embeddings_root), int(year)),
+        "valid": product_valid_uri(str(embeddings_root), int(year)),
+    }[kind]
+    dataset = rasterio.open(uri)
+    _OPEN_YEAR[key] = dataset
+    return dataset
+
+
+def tessera_window_fully_valid(
+    embeddings_root: str,
+    year: int,
+    *,
+    row_100m: int,
+    col_100m: int,
+    patch_cells: int = 16,
+) -> bool:
+    """True when every 10 m pixel in the patch window is TESSERA-valid."""
+    from rasterio.windows import Window
+
+    validate_tessera_year(int(year))
+    edge = int(patch_cells) * 10
+    col_off, row_off = int(col_100m) * 10, int(row_100m) * 10
+    window = Window.from_slices((row_off, row_off + edge), (col_off, col_off + edge))
+    valid = _year_dataset(embeddings_root, int(year), "valid").read(1, window=window)
+    return bool(valid.size) and bool(np.all(valid == 1))
+
+
 def load_patch_embedding(
     embeddings_root: str,
     year: int,
@@ -153,15 +194,17 @@ def load_patch_embedding(
     from rasterio.windows import Window
 
     validate_tessera_year(int(year))
-    import rasterio
 
     h = w = int(patch_cells) * 10
     col_off, row_off = int(col_100m) * 10, int(row_100m) * 10
     window = Window.from_slices((row_off, row_off + h), (col_off, col_off + w))
-    with rasterio.open(product_cog_uri(str(embeddings_root), int(year))) as src:
-        quantized_arr = src.read(window=window).astype(np.int8).transpose(1, 2, 0)
-    with rasterio.open(product_scale_uri(str(embeddings_root), int(year))) as src:
-        scale_arr = src.read(1, window=window)
+    quantized_arr = (
+        _year_dataset(embeddings_root, int(year), "int8")
+        .read(window=window)
+        .astype(np.int8)
+        .transpose(1, 2, 0)
+    )
+    scale_arr = _year_dataset(embeddings_root, int(year), "scale").read(1, window=window)
     embedding = dequantize_tessera(
         np.ascontiguousarray(quantized_arr, dtype=np.int8),
         np.ascontiguousarray(scale_arr),

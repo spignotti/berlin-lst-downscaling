@@ -905,6 +905,7 @@ def collate_real_batch(
     *,
     n_active_channels: int = N_FEATURE_CHANNELS,
     channel_indices: Sequence[int] | None = None,
+    embeddings_root: str | None = None,
 ) -> RealBatch:
     """Stack samples into a :class:`RealBatch` (prior normalized for the model).
 
@@ -941,12 +942,33 @@ def collate_real_batch(
     prior = torch.from_numpy(np.stack([prior_model_channel(s.lst_prior_k) for s in samples]))
     target = torch.from_numpy(np.stack([s.target_100m for s in samples]))
     mask = torch.from_numpy(np.stack([s.mask_100m for s in samples]))
+    metadata = [s.meta for s in samples]
+    embedding = None
+    if embeddings_root is not None:
+        from berlin_lst_downscaling.data.embeddings.loader import load_patch_embedding
+        from berlin_lst_downscaling.modeling.tessera_adapter import tessera_kept_channel_indices
+
+        kept = tessera_kept_channel_indices()
+        if features.shape[1] < max(kept) + 1:
+            raise ValueError(f"TESSERA collate needs the full v6 stack, got C={features.shape[1]}")
+        features = features[:, list(kept)]
+        planes = []
+        for meta in metadata:
+            window, _valid = load_patch_embedding(
+                embeddings_root,
+                meta.year,
+                row_100m=meta.row,
+                col_100m=meta.col,
+            )
+            planes.append(np.moveaxis(window, 2, 0))
+        embedding = torch.from_numpy(np.stack(planes).astype(np.float32))
     return RealBatch(
         features=features,
         lst_prior=prior,
         target_100m=target,
         mask_100m=mask,
-        metadata=[s.meta for s in samples],
+        metadata=metadata,
+        tessera_embedding=embedding,
     )
 
 
