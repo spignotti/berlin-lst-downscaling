@@ -3,8 +3,11 @@
 Run inside the Vertex worker after a successful bounded run. The record is a
 small JSON object — no credentials, environment values, or the local run
 directory. For the full profile it also retains the epoch curve, summary, test
-scope, and a create-only reference to the selected checkpoint. It is uploaded
-create-only (``if_generation_match=0``) so a retained evidence object is never
+scope, and a create-only reference to the selected checkpoint. Test-block
+values (summary keys starting with ``test``) are not part of that record:
+they are uploaded create-only to ``…/sealed/test.json`` and the record keeps
+only their SHA-256. The record is uploaded create-only
+(``if_generation_match=0``) so a retained evidence object is never
 overwritten.
 
 Usage (worker-side, called by ``vertex_entrypoint.sh``):
@@ -199,6 +202,32 @@ def _run_block(context: dict, source_sha: str) -> dict:
     }
 
 
+def partition_test_block(summary: dict | None) -> tuple[dict, dict | None]:
+    """Split test-block keys out of a full-run summary.
+
+    Keys starting with ``test`` hold the one-shot test pass. They must not
+    appear in the public evidence record. The returned public summary is a
+    copy; ``summary`` itself is not modified. ``full_run_status`` still needs
+    the original, including a skipped-test marker.
+    """
+    public = dict(summary or {})
+    sealed = {key: public.pop(key) for key in list(public) if str(key).startswith("test")}
+    return public, sealed or None
+
+
+def sealed_test_uri(evidence_uri: str) -> str:
+    """Return the create-only URI for the sealed test block of an evidence object."""
+    suffix = "/evidence.json"
+    if not evidence_uri.endswith(suffix):
+        raise ValueError(f"evidence URI must end in {suffix}, got {evidence_uri!r}")
+    return f"{evidence_uri[: -len(suffix)]}/sealed/test.json"
+
+
+def sealed_test_bytes(sealed: dict) -> bytes:
+    """Canonical JSON for the sealed test block. The hash is taken over these bytes."""
+    return json.dumps(sealed, indent=2, sort_keys=True, default=str).encode("utf-8")
+
+
 def lr_schedule_from_summary(summary: dict | None) -> dict:
     """Return the recorded LR schedule; a summary without the field is constant."""
     recorded = (summary or {}).get("lr_schedule")
@@ -315,9 +344,11 @@ def build_record(
         test_scope = _read_json(run_root / "test_scope.json")
         record["profile"] = "full"
         epochs_complete, test_skipped = full_run_status(epochs, summary)
+        raw_summary = summary if isinstance(summary, dict) else None
+        public_summary, sealed = partition_test_block(raw_summary)
         record["full"] = {
             "epoch_metrics": epochs if isinstance(epochs, list) else [],
-            "summary": summary or {},
+            "summary": public_summary,
             "lr_schedule": lr_schedule_from_summary(summary),
             "test_scope": test_scope or {},
             # A full run is only decidable when every requested epoch ran (or
@@ -325,6 +356,9 @@ def build_record(
             # plus its test scope were retained.
             "epochs_complete": epochs_complete,
         }
+        if sealed:
+            payload = sealed_test_bytes(sealed)
+            record["full"]["sealed_test"] = {"sha256": hashlib.sha256(payload).hexdigest()}
         if isinstance(summary, dict) and "evaluate_test" in summary:
             record["full"]["test_skipped"] = test_skipped
         if checkpoint is not None:
@@ -529,6 +563,20 @@ def _publish(args: argparse.Namespace) -> None:
         efficiency_role=args.efficiency_role,
         uploader_timings=uploader,
     )
+    if args.profile == "full":
+        raw_summary = _read_json(args.run_root / "full_summary.json")
+        _, sealed = partition_test_block(raw_summary if isinstance(raw_summary, dict) else None)
+        if sealed:
+            sealed_payload = sealed_test_bytes(sealed)
+            sealed_uri = sealed_test_uri(args.evidence_uri)
+            digest = hashlib.sha256(sealed_payload).hexdigest()
+            recorded = (record.get("full") or {}).get("sealed_test") or {}
+            if recorded.get("sha256") != digest:
+                raise SystemExit("ERROR: sealed test hash does not match the evidence record")
+            record["full"]["sealed_test"]["uri"] = sealed_uri
+            with timed_phase("sealed_test_upload", logger=_logger):
+                _upload_create_only(sealed_uri, sealed_payload)
+            print(f"sealed test uploaded: {sealed_uri}")
     payload = json.dumps(record, indent=2, sort_keys=True, default=str).encode("utf-8")
     with timed_phase("evidence_upload", logger=_logger):
         _upload_create_only(args.evidence_uri, payload)
