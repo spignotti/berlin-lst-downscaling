@@ -79,11 +79,10 @@ _FROZEN_FEATURE_ROOTS = frozenset(
 # closed instead of overwriting the canonical product.
 TESSERA_PRODUCT_PREFIX = "gs://berlin-lst-training-data/embeddings/tessera/v1.1-dclimate"
 
-# Year directories already holding a published TESSERA product. Empty until
-# the operator run publishes; add
-# f"{TESSERA_PRODUCT_PREFIX}/<year>" here once that year's complete.json
-# is published.
-_FROZEN_TESSERA_ROOTS = frozenset[str]()
+# Published 2017–2025 products. Immutable; a new release needs a new prefix.
+_FROZEN_TESSERA_ROOTS = frozenset(
+    f"{TESSERA_PRODUCT_PREFIX}/{year}" for year in range(2017, 2026)
+)
 
 
 class FrozenPrefixError(RuntimeError):
