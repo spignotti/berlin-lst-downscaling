@@ -7,6 +7,23 @@ there is no second Vertex client here. Background on the Vertex path:
 
 Coding agents never run these scripts. A paid submit needs the project owner's explicit OK.
 
+## `retry_tessera_seeds.sh`
+
+The existing Mac watcher is retained here with its nested Vertex error parsing
+fixed. It runs seeds 0/1/2 sequentially, validation only, with the approved image,
+40 epochs, cosine, T4 in Frankfurt and at most $5 projected exposure per seed.
+Only code-14 capacity stockouts are retried; other failures and failed lookups
+stop before another submission. Active attempts prevent duplicates.
+
+The default uses the operator wrapper. `TESSERA_AUTH=user-adc` explicitly selects
+the owner's configured gcloud login and user ADC (the alternative submitter in
+`docs/vertex-gpu-training.md`); no vault values are read by that path.
+`TESSERA_REPO`, `TESSERA_STATE_DIR`, `TESSERA_LOG`, and `TESSERA_LABEL` override
+the Mac deployment paths and run-label prefix. Use a fresh prefix for a new
+authorized sequence, never for a second attempt while an old job is active.
+A `STOP` file blocks execution and must be investigated, not automatically removed.
+No scheduler is installed by this script. It is not run by coding agents.
+
 ## `launch_v6_matrix.sh`
 
 9 arms (`L1`…`L5`, `LOO-M`, `LOO-S`, `NO-NDVI-NDWI`, `NO-RED-NIR-IDX`) x seeds 0/1/2,
