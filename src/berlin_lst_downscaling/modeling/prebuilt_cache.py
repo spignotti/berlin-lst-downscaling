@@ -504,7 +504,14 @@ def fetch_prebuilt_cache(
     parent = dest if dest_existed else dest.parent
     while not parent.exists():
         parent = parent.parent
-    required = 2 * sum(int(cast(int, entry["size"])) for entry in files)
+    # All shards coexist after download. Assembly deletes each shard immediately
+    # after copying it, so only the current shard is duplicated, not the cache.
+    # Allow bounded filesystem allocation/metadata overhead per artifact.
+    required = (
+        sum(int(cast(int, entry["size"])) for entry in files)
+        + max(int(cast(int, shard["size"])) for shard in shards)
+        + 8192 * (len(shards) + len(files))
+    )
     available = shutil.disk_usage(parent).free
     if available < required:
         raise OSError(f"fetching cache needs {required} bytes but only {available} are free")
