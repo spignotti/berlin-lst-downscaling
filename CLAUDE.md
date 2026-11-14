@@ -3,8 +3,7 @@
 # Claude Code notes
 
 This file adds Claude-specific rules on top of `AGENTS.md`. Where both apply, the stricter rule wins.
-Coding runs come from the project bot through the shared runner (`run-task.sh --tool claude`). The runner
-pushes and opens the PR; you commit on the current branch only.
+`run-task.sh` is not installed. An owner-started interactive session follows the coding-agent exception in `AGENTS.md`: it may commit, push, and open the PR, and it does not block on Claude subagents. A headless Claude run still commits on the current branch only.
 
 ## Scientific rules (non-negotiable)
 
@@ -30,9 +29,9 @@ pushes and opens the PR; you commit on the current branch only.
   command output that proves it (paste the relevant lines). "Should work" is not evidence.
 - **No secrets.** Never read `.env*` files, print tokens, or write credentials to code, configs, or logs. Secrets live only in Infisical (thesis project, env `dev`: `/operator`, `/data`, `/vertex`) and are reached only through `with-gcp-operator.sh`, `sync-vm-env.sh`, or the Vertex entrypoint.
   Use the environment variables the code already expects.
-- **Do not run pipelines.** No VM launchers, Vertex launches, GCS writes, or republishes from a coding run.
-  Frozen docs (`docs/results/`, `docs/*-full-results.md`, `docs/stage1-*`, `docs/random-forest-*`) stay
-  untouched.
+- **Do not run pipelines unless the owner task names them and the owner has accepted the stated cost.**
+  Otherwise no VM launchers, Vertex launches, GCS writes, or republishes. Frozen docs (`docs/results/`,
+  `docs/*-full-results.md`, `docs/stage1-*`, `docs/random-forest-*`) stay untouched.
 
 ## Standard workflow
 
@@ -64,9 +63,9 @@ checks their output itself, and calls an independent verifier only when the crit
    - **Optional: `code-reviewer` (Sonnet)** for larger code-only changes (refactors, harness, CLI, IO) or when you
      are unsure. Not needed for docs, typos, CI config, or small fixes with a clear test.
    - Fix blocking findings from the verifier (at most 2 rounds), then re-run `test-runner`.
-5. **Commit.** Conventional Commit on the current branch. Do not push, do not use `gh`, do not create or switch
-   branches. The runner pushes and opens the PR; merges happen only after Silas' OK. The PR body lists each
-   acceptance criterion with its evidence and states whether independent verification ran and its verdict.
+5. **Commit.** Conventional Commit on the current branch. An owner-started interactive session may push and open
+   the PR, as `AGENTS.md` says. A headless Claude run does not. Merges happen only after Silas' OK. The PR body
+   lists each acceptance criterion with its evidence and states whether independent verification ran and its verdict.
 
 ## Efficiency rules
 
