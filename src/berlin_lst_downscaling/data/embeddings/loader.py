@@ -175,7 +175,7 @@ def tessera_window_fully_valid(
     return bool(valid.size) and bool(np.all(valid == 1))
 
 
-def load_patch_embedding(
+def load_patch_quantized(
     embeddings_root: str,
     year: int,
     *,
@@ -183,14 +183,7 @@ def load_patch_embedding(
     col_100m: int,
     patch_cells: int = 16,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load one patch window from the canonical annual product.
-
-    The product COGs are canonical-gridded, so the patch window is derived
-    from the global 100 m anchor: 10 m origin ``(col*10, row*10)`` with a
-    ``patch_cells*10`` px edge. Reads only that window (never the full-year
-    raster) via a rasterio Window. Returns dequantized ``(H, W, 128)`` with
-    NaN at gaps plus the bool validity mask.
-    """
+    """Read the unchanged int8 HWC window and float32 per-pixel scale."""
     from rasterio.windows import Window
 
     validate_tessera_year(int(year))
@@ -205,6 +198,29 @@ def load_patch_embedding(
         .transpose(1, 2, 0)
     )
     scale_arr = _year_dataset(embeddings_root, int(year), "scale").read(1, window=window)
+    if quantized_arr.shape != (h, w, TESSERA_N_CHANNELS) or scale_arr.shape != (h, w):
+        raise ValueError("TESSERA patch window is outside the product geometry")
+    if scale_arr.dtype != np.dtype("float32"):
+        raise ValueError("TESSERA product scale must be float32")
+    return np.ascontiguousarray(quantized_arr), np.ascontiguousarray(scale_arr)
+
+
+def load_patch_embedding(
+    embeddings_root: str,
+    year: int,
+    *,
+    row_100m: int,
+    col_100m: int,
+    patch_cells: int = 16,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Dequantize one canonical patch window, preserving NaN at gaps."""
+    quantized_arr, scale_arr = load_patch_quantized(
+        embeddings_root,
+        year,
+        row_100m=row_100m,
+        col_100m=col_100m,
+        patch_cells=patch_cells,
+    )
     embedding = dequantize_tessera(
         np.ascontiguousarray(quantized_arr, dtype=np.int8),
         np.ascontiguousarray(scale_arr),
@@ -244,9 +260,17 @@ def collate_tessera_batch(samples, embeddings_root, *, kept_indices=None):
         meta = sample.meta
         row = int(getattr(meta, "row", 0))
         col = int(getattr(meta, "col", 0))
-        embedding, _ = load_patch_embedding(
-            str(embeddings_root), int(meta.year), row_100m=row, col_100m=col
-        )
+        quantized = getattr(sample, "tessera_int8", None)
+        scale = getattr(sample, "tessera_scale", None)
+        if quantized is not None and scale is not None:
+            embedding = dequantize_tessera(quantized, scale)
+            embedding[~np.all(np.isfinite(embedding), axis=2)] = np.nan
+        elif quantized is not None or scale is not None:
+            raise RuntimeError("incomplete cached TESSERA encoding")
+        else:
+            embedding, _ = load_patch_embedding(
+                str(embeddings_root), int(meta.year), row_100m=row, col_100m=col
+            )
         emb_list.append(np.moveaxis(embedding, 2, 0))
     kept_batch = torch.from_numpy(np.stack(kept_list).astype("float32"))
     emb_batch = torch.from_numpy(np.stack(emb_list).astype("float32"))

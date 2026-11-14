@@ -137,6 +137,61 @@ def test_prebuilt_matches_job_local_samples_batches_and_order(published: dict[st
             assert [m.patch_id for m in batch_a.metadata] == [m.patch_id for m in batch_b.metadata]
 
 
+@pytest.mark.usefixtures("world")
+def test_tessera_prebuilt_loaders_never_read_embeddings_after_setup(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from berlin_lst_downscaling.data.embeddings import loader
+
+    scene: _World = request.getfixturevalue("world")
+    if len(scene.scaler.channels) != 22:
+        pytest.skip("TESSERA uses the v6 stack only")
+    _sources(monkeypatch, scene)
+    quantized = np.ones((160, 160, 128), dtype=np.int8)
+    scale = np.full((160, 160), 0.01, dtype=np.float32)
+    reads = []
+
+    def window(*args: Any, **kwargs: Any) -> tuple[np.ndarray, np.ndarray]:
+        reads.append(1)
+        return quantized, scale
+
+    monkeypatch.setattr(loader, "tessera_window_fully_valid", lambda *args, **kwargs: True)
+    monkeypatch.setattr(loader, "load_patch_quantized", window)
+    indices = tuple(range(22))
+    local = _build(scene, indices, tmp_path / "local", tessera_embeddings_root="gs://fake/tessera")
+    local.setup("fit")
+    assert len(reads) == sum(len(refs) for refs in local._admitted.values())
+    _publish(local, tmp_path)
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("prebuilt consumer must not build or read embedding windows")
+
+    monkeypatch.setattr(loader, "load_patch_quantized", forbidden)
+    monkeypatch.setattr(loader, "load_patch_embedding", forbidden)
+    monkeypatch.setattr(RealPatchDataModule, "_write_cache", forbidden)
+    module = _build(
+        scene,
+        indices,
+        tmp_path / "consumer",
+        tessera_embeddings_root="gs://fake/tessera",
+        cache_source="prebuilt",
+        prebuilt_uri_root=str(tmp_path / "gcs"),
+    )
+    module.setup("fit")
+    monkeypatch.setattr("rasterio.open", forbidden)
+    monkeypatch.setattr(storage, "read_bytes", forbidden)
+    for _ in range(2):
+        for data_loader in (module.train_dataloader(), module.val_dataloader()):
+            for batch in data_loader:
+                assert batch.tessera_embedding is not None
+                assert batch.features.shape[1] == 14
+                assert torch.all(batch.tessera_embedding == 0.01)
+    assert module.stats()["patch_cache_source"] == "prebuilt"
+    assert module.stats()["tessera_embedding_source"] == "quantized_patch_cache"
+
+
 def test_stats_record_source_key_and_timings(
     published: dict[str, Any], caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -630,6 +630,8 @@ class RealSample:
     lst_prior_k: np.ndarray  # (1, 160, 160) float32, physical Kelvin
     target_100m: np.ndarray  # (1, 16, 16) float32, native Kelvin
     mask_100m: np.ndarray  # (1, 16, 16) bool
+    tessera_int8: np.ndarray | None = None  # (160, 160, 128), original product values
+    tessera_scale: np.ndarray | None = None  # (160, 160) float32
 
 
 @dataclass(frozen=True)
@@ -906,6 +908,7 @@ def collate_real_batch(
     n_active_channels: int = N_FEATURE_CHANNELS,
     channel_indices: Sequence[int] | None = None,
     embeddings_root: str | None = None,
+    require_cached_tessera: bool = False,
 ) -> RealBatch:
     """Stack samples into a :class:`RealBatch` (prior normalized for the model).
 
@@ -953,13 +956,24 @@ def collate_real_batch(
             raise ValueError(f"TESSERA collate needs the full v6 stack, got C={features.shape[1]}")
         features = features[:, list(kept)]
         planes = []
-        for meta in metadata:
-            window, _valid = load_patch_embedding(
-                embeddings_root,
-                meta.year,
-                row_100m=meta.row,
-                col_100m=meta.col,
-            )
+        for sample in samples:
+            meta = sample.meta
+            if sample.tessera_int8 is not None and sample.tessera_scale is not None:
+                from berlin_lst_downscaling.data.embeddings.tessera import dequantize_tessera
+
+                window = dequantize_tessera(sample.tessera_int8, sample.tessera_scale)
+                window[~np.all(np.isfinite(window), axis=2)] = np.nan
+            elif sample.tessera_int8 is not None or sample.tessera_scale is not None:
+                raise RuntimeError("incomplete cached TESSERA encoding")
+            else:
+                if require_cached_tessera:
+                    raise RuntimeError("cached TESSERA batch lacks quantized embeddings")
+                window, _valid = load_patch_embedding(
+                    embeddings_root,
+                    meta.year,
+                    row_100m=meta.row,
+                    col_100m=meta.col,
+                )
             planes.append(np.moveaxis(window, 2, 0))
         embedding = torch.from_numpy(np.stack(planes).astype(np.float32))
     return RealBatch(

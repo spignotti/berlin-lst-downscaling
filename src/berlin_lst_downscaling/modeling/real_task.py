@@ -511,6 +511,11 @@ class RealPatchDataModule(LightningDataModule):
             "admitted_patch_ids": scope["patch_ids"],
             "skipped_refs": scope["skipped_refs"],
         }
+        if self.tessera_embeddings_root:
+            provenance["tessera"] = {
+                "root": self.tessera_embeddings_root,
+                "encoding": "int8-scale-float32-v1",
+            }
         return provenance, source_channels
 
     def cache_provenance(self) -> dict[str, object]:
@@ -772,6 +777,13 @@ class RealPatchDataModule(LightningDataModule):
             "patch_cache_source": self.patch_cache_source,
             "patch_cache_prefix": self.patch_cache_prefix,
             "patch_cache_key": self.patch_cache_key,
+            "tessera_embedding_source": (
+                "quantized_patch_cache"
+                if self.tessera_embeddings_root and self.patch_cache_source is not None
+                else "window_read"
+                if self.tessera_embeddings_root
+                else None
+            ),
             "prebuilt_download_seconds": self.prebuilt_download_seconds,
             "prebuilt_verify_seconds": self.prebuilt_verify_seconds,
             "prebuilt_load_seconds": self.prebuilt_load_seconds,
@@ -894,6 +906,7 @@ class RealPatchDataModule(LightningDataModule):
                 collate_real_batch,
                 n_active_channels=self.n_active_channels,
                 embeddings_root=self.tessera_embeddings_root,
+                require_cached_tessera=bool(self.tessera_embeddings_root),
             )
         else:
             collate_fn = partial(

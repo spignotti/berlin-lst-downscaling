@@ -14,6 +14,7 @@ from collections.abc import Callable, Generator, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from rasterio.errors import RasterioIOError
@@ -39,6 +40,24 @@ _ARRAYS = {
     "target": ("target.npy", np.dtype("float32")),
     "mask": ("mask.npy", np.dtype("bool")),
 }
+_TESSERA_ARRAYS = {
+    "tessera_int8": ("tessera_int8.npy", np.dtype("int8")),
+    "tessera_scale": ("tessera_scale.npy", np.dtype("float32")),
+}
+
+
+def _array_specs(provenance: dict[str, object]) -> dict[str, tuple[str, np.dtype]]:
+    if "tessera" not in provenance:
+        return dict(_ARRAYS)
+    tessera = provenance["tessera"]
+    if (
+        not isinstance(tessera, dict)
+        or not isinstance(tessera.get("root"), str)
+        or not tessera["root"]
+        or tessera.get("encoding") != "int8-scale-float32-v1"
+    ):
+        raise ValueError("unsupported TESSERA cache provenance")
+    return {**_ARRAYS, **_TESSERA_ARRAYS}
 
 
 def _json_digest(value: object) -> str:
@@ -54,7 +73,7 @@ def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
-def estimate_cache_bytes(count: int, channels: int) -> int:
+def estimate_cache_bytes(count: int, channels: int, *, tessera: bool = False) -> int:
     """Return exact array payload bytes plus bounded NPY-header allowance."""
     if count <= 0 or not _is_positive_int(channels):
         raise ValueError("cache requires a positive count and a positive active channel count")
@@ -65,7 +84,9 @@ def estimate_cache_bytes(count: int, channels: int) -> int:
         + REAL_PATCH_CELLS * REAL_PATCH_CELLS * 4
         + REAL_PATCH_CELLS * REAL_PATCH_CELLS
     )
-    return n * per_sample + len(_ARRAYS) * 8192 + n * 2048
+    if tessera:
+        per_sample += REAL_PATCH_PX * REAL_PATCH_PX * (128 + 4)
+    return n * per_sample + (len(_ARRAYS) + (2 if tessera else 0)) * 8192 + n * 2048
 
 
 def validate_read_workers(max_workers: object) -> int:
@@ -199,12 +220,20 @@ class PatchCache:
             "target": (len(self.patch_ids), 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
             "mask": (len(self.patch_ids), 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS),
         }
+        array_specs = _array_specs(provenance)
+        if "tessera" in provenance:
+            shape_specs.update(
+                {
+                    "tessera_int8": (len(self.patch_ids), REAL_PATCH_PX, REAL_PATCH_PX, 128),
+                    "tessera_scale": (len(self.patch_ids), REAL_PATCH_PX, REAL_PATCH_PX),
+                }
+            )
         if self.manifest.get("shapes") != {key: list(value) for key, value in shape_specs.items()}:
             raise RuntimeError("patch cache manifest shapes do not match the frozen patch geometry")
-        expected_dtypes = {key: dtype.name for key, (_, dtype) in _ARRAYS.items()}
+        expected_dtypes = {key: dtype.name for key, (_, dtype) in array_specs.items()}
         if self.manifest.get("dtypes") != expected_dtypes:
             raise RuntimeError("patch cache manifest dtype declarations are invalid")
-        for key, (filename, dtype) in _ARRAYS.items():
+        for key, (filename, dtype) in array_specs.items():
             path = root / filename
             if not path.is_file():
                 raise RuntimeError(f"patch cache is incomplete: missing {path}")
@@ -215,7 +244,7 @@ class PatchCache:
                     f"expected {shape_specs[key]}/{dtype}"
                 )
             self.arrays[key] = array
-        actual_bytes = sum((root / filename).stat().st_size for filename, _ in _ARRAYS.values())
+        actual_bytes = sum((root / filename).stat().st_size for filename, _ in array_specs.values())
         if actual_bytes != self.manifest.get("array_bytes"):
             raise RuntimeError("patch cache array byte count differs from its ready manifest")
 
@@ -234,6 +263,12 @@ class PatchCache:
             lst_prior_k=self.arrays["prior"][index],
             target_100m=self.arrays["target"][index],
             mask_100m=self.arrays["mask"][index],
+            tessera_int8=self.arrays["tessera_int8"][index]
+            if "tessera_int8" in self.arrays
+            else None,
+            tessera_scale=self.arrays["tessera_scale"][index]
+            if "tessera_scale" in self.arrays
+            else None,
         )
 
 
@@ -287,7 +322,10 @@ def build_patch_cache(
         if len(set(indices)) != len(indices):
             raise ValueError("channel_indices must be unique")
     index_array = np.asarray(indices, dtype=np.intp)
-    estimate = estimate_cache_bytes(len(patch_ids), active_channels)
+    _array_specs(provenance)
+    estimate = estimate_cache_bytes(
+        len(patch_ids), active_channels, tessera="tessera" in provenance
+    )
     if estimate > max_bytes:
         raise ValueError(f"estimated cache size {estimate} exceeds max_bytes {max_bytes}")
     if not provenance:
@@ -370,6 +408,18 @@ def _write_staged_cache(
         }
     )
     metadata: list[dict[str, object]] = []
+    array_specs = _array_specs(provenance)
+    if "tessera" in provenance:
+        for key, (filename, dtype) in _TESSERA_ARRAYS.items():
+            shape = (count, REAL_PATCH_PX, REAL_PATCH_PX)
+            if key == "tessera_int8":
+                shape = (*shape, 128)
+            arrays[key] = np.lib.format.open_memmap(
+                root / filename,
+                mode="w+",
+                dtype=dtype,
+                shape=shape,
+            )
     iterator = iter(samples)
     for index, expected_id in enumerate(patch_ids):
         try:
@@ -412,6 +462,18 @@ def _write_staged_cache(
         arrays["prior"][index] = sample.lst_prior_k
         arrays["target"][index] = sample.target_100m
         arrays["mask"][index] = sample.mask_100m
+        if "tessera" in provenance:
+            from berlin_lst_downscaling.data.embeddings.loader import load_patch_quantized
+
+            tessera = cast(dict[str, object], provenance["tessera"])
+            quantized, scale = load_patch_quantized(
+                str(tessera["root"]),
+                sample.meta.year,
+                row_100m=sample.meta.row,
+                col_100m=sample.meta.col,
+            )
+            arrays["tessera_int8"][index] = quantized
+            arrays["tessera_scale"][index] = scale
         metadata.append(asdict(sample.meta))
     try:
         next(iterator)
@@ -430,7 +492,14 @@ def _write_staged_cache(
         "target": [count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS],
         "mask": [count, 1, REAL_PATCH_CELLS, REAL_PATCH_CELLS],
     }
-    array_bytes = sum((root / filename).stat().st_size for filename, _ in _ARRAYS.values())
+    if "tessera" in provenance:
+        shapes.update(
+            {
+                "tessera_int8": [count, REAL_PATCH_PX, REAL_PATCH_PX, 128],
+                "tessera_scale": [count, REAL_PATCH_PX, REAL_PATCH_PX],
+            }
+        )
+    array_bytes = sum((root / filename).stat().st_size for filename, _ in array_specs.values())
     if array_bytes > max_bytes:
         raise RuntimeError(f"actual cache size {array_bytes} exceeds max_bytes {max_bytes}")
     manifest: dict[str, object] = {
@@ -443,7 +512,7 @@ def _write_staged_cache(
         "active_channels": active_channels,
         "channel_indices": list(indices),
         "shapes": shapes,
-        "dtypes": {key: dtype.name for key, (_, dtype) in _ARRAYS.items()},
+        "dtypes": {key: dtype.name for key, (_, dtype) in array_specs.items()},
         "array_bytes": array_bytes,
         "estimated_bytes": estimate,
     }
