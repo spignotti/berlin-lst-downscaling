@@ -68,10 +68,13 @@ printf '%s\\n' "$*" >> "$FAKE_LOG_DIR/gcloud.args"
 FAKE_CMD = """#!/usr/bin/env bash
 set +x
 f="${GOOGLE_APPLICATION_CREDENTIALS-UNSET}"
+mode=$(python3 -c \
+  'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$f")
 {
   printf 'path=%s\\n' "$f"
-  printf 'mode=%s\\n' "$(stat -c %a "$f")"
+  printf 'mode=%s\\n' "$mode"
   printf 'override=%s\\n' "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE-UNSET}"
+  printf 'account=%s\\n' "${CLOUDSDK_CORE_ACCOUNT-UNSET}"
   printf 'valid=%s\\n' "$(grep -c service_account "$f")"
 } > "$FAKE_LOG_DIR/cmd.txt"
 if [[ "${CMD_SIGTERM_PARENT:-}" == "1" ]]; then
@@ -171,6 +174,19 @@ def test_command_exit_code_propagates(tmp_path: Path) -> None:
     run = _run(tmp_path, ["--", "{CMD}"], env=_ua_env(CMD_EXIT="7"))
     assert run.proc.returncode == 7
     assert not Path(run.cmd_record()["path"]).exists()
+    _no_leftover(run)
+
+
+def test_operator_account_overrides_personal_gcloud_account(tmp_path: Path) -> None:
+    run = _run(
+        tmp_path,
+        ["--", "{CMD}"],
+        env=_ua_env(CLOUDSDK_CORE_ACCOUNT="personal@example.test"),
+    )
+    assert run.proc.returncode == 0, run.proc.stderr
+    assert run.cmd_record()["account"] == EMAIL
+    assert not (run.log_dir / "gcloud.args").exists()
+    _assert_no_secrets(run)
     _no_leftover(run)
 
 
