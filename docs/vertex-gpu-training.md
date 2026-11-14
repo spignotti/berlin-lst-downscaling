@@ -42,7 +42,7 @@ cache, batch 4, workers 0, `pin_memory: false`, `16-mixed`.
 
 ## Accounts and secrets
 
-GCP and secret operations run from a Linux operator machine. Admin tasks
+GCP and secret operations run from the owner's Mac or a Linux operator machine. Admin tasks
 (billing, quotas, IAM, key rotation, Infisical admin) stay with the project owner.
 
 | Account | Role |
