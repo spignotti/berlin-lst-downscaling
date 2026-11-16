@@ -75,7 +75,7 @@ latest_job() {
     --region=europe-west3 --project=berlin-lst-training \
     --filter="displayName=$1" \
     --format='json(name,state,error.code,error.message,createTime)' |
-    jq -er 'if type != "array" then error("expected jobs array")
+    jq -er 'length as $n | (if type != "array" then error("expected jobs array")
       elif length == 0 then ["NONE", "", ""]
       elif any(.[]; .state == "JOB_STATE_QUEUED" or .state == "JOB_STATE_PENDING"
         or .state == "JOB_STATE_RUNNING" or .state == "JOB_STATE_UPDATING"
@@ -88,7 +88,7 @@ latest_job() {
       then ["STOP", "", ""]
       else sort_by(.createTime) | last |
         [.state, .error.message // "", .name // ""]
-      end | @tsv'
+      end) + [$n] | @tsv'
 }
 
 cd "$REPO" || stop "repository unavailable"
@@ -98,6 +98,7 @@ for seed in 0 1 2; do
     stop "seed $seed lookup failed; no submission"
   fi
   state="${row%%$'\t'*}"
+  jobs_before="${row##*$'\t'}"
   echo "seed $seed state=$state"
   case "$state" in
     JOB_STATE_SUCCEEDED) continue ;;
@@ -108,6 +109,12 @@ for seed in 0 1 2; do
     NONE|JOB_STATE_FAILED) ;;
     *) stop "seed $seed has a non-capacity failure or unknown state; inspect Vertex" ;;
   esac
+  # The launcher blocks for hours, so a STOP written during one seed must
+  # also keep the next seed from being submitted.
+  if [[ -f "$DIR/STOP" ]]; then
+    echo "stopped before seed $seed: $(cat "$DIR/STOP")"
+    exit 0
+  fi
   printf 'submitting seed %s\n' "$seed" >"$STATUS"
   if operator uv run --group operators \
     python scripts/operators/launch_vertex_modeling.py \
@@ -127,6 +134,11 @@ for seed in 0 1 2; do
     stop "seed $seed post-submit lookup failed; reconcile before retry"
   fi
   state="${row%%$'\t'*}"
+  # No new job means the launcher failed before submitting (auth, evidence
+  # already present, exposure refused): that is not a capacity failure.
+  if [[ "${row##*$'\t'}" == "$jobs_before" ]]; then
+    stop "seed $seed launcher failed before creating a job; inspect the log"
+  fi
   case "$state" in
     JOB_STATE_FAILED)
       printf 'no capacity, seed %s; retry next tick\n' "$seed" >"$STATUS"

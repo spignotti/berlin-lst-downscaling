@@ -38,16 +38,23 @@ def _run(
     *,
     lookup_exit: int = 0,
     sequence: dict[str, str] | None = None,
+    jobs_after: list[dict] | None = None,
+    uv_script: str = 'exit 1',
 ):
     if shutil.which("jq") is None:
         pytest.skip("jq is required by the operator watcher")
+    after = jobs if jobs_after is None else jobs_after
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "gcloud").write_text(
         '#!/bin/bash\n[[ "$*" == *"error.code,error.message"* ]] || exit 2\n'
-        f"cat <<'JSON'\n{json.dumps(jobs)}\nJSON\nexit {lookup_exit}\n"
+        # After the launcher stub has run, the lookup returns jobs_after.
+        f'if [[ -e "$CALLS" ]]; then\ncat <<\'JSON\'\n{json.dumps(after)}\nJSON\n'
+        f"else\ncat <<'JSON'\n{json.dumps(jobs)}\nJSON\nfi\nexit {lookup_exit}\n"
     )
-    (bin_dir / "uv").write_text('#!/bin/bash\nprintf "%s\\n" "$*" >>"$CALLS"\nexit 1\n')
+    (bin_dir / "uv").write_text(
+        f'#!/bin/bash\nprintf "%s\\n" "$*" >>"$CALLS"\n{uv_script}\n'
+    )
     for path in bin_dir.iterdir():
         path.chmod(0o755)
     calls = tmp_path / "calls"
@@ -73,9 +80,8 @@ def _run(
 
 
 def test_nested_capacity_error_is_retried(tmp_path: Path):
-    result, state_dir, calls = _run(
-        tmp_path, [_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")]
-    )
+    jobs = [_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")]
+    result, state_dir, calls = _run(tmp_path, jobs, jobs_after=jobs * 2)
     assert result.returncode == 0
     assert not (state_dir / "STOP").exists()
     command = calls.read_text()
@@ -160,6 +166,8 @@ def test_bound_overrides_reach_the_launcher(tmp_path: Path):
     result, _, calls = _run(
         tmp_path,
         [_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")],
+        jobs_after=[_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")]
+        * 2,
         sequence={
             **SEQUENCE,
             "TESSERA_TIMEOUT_SECONDS": "13500",
@@ -171,3 +179,23 @@ def test_bound_overrides_reach_the_launcher(tmp_path: Path):
     assert "--timeout-seconds 13500 --max-wait-seconds 2100 --max-exposure-usd 4.33" in (
         calls.read_text()
     )
+
+
+def test_launcher_failure_without_a_new_job_stops(tmp_path: Path):
+    # An earlier capacity failure exists; the launcher then fails before it
+    # creates a job. That must not be reported as "no capacity".
+    result, state_dir, calls = _run(
+        tmp_path, [_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")]
+    )
+    assert result.returncode == 1
+    assert calls.read_text().count("--mode tessera") == 1
+    assert "before creating a job" in (state_dir / "STOP").read_text()
+
+
+def test_stop_written_during_a_seed_prevents_the_next_submit(tmp_path: Path):
+    result, state_dir, calls = _run(
+        tmp_path, [], uv_script='echo owner >"$TESSERA_STATE_DIR/STOP"\nexit 0'
+    )
+    assert result.returncode == 0
+    assert calls.read_text().count("--mode tessera") == 1
+    assert (state_dir / "STOP").read_text() == "owner\n"
