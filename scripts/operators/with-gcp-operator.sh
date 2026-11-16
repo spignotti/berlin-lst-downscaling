@@ -117,6 +117,9 @@ if [[ "$ACTIVATE" == "true" ]]; then
   [[ $# -eq 0 ]] && exit 0
 else
   export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY_FILE"
+  # OS Login derives the requested profile from core/account, not the key file.
+  # Keep both identities aligned without changing the caller's gcloud config.
+  export CLOUDSDK_CORE_ACCOUNT="$CLIENT_EMAIL"
 fi
 
 rc=0

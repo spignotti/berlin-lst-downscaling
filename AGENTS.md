@@ -7,7 +7,7 @@ Cloud-native LST downscaling for Berlin. Landsat and Sentinel-2 come from Micros
 - Canonical bucket: `gs://berlin-lst-training-data/` (GCP project `berlin-lst-training`, `europe-west3`).
 - Local mount: rclone at `~/.mnt/berlin-lst/` (on the owner's Mac; gcsfuse is unavailable on this arm64 Mac).
 - Heavy pipeline runs use the On-Demand VM `berlin-lst-vm`. Start, stop, SSH, and run launchers live only in `scripts/runners/vm/`. Application code consumes GCS and Hydra and does not know the VM.
-- GCP and secret operations run from a Linux operator machine as the operator SA through `scripts/operators/with-gcp-operator.sh` (its key lives only in Infisical `/operator`). VM SSH uses OS Login.
+- GCP and secret operations run from the owner's Mac or a Linux operator machine as the operator SA through `scripts/operators/with-gcp-operator.sh` (its key lives only in Infisical `/operator`). VM SSH uses OS Login; use `scripts/runners/vm/ssh-vm.sh`, not an unrelated local VM alias.
 - Cloud Build uses the builder SA with the committed configs in `cloudbuild/`.
 - Managed GPU training runs on Vertex AI (`docs/vertex-gpu-training.md`).
 - Keep the VM stopped when it is not running a job. Deletion protection stays on; the boot disk is not auto-delete.
