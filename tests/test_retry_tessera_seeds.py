@@ -142,6 +142,7 @@ def test_successful_seeds_are_skipped(tmp_path: Path):
         ({"TESSERA_SOURCE_SHA": "5e39bfe"}, "TESSERA_SOURCE_SHA"),
         ({"TESSERA_LABEL": ""}, "TESSERA_LABEL"),
         ({"TESSERA_TIMEOUT_SECONDS": "4h"}, "TESSERA_TIMEOUT_SECONDS"),
+        ({"TESSERA_MAX_WAIT_SECONDS": "-1"}, "TESSERA_MAX_WAIT_SECONDS"),
     ],
 )
 def test_incomplete_or_retired_sequence_never_submits(
@@ -154,11 +155,15 @@ def test_incomplete_or_retired_sequence_never_submits(
     assert not calls.exists()
 
 
-def test_timeout_override_reaches_the_launcher(tmp_path: Path):
+def test_timeout_and_queue_overrides_reach_the_launcher(tmp_path: Path):
     result, _, calls = _run(
         tmp_path,
         [_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")],
-        sequence={**SEQUENCE, "TESSERA_TIMEOUT_SECONDS": "16200"},
+        sequence={
+            **SEQUENCE,
+            "TESSERA_TIMEOUT_SECONDS": "13500",
+            "TESSERA_MAX_WAIT_SECONDS": "2100",
+        },
     )
     assert result.returncode == 0
-    assert "--timeout-seconds 16200 --max-wait-seconds 600" in calls.read_text()
+    assert "--timeout-seconds 13500 --max-wait-seconds 2100" in calls.read_text()

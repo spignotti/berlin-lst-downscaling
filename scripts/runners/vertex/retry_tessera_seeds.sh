@@ -15,6 +15,9 @@ IMAGE="${TESSERA_IMAGE:-}"
 SHA="${TESSERA_SOURCE_SHA:-}"
 LABEL="${TESSERA_LABEL:-}"
 TIMEOUT="${TESSERA_TIMEOUT_SECONDS:-17400}"
+# Queue allowance: the launcher cancels a job that starts later than this after
+# creation. Vertex reports a stockout (code 14) by itself after about 30 minutes.
+MAX_WAIT="${TESSERA_MAX_WAIT_SECONDS:-600}"
 # Window-read image of the cancelled 2026-11-13 sequence (about an hour per epoch).
 RETIRED_DIGEST="sha256:e5aa497c215290343842011ca58b3da99dc22562e9795453b2bf5ed80a3e2c9f"
 
@@ -40,6 +43,8 @@ config_error() {
   config_error "TESSERA_LABEL must be a fresh lowercase run-label prefix"
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] ||
   config_error "TESSERA_TIMEOUT_SECONDS must be a positive integer"
+[[ "$MAX_WAIT" =~ ^[1-9][0-9]*$ ]] ||
+  config_error "TESSERA_MAX_WAIT_SECONDS must be a positive integer"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "already running"
   exit 0
@@ -109,7 +114,7 @@ for seed in 0 1 2; do
     --infisical-identity 7ba603e5-b94d-42d1-bc57-d64658dde09d \
     --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
     --infisical-env dev --infisical-path /vertex \
-    --hourly-rate-usd 1.00 --timeout-seconds "$TIMEOUT" --max-wait-seconds 600 \
+    --hourly-rate-usd 1.00 --timeout-seconds "$TIMEOUT" --max-wait-seconds "$MAX_WAIT" \
     --max-exposure-usd 5
   then
     continue
