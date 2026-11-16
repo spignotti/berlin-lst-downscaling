@@ -466,7 +466,8 @@ def compare_single_runs(
     """
     arm_a, run_a = _single_run(table_a, "run A")
     arm_b, run_b = _single_run(table_b, "run B")
-    if run_a == run_b:
+    # A random forest run shares one run id across its stage exports; the arm tells them apart.
+    if (arm_a, run_a) == (arm_b, run_b):
         raise SpatialErrorError("run A and run B are the same run")
 
     def support(table: pa.Table) -> dict[str, tuple[str, int]]:
