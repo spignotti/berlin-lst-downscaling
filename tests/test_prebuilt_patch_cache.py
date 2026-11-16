@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -114,6 +115,30 @@ def built(tmp_path: Path) -> dict[str, Any]:
 def uploaded(built: dict[str, Any]) -> dict[str, Any]:
     upload_prebuilt_cache(built["out_dir"], built["prefix"])
     return built
+
+
+def test_fetch_capacity_tracks_incremental_shard_assembly(
+    uploaded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = uploaded["manifest"]
+    total = sum(entry["size"] for entry in manifest["files"])
+    largest = max(shard["size"] for shard in manifest["shards"])
+    free = total + largest + 8192 * (len(manifest["shards"]) + len(manifest["files"]))
+    assert free < 2 * total
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: type("Disk", (), {"free": free})())
+    dest = uploaded["root"] / "incremental"
+    original_copy = shutil.copyfileobj
+    peaks = []
+
+    def copy_and_measure(reader: Any, writer: Any, length: int) -> None:
+        original_copy(reader, writer, length)
+        writer.flush()
+        peaks.append(sum(path.stat().st_size for path in dest.rglob("*") if path.is_file()))
+
+    monkeypatch.setattr(shutil, "copyfileobj", copy_and_measure)
+    fetch_prebuilt_cache(uploaded["prefix"], dest, expected_components=uploaded["components"])
+    assert peaks and max(peaks) <= free
+    PatchCache(dest, uploaded["provenance"])
 
 
 # --- key ---------------------------------------------------------------------

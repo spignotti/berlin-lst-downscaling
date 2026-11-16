@@ -40,10 +40,21 @@ PATCH_CACHE_MANIFEST_VERSION = 1
 PREBUILT_MANIFEST = "prebuilt_manifest.json"
 DEFAULT_SHARD_MAX_BYTES = 512 * 1024**2
 CACHE_FILES = ("features.npy", "prior.npy", "target.npy", "mask.npy", "manifest.json")
+TESSERA_CACHE_FILES = ("tessera_int8.npy", "tessera_scale.npy")
 ALLOWED_SPLITS = ("train", "validation")
 _CHUNK_BYTES = 64 * 1024**2
 _PARTS_DIR = ".prebuilt-parts"
-_SHARD_NAME = re.compile(r"^(features|prior|target|mask|manifest)-\d{5}\.bin$")
+_SHARD_NAME = re.compile(
+    r"^(features|prior|target|mask|manifest|tessera_int8|tessera_scale)-\d{5}\.bin$"
+)
+
+
+def _cache_files(components: Mapping[str, object]) -> tuple[str, ...]:
+    if components.get("tessera_encoding") == "int8-scale-float32-v1":
+        return (*CACHE_FILES, *TESSERA_CACHE_FILES)
+    if "tessera_encoding" in components:
+        raise PrebuiltCacheError("unsupported TESSERA cache encoding")
+    return CACHE_FILES
 
 
 class PrebuiltCacheError(RuntimeError):
@@ -83,7 +94,7 @@ def prebuilt_key_components(
             "the test split is never cached"
         )
     fingerprints = cast(Mapping[str, str], provenance["patch_index_fingerprints"])
-    return {
+    components: dict[str, object] = {
         "cache_format_version": PREBUILT_CACHE_FORMAT_VERSION,
         "patch_cache_version": PATCH_CACHE_MANIFEST_VERSION,
         "index_policy_hash": fingerprints["index_policy_hash"],
@@ -95,6 +106,10 @@ def prebuilt_key_components(
         "splits": list(splits),
         "provenance_sha256": _json_digest(provenance),
     }
+    if "tessera" in provenance:
+        tessera = cast(Mapping[str, object], provenance["tessera"])
+        components["tessera_encoding"] = tessera["encoding"]
+    return components
 
 
 def prebuilt_key(components: Mapping[str, object]) -> str:
@@ -202,12 +217,21 @@ def pack_prebuilt_cache(
         )
     if out_dir.exists():
         raise FileExistsError(str(out_dir))
+    cache_files = _cache_files(components)
+    if set(cache_manifest.get("shapes", {})) != {
+        Path(filename).stem for filename in cache_files if filename.endswith(".npy")
+    }:
+        raise PrebuiltCacheError("cache arrays differ from prebuilt identity")
+    required = sum((cache_dir / filename).stat().st_size for filename in cache_files)
+    available = shutil.disk_usage(cache_dir.parent).free
+    if available < required:
+        raise OSError(f"packing cache needs {required} bytes but only {available} are free")
     shards_dir = out_dir / "shards"
     shards_dir.mkdir(parents=True)
 
     shards: list[dict[str, object]] = []
     files: list[dict[str, object]] = []
-    for filename in CACHE_FILES:
+    for filename in cache_files:
         src = cache_dir / filename
         stem = src.stem
         file_size = src.stat().st_size
@@ -411,9 +435,9 @@ def _check_manifest(
         if not _SHARD_NAME.match(str(shard.get("name"))):
             raise PrebuiltCacheError(f"prebuilt manifest has an invalid shard name {shard!r}")
     for entry in files:
-        if entry.get("file") not in CACHE_FILES:
+        if entry.get("file") not in _cache_files(expected):
             raise PrebuiltCacheError(f"prebuilt manifest has an unexpected file {entry!r}")
-    if sorted(str(entry["file"]) for entry in files) != sorted(CACHE_FILES):
+    if sorted(str(entry["file"]) for entry in files) != sorted(_cache_files(expected)):
         raise PrebuiltCacheError("prebuilt manifest does not list exactly the cache files")
     return shards, files
 
@@ -477,6 +501,20 @@ def fetch_prebuilt_cache(
     if retries < 1:
         raise ValueError(f"retries must be >= 1, got {retries}")
     dest_existed = dest.exists()
+    parent = dest if dest_existed else dest.parent
+    while not parent.exists():
+        parent = parent.parent
+    # All shards coexist after download. Assembly deletes each shard immediately
+    # after copying it, so only the current shard is duplicated, not the cache.
+    # Allow bounded filesystem allocation/metadata overhead per artifact.
+    required = (
+        sum(int(cast(int, entry["size"])) for entry in files)
+        + max(int(cast(int, shard["size"])) for shard in shards)
+        + 8192 * (len(shards) + len(files))
+    )
+    available = shutil.disk_usage(parent).free
+    if available < required:
+        raise OSError(f"fetching cache needs {required} bytes but only {available} are free")
     parts = dest / _PARTS_DIR
     parts.mkdir(parents=True, exist_ok=True)
     try:
@@ -507,7 +545,7 @@ def fetch_prebuilt_cache(
                 os.replace(partial, dest / filename)
             verify_seconds = time.perf_counter() - verify_started
     except BaseException:
-        for filename in CACHE_FILES:
+        for filename in _cache_files(expected_components):
             (dest / filename).unlink(missing_ok=True)
             (dest / f"{filename}.partial").unlink(missing_ok=True)
         shutil.rmtree(parts, ignore_errors=True)
