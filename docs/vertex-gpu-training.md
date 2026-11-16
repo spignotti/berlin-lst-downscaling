@@ -465,7 +465,8 @@ directory, and submits only through its `submit` / `submit-all` subcommands.
 Existing jobs are looked up by exact displayName: SUCCEEDED is skipped, an
 active job is waited on, FAILED/CANCELLED stops the loop without resubmitting.
 Its `holdout` subcommand submits the spatial holdout runs of all nine arms, up
-to four jobs at a time, under a required `--max-total-usd`
+to four jobs at a time, under a required `--max-total-usd`, and with
+`--assignments` the five spatial cross-validation folds of L1 and L4
 ([`spatial-holdout.md`](spatial-holdout.md)).
 See [`scripts/runners/vertex/README.md`](../scripts/runners/vertex/README.md).
 
