@@ -398,7 +398,7 @@ def test_tessera_preflight_is_validation_only(
             "cosine",
             "--skip-test",
             "--max-exposure-usd",
-            "5",
+            "6.25",
         ),
     )
     assert launcher.main() == 0
@@ -407,7 +407,43 @@ def test_tessera_preflight_is_validation_only(
     assert "test pass      : skipped" in out
     assert "evaluate_test=false" in out
     assert "unit-seed1-ep40-cos-notest" in out
-    assert "~$5.00" in out
+    assert "timeout        : 20400s  max-wait: 600s" in out
+    assert "~$5.83" in out
+
+
+def test_tessera_bounds_fit_the_measured_epoch_time(
+    launcher: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Smoke 1328544023010344960: 399 s per epoch and about 2070 s fixed overhead,
+    # so 40 epochs need about 18030 s; 17400 s would cut the run off.
+    assert launcher.TESSERA_TIMEOUT_SECONDS >= 40 * 399 + 2070
+    seed = ("--seed", "0", "--max-epochs", "40", "--lr-schedule", "cosine", "--skip-test")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        _argv("tessera", *seed, "--max-wait-seconds", "2100", "--max-exposure-usd", "6.25"),
+    )
+    assert launcher.main() == 0
+    assert "~$6.25" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (("--timeout-seconds", "20401"), "tessera timeout cannot exceed 20400 seconds"),
+        (("--max-exposure-usd", "6.26"), r"tessera per-job exposure cannot exceed \$6.25"),
+    ],
+)
+def test_tessera_bounds_are_ceilings(
+    launcher: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: tuple[str, str],
+    message: str,
+) -> None:
+    seed = ("--seed", "0", "--max-epochs", "40", "--skip-test")
+    monkeypatch.setattr(sys, "argv", _argv("tessera", *seed, *extra))
+    with pytest.raises(SystemExit, match=message):
+        launcher.main()
 
 
 def test_tessera_without_skip_test_is_refused(

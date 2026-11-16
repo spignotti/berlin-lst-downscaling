@@ -11,7 +11,7 @@ Coding agents never run these scripts. A paid submit needs the project owner's e
 
 Mac watcher for the three validation-only TESSERA seeds. Each tick walks seeds 0, 1, 2
 in order: 40 epochs, cosine, `--skip-test`, `--patch-cache prebuilt`, T4 in Frankfurt,
-at most $5 projected exposure per seed. A seed is submitted only after the previous one
+at most $6.25 projected exposure per seed. A seed is submitted only after the previous one
 succeeded. Only code-14 capacity stockouts ("Resources are insufficient") are retried on
 a later tick; every other failure, an unknown state and a failed lookup write `STOP` and
 submit nothing. An active attempt prevents a duplicate.
@@ -26,12 +26,13 @@ before any `gcloud` or launcher call:
 | `TESSERA_SOURCE_SHA` | the 40-hex commit the image was built from |
 | `TESSERA_LABEL` | fresh run-label prefix; never reuse one while an old job is active |
 
-Optional: `TESSERA_TIMEOUT_SECONDS` (default and launcher maximum 17400) and
-`TESSERA_MAX_WAIT_SECONDS` (default 600). The launcher cancels a job that starts later
+Optional: `TESSERA_TIMEOUT_SECONDS` (default and launcher maximum 20400; the smoke
+measured about 18030 s for 40 epochs), `TESSERA_MAX_WAIT_SECONDS` (default 600) and
+`TESSERA_MAX_EXPOSURE_USD` (default and launcher maximum 6.25). The launcher cancels a job that starts later
 than the queue allowance after creation, and the watcher then stops; T4 provisioning in
 Frankfurt took 18.6 minutes on 2026-11-16, while Vertex reports a stockout by itself
 after about 30 minutes. The launcher refuses the pair when `rate x (timeout + wait)`
-exceeds $5. `TESSERA_REPO`, `TESSERA_STATE_DIR` and `TESSERA_LOG` set the deployment paths. The default
+exceeds the exposure ceiling. `TESSERA_REPO`, `TESSERA_STATE_DIR` and `TESSERA_LOG` set the deployment paths. The default
 authentication is the operator wrapper; `TESSERA_AUTH=user-adc` selects the owner's own
 gcloud login and user ADC instead (the alternative submitter in
 `docs/vertex-gpu-training.md`).

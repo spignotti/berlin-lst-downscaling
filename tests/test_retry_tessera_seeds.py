@@ -82,7 +82,7 @@ def test_nested_capacity_error_is_retried(tmp_path: Path):
     assert command.count("--mode tessera") == 1
     assert "--skip-test --patch-cache prebuilt" in command
     assert f"--image-uri {IMAGE} --source-sha {SOURCE_SHA} --run-label tessera-test-r1" in command
-    assert "--timeout-seconds 17400 --max-wait-seconds 600 --max-exposure-usd 5" in command
+    assert "--timeout-seconds 20400 --max-wait-seconds 600 --max-exposure-usd 6.25" in command
     assert "no capacity" in (state_dir / "status.txt").read_text()
 
 
@@ -143,6 +143,7 @@ def test_successful_seeds_are_skipped(tmp_path: Path):
         ({"TESSERA_LABEL": ""}, "TESSERA_LABEL"),
         ({"TESSERA_TIMEOUT_SECONDS": "4h"}, "TESSERA_TIMEOUT_SECONDS"),
         ({"TESSERA_MAX_WAIT_SECONDS": "-1"}, "TESSERA_MAX_WAIT_SECONDS"),
+        ({"TESSERA_MAX_EXPOSURE_USD": "6,25"}, "TESSERA_MAX_EXPOSURE_USD"),
     ],
 )
 def test_incomplete_or_retired_sequence_never_submits(
@@ -155,7 +156,7 @@ def test_incomplete_or_retired_sequence_never_submits(
     assert not calls.exists()
 
 
-def test_timeout_and_queue_overrides_reach_the_launcher(tmp_path: Path):
+def test_bound_overrides_reach_the_launcher(tmp_path: Path):
     result, _, calls = _run(
         tmp_path,
         [_job("JOB_STATE_FAILED", "Resources are insufficient in region: europe-west3.")],
@@ -163,7 +164,10 @@ def test_timeout_and_queue_overrides_reach_the_launcher(tmp_path: Path):
             **SEQUENCE,
             "TESSERA_TIMEOUT_SECONDS": "13500",
             "TESSERA_MAX_WAIT_SECONDS": "2100",
+            "TESSERA_MAX_EXPOSURE_USD": "4.33",
         },
     )
     assert result.returncode == 0
-    assert "--timeout-seconds 13500 --max-wait-seconds 2100" in calls.read_text()
+    assert "--timeout-seconds 13500 --max-wait-seconds 2100 --max-exposure-usd 4.33" in (
+        calls.read_text()
+    )

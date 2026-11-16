@@ -14,10 +14,12 @@ LOCK="$DIR/retry.lock"
 IMAGE="${TESSERA_IMAGE:-}"
 SHA="${TESSERA_SOURCE_SHA:-}"
 LABEL="${TESSERA_LABEL:-}"
-TIMEOUT="${TESSERA_TIMEOUT_SECONDS:-17400}"
+TIMEOUT="${TESSERA_TIMEOUT_SECONDS:-20400}"
 # Queue allowance: the launcher cancels a job that starts later than this after
 # creation. Vertex reports a stockout (code 14) by itself after about 30 minutes.
 MAX_WAIT="${TESSERA_MAX_WAIT_SECONDS:-600}"
+# Projected exposure ceiling per seed; the launcher refuses more than its own cap.
+MAX_EXPOSURE="${TESSERA_MAX_EXPOSURE_USD:-6.25}"
 # Window-read image of the cancelled 2026-11-13 sequence (about an hour per epoch).
 RETIRED_DIGEST="sha256:e5aa497c215290343842011ca58b3da99dc22562e9795453b2bf5ed80a3e2c9f"
 
@@ -45,6 +47,8 @@ config_error() {
   config_error "TESSERA_TIMEOUT_SECONDS must be a positive integer"
 [[ "$MAX_WAIT" =~ ^[1-9][0-9]*$ ]] ||
   config_error "TESSERA_MAX_WAIT_SECONDS must be a positive integer"
+[[ "$MAX_EXPOSURE" =~ ^[0-9]+(\.[0-9]+)?$ ]] ||
+  config_error "TESSERA_MAX_EXPOSURE_USD must be a decimal number of dollars"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "already running"
   exit 0
@@ -115,7 +119,7 @@ for seed in 0 1 2; do
     --infisical-project 5da7dfb7-954d-4736-ba2e-4471ade9d766 \
     --infisical-env dev --infisical-path /vertex \
     --hourly-rate-usd 1.00 --timeout-seconds "$TIMEOUT" --max-wait-seconds "$MAX_WAIT" \
-    --max-exposure-usd 5
+    --max-exposure-usd "$MAX_EXPOSURE"
   then
     continue
   fi

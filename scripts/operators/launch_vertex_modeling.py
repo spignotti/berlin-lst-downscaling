@@ -164,11 +164,13 @@ EFFICIENCY_SLOT_ROLE = EFFICIENCY_SLOT_ROLES
 # and image share this region, so no cross-region transfer applies.
 DEFAULT_HOURLY_RATE_USD = 0.75
 DEFAULT_MAX_EXPOSURE_USD = 3.0
-# Three validation-only TESSERA seeds share a $15 authorization. Each job
-# stops at $5 (4 h 50 min + 10 min queue at the $1/h cap).
+# Validation-only TESSERA seeds from the prebuilt quantized cache. Smoke
+# 1328544023010344960 measured 399 s per epoch plus about 2070 s fixed overhead,
+# about 18030 s for 40 epochs. The timeout leaves 13 % margin; the owner raised
+# the seed cap on 2026-11-16 to $6.25 projected exposure per job at the $1/h cap.
 TESSERA_MODE = "tessera"
-TESSERA_TIMEOUT_SECONDS = 17400
-TESSERA_MAX_EXPOSURE_USD = 5.0
+TESSERA_TIMEOUT_SECONDS = 20400
+TESSERA_MAX_EXPOSURE_USD = 6.25
 TESSERA_MAX_HOURLY_RATE_USD = 1.0
 POLL_SECONDS = 20
 CANCEL_CONFIRMATION_SECONDS = 300
