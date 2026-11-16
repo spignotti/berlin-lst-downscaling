@@ -218,3 +218,9 @@ Each is a CLI parameter. The default is a proposal, not a decision.
   description for the discussion chapter.
 - The per-cell export is produced from the retained best checkpoints, which were
   selected on this validation split.
+- Step 4 calls `compare_arms`, which requires seeds 0, 1 and 2 for each arm.
+  Steps 1-3 average over whatever seeds an arm has and record the count.
+- All runs of one analysis must cover identical cells with identical targets.
+  A run on another patch set (a spatial holdout) needs its own analysis run.
+- The cell export job only knows the 27 runs of the v6 matrix. Another arm
+  needs its own job that writes the same cell export schema.
