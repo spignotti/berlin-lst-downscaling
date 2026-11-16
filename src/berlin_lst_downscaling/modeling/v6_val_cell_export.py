@@ -30,7 +30,7 @@ import dataclasses
 import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -57,6 +57,7 @@ from berlin_lst_downscaling.modeling.contracts import RealBatch, validate_real_b
 from berlin_lst_downscaling.modeling.evaluation_exports import EvaluationIdentity
 from berlin_lst_downscaling.modeling.metrics import MaskedMAE, pool_10m_to_100m
 from berlin_lst_downscaling.modeling.real_task import RealLSTTask
+from berlin_lst_downscaling.modeling.ssim_range import SsimDataRange
 from berlin_lst_downscaling.modeling.v6_val_rescore import RescoreRun
 
 _logger = logging.getLogger(__name__)
@@ -117,6 +118,29 @@ def score_validation_cells(
     return concat_cell_columns(parts), float(recheck.compute())
 
 
+def ssim_range_for_checkpoint(path: Path, ssim_range: SsimDataRange) -> SsimDataRange:
+    """Rebind the SSIM artifact path to the one the checkpoint recorded, if the content agrees.
+
+    The rescore compares the checkpoint's ``ssim_data_range`` hyperparameter with the
+    resolved artifact, and that payload holds the artifact's absolute path: ``/app/...``
+    in the training image, a checkout path anywhere else. The path is replaced only when
+    every other field, including ``artifact_sha256``, is equal; otherwise the range is
+    returned unchanged and the rescore's comparison fails as it should.
+    """
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    hparams = ckpt.get("hyper_parameters") if isinstance(ckpt, dict) else None
+    stored = hparams.get("ssim_data_range") if isinstance(hparams, Mapping) else None
+    if not isinstance(stored, Mapping) or stored.get("artifact_sha256") is None:
+        return ssim_range
+
+    def without_path(payload: Mapping[str, object]) -> dict[str, object]:
+        return {key: value for key, value in payload.items() if key != "artifact_path"}
+
+    if without_path(stored) != without_path(ssim_range.payload()):
+        return ssim_range
+    return dataclasses.replace(ssim_range, artifact_path=str(stored.get("artifact_path")))
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -162,7 +186,9 @@ def run_cell_export(
         try:
             ref_ckpt = rescore.fetch_checkpoint(run.checkpoint_uri, dest)
             selection = rescore.checkpoint_selection_state(dest)
-            task = rescore.load_rescore_task(dest, cfg, ssim_range).to(device)
+            task = rescore.load_rescore_task(
+                dest, cfg, ssim_range_for_checkpoint(dest, ssim_range)
+            ).to(device)
             columns, recomputed = score_validation_cells(
                 task,
                 rescore.validation_loader(cache, cfg),

@@ -80,6 +80,11 @@ EXPLORATORY_NOTE = (
 
 _BATCH_INDICES = 1_000_000  # scene_bootstrap._BATCH_INDICES; a test pins the equivalence
 _SCENE_DATE = re.compile(r"^L[A-Z]\d{2}_[A-Z0-9]+_\d{6}_(\d{4})(\d{2})(\d{2})_")
+_SCENE_OVERPASS = re.compile(r"^(L[A-Z]\d{2})_[A-Z0-9]+_(\d{3})\d{3}_(\d{8})_")
+OVERPASS_NOTE = (
+    "Sensitivity, not the frozen rule: scenes of one platform, path and date (adjacent rows of "
+    "one overpass) are resampled together as one unit. The frozen rule resamples scenes."
+)
 _SEASON_MONTHS: dict[str, tuple[int, ...]] = {
     "DJF": (12, 1, 2),
     "MAM": (3, 4, 5),
@@ -90,6 +95,60 @@ _SEASON_MONTHS: dict[str, tuple[int, ...]] = {
 
 class SpatialErrorError(ValueError):
     """Raised for any invalid input or contract violation in this module."""
+
+
+# -------------------------------------------------------------------- table helpers
+
+
+def _values(frame: pd.DataFrame, column: str) -> np.ndarray:
+    """Return a column as a float64 array (``None`` becomes NaN)."""
+    return np.asarray(frame[column].to_numpy(dtype=np.float64, na_value=np.nan), dtype=np.float64)
+
+
+def _labels(frame: pd.DataFrame, column: str) -> list[str]:
+    return [str(value) for value in frame[column].tolist()]
+
+
+def _where(frame: pd.DataFrame, mask: np.ndarray) -> pd.DataFrame:
+    """Rows of ``frame`` where ``mask`` holds, with a fresh index."""
+    return frame.take(np.flatnonzero(mask)).reset_index(drop=True)
+
+
+def _aggregate(
+    frame: pd.DataFrame,
+    keys: Sequence[str],
+    *,
+    mean: Sequence[str] = (),
+    total: Sequence[str] = (),
+    first: Sequence[str] = (),
+) -> pd.DataFrame:
+    """Group ``frame`` by string ``keys``; rows come back sorted by the keys.
+
+    ``mean`` and ``total`` columns are averaged or summed, ``first`` columns keep
+    the first value of the group, and ``n`` counts the rows of the group.
+    """
+    combined = np.zeros(len(frame), dtype=np.int64)
+    names: list[np.ndarray] = []
+    for key in keys:
+        codes, uniques = pd.factorize(np.asarray(_labels(frame, key), dtype=object), sort=True)
+        combined = combined * len(uniques) + np.asarray(codes, dtype=np.int64)
+        names.append(np.asarray(uniques, dtype=object))
+    groups, first_index, inverse = np.unique(combined, return_index=True, return_inverse=True)
+    counts = np.bincount(inverse, minlength=len(groups)).astype(np.float64)
+    out: dict[str, Any] = {}
+    remainder = groups.copy()
+    for key, uniques in zip(reversed(list(keys)), reversed(names), strict=True):
+        out[key] = uniques[remainder % len(uniques)]
+        remainder = remainder // len(uniques)
+    out = {key: out[key] for key in keys}
+    for column in mean:
+        out[column] = np.bincount(inverse, weights=_values(frame, column)) / counts
+    for column in total:
+        out[column] = np.bincount(inverse, weights=_values(frame, column))
+    for column in first:
+        out[column] = frame[column].to_numpy()[first_index]
+    out["n"] = counts.astype(np.int64)
+    return pd.DataFrame(out)
 
 
 # ----------------------------------------------------------------------- bootstrap
@@ -105,16 +164,16 @@ class BootstrapCI:
     rng_seed: int
     level: float
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self, unit: str = "scene") -> dict[str, Any]:
         return {
             "point_estimate": self.point,
             "ci": [self.ci_low, self.ci_high],
             "level": self.level,
-            "n_scenes": self.n_units,
+            "n_units": self.n_units,
             "n_bootstrap": self.n_bootstrap,
             "rng_seed": self.rng_seed,
             "method": "percentile",
-            "unit": "scene",
+            "unit": unit,
         }
 
 
@@ -168,6 +227,37 @@ def scene_bootstrap_ci(
     return BootstrapCI(point, float(lo), float(hi), n, n_bootstrap, rng_seed, level)
 
 
+def unit_bootstrap_ci(
+    values: Sequence[float] | np.ndarray,
+    units: Sequence[str],
+    *,
+    weights: Sequence[float] | np.ndarray | None = None,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    rng_seed: int = DEFAULT_RNG_SEED,
+    level: float = DEFAULT_LEVEL,
+) -> BootstrapCI:
+    """Like ``scene_bootstrap_ci``, but scenes that share a unit label are drawn together.
+
+    The estimand stays the same (mean of ``values``, or the ``weights`` ratio);
+    only the resampling unit changes. With one scene per unit this is
+    ``scene_bootstrap_ci``.
+    """
+    v = np.asarray(values, dtype=np.float64)
+    w = np.ones_like(v) if weights is None else np.asarray(weights, dtype=np.float64)
+    if v.ndim != 1 or len(units) != v.size or w.shape != v.shape:
+        raise SpatialErrorError("values, units and weights must have one entry per scene")
+    codes, names = pd.factorize(np.asarray(units, dtype=object), sort=True)
+    denominator = np.bincount(codes, weights=w, minlength=len(names))
+    numerator = np.bincount(codes, weights=w * v, minlength=len(names))
+    return scene_bootstrap_ci(
+        numerator / denominator,
+        weights=denominator,
+        n_bootstrap=n_bootstrap,
+        rng_seed=rng_seed,
+        level=level,
+    )
+
+
 # -------------------------------------------------------------------- scene helpers
 
 
@@ -180,6 +270,14 @@ def scene_date(scene_id: str) -> date:
         return date(int(match[1]), int(match[2]), int(match[3]))
     except ValueError as exc:
         raise SpatialErrorError(f"scene id {scene_id!r} has an invalid date") from exc
+
+
+def overpass_id(scene_id: str) -> str:
+    """Return ``<platform>_<path>_<date>``: equal for adjacent rows of one overpass."""
+    match = _SCENE_OVERPASS.match(scene_id)
+    if match is None:
+        raise SpatialErrorError(f"scene id {scene_id!r} carries no Landsat path and date")
+    return f"{match[1]}_{match[2]}_{match[3]}"
 
 
 def season_of(day: date) -> str:
@@ -232,6 +330,7 @@ def scene_difference_table(
         rows.append(
             {
                 "scene_id": scene.scene_id,
+                "overpass": overpass_id(scene.scene_id),
                 "date": day.isoformat(),
                 "season": season_of(day),
                 "n_patches": scene.n_patches,
@@ -283,6 +382,9 @@ def pooled_vs_scene_equal(
     )
     level_equal_b = float(mae_b.mean())
     level_pooled_b = float((cells * mae_b).sum() / cells.sum())
+    overpasses = [str(name) for name in table["overpass"]]
+    kwargs: dict[str, Any] = {"n_bootstrap": n_bootstrap, "rng_seed": rng_seed, "level": level}
+    shared = table.groupby("overpass", sort=True)["scene_id"].apply(list)
     drivers = {"n_cells": cells, "mae_b": mae_b}
     for column in ("scene_mean_lst_k", "scene_std_lst_k"):
         if column in table.columns:
@@ -299,7 +401,7 @@ def pooled_vs_scene_equal(
                 "cell_share": float(part_cells.sum() / cells.sum()),
                 "scene_equal_diff": float(part_diff.mean()),
                 "pooled_diff": float((part_cells * part_diff).sum() / part_cells.sum()),
-                "gap_contribution": float(part["gap_contribution"].sum()),
+                "gap_contribution": float(_values(part, "gap_contribution").sum()),
             }
         )
     return {
@@ -321,6 +423,16 @@ def pooled_vs_scene_equal(
         "fraction_scenes_a_better": float((diff < 0).mean()),
         "correlation_of_diff_with": {k: _correlation(v, diff) for k, v in drivers.items()},
         "by_season": seasons,
+        "sensitivity_overpass_units": {
+            "note": OVERPASS_NOTE,
+            "overpasses_with_several_scenes": {
+                str(name): scenes for name, scenes in shared.items() if len(scenes) > 1
+            },
+            "scene_equal": unit_bootstrap_ci(diff, overpasses, **kwargs).as_dict("overpass"),
+            "cell_pooled": unit_bootstrap_ci(diff, overpasses, weights=cells, **kwargs).as_dict(
+                "overpass"
+            ),
+        },
     }
 
 
@@ -505,7 +617,9 @@ def load_cell_exports(paths: Sequence[Path]) -> CellErrors:
             raise SpatialErrorError(f"arm {identity.arm!r} seed {identity.seed} was given twice")
         keys = frame[["scene_id", "patch_id", "row", "col"]]
         if base is None:
-            base = frame[["scene_id", "patch_id", "row", "col", "target_k"]].copy()
+            base = pd.DataFrame(
+                {name: frame[name] for name in ("scene_id", "patch_id", "row", "col", "target_k")}
+            )
         else:
             if len(keys) != len(base) or not keys.equals(
                 base[["scene_id", "patch_id", "row", "col"]]
@@ -534,21 +648,22 @@ def check_cells_against_patch_export(
     index = [i for i, run in enumerate(cell_errors.runs) if run.run_id == run_id]
     if len(index) != 1:
         raise SpatialErrorError(f"run {run_id!r} is not among the loaded cell exports")
-    absolute = np.abs(cell_errors.errors[index[0]])
-    grouped = (
-        pd.DataFrame({"patch_id": cell_errors.cells["patch_id"], "abs": absolute})
-        .groupby("patch_id", sort=True)["abs"]
-        .agg(["sum", "count"])
-    )
-    patches = patch_table.to_pandas().set_index("patch_id").sort_index()
-    if set(patches["run_id"]) != {run_id}:
+    if set(patch_table.column("run_id").to_pylist()) != {run_id}:
         raise SpatialErrorError(f"the patch export does not belong to run {run_id!r}")
-    if not grouped.index.equals(patches.index):
+    codes, names = pd.factorize(
+        np.asarray(_labels(cell_errors.cells, "patch_id"), dtype=object), sort=True
+    )
+    absolute = np.bincount(codes, weights=np.abs(cell_errors.errors[index[0]]))
+    counts = np.bincount(codes)
+    patch_ids = [str(value) for value in patch_table.column("patch_id").to_pylist()]
+    order = np.argsort(np.asarray(patch_ids, dtype=object))
+    if [patch_ids[i] for i in order] != [str(name) for name in names]:
         raise SpatialErrorError(f"{run_id}: cell and patch exports cover different patches")
-    if not np.array_equal(grouped["count"].to_numpy(), patches["valid_cells"].to_numpy()):
+    valid = np.asarray(patch_table.column("valid_cells").to_pylist(), dtype=np.int64)[order]
+    if not np.array_equal(counts, valid):
         raise SpatialErrorError(f"{run_id}: valid cells differ between cell and patch export")
-    expected = patches["abs_error_sum"].to_numpy(dtype=np.float64)
-    if not np.allclose(grouped["sum"].to_numpy(), expected, rtol=rtol, atol=1e-3):
+    expected = np.asarray(patch_table.column("abs_error_sum").to_pylist(), dtype=np.float64)[order]
+    if not np.allclose(absolute, expected, rtol=rtol, atol=1e-3):
         raise SpatialErrorError(
             f"{run_id}: absolute cell errors do not reproduce the per-patch abs_error_sum"
         )
@@ -628,46 +743,46 @@ _DECOMPOSITION_METRICS = (
 
 def arm_scene_decomposition(per_run: pd.DataFrame) -> pd.DataFrame:
     """Average the per-run scene metrics over the seeds of each arm."""
-    grouped = per_run.groupby(["arm", "scene_id"], sort=True)
-    out = grouped[list(_DECOMPOSITION_METRICS)].mean()
-    out["n_cells"] = grouped["n_cells"].first()
-    out["n_seeds"] = grouped["run_id"].nunique()
-    return out.reset_index()
+    out = _aggregate(per_run, ("arm", "scene_id"), mean=_DECOMPOSITION_METRICS, first=("n_cells",))
+    return out.rename(columns={"n": "n_seeds"})
 
 
 def decomposition_summary(per_run: pd.DataFrame) -> list[dict[str, Any]]:
     """Per arm: scene-equal means and the cell-pooled split of the MSE."""
     out = []
     for arm, part in per_run.groupby("arm", sort=True):
-        scenes = part.groupby("scene_id", sort=True)[list(_DECOMPOSITION_METRICS)].mean()
-        pooled = []
+        scenes = _aggregate(part, ("scene_id",), mean=_DECOMPOSITION_METRICS)
+        bias = _values(scenes, "bias_k")
+        between, within = [], []
         for _run, run_part in part.groupby("run_id", sort=True):
-            cells = run_part["n_cells"].to_numpy(dtype=np.float64)
-            between = float((cells * run_part["bias_k"] ** 2).sum() / cells.sum())
-            within = float((cells * run_part["centred_rmse_k"] ** 2).sum() / cells.sum())
-            pooled.append((between, within))
-        between_mean = float(np.mean([p[0] for p in pooled]))
-        within_mean = float(np.mean([p[1] for p in pooled]))
+            cells = _values(run_part, "n_cells")
+            between.append(float((cells * _values(run_part, "bias_k") ** 2).sum() / cells.sum()))
+            within.append(
+                float((cells * _values(run_part, "centred_rmse_k") ** 2).sum() / cells.sum())
+            )
+        between_mean = float(np.mean(between))
+        within_mean = float(np.mean(within))
+        total = between_mean + within_mean
         out.append(
             {
                 "arm": str(arm),
-                "n_seeds": int(part["run_id"].nunique()),
+                "n_seeds": len(between),
                 "n_scenes": int(len(scenes)),
                 "scene_equal": {
-                    "bias_k": float(scenes["bias_k"].mean()),
-                    "abs_bias_k": float(scenes["bias_k"].abs().mean()),
-                    "bias_sd_over_scenes_k": float(scenes["bias_k"].std(ddof=1)),
-                    "mae_k": float(scenes["mae_k"].mean()),
-                    "rmse_k": float(scenes["rmse_k"].mean()),
-                    "centred_mae_k": float(scenes["centred_mae_k"].mean()),
-                    "centred_rmse_k": float(scenes["centred_rmse_k"].mean()),
-                    "bias_share_of_mse": float(scenes["bias_share_of_mse"].mean()),
+                    "bias_k": float(bias.mean()),
+                    "abs_bias_k": float(np.abs(bias).mean()),
+                    "bias_sd_over_scenes_k": float(bias.std(ddof=1)) if bias.size > 1 else None,
+                    "mae_k": float(_values(scenes, "mae_k").mean()),
+                    "rmse_k": float(_values(scenes, "rmse_k").mean()),
+                    "centred_mae_k": float(_values(scenes, "centred_mae_k").mean()),
+                    "centred_rmse_k": float(_values(scenes, "centred_rmse_k").mean()),
+                    "bias_share_of_mse": float(_values(scenes, "bias_share_of_mse").mean()),
                 },
                 "cell_pooled_mse": {
                     "scene_bias_k2": between_mean,
                     "centred_k2": within_mean,
-                    "total_k2": between_mean + within_mean,
-                    "scene_bias_share": between_mean / (between_mean + within_mean),
+                    "total_k2": total,
+                    "scene_bias_share": between_mean / total if total > 0 else None,
                 },
             }
         )
@@ -709,17 +824,20 @@ def group_weights(
         {
             "row": shares["row"].astype(np.int64),
             "col": shares["col"].astype(np.int64),
-            "group": shares["typ"].astype(int).map(dict(typ_to_group)),
+            "group": [typ_to_group[int(typ)] for typ in shares["typ"].tolist()],
             "weight": shares[share_column].astype(np.float64),
         }
     )
     if not np.isfinite(frame["weight"]).all() or (frame["weight"] < 0).any():
         raise SpatialErrorError(f"{share_column} must be finite and non-negative")
-    weights = frame.groupby(["row", "col", "group"], sort=True, as_index=False)["weight"].sum()
-    if (weights.groupby(["row", "col"])["weight"].sum() > 1.0 + 1e-6).any():
+    frame["cell"] = [f"{row}_{col}" for row, col in zip(frame["row"], frame["col"], strict=True)]
+    weights = _aggregate(frame, ("cell", "group"), total=("weight",), first=("row", "col"))
+    per_cell = _aggregate(weights, ("cell",), total=("weight",))
+    if (_values(per_cell, "weight") > 1.0 + 1e-6).any():
         raise SpatialErrorError(f"{share_column} sums to more than 1 in a cell")
-    weights = weights[(weights["weight"] > 0) & (weights["weight"] >= min_share)]
-    return weights.reset_index(drop=True)
+    weight = _values(weights, "weight")
+    weights = _where(weights, (weight > 0) & (weight >= min_share))
+    return pd.DataFrame({name: weights[name] for name in ("row", "col", "group", "weight")})
 
 
 def group_scene_metrics(
@@ -793,38 +911,38 @@ _GROUP_METRICS = ("bias_k", "centred_bias_k", "mae_k", "mse_k2", "rmse_k")
 
 
 def _arm_group_scenes(per_run: pd.DataFrame) -> pd.DataFrame:
-    """Seed-mean metrics per (arm, scene, group) on supported pairs only."""
-    supported = per_run[per_run["supported"]]
-    grouped = supported.groupby(["arm", "group", "scene_id"], sort=True)
-    out = grouped[list(_GROUP_METRICS)].mean()
-    out["effective_cells"] = grouped["effective_cells"].first()
-    return out.reset_index()
+    """Seed-mean metrics per (arm, group, scene) on supported pairs only."""
+    supported = _where(per_run, per_run["supported"].to_numpy(dtype=bool))
+    return _aggregate(
+        supported, ("arm", "group", "scene_id"), mean=_GROUP_METRICS, first=("effective_cells",)
+    )
 
 
 def group_summary(per_run: pd.DataFrame) -> pd.DataFrame:
     """Per (arm, group): scene-equal and area-pooled MAE, bias and RMSE."""
     rows = []
-    for (arm, group), part in _arm_group_scenes(per_run).groupby(["arm", "group"], sort=True):
-        weight = part["effective_cells"].to_numpy(dtype=np.float64)
-
-        def pooled(column: str, weight: np.ndarray = weight, part: pd.DataFrame = part) -> float:
-            return float((weight * part[column].to_numpy(dtype=np.float64)).sum() / weight.sum())
-
-        rows.append(
-            {
-                "arm": arm,
-                "group": group,
-                "n_scenes": int(len(part)),
-                "effective_cells": float(weight.sum()),
-                "scene_equal_mae_k": float(part["mae_k"].mean()),
-                "scene_equal_bias_k": float(part["bias_k"].mean()),
-                "scene_equal_centred_bias_k": float(part["centred_bias_k"].mean()),
-                "scene_equal_rmse_k": float(part["rmse_k"].mean()),
-                "pooled_mae_k": pooled("mae_k"),
-                "pooled_bias_k": pooled("bias_k"),
-                "pooled_rmse_k": float(math.sqrt(pooled("mse_k2"))),
+    for arm, arm_part in _arm_group_scenes(per_run).groupby("arm", sort=True):
+        for group, part in arm_part.groupby("group", sort=True):
+            weight = _values(part, "effective_cells")
+            pooled = {
+                column: float((weight * _values(part, column)).sum() / weight.sum())
+                for column in ("mae_k", "bias_k", "mse_k2")
             }
-        )
+            rows.append(
+                {
+                    "arm": str(arm),
+                    "group": str(group),
+                    "n_scenes": int(len(part)),
+                    "effective_cells": float(weight.sum()),
+                    "scene_equal_mae_k": float(_values(part, "mae_k").mean()),
+                    "scene_equal_bias_k": float(_values(part, "bias_k").mean()),
+                    "scene_equal_centred_bias_k": float(_values(part, "centred_bias_k").mean()),
+                    "scene_equal_rmse_k": float(_values(part, "rmse_k").mean()),
+                    "pooled_mae_k": pooled["mae_k"],
+                    "pooled_bias_k": pooled["bias_k"],
+                    "pooled_rmse_k": math.sqrt(pooled["mse_k2"]),
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -846,24 +964,28 @@ def group_paired_differences(
     if min_scenes < 2:
         raise SpatialErrorError("min_scenes must be at least 2")
     scenes = _arm_group_scenes(per_run)
-    if arm_a == arm_b or not {arm_a, arm_b} <= set(scenes["arm"]):
+    arms = np.asarray(_labels(scenes, "arm"), dtype=object)
+    if arm_a == arm_b or not {arm_a, arm_b} <= set(arms.tolist()):
         raise SpatialErrorError(f"arms {arm_a!r} and {arm_b!r} must be two loaded arms")
-    wide = scenes[scenes["arm"].isin([arm_a, arm_b])].pivot_table(
-        index=["group", "scene_id"], columns="arm", values="mae_k"
-    )
-    if wide.isna().any().any():
+    part_a, part_b = _where(scenes, arms == arm_a), _where(scenes, arms == arm_b)
+    pairs = list(zip(_labels(part_a, "group"), _labels(part_a, "scene_id"), strict=True))
+    if pairs != list(zip(_labels(part_b, "group"), _labels(part_b, "scene_id"), strict=True)):
         raise SpatialErrorError("the two arms differ in supported scene-group pairs")
+    groups = np.asarray([group for group, _scene in pairs], dtype=object)
     out = []
-    for group, part in wide.groupby(level="group", sort=True):
-        diff = (part[arm_a] - part[arm_b]).to_numpy(dtype=np.float64)
+    for group in sorted(set(groups.tolist())):
+        select = groups == group
+        mae_a = _values(part_a, "mae_k")[select]
+        mae_b = _values(part_b, "mae_k")[select]
+        diff = mae_a - mae_b
         entry: dict[str, Any] = {
             "group": str(group),
             "family": "exploratory",
             "n_scenes": int(diff.size),
-            "mae_a": float(part[arm_a].mean()),
-            "mae_b": float(part[arm_b].mean()),
+            "mae_a": float(mae_a.mean()),
+            "mae_b": float(mae_b.mean()),
             "diff": float(diff.mean()),
-            "relative_to_b": float(diff.mean() / part[arm_b].mean()),
+            "relative_to_b": float(diff.mean() / mae_b.mean()),
             "fraction_scenes_a_better": float((diff < 0).mean()),
             "ci": None,
             "interval_note": None,
@@ -879,14 +1001,24 @@ def group_paired_differences(
 
 def mapped_coverage(cell_errors: CellErrors, weights: pd.DataFrame) -> dict[str, Any]:
     """How much of the evaluated cell area carries a group weight."""
-    cells = cell_errors.cells[["row", "col"]].astype(np.int64)
-    per_cell = weights.groupby(["row", "col"], as_index=False)["weight"].sum()
-    merged = cells.merge(per_cell, on=["row", "col"], how="left")
-    weight = merged["weight"].fillna(0.0).to_numpy()
+    per_cell: dict[tuple[int, int], float] = {}
+    for row, col, weight in zip(
+        weights["row"].tolist(), weights["col"].tolist(), weights["weight"].tolist(), strict=True
+    ):
+        per_cell[(int(row), int(col))] = per_cell.get((int(row), int(col)), 0.0) + float(weight)
+    assigned = np.asarray(
+        [
+            per_cell.get((int(row), int(col)), 0.0)
+            for row, col in zip(
+                cell_errors.cells["row"].tolist(), cell_errors.cells["col"].tolist(), strict=True
+            )
+        ],
+        dtype=np.float64,
+    )
     return {
-        "evaluated_cells": int(len(cells)),
-        "cells_with_a_group": int((weight > 0).sum()),
-        "assigned_area_share": float(weight.sum() / len(cells)),
+        "evaluated_cells": int(assigned.size),
+        "cells_with_a_group": int((assigned > 0).sum()),
+        "assigned_area_share": float(assigned.mean()),
     }
 
 
@@ -1004,30 +1136,26 @@ def scene_morans(
 
 
 def moran_summary(per_run: pd.DataFrame) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
-    """Seed-mean Moran's I per (arm, scene) and its spread over scenes per arm."""
-    frame = per_run.copy()
-    frame["moran_i"] = frame["moran_i"].astype(np.float64)
-    scenes = (
-        frame.groupby(["arm", "scene_id"], sort=True)
-        .agg(
-            moran_i=("moran_i", "mean"),
-            n_cells=("n_cells", "first"),
-            n_islands=("n_islands", "first"),
-        )
-        .reset_index()
-    )
+    """Seed-mean Moran's I per (arm, scene) and its spread over scenes per arm.
+
+    A scene whose value is undefined for one seed is undefined for the arm.
+    """
+    scenes = _aggregate(
+        per_run, ("arm", "scene_id"), mean=("moran_i",), first=("n_cells", "n_islands")
+    ).rename(columns={"n": "n_seeds"})
     summary = []
     for arm, part in scenes.groupby("arm", sort=True):
-        valid = part["moran_i"].dropna()
+        values = _values(part, "moran_i")
+        valid = values[np.isfinite(values)]
         summary.append(
             {
                 "arm": str(arm),
-                "n_scenes": int(len(part)),
-                "n_scenes_defined": int(len(valid)),
-                "mean": float(valid.mean()) if len(valid) else None,
-                "median": float(valid.median()) if len(valid) else None,
-                "min": float(valid.min()) if len(valid) else None,
-                "max": float(valid.max()) if len(valid) else None,
+                "n_scenes": int(values.size),
+                "n_scenes_defined": int(valid.size),
+                "mean": float(valid.mean()) if valid.size else None,
+                "median": float(np.median(valid)) if valid.size else None,
+                "min": float(valid.min()) if valid.size else None,
+                "max": float(valid.max()) if valid.size else None,
             }
         )
     return scenes, summary
@@ -1203,7 +1331,7 @@ def run_analysis(config: AnalysisConfig) -> dict[str, Any]:
     report["cells"] = {
         "runs": [vars(run) for run in cell_errors.runs],
         "n_cells": int(len(cell_errors.cells)),
-        "n_scenes": int(cell_errors.cells["scene_id"].nunique()),
+        "n_scenes": len(set(_labels(cell_errors.cells, "scene_id"))),
         "checked_against_patch_exports": sorted(patch_tables),
     }
 
@@ -1235,7 +1363,7 @@ def run_analysis(config: AnalysisConfig) -> dict[str, Any]:
         cell_errors, weights, min_effective_cells=config.min_effective_cells
     )
     summary = group_summary(per_group)
-    summary["role"] = summary["group"].map(roles)
+    summary["role"] = [roles.get(group) for group in _labels(summary, "group")]
     differences = group_paired_differences(
         per_group,
         config.arm_a,
@@ -1314,6 +1442,17 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"Gap (pooled minus scene-equal): {_signed(est['gap_pooled_minus_scene_equal'], 4)} K. "
             f"{a} is better in {est['fraction_scenes_a_better']:.0%} of {est['n_scenes']} scenes.",
             "",
+            OVERPASS_NOTE,
+            "",
+            "| estimator | units | A - B | 95 % |",
+            "| --- | --- | --- | --- |",
+            *(
+                f"| {name} | {est['sensitivity_overpass_units'][key]['n_units']} | "
+                f"{_signed(est['sensitivity_overpass_units'][key]['point_estimate'])} | "
+                f"{_interval(est['sensitivity_overpass_units'][key]['ci'])} |"
+                for key, name in (("scene_equal", "scene-equal"), ("cell_pooled", "cell-pooled"))
+            ),
+            "",
             "| season | scenes | cell share | scene-equal A - B | pooled A - B | gap part |",
             "| --- | --- | --- | --- | --- | --- |",
         ]
@@ -1358,7 +1497,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines += [
             "",
             f"{block['note']}. {ra} is better in {block['fractions']['a_better']:.0%} of "
-            f"{block['scene_equal']['n_scenes']} scenes.",
+            f"{block['scene_equal']['n_units']} scenes.",
             "",
         ]
     if "scene_decomposition" in report:

@@ -214,6 +214,44 @@ def test_bootstrap_rejects_bad_input(kwargs: dict) -> None:
         se.scene_bootstrap_ci(**kwargs)
 
 
+def test_unit_bootstrap_groups_scenes_and_keeps_the_estimand() -> None:
+    values = np.array([0.1, -0.4, 0.3, 0.0, -0.2, 0.05])
+    weights = np.array([10.0, 1000.0, 5.0, 20.0, 50.0, 7.0])
+    singles = [f"u{i}" for i in range(6)]
+    same = se.unit_bootstrap_ci(values, singles, n_bootstrap=400, rng_seed=2)
+    plain = se.scene_bootstrap_ci(values, n_bootstrap=400, rng_seed=2)
+    assert (same.point, same.ci_low, same.ci_high) == pytest.approx(
+        (plain.point, plain.ci_low, plain.ci_high)
+    )
+    units = ["x", "x", "y", "z", "z", "w"]
+    grouped = se.unit_bootstrap_ci(values, units, n_bootstrap=400, rng_seed=2)
+    assert grouped.n_units == 4
+    assert grouped.point == pytest.approx(values.mean())  # same estimand, other unit
+    pooled = se.unit_bootstrap_ci(values, units, weights=weights, n_bootstrap=400, rng_seed=2)
+    assert pooled.point == pytest.approx((values * weights).sum() / weights.sum())
+    # manual cluster bootstrap with the same draws; unit labels sort as w, x, y, z
+    idx = np.random.default_rng(2).integers(0, 4, size=(400, 4))
+    numerator = np.array([0.05, 0.1 - 0.4, 0.3, 0.0 - 0.2])
+    denominator = np.array([1.0, 2.0, 1.0, 2.0])
+    reps = numerator[idx].sum(axis=1) / denominator[idx].sum(axis=1)
+    assert (grouped.ci_low, grouped.ci_high) == pytest.approx(
+        tuple(np.quantile(reps, [0.025, 0.975]))
+    )
+    assert grouped.as_dict("overpass")["unit"] == "overpass"
+    with pytest.raises(se.SpatialErrorError, match="one entry per scene"):
+        se.unit_bootstrap_ci(values, units[:-1])
+
+
+def test_overpass_id_joins_adjacent_rows_only() -> None:
+    a = se.overpass_id("LC09_L2SP_193023_20240629_02_T1")
+    assert a == se.overpass_id("LC09_L2SP_193024_20240629_02_T1") == "LC09_193_20240629"
+    assert a != se.overpass_id("LC08_L2SP_193023_20240629_02_T1")  # other platform
+    assert a != se.overpass_id("LC09_L2SP_192023_20240629_02_T1")  # other path
+    assert a != se.overpass_id("LC09_L2SP_193023_20240715_02_T1")  # other date
+    with pytest.raises(se.SpatialErrorError):
+        se.overpass_id("scene00")
+
+
 # ── scene helpers and step 4 ──────────────────────────────────────────
 
 
@@ -274,6 +312,19 @@ def test_scene_table_splits_the_gap_exactly(exports: dict[str, Path]) -> None:
     assert gap == pytest.approx(table["gap_contribution"].sum())
     assert gap == pytest.approx(sum(s["gap_contribution"] for s in block["by_season"]))
     assert sum(s["n_scenes"] for s in block["by_season"]) == 12
+    sensitivity = block["sensitivity_overpass_units"]
+    assert "not the frozen rule" in sensitivity["note"]
+    # every synthetic scene is its own overpass: the sensitivity equals the frozen rule
+    assert sensitivity["overpasses_with_several_scenes"] == {}
+    assert sensitivity["scene_equal"]["unit"] == "overpass"
+    assert sensitivity["scene_equal"]["n_units"] == 12
+    assert sensitivity["scene_equal"]["ci"] == pytest.approx(equal["ci"])
+    assert sensitivity["cell_pooled"]["ci"] == pytest.approx(pooled["ci"])
+    paired = table.assign(overpass=np.repeat([f"o{i}" for i in range(6)], 2))
+    joined = se.pooled_vs_scene_equal(paired, n_bootstrap=300)["sensitivity_overpass_units"]
+    assert joined["scene_equal"]["n_units"] == 6
+    assert joined["scene_equal"]["point_estimate"] == pytest.approx(equal["point_estimate"])
+    assert len(joined["overpasses_with_several_scenes"]) == 6
     corr = block["correlation_of_diff_with"]
     assert set(corr) == {"n_cells", "mae_b", "scene_mean_lst_k", "scene_std_lst_k"}
     assert corr["scene_std_lst_k"]["pearson"] is None  # constant column
@@ -348,7 +399,7 @@ def test_compare_single_runs_matches_a_manual_bootstrap() -> None:
     manual = se.scene_bootstrap_ci(diffs, n_bootstrap=400, rng_seed=3)
     assert out["scene_equal"]["point_estimate"] == pytest.approx(diffs.mean())
     assert out["scene_equal"]["ci"] == pytest.approx([manual.ci_low, manual.ci_high])
-    assert out["scene_equal"]["n_scenes"] == 15
+    assert out["scene_equal"]["n_units"] == 15
     assert out["fractions"] == {"a_better": 1.0, "tie": 0.0, "b_better": 0.0}
     assert out["arm_a"]["arm"] == "random_forest_stage4"
     cells = np.array([s["n_cells"] for s in out["scenes"]], dtype=float)
