@@ -10,13 +10,15 @@ Usage
         --matrix-export <L1 seed0> <L1 seed1> <L1 seed2> <L4 seed0> <L4 seed1> <L4 seed2> \\
         --output-prefix data/analysis/spatial-holdout/matrix
 
-    # after the holdout runs: adds the holdout models, G per arm and K
+    # after the holdout runs: adds the holdout models, G per arm and K, and the
+    # paired differences of the matrix families A and B (any of the nine arms)
     uv run python scripts/analyze_spatial_holdout.py \\
-        --matrix-export <...> --holdout-export <L1 holdout seed0> <L4 holdout seed0> \\
+        --matrix-export <...> --holdout-export <holdout seed0 of each arm> <...> \\
         --output-prefix data/analysis/spatial-holdout/stage1
 
 The arm and seed of an export are read from the file. G pairs each holdout run
-with the matrix run of the same arm and seed.
+with the matrix run of the same arm and seed. An arm without exports is skipped
+with a note under "Skipped" in the output.
 """
 
 from __future__ import annotations

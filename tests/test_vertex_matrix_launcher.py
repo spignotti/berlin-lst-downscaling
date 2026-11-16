@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,8 +57,15 @@ fi
 shift
 if [[ "${1:-}" == uv ]]; then
   printf '%s\\n' "$*" >> "$FAKE_LOG_DIR/launcher.log"
+  mode=$(sed -n 's/.*--mode \\([^ ]*\\).*/\\1/p' <<<"$*")
+  if [[ " ${FAKE_LAUNCH_FAIL_MODES:-} " == *" $mode "* ]]; then
+    echo "${FAKE_LAUNCH_FAIL_MSG:-ERROR: launcher failed}" >&2; exit 1
+  fi
   if [[ "${FAKE_SUBMIT:-0}" == 1 ]]; then
-    echo "submitted job: projects/p/locations/europe-west3/customJobs/123"
+    id=123; [[ "${FAKE_UNIQUE_IDS:-0}" == 1 ]] && id=$$
+    echo "$mode" > "$FAKE_LOG_DIR/job.$id"
+    echo "+$id" >> "$FAKE_LOG_DIR/events.log"
+    echo "submitted job: projects/p/locations/europe-west3/customJobs/$id"
   else
     echo "preflight only: no job submitted"
   fi
@@ -73,18 +81,61 @@ printf '%s\\n' "$*" >> "$FAKE_LOG_DIR/gcloud.log"
 case "$*" in
   *"custom-jobs list"*)
     dn=$(sed -n 's/.*--filter=displayName="\\([^"]*\\)".*/\\1/p' <<<"$*")
+    nl=$(cat "$FAKE_LOG_DIR/listn.$dn" 2>/dev/null || echo 0)
+    echo $((nl + 1)) > "$FAKE_LOG_DIR/listn.$dn"
+    if (( nl >= 1 )) && [[ -f "$FAKE_LOG_DIR/list2.$dn" ]]; then
+      cat "$FAKE_LOG_DIR/list2.$dn"; exit 0
+    fi
+    if [[ -f "$FAKE_LOG_DIR/list.$dn" ]]; then cat "$FAKE_LOG_DIR/list.$dn"; exit 0; fi
     if [[ -n "${FAKE_ODD_DN:-}" && "$dn" == "$FAKE_ODD_DN" ]]; then
       [[ -n "${FAKE_LIST_ODD:-}" ]] && printf '%b\\n' "$FAKE_LIST_ODD"; exit 0
     fi
     [[ -n "${FAKE_LIST:-}" ]] && printf '%b\\n' "$FAKE_LIST"; exit 0 ;;
   *"custom-jobs describe"*)
+    if [[ "${FAKE_UNIQUE_IDS:-0}" == 1 ]]; then
+      id=$(sed -n 's/.*custom-jobs describe \\([0-9]*\\).*/\\1/p' <<<"$*")
+      mode=$(cat "$FAKE_LOG_DIR/job.$id" 2>/dev/null)
+      now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      if [[ -n "$mode" && " ${FAKE_DIE_MODES:-} " == *" $mode "* ]]; then
+        # kill the batch's worker for this run: the second-to-last script process up the chain
+        # (GNU timeout is a process of its own between gcloud and the script; the macOS shim execs)
+        chain=(); p=$PPID
+        while (( p > 1 )); do
+          if [[ "$(ps -o command= -p "$p")" == *launch_v6_matrix.sh* ]]; then
+            chain+=("$p")
+          elif (( ${#chain[@]} > 0 )); then
+            break
+          fi
+          p=$(ps -o ppid= -p "$p" | tr -d ' ')
+        done
+        kill -9 "${chain[$(( ${#chain[@]} - 2 ))]}"; exit 0
+      fi
+      if [[ -n "$mode" && " ${FAKE_PENDING_MODES:-} " == *" $mode "* ]]; then
+        printf 'JOB_STATE_PENDING\\t2026-01-01T00:00:00Z\\n'; exit 0
+      fi
+      k=$(cat "$FAKE_LOG_DIR/desc.$id" 2>/dev/null || echo 0)
+      echo $((k + 1)) > "$FAKE_LOG_DIR/desc.$id"
+      polls=${FAKE_RUN_POLLS:-2}
+      if [[ -n "$mode" && " ${FAKE_SLOW_MODES:-} " == *" $mode "* ]]; then
+        polls=${FAKE_SLOW_POLLS:-8}
+      fi
+      if (( k < polls )); then
+        printf 'JOB_STATE_RUNNING\\t%s\\t%s\\n' "$now" "$now"; exit 0
+      fi
+      state=JOB_STATE_SUCCEEDED
+      if [[ -n "$mode" && " ${FAKE_FAILED_MODES:-} " == *" $mode "* ]]; then
+        state=JOB_STATE_FAILED
+      fi
+      (( k == polls )) && echo "-$id" >> "$FAKE_LOG_DIR/events.log"
+      printf '%s\\t%s\\t%s\\n' "$state" "$now" "$now"; exit 0
+    fi
     n=$(cat "$FAKE_LOG_DIR/describe.n" 2>/dev/null || echo 0)
     echo $((n + 1)) > "$FAKE_LOG_DIR/describe.n"
     IFS='|' read -r -a seq <<<"${FAKE_DESCRIBE:-}"
     (( n >= ${#seq[@]} )) && n=$(( ${#seq[@]} - 1 ))
     (( n < 0 )) && exit 0
     printf '%b\\n' "${seq[$n]}"; exit 0 ;;
-  *"custom-jobs cancel"*) exit 0 ;;
+  *"custom-jobs cancel"*) [[ "${FAKE_CANCEL_FAIL:-0}" == 1 ]] && exit 1; exit 0 ;;
 esac
 exit 1
 """
@@ -108,6 +159,7 @@ class Env:
     base: dict[str, str]
 
     def run(self, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
+        timeout = int(extra.pop("TEST_TIMEOUT", "60"))
         env = {**self.base, **extra}
         env = {k: v for k, v in env.items() if v != ""}
         assert BASH is not None
@@ -116,13 +168,41 @@ class Env:
             env=env,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
             check=False,
         )
 
     def log(self, name: str) -> str:
         path = self.log_dir / name
         return path.read_text() if path.exists() else ""
+
+
+def _gnu_tool_path(tmp_path: Path) -> str:
+    """PATH for the script under test: ``/usr/bin:/bin``, plus shims where they lack GNU tools.
+
+    The script needs GNU ``timeout`` and ``date -d`` (a Linux operator machine, and CI). On a Mac
+    those are missing; the shims below only cover what the script calls: ``timeout [-k N] SEC cmd``
+    runs ``cmd``, and ``date -d <ISO time> +%s`` prints the epoch seconds.
+    """
+    base = "/usr/bin:/bin"
+    probe = subprocess.run(  # noqa: S603
+        ["/bin/sh", "-c", "command -v timeout >/dev/null && date -d @0 +%s >/dev/null 2>&1"],
+        env={"PATH": base},
+        check=False,
+    )
+    if probe.returncode == 0:
+        return base
+    shims = tmp_path / "gnu-shims"
+    _write_exec(shims / "timeout", '#!/bin/bash\n[[ "$1" == -k ]] && shift 2\nshift\nexec "$@"\n')
+    _write_exec(
+        shims / "date",
+        '#!/bin/bash\nif [[ "${1:-}" == -d ]]; then\n'
+        f"  exec {sys.executable} -c 'import sys, datetime as d; "
+        't = sys.argv[1].replace("Z", "+00:00"); '
+        'print(int(d.datetime.fromisoformat(t).timestamp()))\' "$2"\n'
+        'fi\nexec /bin/date "$@"\n',
+    )
+    return f"{shims}:{base}"
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -163,7 +243,7 @@ def env(tmp_path: Path) -> Env:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     base = {
-        "PATH": "/usr/bin:/bin",
+        "PATH": _gnu_tool_path(tmp_path),
         "HOME": str(tmp_path),
         "FAKE_LOG_DIR": str(log_dir),
         "V6M_GCLOUD": str(gcloud),
@@ -585,3 +665,464 @@ def test_submit_all_halts_when_new_job_fails(env: Env) -> None:
     assert "submit-all stopped at L1 seed0" in res.stdout
     assert len(env.log("launcher.log").splitlines()) == 1
     assert listed_dns(env.log("gcloud.log")) == [dn("L1", 0)]
+
+
+# --- spatial holdout batch ----------------------------------------------------------------
+
+HOLDOUT_FLAGS = ("--max-total-usd", "100", "--include-stage1")
+
+
+def hdn(arm: str, seed: int) -> str:
+    return f"{MODES[arm]}-spatial-holdout-{PREFIX}-{arm.lower()}-seed{seed}-ep40-cos-notest"
+
+
+def launcher_calls(env: Env) -> list[str]:
+    return env.log("launcher.log").splitlines()
+
+
+def launched(env: Env) -> list[tuple[str, int]]:
+    out = []
+    for line in launcher_calls(env):
+        mode = re.search(r"--mode (\S+)", line)
+        seed = re.search(r"--seed (\d)", line)
+        assert mode and seed
+        arm = next(a for a in ARMS if f"{MODES[a]}-spatial-holdout" == mode.group(1))
+        out.append((arm, int(seed.group(1))))
+    return out
+
+
+def set_listed(env: Env, arm: str, seed: int, row: str) -> None:
+    (env.log_dir / f"list.{hdn(arm, seed)}").write_text(row + "\n")
+
+
+def max_in_flight(env: Env) -> int:
+    live, peak, started = 0, 0, set()
+    for event in env.log("events.log").split():
+        if event.startswith("+"):
+            started.add(event[1:])
+            live += 1
+            peak = max(peak, live)
+        elif event[1:] in started:
+            live -= 1
+    assert live == 0
+    return peak
+
+
+BATCH = {"FAKE_SUBMIT": "1", "FAKE_UNIQUE_IDS": "1", "V6M_BATCH_TICK_SECONDS": "1"}
+
+
+def test_holdout_constants_equal_the_launcher_caps() -> None:
+    source = (REPO / "scripts" / "operators" / "launch_vertex_modeling.py").read_text()
+    timeout = re.search(r"^SPATIAL_HOLDOUT_TIMEOUT_SECONDS = (\d+)$", source, re.M)
+    exposure = re.search(r"^SPATIAL_HOLDOUT_MAX_EXPOSURE_USD = ([\d.]+)$", source, re.M)
+    assert timeout and exposure
+    script = SCRIPT.read_text()
+    assert f"HOLDOUT_TIMEOUT_SECONDS={timeout.group(1)}\n" in script
+    assert f"HOLDOUT_EXPOSURE_CENTS={round(float(exposure.group(1)) * 100)}\n" in script
+
+
+def test_holdout_dry_run_prints_the_plan_and_touches_no_cloud(env: Env) -> None:
+    res = env.run(
+        "holdout",
+        "--dry-run",
+        "--max-total-usd",
+        "100",
+        "--include-stage1",
+        V6M_IMAGE_URI="",
+        V6M_SOURCE_SHA="",
+        V6M_RUN_DIR="",
+    )
+    assert res.returncode == 0, res.stderr
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    assert len(plan) == 27
+    for arm in ARMS:
+        for seed in (0, 1, 2):
+            assert any(
+                f"jobname={hdn(arm, seed)}" in line
+                and f"label={PREFIX}-{arm.lower()} " in line
+                and f"mode={MODES[arm]}-spatial-holdout" in line
+                for line in plan
+            )
+    # seeds first: the whole of seed 0 precedes seed 1
+    assert [line.split()[2] for line in plan] == ["seed0"] * 9 + ["seed1"] * 9 + ["seed2"] * 9
+    assert "summed exposure caps of all 27 run(s): USD 87.75" in res.stdout
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""
+
+
+def test_holdout_dry_run_prices_the_requested_runs_against_the_limit(env: Env) -> None:
+    args = ("holdout", "--dry-run", "--arms", "L5,LOO-M", "--seeds", "0,1")
+    res = env.run(*args, "--max-total-usd", "13.00")
+    assert res.returncode == 0 and "USD 13.00" in res.stdout
+    assert [line.split()[1] for line in res.stdout.splitlines() if line.startswith("PLAN")] == [
+        "L5",
+        "LOO-M",
+        "L5",
+        "LOO-M",
+    ]
+    over = env.run(*args, "--max-total-usd", "12.99")
+    assert over.returncode == 2 and "REFUSED" in over.stdout
+    assert env.log("wrapper.log") == "" and env.log("gcloud.log") == ""
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("holdout",),  # --max-total-usd is required
+        ("holdout", "--dry-run"),
+        ("holdout", "--max-total-usd", "x", "--dry-run"),
+        ("holdout", "--max-total-usd", "1.234", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--max-parallel", "5", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--max-parallel", "0", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--arms", "L9", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--arms", "L1,L1", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--seeds", "3", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--seeds", "", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--bogus", "--dry-run"),
+        ("holdout", "--max-total-usd", "10", "--dry-run", "--preflight"),
+    ],
+)
+def test_holdout_bad_arguments_fail_closed(env: Env, args: tuple[str, ...]) -> None:
+    res = env.run(*args)
+    assert res.returncode == 2
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"V6M_TIMEOUT_SECONDS": "10801"},
+        {"V6M_MAX_WAIT_SECONDS": "1800"},  # 10800 s + 1800 s would project USD 3.50
+        {"V6M_HOURLY_RATE_USD": "1.01"},
+    ],
+)
+def test_holdout_keeps_the_launcher_caps(env: Env, bad: dict[str, str]) -> None:
+    res = env.run("holdout", "--dry-run", *HOLDOUT_FLAGS, **bad)
+    assert res.returncode == 2
+    assert env.log("wrapper.log") == "" and env.log("gcloud.log") == ""
+
+
+def test_holdout_preflight_runs_the_launcher_preflight_only(env: Env) -> None:
+    res = env.run(
+        "holdout", "--preflight", "--arms", "L5,NO-RED-NIR-IDX", "--seeds", "0", V6M_RUN_DIR=""
+    )
+    assert res.returncode == 0, res.stderr
+    lines = launcher_calls(env)
+    assert len(lines) == 2
+    assert all("--preflight" in line and "--skip-test" in line for line in lines)
+    assert "--mode v6-l5-spatial-holdout" in lines[0]
+    assert "--mode v6-no-red-nir-index-spatial-holdout" in lines[1]
+    assert env.log("gcloud.log") == ""
+
+
+def test_holdout_submits_with_the_holdout_arguments_and_skips_what_exists(env: Env) -> None:
+    set_listed(env, "L1", 0, "111\tJOB_STATE_SUCCEEDED")
+    set_listed(env, "L2", 0, "222\tJOB_STATE_RUNNING")
+    res = env.run("holdout", *HOLDOUT_FLAGS, "--arms", "L1,L2,L5", "--seeds", "0", **BATCH)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launched(env) == [("L5", 0)]  # L1 succeeded, L2 is attached to, only L5 is submitted
+    (line,) = launcher_calls(env)
+    for token in (
+        "--mode v6-l5-spatial-holdout",
+        "--seed 0",
+        "--max-epochs 40",
+        "--lr-schedule cosine",
+        "--skip-test",
+        "--timeout-seconds 10800",
+        "--max-wait-seconds 600",
+        f"--run-label {PREFIX}-l5",
+        "--project berlin-lst-training",
+    ):
+        assert token in line
+    assert "--patch-cache" not in line and "--preflight" not in line
+    assert "custom-jobs describe 222" in env.log("gcloud.log")
+    assert "2 succeeded, 1 skipped" in res.stdout
+    # every lookup is by the exact holdout displayName
+    assert listed_dns(env.log("gcloud.log"))[:3] == [hdn("L1", 0), hdn("L2", 0), hdn("L5", 0)]
+
+
+def test_holdout_everything_done_submits_nothing(env: Env) -> None:
+    res = env.run(
+        "holdout", *HOLDOUT_FLAGS, "--seeds", "0", FAKE_LIST="999\tJOB_STATE_SUCCEEDED", **BATCH
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launcher_calls(env) == [] and "9 skipped" in res.stdout
+    assert "custom-jobs describe" not in env.log("gcloud.log")
+
+
+def test_holdout_refuses_before_any_submission_when_the_caps_exceed_the_limit(env: Env) -> None:
+    arms = ("--arms", "L1,L2,L3", "--seeds", "0", "--include-stage1")
+    res = env.run("holdout", "--max-total-usd", "9.74", *arms, **BATCH)
+    assert res.returncode == 2 and "REFUSED" in res.stdout
+    assert launcher_calls(env) == []
+    assert len(listed_dns(env.log("gcloud.log"))) == 3  # looked up, nothing submitted
+    # what already succeeded is not part of the sum: two runs left, 2 x 3.25 = 6.50
+    set_listed(env, "L1", 0, "111\tJOB_STATE_SUCCEEDED")
+    below = env.run("holdout", "--max-total-usd", "6.49", *arms, **BATCH)
+    assert below.returncode == 2 and launcher_calls(env) == []
+    ok = env.run("holdout", "--max-total-usd", "6.50", *arms, **BATCH)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert sorted(launched(env)) == [("L2", 0), ("L3", 0)]
+    assert "summed exposure caps USD 6.50, limit USD 6.50" in ok.stdout
+
+
+@pytest.mark.parametrize("state", ["JOB_STATE_FAILED", "JOB_STATE_CANCELLED"])
+def test_holdout_refuses_a_pair_with_only_unsuccessful_jobs_unless_opted_in(
+    env: Env, state: str
+) -> None:
+    set_listed(env, "L3", 0, f"333\t{state}")
+    args = ("holdout", *HOLDOUT_FLAGS, "--arms", "L2,L3", "--seeds", "0")
+    res = env.run(*args, **BATCH)
+    assert res.returncode == 1 and "REFUSED: 1 pair(s)" in res.stdout and "BLOCKED" in res.stdout
+    assert launcher_calls(env) == []  # not even the clean L2 run: the batch refuses as a whole
+    wrong = "V6M_RESUBMIT_CANCELLED" if state == "JOB_STATE_FAILED" else "V6M_RESUBMIT_FAILED"
+    assert env.run(*args, **{wrong: "1"}, **BATCH).returncode == 1
+    right = "V6M_RESUBMIT_FAILED" if state == "JOB_STATE_FAILED" else "V6M_RESUBMIT_CANCELLED"
+    ok = env.run(*args, **{right: "1"}, **BATCH)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert sorted(launched(env)) == [("L2", 0), ("L3", 0)]
+
+
+@pytest.mark.parametrize(("parallel", "expected"), [(None, 4), ("2", 2)])
+def test_holdout_keeps_at_most_n_jobs_in_flight(
+    env: Env, parallel: str | None, expected: int
+) -> None:
+    flags = ["--max-parallel", parallel] if parallel else []
+    res = env.run(
+        "holdout",
+        "--max-total-usd",
+        "29.25",  # nine runs x 3.25: exact
+        "--include-stage1",
+        "--seeds",
+        "0",
+        *flags,
+        FAKE_RUN_POLLS="3",
+        TEST_TIMEOUT="150",
+        **BATCH,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert sorted(launched(env)) == sorted((arm, 0) for arm in ARMS)
+    assert max_in_flight(env) == expected
+    assert "9 succeeded" in res.stdout
+
+
+def test_holdout_continues_after_a_capacity_miss_and_exits_3(env: Env) -> None:
+    res = env.run(
+        "holdout",
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        FAKE_PENDING_MODES="v6-l1-spatial-holdout",
+        **BATCH,
+    )
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert launched(env) == [("L1", 0), ("L2", 0), ("L3", 0)]
+    assert "custom-jobs cancel" in env.log("gcloud.log")
+    assert "1 without capacity [L1/seed0]" in res.stdout and "2 succeeded" in res.stdout
+
+
+def test_holdout_treats_a_capacity_refusal_at_submission_as_capacity(env: Env) -> None:
+    res = env.run(
+        "holdout",
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        FAKE_LAUNCH_FAIL_MODES="v6-l2-spatial-holdout",
+        FAKE_LAUNCH_FAIL_MSG="google.api_core.exceptions.ResourceExhausted: RESOURCE_EXHAUSTED",
+        **BATCH,
+    )
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert launched(env) == [("L1", 0), ("L2", 0), ("L3", 0)]
+    assert "1 without capacity [L2/seed0]" in res.stdout
+
+
+@pytest.mark.parametrize("how", ["launcher", "job"])
+def test_holdout_stops_on_any_other_failure_and_leaves_running_jobs_alone(
+    env: Env, how: str
+) -> None:
+    fail = (
+        {"FAKE_LAUNCH_FAIL_MODES": "v6-l2-spatial-holdout"}
+        if how == "launcher"
+        else {"FAKE_FAILED_MODES": "v6-l2-spatial-holdout"}
+    )
+    res = env.run(
+        "holdout",
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3,L4",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "2",
+        # L1 runs long, so no slot frees before L2's failure is known: nothing may start in between
+        FAKE_RUN_POLLS="1",
+        FAKE_SLOW_MODES="v6-l1-spatial-holdout",
+        FAKE_SLOW_POLLS="8",
+        **fail,
+        **BATCH,
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert ("L1", 0) in launched(env) and ("L2", 0) in launched(env)
+    assert ("L3", 0) not in launched(env) and ("L4", 0) not in launched(env)
+    assert "1 failed [L2/seed0]" in res.stdout and "not started [L3/seed0 L4/seed0]" in res.stdout
+    assert "custom-jobs cancel" not in env.log("gcloud.log")
+    assert "1 succeeded" in res.stdout  # the job in flight was waited for
+
+
+# --- review fixes: attach slots, unconfirmed cancel, lock, stage 1, dead workers ---------------
+
+
+def run_batch(env: Env, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    return env.run("holdout", *args, **{**BATCH, **extra})
+
+
+def test_holdout_default_skips_the_two_stage_one_runs(env: Env) -> None:
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "81.25")
+    assert res.returncode == 0, res.stderr
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    assert len(plan) == 25 and "USD 81.25" in res.stdout
+    stage_one = [ln for ln in plan if ln.split()[2] == "seed0" and ln.split()[1] in ("L1", "L4")]
+    assert stage_one == []
+    assert "NOTE L1 seed0 is a stage-1 run" in res.stdout
+    assert "v6-l4-spatial-holdout-v6sh-99a71cf-l4-seed0-ep40-cos-notest" in res.stdout
+    only = env.run(
+        "holdout", "--dry-run", "--max-total-usd", "9.75", "--arms", "L1,L4", "--seeds", "0"
+    )
+    assert only.returncode == 2 and "only stage-1 runs" in only.stderr
+    full = env.run("holdout", "--dry-run", "--max-total-usd", "87.75", "--include-stage1")
+    assert full.returncode == 0 and "USD 87.75" in full.stdout
+    assert len([ln for ln in full.stdout.splitlines() if ln.startswith("PLAN")]) == 27
+
+
+def test_holdout_active_jobs_hold_their_slots_before_anything_new_starts(env: Env) -> None:
+    # Ctrl-C then resume: L1-L4 are still running on Vertex, L5 was cancelled before
+    for arm in ("L1", "L2", "L3", "L4"):
+        set_listed(env, arm, 0, f"11{arm[1]}\tJOB_STATE_RUNNING")
+    set_listed(env, "L5", 0, "555\tJOB_STATE_CANCELLED")
+    args = (*HOLDOUT_FLAGS, "--arms", "L1,L2,L3,L4,L5", "--seeds", "0", "--max-parallel", "4")
+    blocked = run_batch(env, *args)
+    assert blocked.returncode == 1 and "BLOCKED" in blocked.stdout
+    assert launcher_calls(env) == []
+    res = run_batch(env, *args, V6M_RESUBMIT_CANCELLED="1", FAKE_RUN_POLLS="3")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launched(env) == [("L5", 0)]
+    out = res.stdout
+    assert "4 active job(s) to watch first" in out
+    # L5 waits for a slot: it starts only after a watched job has ended
+    assert out.index("started L5") > out.index("final: JOB_STATE_SUCCEEDED")
+    assert "summed exposure caps USD 3.25" in out
+
+
+def test_holdout_more_active_jobs_than_slots_start_nothing_new_until_they_finish(
+    env: Env,
+) -> None:
+    for arm in ("L2", "L3", "L5"):
+        set_listed(env, arm, 0, f"11{arm[1]}\tJOB_STATE_RUNNING")
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L2,L3,L5,LOO-M",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "2",
+        FAKE_RUN_POLLS="2",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launched(env) == [("LOO-M", 0)]
+    started = [m.group(1) for m in re.finditer(r"started (\S+) seed0", res.stdout)]
+    assert started == ["L2", "L3", "L5", "LOO-M"]  # watched jobs first, the new run last
+
+
+def test_holdout_attached_pair_never_submits_when_its_job_ended_meanwhile(env: Env) -> None:
+    set_listed(env, "L1", 0, "111\tJOB_STATE_RUNNING")
+    set_listed(env, "L2", 0, "222\tJOB_STATE_RUNNING")
+    # at its own turn (second lookup) L2's job is FAILED; the opt-in must not make it a new job
+    (env.log_dir / f"list2.{hdn('L2', 0)}").write_text("222\tJOB_STATE_FAILED\n")
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        V6M_RESUBMIT_FAILED="1",
+        V6M_RESUBMIT_CANCELLED="1",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert launcher_calls(env) == []
+    assert "planned as attached to an active job" in res.stdout
+    assert "1 failed [L2/seed0]" in res.stdout
+
+
+def test_holdout_unconfirmed_cancel_is_a_failure_and_names_the_job(env: Env) -> None:
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        FAKE_PENDING_MODES="v6-l1-spatial-holdout",
+        FAKE_CANCEL_FAIL="1",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert launched(env) == [("L1", 0)]  # nothing was started in its place
+    assert "CANCEL_UNCONFIRMED" in res.stdout
+    assert re.search(r"cancel request for \d+ FAILED", res.stdout + res.stderr)
+    assert "1 failed [L1/seed0]" in res.stdout and "0 without capacity" in res.stdout
+
+
+def test_holdout_second_batch_in_the_same_run_directory_is_refused(env: Env) -> None:
+    lock = env.run_dir / "holdout.lock"
+    lock.mkdir()
+    res = run_batch(env, *HOLDOUT_FLAGS, "--arms", "L2", "--seeds", "0")
+    assert res.returncode == 2
+    assert str(lock) in res.stderr and "lock" in res.stderr
+    assert env.log("gcloud.log") == "" and launcher_calls(env) == []
+    assert lock.is_dir()  # someone else's lock is left alone
+    lock.rmdir()
+    ok = run_batch(env, *HOLDOUT_FLAGS, "--arms", "L2", "--seeds", "0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert not lock.exists()  # released on exit
+    refused = run_batch(env, "--arms", "L2", "--seeds", "0", "--max-total-usd", "1")
+    assert refused.returncode == 2 and not lock.exists()  # also released when it refuses
+
+
+def test_holdout_dry_run_and_preflight_take_no_lock(env: Env) -> None:
+    (env.run_dir / "holdout.lock").mkdir()
+    assert env.run("holdout", "--dry-run", *HOLDOUT_FLAGS).returncode == 0
+    assert env.run("holdout", "--preflight", "--arms", "L2", "--seeds", "0").returncode == 0
+
+
+def test_holdout_dead_worker_without_a_result_is_a_failure_not_a_held_slot(env: Env) -> None:
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        FAKE_DIE_MODES="v6-l2-spatial-holdout",
+        TEST_TIMEOUT="90",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "ended without a result" in res.stdout
+    assert "1 failed [L2/seed0]" in res.stdout and "not started [L3/seed0]" in res.stdout
+    assert ("L3", 0) not in launched(env)

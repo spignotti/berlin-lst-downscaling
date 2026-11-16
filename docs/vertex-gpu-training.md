@@ -464,6 +464,9 @@ by default, needs explicit image digest, source SHA, label prefix and run
 directory, and submits only through its `submit` / `submit-all` subcommands.
 Existing jobs are looked up by exact displayName: SUCCEEDED is skipped, an
 active job is waited on, FAILED/CANCELLED stops the loop without resubmitting.
+Its `holdout` subcommand submits the spatial holdout runs of all nine arms, up
+to four jobs at a time, under a required `--max-total-usd`
+([`spatial-holdout.md`](spatial-holdout.md)).
 See [`scripts/runners/vertex/README.md`](../scripts/runners/vertex/README.md).
 
 ### Epoch numbering (1-based summaries, 0-based Lightning)
