@@ -16,7 +16,7 @@ trained on. The add-on test asks:
 
 ## Design
 
-Fixed before any run; the block rule was approved by the owner on 2026-11-16.
+Fixed before any run; the block rule was approved by the owner on 2026-11-14.
 
 - Unit: the 263 anchors of patch index v3 (1.6 km windows, no overlap). All
   263 stay the unit, also the 13 that lack train or validation patches.
