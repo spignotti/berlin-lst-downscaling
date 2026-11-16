@@ -253,6 +253,9 @@ displayName lookup could not find them. `--include-stage1` runs them again
 - One batch per `V6M_RUN_DIR`: it holds the lock directory `holdout.lock` there and
   a second batch is refused (exit 2), naming the path. After a crash, remove the
   directory by hand once no batch runs. `--dry-run` and `--preflight` take no lock.
+  The lock covers one run directory only: always resume with the same
+  `V6M_RUN_DIR`. A second batch started with another directory while the first
+  still runs can submit the same run twice.
 - A cancel request that fails after the queue rule fired (`CANCEL_UNCONFIRMED`) is
   a failure, not a capacity miss: the old job may still start, so no new run
   starts and the job id is logged. A worker that dies without a result is also a
