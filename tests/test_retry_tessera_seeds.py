@@ -39,7 +39,7 @@ def _run(
     lookup_exit: int = 0,
     sequence: dict[str, str] | None = None,
     jobs_after: list[dict] | None = None,
-    uv_script: str = 'exit 1',
+    uv_script: str = "exit 1",
 ):
     if shutil.which("jq") is None:
         pytest.skip("jq is required by the operator watcher")
@@ -49,12 +49,10 @@ def _run(
     (bin_dir / "gcloud").write_text(
         '#!/bin/bash\n[[ "$*" == *"error.code,error.message"* ]] || exit 2\n'
         # After the launcher stub has run, the lookup returns jobs_after.
-        f'if [[ -e "$CALLS" ]]; then\ncat <<\'JSON\'\n{json.dumps(after)}\nJSON\n'
+        f"if [[ -e \"$CALLS\" ]]; then\ncat <<'JSON'\n{json.dumps(after)}\nJSON\n"
         f"else\ncat <<'JSON'\n{json.dumps(jobs)}\nJSON\nfi\nexit {lookup_exit}\n"
     )
-    (bin_dir / "uv").write_text(
-        f'#!/bin/bash\nprintf "%s\\n" "$*" >>"$CALLS"\n{uv_script}\n'
-    )
+    (bin_dir / "uv").write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >>"$CALLS"\n{uv_script}\n')
     for path in bin_dir.iterdir():
         path.chmod(0o755)
     calls = tmp_path / "calls"
