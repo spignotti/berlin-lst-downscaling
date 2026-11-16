@@ -25,6 +25,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 - `ablation-stage-configs.md` — frozen comparison configs for the ablation
   stages and isolation runs.
 - `ablation-v6-configs.md` — v6 ablation arms, run matrix, and launcher modes.
+- `spatial-holdout.md` — spatial holdout add-on test for L1 and L4: block
+  assignment, training option, launch commands, evaluation, limits.
 - `stage5-loss-audit.md` — audit of the Stage-5 thermal-aware loss (term
   scales, SSIM support, fp32 numerics) before the v6 L5 arm, and the fixed
   train-split SSIM data range (derivation command, parameters).
