@@ -363,7 +363,7 @@ do_pair() {
         kill_tree "$lpid"; wait "$lpid" 2>/dev/null || true
         break
       fi
-      sleep 10
+      sleep 2
     done
     if [[ -z "$id" ]]; then
       sleep "$BACKOFF"
