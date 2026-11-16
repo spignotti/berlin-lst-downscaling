@@ -16,7 +16,12 @@ from berlin_lst_downscaling.modeling.guards import contract_invariants, guard_mo
 _REPO = Path(__file__).resolve().parents[1]
 _CONFIG_DIR = _REPO / "configs" / "modeling"
 _COMMITTED = sh.ASSIGNMENT_DIR / "v1.json"
-_RUN_OVERRIDES = ["seed=0", "trainer.max_epochs=40", "trainer.lr_schedule.name=cosine"]
+_RUN_OVERRIDES = [
+    "seed=0",
+    "trainer.max_epochs=40",
+    "trainer.lr_schedule.name=cosine",
+    "evaluate_test=false",
+]
 
 
 def _lattice(rows: int, cols: int, *, train: int = 3, validation: int = 1) -> dict:
@@ -164,7 +169,7 @@ def test_holdout_config_equals_the_locked_arm_except_for_the_option(arm: str) ->
     holdout = _compose(name, _RUN_OVERRIDES)
     guard_modeling_config(holdout, name)
     contract_invariants(holdout)
-    locked = _compose(f"v6_{arm}_locked", [*_RUN_OVERRIDES, "evaluate_test=false"])
+    locked = _compose(f"v6_{arm}_locked", _RUN_OVERRIDES)
     a = OmegaConf.to_container(holdout, resolve=True)
     b = OmegaConf.to_container(locked, resolve=True)
     assert isinstance(a, dict) and isinstance(b, dict)

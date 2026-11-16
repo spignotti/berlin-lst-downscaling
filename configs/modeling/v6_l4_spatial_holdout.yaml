@@ -1,11 +1,13 @@
 # @package _global_
 # Spatial holdout add-on test, arm L4 (docs/spatial-holdout.md, pm #553).
-# Everything is inherited from v6_l4_locked; only the option below, the
-# closed test pass and the output root differ. The option removes the
-# held-out anchors of the committed assignment from the train split, refits
-# the scaler on the remaining train patches, and selects the checkpoint on
-# the validation patches of the other anchors.
-# Parameters: seed and trainer.max_epochs, as for v6_l4_locked.
+# Everything is inherited from v6_l4_locked; only the option below and the
+# output root differ. The option removes the held-out anchors of the
+# committed assignment from the train split, refits the scaler on the
+# remaining train patches, and selects the checkpoint on the validation
+# patches of the other anchors.
+# Parameters: seed and trainer.max_epochs, as for v6_l4_locked. A run must
+# pass evaluate_test=false (launcher: --skip-test); the guard refuses a
+# holdout run that would score test 2025.
 defaults:
   - v6_l4_locked
   - _self_
@@ -13,7 +15,5 @@ defaults:
 spatial_holdout:
   enabled: true
   assignment: "v1"            # configs/modeling/spatial_holdout/v1.json
-
-evaluate_test: false          # test 2025 stays sealed
 
 output_root: "data/runs/modeling-spatial-holdout-v6-l4/seed-${seed}"

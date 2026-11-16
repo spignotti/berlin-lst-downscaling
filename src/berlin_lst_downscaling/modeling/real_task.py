@@ -646,9 +646,6 @@ class RealPatchDataModule(LightningDataModule):
         offset = 0
         for split in ("train", "validation"):
             refs = self._admitted[split]
-            self._datasets[split] = CachedRealPatchDataset(
-                cache_root, provenance, range(offset, offset + len(refs))
-            )
             if split == "validation" and self.holdout_anchors is not None:
                 # The cache keeps every validation row; the two loaders index into it.
                 seen, unseen = self._validation_partition()
@@ -657,6 +654,10 @@ class RealPatchDataModule(LightningDataModule):
                 )
                 self._datasets[_HOLDOUT_VALIDATION] = CachedRealPatchDataset(
                     cache_root, provenance, [offset + i for i in unseen]
+                )
+            else:
+                self._datasets[split] = CachedRealPatchDataset(
+                    cache_root, provenance, range(offset, offset + len(refs))
                 )
             offset += len(refs)
 
@@ -886,8 +887,6 @@ class RealPatchDataModule(LightningDataModule):
         comparison can be audited: which patches entered each split, and which
         were dropped with which reason.
         """
-        if self.reader is None:
-            raise RuntimeError("setup() must run before stats()")
         scope = self._base_stats()
         if self.holdout_anchors is not None:
             seen, unseen = self._validation_partition()

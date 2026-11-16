@@ -199,9 +199,17 @@ def test_fit_selects_on_seen_anchors_and_exports_all_validation_patches(
     assert result.run_ok
     root = Path(str(lifecycle_cfg.output_root))
     summary = json.loads((root / "full_summary.json").read_text())
+    scope = json.loads((root / "data_scope.json").read_text())
     block = summary["spatial_holdout"]
     assert block["assignment"] == "unit"
-    assert (block["validation_patches_seen"], block["validation_patches_held_out"]) == (1, 1)
+    assert (block["train_removed"], block["validation_seen"], block["validation_held_out"]) == (
+        1,
+        1,
+        1,
+    )
+    # The refit scaler reaches the summary, and with it the evidence record.
+    assert block["scaler"] == scope["spatial_holdout"]["scaler"]
+    assert len(block["scaler"]["channels"]) == 22
     # Selection and its report cover the seen validation patch only.
     rows = {
         row["patch_id"]: row
@@ -213,6 +221,4 @@ def test_fit_selects_on_seen_anchors_and_exports_all_validation_patches(
     seen_mae = rows["p3"]["abs_error_sum"] / rows["p3"]["valid_cells"]
     assert summary["best_metric"] == pytest.approx(seen_mae, rel=1e-3)
     assert summary["test"] == {"skipped": True}
-    scope = json.loads((root / "data_scope.json").read_text())
-    assert scope["spatial_holdout"]["train_removed"] == 1
     assert scope["patch_ids"]["train"] == ["p0", "p2"]

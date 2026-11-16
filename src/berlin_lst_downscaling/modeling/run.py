@@ -1144,10 +1144,11 @@ def _fit_contract_lifecycle(
                         summary["test"] = test_result
                     if holdout_rows:
                         # best_metric and validation_report above are seen anchors only.
+                        # The scope block carries the refit scaler; the summary is
+                        # the part of the run that reaches the evidence record.
                         summary["spatial_holdout"] = {
                             **cast(dict, source_metadata.get("spatial_holdout") or {}),
-                            "validation_patches_seen": len(validation_rows),
-                            "validation_patches_held_out": len(holdout_rows),
+                            **cast(dict, scope.get("spatial_holdout") or {}),
                             "validation_report_held_out": report_metrics(holdout_rows),
                         }
                     summary_name = "full_summary.json" if is_full else "probe_summary.json"
