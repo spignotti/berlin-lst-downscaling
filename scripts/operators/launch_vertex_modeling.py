@@ -172,6 +172,13 @@ TESSERA_MODE = "tessera"
 TESSERA_TIMEOUT_SECONDS = 20400
 TESSERA_MAX_EXPOSURE_USD = 6.25
 TESSERA_MAX_HOURLY_RATE_USD = 1.0
+# Spatial holdout add-on test (docs/spatial-holdout.md): one 40-epoch L1 or L4
+# job without the held-out anchors, validation only. The matrix L4 job took
+# 2.38 h; the 3 h timeout caps one job at $3.17 at the $1/h cap.
+SPATIAL_HOLDOUT_MODES = ("v6-l1-spatial-holdout", "v6-l4-spatial-holdout")
+SPATIAL_HOLDOUT_TIMEOUT_SECONDS = 10800
+SPATIAL_HOLDOUT_MAX_EXPOSURE_USD = 3.25
+SPATIAL_HOLDOUT_MAX_HOURLY_RATE_USD = 1.0
 POLL_SECONDS = 20
 CANCEL_CONFIRMATION_SECONDS = 300
 
@@ -203,6 +210,8 @@ MODE_CONFIG_NAME = {
     "v6-no-ndvi-ndwi": "v6_no_ndvi_ndwi_locked",
     "v6-no-red-nir-index": "v6_no_red_nir_index_locked",
     TESSERA_MODE: "tessera_arm",
+    "v6-l1-spatial-holdout": "v6_l1_spatial_holdout",
+    "v6-l4-spatial-holdout": "v6_l4_spatial_holdout",
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
@@ -245,7 +254,13 @@ _ABLATION_MODES = (
     *_V6_ABLATION_MODES,
 )
 # Modes that require the verified regional rate before submitting.
-_RATE_REQUIRED_MODES = ("probe", "probe-lr3", TESSERA_MODE, *_FULL_TEMPORAL_MODES)
+_RATE_REQUIRED_MODES = (
+    "probe",
+    "probe-lr3",
+    TESSERA_MODE,
+    *SPATIAL_HOLDOUT_MODES,
+    *_FULL_TEMPORAL_MODES,
+)
 MODE_EVIDENCE_PROFILE = {
     "smoke": "smoke",
     "probe": "probe-residual",
@@ -267,6 +282,8 @@ MODE_EVIDENCE_PROFILE = {
     "v6-no-ndvi-ndwi": "full",
     "v6-no-red-nir-index": "full",
     TESSERA_MODE: "full",
+    "v6-l1-spatial-holdout": "full",
+    "v6-l4-spatial-holdout": "full",
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -295,7 +312,9 @@ def check_bounds(
         if efficiency_role is not None:
             compose_overrides.append(f"stage1_efficiency_role={efficiency_role}")
         cfg = compose(config_name=config_name, overrides=compose_overrides)
-    seeded = {MODE_CONFIG_NAME[m] for m in _V6_ABLATION_MODES} | {"tessera_arm"}
+    seeded = {MODE_CONFIG_NAME[m] for m in (*_V6_ABLATION_MODES, *SPATIAL_HOLDOUT_MODES)} | {
+        "tessera_arm"
+    }
     if config_name in seeded:
         guard_modeling_config(cfg, config_name)
         contract_invariants(cfg)
@@ -1388,9 +1407,17 @@ def main() -> int:
     config_name = MODE_CONFIG_NAME[args.mode]
     is_seeded = args.mode in _V6_ABLATION_MODES
     is_tessera = args.mode == TESSERA_MODE
-    is_seeded = is_seeded or is_tessera
+    is_holdout = args.mode in SPATIAL_HOLDOUT_MODES
+    is_seeded = is_seeded or is_tessera or is_holdout
     if is_tessera and not args.skip_test:
         raise SystemExit("ERROR: --mode tessera requires --skip-test; test 2025 stays sealed")
+    if is_holdout and not args.skip_test:
+        raise SystemExit(f"ERROR: --mode {args.mode} requires --skip-test; test 2025 stays sealed")
+    if is_holdout and args.patch_cache != "job_local":
+        raise SystemExit(
+            f"ERROR: --mode {args.mode} builds its patch cache in the job; a prebuilt "
+            "cache holds the published scaler and every train anchor"
+        )
     if not is_seeded and (args.seed is not None or args.max_epochs is not None):
         raise SystemExit(
             "ERROR: --seed and --max-epochs are only accepted by the v6 and tessera "
@@ -1463,6 +1490,8 @@ def main() -> int:
         timeout_seconds = PROBE_TIMEOUT_SECONDS
     elif args.mode == TESSERA_MODE:
         timeout_seconds = TESSERA_TIMEOUT_SECONDS
+    elif is_holdout:
+        timeout_seconds = SPATIAL_HOLDOUT_TIMEOUT_SECONDS
     else:
         timeout_seconds = DEFAULT_TIMEOUT_SECONDS
     max_wait_seconds = (
@@ -1502,7 +1531,11 @@ def main() -> int:
                     else (
                         TESSERA_MAX_EXPOSURE_USD
                         if args.mode == TESSERA_MODE
-                        else DEFAULT_MAX_EXPOSURE_USD
+                        else (
+                            SPATIAL_HOLDOUT_MAX_EXPOSURE_USD
+                            if is_holdout
+                            else DEFAULT_MAX_EXPOSURE_USD
+                        )
                     )
                 )
             )
@@ -1548,6 +1581,22 @@ def main() -> int:
             )
         if hourly_rate > TESSERA_MAX_HOURLY_RATE_USD:
             raise SystemExit("ERROR: tessera rate exceeds the user-authorized $1.00/hour cap")
+
+    if is_holdout:
+        if timeout_seconds > SPATIAL_HOLDOUT_TIMEOUT_SECONDS:
+            raise SystemExit(
+                f"ERROR: spatial holdout timeout cannot exceed "
+                f"{SPATIAL_HOLDOUT_TIMEOUT_SECONDS} seconds"
+            )
+        if max_exposure > SPATIAL_HOLDOUT_MAX_EXPOSURE_USD:
+            raise SystemExit(
+                "ERROR: spatial holdout per-job exposure cannot exceed "
+                f"${SPATIAL_HOLDOUT_MAX_EXPOSURE_USD:.2f}"
+            )
+        if hourly_rate > SPATIAL_HOLDOUT_MAX_HOURLY_RATE_USD:
+            raise SystemExit(
+                "ERROR: spatial holdout rate exceeds the user-authorized $1.00/hour cap"
+            )
 
     if args.mode == "efficiency":
         if timeout_seconds > EFFICIENCY_TIMEOUT_SECONDS:
@@ -1659,6 +1708,7 @@ def main() -> int:
     _checkpoint_uploading = (
         args.mode in _FULL_TEMPORAL_MODES
         or args.mode == TESSERA_MODE
+        or is_holdout
         or (args.mode == "efficiency" and args.efficiency_role in ("baseline", "final"))
     )
     if _checkpoint_uploading and _evidence_exists(f"{run_prefix}/best.ckpt"):
@@ -1667,6 +1717,14 @@ def main() -> int:
         # after burning a new paid job, so refuse the label here.
         raise SystemExit(
             f"ERROR: checkpoint already exists at {run_prefix}/best.ckpt; the run "
+            "label must never be reused"
+        )
+    # A holdout run is read through its per-patch validation export (seen and
+    # held-out anchors); it is uploaded create-only next to the evidence.
+    validation_export_uri = f"{run_prefix}/eval_validation_patches.parquet" if is_holdout else None
+    if validation_export_uri is not None and _evidence_exists(validation_export_uri):
+        raise SystemExit(
+            f"ERROR: validation export already exists at {validation_export_uri}; the run "
             "label must never be reused"
         )
     env = [
@@ -1697,6 +1755,8 @@ def main() -> int:
             if args.allow_job_local_fallback:
                 env.append(("VERTEX_PATCH_CACHE_FALLBACK", "1"))
         env.append(("VERTEX_EPOCH_METRICS_URI", f"{run_prefix}/epoch_metrics.json"))
+    if validation_export_uri is not None:
+        env.append(("VERTEX_VALIDATION_EXPORT_URI", validation_export_uri))
     if args.mode == "efficiency":
         env.extend(
             [
@@ -1783,6 +1843,12 @@ def main() -> int:
             )
         )
         print(f"  hydra overrides: {' '.join(hydra_overrides)}")
+    if validation_export_uri is not None:
+        print(
+            "  spatial holdout: held-out anchors leave the train split, scaler refit on the "
+            "remaining train patches, checkpoint selected on seen validation anchors"
+        )
+        print(f"  val export     : {validation_export_uri}")
     print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")
 

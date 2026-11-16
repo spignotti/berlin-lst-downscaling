@@ -13,6 +13,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 - `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer. Not a
   V3 feature channel. Proposal B is the decided evaluation grouping
   (2026-10-16).
+- `spatial-error-analysis.md` — exploratory validation error analysis by
+  scene, Stadtstruktur group and in space; inputs, commands, limits.
 - `eda-v1.md` — descriptive tables for the published training release.
   No figures. Proposal B is the stratification.
 - `ecostress-feasibility.md` — read-only ECOSTRESS C2 collocation inventory
@@ -23,6 +25,8 @@ live run metrics; GCS holds released datasets, provenance, and checkpoints.
 - `ablation-stage-configs.md` — frozen comparison configs for the ablation
   stages and isolation runs.
 - `ablation-v6-configs.md` — v6 ablation arms, run matrix, and launcher modes.
+- `spatial-holdout.md` — spatial holdout add-on test for L1 and L4: block
+  assignment, training option, launch commands, evaluation, limits.
 - `stage5-loss-audit.md` — audit of the Stage-5 thermal-aware loss (term
   scales, SSIM support, fp32 numerics) before the v6 L5 arm, and the fixed
   train-split SSIM data range (derivation command, parameters).

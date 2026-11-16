@@ -90,9 +90,12 @@ from berlin_lst_downscaling.modeling.patches import (
     RealPatchReader,
     RealSample,
     RealSourceConfig,
+    ScalerSpec,
     collate_real_batch,
     load_patch_refs,
+    merge_scaler_moments,
     patch_index_fingerprints,
+    scaler_from_moments,
 )
 from berlin_lst_downscaling.modeling.prebuilt_cache import (
     PrebuiltCacheError,
@@ -108,6 +111,8 @@ from berlin_lst_downscaling.modeling.unet import UNet
 logger = logging.getLogger(__name__)
 
 _REAL_SPLITS = ("train", "validation", "test")
+# Dataset key of the validation patches on held-out anchors (spatial holdout only).
+_HOLDOUT_VALIDATION = "validation_holdout"
 
 
 @dataclass(frozen=True)
@@ -172,9 +177,16 @@ class RealPatchDataset(Dataset[RealSample]):
     methods.
     """
 
-    def __init__(self, source: RealSourceConfig, refs: Sequence[PatchRef]) -> None:
+    def __init__(
+        self,
+        source: RealSourceConfig,
+        refs: Sequence[PatchRef],
+        scaler: ScalerSpec | None = None,
+    ) -> None:
         self.source = source
         self.refs = list(refs)
+        # None reads with the published scaler; the spatial holdout passes its refit.
+        self.scaler = scaler
         self._reader: RealPatchReader | None = None
 
     def __len__(self) -> int:
@@ -198,6 +210,8 @@ class RealPatchDataset(Dataset[RealSample]):
         """
         if self._reader is None:
             reader = RealPatchReader(self.source)
+            if self.scaler is not None:
+                reader.scaler = self.scaler
             reader.preload({ref.scene_id for ref in self.refs})
             self._reader = reader
         return self._reader
@@ -243,6 +257,13 @@ class RealPatchDataModule(LightningDataModule):
     scene-spread selection (see :class:`ProbeScope`). ``splits`` restricts which
     published splits are even read; the Stage-1 probe passes train/validation
     only, so no test ref is ever loaded.
+
+    ``holdout_anchors`` (spatial holdout, default off) is a set of global
+    ``(row, col)`` anchors. Train refs on these anchors are dropped before
+    admission, the scaler is refit on the admitted train patches only, and the
+    validation loader yields the patches on the other anchors;
+    ``holdout_val_dataloader`` yields the validation patches on the held-out
+    anchors. With ``None`` nothing changes.
     """
 
     def __init__(
@@ -271,8 +292,19 @@ class RealPatchDataModule(LightningDataModule):
         prebuilt_download_workers: int = 8,
         prebuilt_download_retries: int = 3,
         tessera_embeddings_root: str | None = None,
+        holdout_anchors: frozenset[tuple[int, int]] | None = None,
     ) -> None:
         super().__init__()
+        if holdout_anchors is not None:
+            if not holdout_anchors:
+                raise ValueError("holdout_anchors must be None or a non-empty set")
+            if tuple(splits) != ("train", "validation"):
+                raise ValueError("spatial holdout requires splits ('train', 'validation')")
+            if cache_source != "job_local":
+                raise ValueError("spatial holdout supports only the job-local patch cache")
+            if tessera_embeddings_root:
+                raise ValueError("spatial holdout is not defined for the TESSERA arm")
+        self.holdout_anchors = holdout_anchors
         self.reuse_ready_cache = reuse_ready_cache
         if cache_source not in ("job_local", "prebuilt"):
             raise ValueError(f"cache_source {cache_source!r} is not one of 'job_local', 'prebuilt'")
@@ -340,6 +372,9 @@ class RealPatchDataModule(LightningDataModule):
         self.prebuilt_commit_match: bool | None = None
         self.prebuilt_build_commit: str | None = None
         self.prebuilt_running_commit: str | None = None
+        self.holdout_scaler: ScalerSpec | None = None
+        self.holdout_scaler_fit_seconds = 0.0
+        self._holdout_train_removed = 0
         self.reader: RealPatchReader | None = None
         self._admitted: dict[str, list[PatchRef]] = {}
         self._requested: dict[str, list[PatchRef]] = {split: [] for split in self.splits}
@@ -432,6 +467,10 @@ class RealPatchDataModule(LightningDataModule):
         # Bound the *refs* per split, before any exclusion, so the requested
         # universe matches the baseline's selection exactly.
         requested = self._select_refs(refs)
+        if self.holdout_anchors is not None:
+            kept = [ref for ref in requested["train"] if not self._held_out(ref)]
+            self._holdout_train_removed = len(requested["train"]) - len(kept)
+            requested["train"] = kept
         self._requested = requested
 
         # Resolve every scene's Landsat COG/flag once, so the admission pass
@@ -448,6 +487,14 @@ class RealPatchDataModule(LightningDataModule):
                 admitted = self._admit(self.reader, split, split_refs)
                 self._admitted[split] = admitted
         self.admission_seconds = time.perf_counter() - admission_started
+        if self.holdout_anchors is not None:
+            seen, unseen = self._validation_partition()
+            if not seen or not unseen:
+                raise RuntimeError(
+                    f"spatial holdout needs validation patches on both sides, got "
+                    f"{len(seen)} seen and {len(unseen)} held out"
+                )
+            self._fit_holdout_scaler()
         if self.cache_root is not None:
             # The cache build reads every admitted patch once; an eager
             # pre-collation would read the features a second time.
@@ -457,11 +504,79 @@ class RealPatchDataModule(LightningDataModule):
                 self._build_cache()
                 self.patch_cache_source = "job_local"
             return
-        for split, admitted in self._admitted.items():
+        live_refs: dict[str, list[PatchRef]] = dict(self._admitted)
+        if self.holdout_anchors is not None:
+            seen, unseen = self._validation_partition()
+            validation = self._admitted["validation"]
+            live_refs["validation"] = [validation[i] for i in seen]
+            live_refs[_HOLDOUT_VALIDATION] = [validation[i] for i in unseen]
+        for split, admitted in live_refs.items():
             if self.mode == "eager":
                 self._datasets[split] = _BatchDataset(self._read_batches(self.reader, admitted))
             else:
-                self._datasets[split] = RealPatchDataset(self.source, admitted)
+                self._datasets[split] = RealPatchDataset(
+                    self.source, admitted, scaler=self.holdout_scaler
+                )
+
+    def _held_out(self, ref: PatchRef) -> bool:
+        return self.holdout_anchors is not None and (ref.row, ref.col) in self.holdout_anchors
+
+    def _validation_partition(self) -> tuple[list[int], list[int]]:
+        """Indices into the admitted validation refs: seen anchors, held-out anchors."""
+        seen: list[int] = []
+        unseen: list[int] = []
+        for index, ref in enumerate(self._admitted.get("validation", [])):
+            (unseen if self._held_out(ref) else seen).append(index)
+        return seen, unseen
+
+    def _fit_holdout_scaler(self) -> None:
+        """Refit the scaler on the admitted train patches and install it on the reader.
+
+        One threaded pass reads every remaining train patch unscaled and merges
+        the per-patch moments in canonical order, so the result does not depend
+        on the worker count. The cache build and every later read then scale
+        with this refit; the published scaler only supplies order and transforms.
+        """
+        if self.reader is None:
+            raise RuntimeError("the holdout scaler fit requires an initialized reader")
+        reader = self.reader
+        refs = self._admitted.get("train", [])
+        if not refs:
+            raise RuntimeError("spatial holdout left no admitted train patch to fit the scaler")
+        workers = self.cache_build_workers
+        local = threading.local()
+
+        def moments_of(ref: PatchRef):
+            if workers == 1:
+                thread_reader = reader
+            else:
+                thread_reader = getattr(local, "reader", None)
+                if thread_reader is None:
+                    thread_reader = reader.copy_for_reads()
+                    local.reader = thread_reader
+            return read_with_retry(
+                lambda: thread_reader.read_scaler_moments(ref), patch_id=ref.patch_id
+            )
+
+        started = time.perf_counter()
+        with timed_phase(
+            "holdout_scaler_fit",
+            logger=logger,
+            cache_build_workers=workers,
+            patch_count=len(refs),
+        ):
+            total = None
+            parts = ordered_bounded_map(moments_of, refs, max_workers=workers)
+            try:
+                for part in parts:
+                    total = merge_scaler_moments(total, part)
+            finally:
+                parts.close()
+        if total is None:
+            raise RuntimeError("the holdout scaler fit read no patch")
+        self.holdout_scaler = scaler_from_moments(reader.scaler, total)
+        reader.scaler = self.holdout_scaler
+        self.holdout_scaler_fit_seconds = time.perf_counter() - started
 
     def _cache_patch_order(self) -> list[PatchRef]:
         """Admitted refs in cache row order: train rows, then validation rows."""
@@ -536,9 +651,19 @@ class RealPatchDataModule(LightningDataModule):
         offset = 0
         for split in ("train", "validation"):
             refs = self._admitted[split]
-            self._datasets[split] = CachedRealPatchDataset(
-                cache_root, provenance, range(offset, offset + len(refs))
-            )
+            if split == "validation" and self.holdout_anchors is not None:
+                # The cache keeps every validation row; the two loaders index into it.
+                seen, unseen = self._validation_partition()
+                self._datasets[split] = CachedRealPatchDataset(
+                    cache_root, provenance, [offset + i for i in seen]
+                )
+                self._datasets[_HOLDOUT_VALIDATION] = CachedRealPatchDataset(
+                    cache_root, provenance, [offset + i for i in unseen]
+                )
+            else:
+                self._datasets[split] = CachedRealPatchDataset(
+                    cache_root, provenance, range(offset, offset + len(refs))
+                )
             offset += len(refs)
 
     def _build_cache(self) -> None:
@@ -591,6 +716,8 @@ class RealPatchDataModule(LightningDataModule):
         """
         if self.reader is None or not self._setup_done:
             raise RuntimeError("setup() must run before build_validation_only_cache()")
+        if self.holdout_anchors is not None:
+            raise RuntimeError("validation-only cache is not defined for the spatial holdout")
         if self.splits != ("validation",):
             raise RuntimeError(
                 f"validation-only cache requires splits ('validation',), got {self.splits!r}"
@@ -765,6 +892,20 @@ class RealPatchDataModule(LightningDataModule):
         comparison can be audited: which patches entered each split, and which
         were dropped with which reason.
         """
+        scope = self._base_stats()
+        if self.holdout_anchors is not None:
+            seen, unseen = self._validation_partition()
+            scope["spatial_holdout"] = {
+                "holdout_anchors": len(self.holdout_anchors),
+                "train_removed": self._holdout_train_removed,
+                "validation_seen": len(seen),
+                "validation_held_out": len(unseen),
+                "scaler_fit_seconds": self.holdout_scaler_fit_seconds,
+                "scaler": None if self.holdout_scaler is None else asdict(self.holdout_scaler),
+            }
+        return scope
+
+    def _base_stats(self) -> dict[str, object]:
         if self.reader is None:
             raise RuntimeError("setup() must run before stats()")
         return {
@@ -934,6 +1075,12 @@ class RealPatchDataModule(LightningDataModule):
 
     def val_dataloader(self) -> DataLoader[RealBatch]:
         return self._loader("validation")
+
+    def holdout_val_dataloader(self) -> DataLoader[RealBatch]:
+        """Validation patches on the held-out anchors (spatial holdout only)."""
+        if self.holdout_anchors is None:
+            raise RuntimeError("holdout_val_dataloader requires a spatial holdout")
+        return self._loader(_HOLDOUT_VALIDATION)
 
     def test_dataloader(self) -> DataLoader[RealBatch]:
         return self._loader("test")

@@ -97,6 +97,13 @@ from berlin_lst_downscaling.modeling.run_identity import (
     persist_run_identity,
     resolve_run_identity,
 )
+from berlin_lst_downscaling.modeling.spatial_holdout import (
+    SpatialHoldoutAssignment,
+    assignment_sha256,
+    load_assignment,
+    resolve_assignment_path,
+    spatial_holdout_from_config,
+)
 from berlin_lst_downscaling.modeling.ssim_range import (
     SsimDataRange,
     load_ssim_data_range,
@@ -1046,8 +1053,34 @@ def _fit_contract_lifecycle(
                             "no valid validation cell for the residual correction check"
                         )
                     correction_mean = correction_abs_sum / correction_cells
+                # Spatial holdout: the selection metric above covers the seen
+                # anchors only. The held-out validation patches are scored once
+                # here, after the checkpoint is frozen, and join the export.
+                holdout_rows: list[dict[str, object]] = []
+                if (
+                    isinstance(data_module, RealPatchDataModule)
+                    and data_module.holdout_anchors is not None
+                ):
+                    with torch.inference_mode():
+                        for batch in data_module.holdout_val_dataloader():
+                            validate_real_batch(batch, n_active_channels=reloaded.n_active_channels)
+                            prediction = reloaded(batch)
+                            if not torch.isfinite(prediction).all():
+                                raise RuntimeError(
+                                    "reloaded best checkpoint produced non-finite predictions "
+                                    "on the held-out validation patches"
+                                )
+                            holdout_rows.extend(
+                                score_batch_patches(
+                                    pool_10m_to_100m(prediction, aggregation, batch.mask_100m),
+                                    batch.target_100m,
+                                    batch.mask_100m,
+                                    batch.metadata,
+                                    data_range_k=ssim_range.data_range_k,
+                                )
+                            )
                 write_patch_export(
-                    validation_rows,
+                    [*validation_rows, *holdout_rows],
                     output_root / patch_export_filename("validation"),
                     identity=export_identity,
                     split="validation",
@@ -1109,6 +1142,15 @@ def _fit_contract_lifecycle(
                         summary["stopped_epoch"] = stopped_epoch
                     if test_result is not None:
                         summary["test"] = test_result
+                    if holdout_rows:
+                        # best_metric and validation_report above are seen anchors only.
+                        # The scope block carries the refit scaler; the summary is
+                        # the part of the run that reaches the evidence record.
+                        summary["spatial_holdout"] = {
+                            **cast(dict, source_metadata.get("spatial_holdout") or {}),
+                            **cast(dict, scope.get("spatial_holdout") or {}),
+                            "validation_report_held_out": report_metrics(holdout_rows),
+                        }
                     summary_name = "full_summary.json" if is_full else "probe_summary.json"
                     (output_root / summary_name).write_text(
                         json.dumps(summary, indent=2, sort_keys=True, default=str), encoding="utf-8"
@@ -1166,6 +1208,43 @@ def run_contract_synthetic_training(cfg: DictConfig, run_id: str) -> ModelingRun
             "loss proves tensor/loss/lifecycle wiring, not training quality"
         ),
     )
+
+
+_HOLDOUT_INDEX_KEYS = ("index_policy_hash", "source_policy_hash", "patches_total")
+
+
+def resolve_spatial_holdout(
+    cfg: DictConfig, source: RealSourceConfig
+) -> tuple[SpatialHoldoutAssignment, dict[str, object]] | None:
+    """Load the configured holdout assignment, or ``None`` when the option is off.
+
+    The assignment must have been drawn from the patch index the run reads;
+    a different index (fingerprints or row count) raises before any patch read.
+    """
+    name = spatial_holdout_from_config(cfg)
+    if name is None:
+        return None
+    path = resolve_assignment_path(name)
+    assignment = load_assignment(path)
+    fingerprints = patch_index_fingerprints(source.patch_index_root)
+    drift = {
+        key: (assignment.patch_index.get(key), fingerprints.get(key))
+        for key in _HOLDOUT_INDEX_KEYS
+        if assignment.patch_index.get(key) != fingerprints.get(key)
+    }
+    if drift:
+        raise RuntimeError(
+            f"spatial holdout assignment {name!r} was drawn from another patch index "
+            f"(assignment, run): {drift}"
+        )
+    return assignment, {
+        "assignment": name,
+        "assignment_sha256": assignment_sha256(path),
+        "seed": assignment.seed,
+        "blocks": [list(block) for block in assignment.blocks],
+        "anchors_total": len(assignment.anchors),
+        "holdout_anchors": len(assignment.holdout),
+    }
 
 
 def build_real_datamodule(
@@ -1235,6 +1314,9 @@ def build_real_datamodule(
         if not root:
             raise ValueError("tessera arm requires data.tessera_embeddings_root")
         kwargs["tessera_embeddings_root"] = root
+    holdout = resolve_spatial_holdout(cfg, source)
+    if holdout is not None:
+        kwargs["holdout_anchors"] = holdout[0].holdout_anchors
     kwargs.update(overrides)
     return RealPatchDataModule(source, **kwargs)
 
@@ -1289,16 +1371,22 @@ def run_real_training(cfg: DictConfig, run_id: str) -> ModelingRunResult:
             raise RuntimeError("a cache path requires a positive cache budget")
     data_module = build_real_datamodule(cfg, cache_root=cache_root, cache_max_bytes=cache_budget)
     source = real_source_config(cfg)
+    source_metadata: dict[str, object] = {
+        "patch_index_root": source.patch_index_root,
+        "features_root": source.features_root,
+        "ard_root": source.ard_root,
+        "patch_index_fingerprints": patch_index_fingerprints(source.patch_index_root),
+    }
+    holdout = resolve_spatial_holdout(cfg, source)
+    if holdout is not None:
+        if evaluate_test_from_config(cfg):
+            raise RuntimeError("a spatial holdout run never scores the 2025 test split")
+        source_metadata["spatial_holdout"] = holdout[1]
     return _fit_contract_lifecycle(
         cfg,
         run_id,
         data_module=data_module,
-        source_metadata={
-            "patch_index_root": source.patch_index_root,
-            "features_root": source.features_root,
-            "ard_root": source.ard_root,
-            "patch_index_fingerprints": patch_index_fingerprints(source.patch_index_root),
-        },
+        source_metadata=source_metadata,
         reproducibility=(
             "deterministic kernels requested (Trainer deterministic=True); "
             "byte identity is environment/hardware/library dependent; the prior "

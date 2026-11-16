@@ -516,6 +516,11 @@ def main() -> None:
         help="gs:// destination for run-root/epoch_metrics.json (create-only)",
     )
     parser.add_argument(
+        "--validation-export-uri",
+        default=None,
+        help="gs:// destination for run-root/eval_validation_patches.parquet (create-only)",
+    )
+    parser.add_argument(
         "--epoch-metrics-only",
         action="store_true",
         help="upload only the epoch curve (failed runs); requires --epoch-metrics-uri",
@@ -551,6 +556,20 @@ def _publish(args: argparse.Namespace) -> None:
             checkpoint = _upload_checkpoint_create_only(args.checkpoint_path, args.checkpoint_uri)
         print(f"checkpoint uploaded: {checkpoint['uri']} ({checkpoint['bytes']} bytes)")
 
+    validation_export = None
+    if args.validation_export_uri:
+        export_path = args.run_root / "eval_validation_patches.parquet"
+        if not export_path.is_file():
+            raise SystemExit(f"ERROR: validation export not found: {export_path}")
+        if not args.validation_export_uri.endswith(".parquet"):
+            raise SystemExit("ERROR: --validation-export-uri must end in '.parquet'")
+        # Same create-only binary upload as the checkpoint, before the manifest.
+        with _timed_upload("validation_export_upload", uploader):
+            validation_export = _upload_checkpoint_create_only(
+                export_path, args.validation_export_uri
+            )
+        print(f"validation export uploaded: {validation_export['uri']}")
+
     record = build_record(
         args.run_root,
         run_label=args.run_label,
@@ -577,6 +596,8 @@ def _publish(args: argparse.Namespace) -> None:
             with timed_phase("sealed_test_upload", logger=_logger):
                 _upload_create_only(sealed_uri, sealed_payload)
             print(f"sealed test uploaded: {sealed_uri}")
+    if validation_export is not None:
+        record["validation_export"] = validation_export
     payload = json.dumps(record, indent=2, sort_keys=True, default=str).encode("utf-8")
     with timed_phase("evidence_upload", logger=_logger):
         _upload_create_only(args.evidence_uri, payload)

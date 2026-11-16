@@ -253,6 +253,88 @@ def assert_scaler_matches_config(cfg: DictConfig, scaler: ScalerSpec) -> None:
     )
 
 
+# ── patch-limited scaler fit (spatial holdout) ────────────────────────
+
+
+def scaler_moments(bands: np.ndarray, eligible: np.ndarray, scaler: ScalerSpec) -> np.ndarray:
+    """Return ``(n_channels, 3)`` float64 ``(count, mean, m2)`` of one raw patch.
+
+    ``bands`` is the unscaled ``(n_channels, H, W)`` feature window and
+    ``eligible`` the ``(H, W)`` mask of pixels inside training-eligible 100 m
+    cells. Same grain and transforms as ``data.training.scaler.fit_scaler``:
+    finite pixels inside eligible cells, ``log1p`` before the moments of a
+    ``log1p_zscore`` channel, and a count without moments for identity channels.
+    ``m2`` is the sum of squared deviations from the patch mean.
+    """
+    if bands.shape[0] != len(scaler.channels) or bands.shape[1:] != eligible.shape:
+        raise ValueError(
+            f"bands {bands.shape} do not match {len(scaler.channels)} channels and "
+            f"mask {eligible.shape}"
+        )
+    out = np.zeros((len(scaler.channels), 3), dtype=np.float64)
+    for i, ch in enumerate(scaler.channels):
+        if ch.transform == "identity":
+            out[i, 0] = float(eligible.sum())
+            continue
+        band = bands[i]
+        vals = band[eligible & np.isfinite(band)].astype(np.float64)
+        if vals.size == 0:
+            continue
+        if ch.transform == "log1p_zscore":
+            vals = np.log1p(vals)
+        mean = float(vals.mean())
+        out[i] = (vals.size, mean, float(np.square(vals - mean).sum()))
+    return out
+
+
+def merge_scaler_moments(total: np.ndarray | None, part: np.ndarray) -> np.ndarray:
+    """Merge two ``(count, mean, m2)`` tables (pairwise update, population moments)."""
+    if total is None:
+        return part.astype(np.float64, copy=True)
+    n_a, n_b = total[:, 0], part[:, 0]
+    n = n_a + n_b
+    safe = np.where(n > 0, n, 1.0)
+    delta = part[:, 1] - total[:, 1]
+    merged = np.empty_like(total)
+    merged[:, 0] = n
+    merged[:, 1] = total[:, 1] + delta * n_b / safe
+    merged[:, 2] = total[:, 2] + part[:, 2] + np.square(delta) * n_a * n_b / safe
+    return merged
+
+
+def scaler_from_moments(published: ScalerSpec, moments: np.ndarray) -> ScalerSpec:
+    """Return ``published`` with mean/std replaced by the merged patch moments.
+
+    Channel order, transforms and policy hash are kept. Mean and population std
+    (``ddof=0``) are rounded to 8 decimals like the published fit. A scaled
+    channel without a single contributing pixel raises.
+    """
+    if moments.shape != (len(published.channels), 3):
+        raise ValueError(f"moments shape {moments.shape} does not match the scaler")
+    channels: list[ScalerChannel] = []
+    for ch, (count, mean, m2) in zip(published.channels, moments, strict=True):
+        if ch.transform == "identity":
+            channels.append(ch)
+            continue
+        if count < 1:
+            raise RuntimeError(f"no eligible finite pixel to fit scaler channel {ch.name!r}")
+        std = float(np.sqrt(m2 / count)) if count >= 2 else 0.0
+        channels.append(
+            ScalerChannel(
+                index=ch.index,
+                name=ch.name,
+                transform=ch.transform,
+                mean=round(float(mean), 8),
+                std=round(std, 8),
+            )
+        )
+    return ScalerSpec(
+        channel_order=published.channel_order,
+        channels=tuple(channels),
+        policy_hash=published.policy_hash,
+    )
+
+
 # ── loading ───────────────────────────────────────────────────────────
 
 
@@ -864,7 +946,24 @@ class RealPatchReader:
             return None, EMPTY_MASK_REASON
         return _TargetMask(target=target, mask=mask == 1), None
 
+    def read_scaler_moments(self, ref: PatchRef) -> np.ndarray:
+        """Return :func:`scaler_moments` of one admitted patch (raw features, own mask)."""
+        target_mask = self.read_target_and_mask(ref)
+        if target_mask is None:
+            raise RuntimeError(f"admitted patch {ref.patch_id} has no readable eligibility mask")
+        eligible = np.repeat(np.repeat(target_mask[1], 10, axis=0), 10, axis=1)
+        return scaler_moments(self._read_feature_window(ref), eligible, self.scaler)
+
     def _read_features(self, ref: PatchRef) -> tuple[np.ndarray, int]:
+        bands = self._read_feature_window(ref)
+        self.scaler.apply(bands)
+        filled = int((~np.isfinite(bands)).sum())
+        if filled:
+            bands[~np.isfinite(bands)] = 0.0
+        return bands, filled
+
+    def _read_feature_window(self, ref: PatchRef) -> np.ndarray:
+        """Read the unscaled ``(n_channels, 160, 160)`` float32 feature window."""
         uri = feature_cog(self.cfg.features_root, ref.scene_id)
         r0 = ref.row * 10 - self._drow10
         c0 = ref.col * 10 - self._dcol10
@@ -893,13 +992,7 @@ class RealPatchReader:
                     f"({src.height}, {src.width})"
                 )
             fwindow = Window.from_slices((r0, r0 + REAL_PATCH_PX), (c0, c0 + REAL_PATCH_PX))
-            bands = src.read(window=fwindow).astype(np.float32)
-
-        self.scaler.apply(bands)
-        filled = int((~np.isfinite(bands)).sum())
-        if filled:
-            bands[~np.isfinite(bands)] = 0.0
-        return bands, filled
+            return src.read(window=fwindow).astype(np.float32)
 
 
 def collate_real_batch(
@@ -1005,6 +1098,9 @@ __all__ = [
     "load_landsat_uris",
     "load_patch_refs",
     "load_scaler",
+    "merge_scaler_moments",
     "patch_index_fingerprints",
     "prior_model_channel",
+    "scaler_from_moments",
+    "scaler_moments",
 ]
