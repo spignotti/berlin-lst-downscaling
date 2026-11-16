@@ -366,14 +366,14 @@ def test_scene_properties_keep_validation_rows_only(tmp_path: Path) -> None:
 # ── step 5: single-run pair ───────────────────────────────────────────
 
 
-def _single(arm: str, mae_of_scene, world) -> pa.Table:
+def _single(arm: str, mae_of_scene, world, run_id: str | None = None) -> pa.Table:
     cols: dict[str, list] = {name: [] for name in PATCH_SCHEMA.names}
     for pid, scene, _date, cells, wins in world:
         row = {
             "schema_version": 2,
             "arm": arm,
             "seed": 0,
-            "run_id": f"{arm}-run",
+            "run_id": run_id or f"{arm}-run",
             "checkpoint": None,
             "patch_id": pid,
             "scene_id": scene,
@@ -407,6 +407,16 @@ def test_compare_single_runs_matches_a_manual_bootstrap() -> None:
         (cells * diffs).sum() / cells.sum()
     )
     assert out["n_patches"] == len(world)
+
+
+def test_compare_single_runs_accepts_two_stages_of_one_random_forest_run() -> None:
+    # A random forest run writes one export per stage under one shared run id.
+    world = make_world(6)
+    stage4 = _single("random_forest_stage4", lambda s: 1.0, world, run_id="9debdb78")
+    stage1 = _single("random_forest_stage1", lambda s: 1.2, world, run_id="9debdb78")
+    out = se.compare_single_runs(stage4, stage1, n_bootstrap=100, rng_seed=0)
+    assert out["scene_equal"]["point_estimate"] == pytest.approx(-0.2)
+    assert out["arm_a"] == {"arm": "random_forest_stage4", "run_id": "9debdb78"}
 
 
 def test_compare_single_runs_rejects_mismatch() -> None:
