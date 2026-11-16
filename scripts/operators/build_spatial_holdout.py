@@ -21,6 +21,19 @@ Usage
 ``--patch-index-dir`` reads a local copy of ``patch_index.parquet`` and
 ``complete.json`` instead of the ``gs://`` root; the recorded root stays the
 published one.
+
+Spatial cross-validation (``--partition cv5``): the five fold files
+``cv5-fold0.json`` ... ``cv5-fold4.json`` partition ALL anchors, no random draw.
+``--anchors-from`` takes the anchor table and the index fingerprints from a
+committed assignment (``v1.json``, verified against the published index with
+``--check``) instead of reading the index; nothing is read from the cloud then.
+
+    uv run python scripts/operators/build_spatial_holdout.py --partition cv5 \
+        --anchors-from configs/modeling/spatial_holdout/v1.json \
+        --output-dir configs/modeling/spatial_holdout
+    uv run python scripts/operators/build_spatial_holdout.py --partition cv5 \
+        --anchors-from configs/modeling/spatial_holdout/v1.json \
+        --check-dir configs/modeling/spatial_holdout
 """
 
 from __future__ import annotations
@@ -29,19 +42,25 @@ import argparse
 import io
 import json
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
 from berlin_lst_downscaling.modeling.spatial_holdout import (
+    CV_PARTITION,
     MAX_FRACTION,
     MIN_FRACTION,
     POSITION_EDGE,
     POSITION_INTERIOR,
+    AnchorCounts,
     SpatialHoldoutAssignment,
     anchor_counts,
     assignment_bytes,
     build_assignment,
+    build_fold_assignments,
+    load_assignment,
+    render_fold_map,
     render_map,
 )
 
@@ -132,6 +151,66 @@ def _print_report(assignment: SpatialHoldoutAssignment, stats: dict) -> None:
     print(render_map(assignment))
 
 
+def _print_fold_report(folds: Sequence[SpatialHoldoutAssignment]) -> None:
+    print(f"partition {CV_PARTITION}: {len(folds)} folds over {len(folds[0].anchors)} anchors")
+    print("fold | blocks | anchors | train | validation | interior | edge")
+    for k, fold in enumerate(folds):
+        held = fold.holdout_anchors
+        positions = Counter(a.position for a in fold.holdout)
+        print(
+            f"{k} | {len(fold.blocks)} | {len(held)} | "
+            f"{sum(fold.anchors[a].train for a in held)} | "
+            f"{sum(fold.anchors[a].validation for a in held)} | "
+            f"{positions[POSITION_INTERIOR]} | {positions[POSITION_EDGE]}"
+        )
+    print("map (fold of each anchor; . no anchor; north up, one cell = 1.6 km):")
+    print(render_fold_map(folds))
+
+
+def _main_cv(args: argparse.Namespace) -> int:
+    if args.output is not None or args.check is not None:
+        raise SystemExit("ERROR: --partition cv5 writes or checks a directory: use --output-dir")
+    if args.output_dir is not None and args.check_dir is not None:
+        raise SystemExit("ERROR: pass --output-dir or --check-dir, not both")
+    if args.anchors_from is not None:
+        source = load_assignment(args.anchors_from)
+        anchors: dict[tuple[int, int], AnchorCounts] = dict(source.anchors)
+        fingerprints = dict(source.patch_index)
+    else:
+        rows, fingerprints = _read_index(args.patch_index_root, args.patch_index_dir)
+        anchors = anchor_counts(rows)
+    folds = build_fold_assignments(
+        anchors, neighbourhood=args.neighbourhood, patch_index=fingerprints
+    )
+    _print_fold_report(folds)
+    files = {f"{CV_PARTITION}-fold{k}.json": assignment_bytes(fold) for k, fold in enumerate(folds)}
+    if args.check_dir is not None:
+        bad = [
+            name
+            for name, payload in files.items()
+            if not (args.check_dir / name).is_file()
+            or (args.check_dir / name).read_bytes() != payload
+        ]
+        if bad:
+            print(f"FAIL: {bad} in {args.check_dir} differ from the partition drawn from the table")
+            return 1
+        print(f"OK: the {len(files)} fold files in {args.check_dir} match the rule")
+        return 0
+    if args.output_dir is not None:
+        for name, payload in files.items():
+            target = args.output_dir / name
+            if target.exists() and target.read_bytes() != payload:
+                raise SystemExit(
+                    f"ERROR: {target} exists with different content; an assignment that a "
+                    "run may have used is never overwritten. Write a new version file."
+                )
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        for name, payload in files.items():
+            (args.output_dir / name).write_bytes(payload)
+            print(f"wrote {args.output_dir / name}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--patch-index-root", default=DEFAULT_PATCH_INDEX_ROOT)
@@ -142,7 +221,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-fraction", type=float, default=MAX_FRACTION)
     parser.add_argument("--output", type=Path, help="write the assignment file here")
     parser.add_argument("--check", type=Path, help="compare with an existing assignment file")
+    parser.add_argument(
+        "--partition",
+        choices=("draw", CV_PARTITION),
+        default="draw",
+        help="draw: the seeded block draw (default); cv5: the five-fold partition of all anchors",
+    )
+    parser.add_argument("--anchors-from", type=Path, help="cv5: read the anchor table from here")
+    parser.add_argument("--output-dir", type=Path, help="cv5: write the five fold files here")
+    parser.add_argument("--check-dir", type=Path, help="cv5: compare the five fold files here")
     args = parser.parse_args(argv)
+    if args.partition == CV_PARTITION:
+        return _main_cv(args)
+    if args.output_dir is not None or args.check_dir is not None or args.anchors_from is not None:
+        raise SystemExit("ERROR: --output-dir, --check-dir and --anchors-from need --partition cv5")
     if args.output is not None and args.check is not None:
         raise SystemExit("ERROR: pass --output or --check, not both")
 

@@ -23,6 +23,17 @@ Rule
 
 The committed file is the source of truth for a run; ``build_assignment`` must
 reproduce it from the file's own anchor table.
+
+Spatial cross-validation ``cv5`` (pm #553, owner decision 2026-11-16)
+--------------------------------------------------------------------
+A second rule partitions ALL anchors into five folds, one assignment file per
+fold (``cv5-fold0`` ... ``cv5-fold4``); a fold file holds that fold's anchors out.
+- Blocks: the same tessellation, every block with at least one anchor (complete
+  or not).
+- Partition (no random draw): blocks sorted by ``(train patches descending,
+  block_row, block_col)``; each block goes to the fold that currently has the
+  fewest train patches, ties to the lowest fold index.
+- Position: as above, with the fold's anchors as the held-out set.
 """
 
 from __future__ import annotations
@@ -66,6 +77,14 @@ SPATIAL_HOLDOUT_CONFIG_ARMS: dict[str, str] = {
 }
 # The only assignment a run may name (configs/modeling/spatial_holdout/v1.json).
 SPATIAL_HOLDOUT_ASSIGNMENT = "v1"
+# Spatial cross-validation: the fold assignments, admitted on two arms only and seed 0.
+CV_PARTITION = "cv5"
+CV_FOLDS = 5
+SPATIAL_HOLDOUT_CV_ASSIGNMENTS: tuple[str, ...] = tuple(
+    f"{CV_PARTITION}-fold{fold}" for fold in range(CV_FOLDS)
+)
+SPATIAL_HOLDOUT_CV_ARMS: tuple[str, ...] = ("L1", "L4")
+SPATIAL_HOLDOUT_CV_SEED = 0
 _CONFIG_KEYS = frozenset({"enabled", "assignment"})
 
 Anchor = tuple[int, int]
@@ -103,14 +122,17 @@ class SpatialHoldoutAssignment:
     """A drawn assignment plus the anchor table and rule it was drawn from."""
 
     anchors: dict[Anchor, AnchorCounts]
-    seed: int
+    # seed and the share bounds belong to the block draw; a cross-validation fold has none.
+    seed: int | None
     neighbourhood: int
-    min_fraction: float
-    max_fraction: float
+    min_fraction: float | None
+    max_fraction: float | None
     eligible_blocks: tuple[Anchor, ...]
     blocks: tuple[Anchor, ...]
     holdout: tuple[HoldoutAnchor, ...]
     patch_index: dict[str, str]
+    # Fold index of a ``cv5`` fold assignment; ``None`` for the block draw.
+    fold: int | None = None
 
     @property
     def holdout_anchors(self) -> frozenset[Anchor]:
@@ -124,29 +146,52 @@ class SpatialHoldoutAssignment:
         """Return ``anchor -> interior|edge`` for the held-out anchors."""
         return {(a.row, a.col): a.position for a in self.holdout}
 
+    def _rule_payload(self) -> dict[str, Any]:
+        if self.fold is not None:
+            return {
+                "anchor_stride_cells": ANCHOR_STRIDE_CELLS,
+                "block_anchors": BLOCK_ANCHORS,
+                "tessellation": "block = (row // 48, col // 48) on the global canonical lattice",
+                "eligible_blocks": "all blocks with at least one anchor, complete or not",
+                "partition": CV_PARTITION,
+                "folds": CV_FOLDS,
+                "fold": self.fold,
+                "draw": (
+                    "no random draw: blocks sorted by (train patches descending, block_row, "
+                    "block_col); each block goes to the fold with the fewest train patches so "
+                    "far, ties to the lowest fold index"
+                ),
+                "position": (
+                    "edge: a direct neighbour is a training anchor (not in this fold, "
+                    "train patches > 0); else interior"
+                ),
+                "neighbourhood": self.neighbourhood,
+            }
+        return {
+            "anchor_stride_cells": ANCHOR_STRIDE_CELLS,
+            "block_anchors": BLOCK_ANCHORS,
+            "tessellation": "block = (row // 48, col // 48) on the global canonical lattice",
+            "eligible_blocks": "complete: all nine anchor positions are in the index",
+            "draw": (
+                "eligible blocks sorted by (block_row, block_col), permuted with "
+                "numpy.random.default_rng(seed); whole blocks until fraction >= min"
+            ),
+            "seed": self.seed,
+            "min_fraction": self.min_fraction,
+            "max_fraction": self.max_fraction,
+            "position": (
+                "edge: a direct neighbour is a training anchor (not held out, "
+                "train patches > 0); else interior"
+            ),
+            "neighbourhood": self.neighbourhood,
+        }
+
     def to_payload(self) -> dict[str, Any]:
         return {
             "schema_version": ASSIGNMENT_SCHEMA_VERSION,
             "kind": ASSIGNMENT_KIND,
             "patch_index": dict(sorted(self.patch_index.items())),
-            "rule": {
-                "anchor_stride_cells": ANCHOR_STRIDE_CELLS,
-                "block_anchors": BLOCK_ANCHORS,
-                "tessellation": "block = (row // 48, col // 48) on the global canonical lattice",
-                "eligible_blocks": "complete: all nine anchor positions are in the index",
-                "draw": (
-                    "eligible blocks sorted by (block_row, block_col), permuted with "
-                    "numpy.random.default_rng(seed); whole blocks until fraction >= min"
-                ),
-                "seed": self.seed,
-                "min_fraction": self.min_fraction,
-                "max_fraction": self.max_fraction,
-                "position": (
-                    "edge: a direct neighbour is a training anchor (not held out, "
-                    "train patches > 0); else interior"
-                ),
-                "neighbourhood": self.neighbourhood,
-            },
+            "rule": self._rule_payload(),
             "anchors_total": len(self.anchors),
             "holdout_anchors": len(self.holdout),
             "holdout_fraction": round(self.fraction, 6),
@@ -290,6 +335,69 @@ def build_assignment(
     )
 
 
+def partition_blocks(
+    anchors: Mapping[Anchor, AnchorCounts], *, folds: int = CV_FOLDS
+) -> tuple[tuple[Anchor, ...], ...]:
+    """Partition every block that holds an anchor into ``folds`` folds (rule ``cv5``).
+
+    No random draw: blocks sorted by ``(train patches descending, block_row,
+    block_col)``, each assigned to the fold with the fewest train patches so
+    far, ties to the lowest fold index. Returns the sorted blocks of each fold.
+    """
+    train: dict[Anchor, int] = {}
+    for (row, col), counts in anchors.items():
+        block = block_of(row, col)
+        train[block] = train.get(block, 0) + counts.train
+    if len(train) < folds:
+        raise SpatialHoldoutError(f"{len(train)} blocks cannot fill {folds} folds")
+    load = [0] * folds
+    members: list[list[Anchor]] = [[] for _ in range(folds)]
+    for block in sorted(train, key=lambda b: (-train[b], b[0], b[1])):
+        fold = min(range(folds), key=lambda k: (load[k], k))
+        load[fold] += train[block]
+        members[fold].append(block)
+    return tuple(tuple(sorted(blocks)) for blocks in members)
+
+
+def build_fold_assignments(
+    anchors: Mapping[Anchor, AnchorCounts],
+    *,
+    neighbourhood: int = 8,
+    patch_index: Mapping[str, str] | None = None,
+) -> tuple[SpatialHoldoutAssignment, ...]:
+    """Build the ``cv5`` fold assignments: fold ``k`` holds its blocks' anchors out."""
+    _validate_anchors(anchors)
+    if neighbourhood not in NEIGHBOURHOODS:
+        raise SpatialHoldoutError(f"neighbourhood must be one of {NEIGHBOURHOODS}")
+    ordered = dict(sorted(anchors.items()))
+    every_block = tuple(sorted({block_of(*a) for a in ordered}))
+    out: list[SpatialHoldoutAssignment] = []
+    for fold, blocks in enumerate(partition_blocks(ordered)):
+        block_set = set(blocks)
+        held = sorted(a for a in ordered if block_of(*a) in block_set)
+        labels = label_positions(held, ordered, neighbourhood=neighbourhood)
+        out.append(
+            SpatialHoldoutAssignment(
+                anchors=ordered,
+                seed=None,
+                neighbourhood=neighbourhood,
+                min_fraction=None,
+                max_fraction=None,
+                eligible_blocks=every_block,
+                blocks=blocks,
+                holdout=tuple(
+                    HoldoutAnchor(
+                        row=row, col=col, block=block_of(row, col), position=labels[(row, col)]
+                    )
+                    for row, col in held
+                ),
+                patch_index=dict(patch_index or {}),
+                fold=fold,
+            )
+        )
+    return tuple(out)
+
+
 def assignment_bytes(assignment: SpatialHoldoutAssignment) -> bytes:
     """Canonical file bytes: sorted keys, one list element per line, trailing newline."""
     lines: list[str] = []
@@ -334,6 +442,24 @@ def parse_assignment(payload: Mapping[str, Any]) -> SpatialHoldoutAssignment:
         if (row, col) in anchors:
             raise SpatialHoldoutError(f"duplicate anchor ({row}, {col})")
         anchors[(row, col)] = AnchorCounts(train=train, validation=validation)
+    patch_index = {str(k): str(v) for k, v in (payload.get("patch_index") or {}).items()}
+    if "partition" in rule:
+        fold = rule.get("fold")
+        if (
+            rule.get("partition") != CV_PARTITION
+            or isinstance(fold, bool)
+            or not isinstance(fold, int)
+            or not 0 <= fold < CV_FOLDS
+        ):
+            raise SpatialHoldoutError(f"unknown partition rule {rule.get('partition')!r}/{fold!r}")
+        folded = build_fold_assignments(
+            anchors, neighbourhood=rule.get("neighbourhood", 0), patch_index=patch_index
+        )[fold]
+        if folded.to_payload() != dict(payload):
+            raise SpatialHoldoutError(
+                "assignment does not match the one its own rule and anchor table produce"
+            )
+        return folded
     min_fraction, max_fraction = rule.get("min_fraction"), rule.get("max_fraction")
     if not isinstance(min_fraction, float) or not isinstance(max_fraction, float):
         raise SpatialHoldoutError("rule min_fraction and max_fraction must be floats")
@@ -343,7 +469,7 @@ def parse_assignment(payload: Mapping[str, Any]) -> SpatialHoldoutAssignment:
         neighbourhood=rule.get("neighbourhood", 0),
         min_fraction=min_fraction,
         max_fraction=max_fraction,
-        patch_index={str(k): str(v) for k, v in (payload.get("patch_index") or {}).items()},
+        patch_index=patch_index,
     )
     if rebuilt.to_payload() != dict(payload):
         raise SpatialHoldoutError(
@@ -416,16 +542,37 @@ def render_map(assignment: SpatialHoldoutAssignment) -> str:
     return "\n".join(lines)
 
 
+def render_fold_map(folds: Sequence[SpatialHoldoutAssignment]) -> str:
+    """ASCII map of the anchor lattice: the fold digit of each anchor, ``.`` no anchor."""
+    fold_of = {a: k for k, fold in enumerate(folds) for a in fold.holdout_anchors}
+    anchors = folds[0].anchors
+    rows = sorted({a[0] for a in anchors})
+    cols = sorted({a[1] for a in anchors})
+    step = ANCHOR_STRIDE_CELLS
+    return "\n".join(
+        " ".join(
+            str(fold_of[(row, col)]) if (row, col) in anchors else "."
+            for col in range(cols[0], cols[-1] + step, step)
+        )
+        for row in range(rows[0], rows[-1] + step, step)
+    )
+
+
 __all__ = [
     "ANCHOR_STRIDE_CELLS",
     "ASSIGNMENT_DIR",
     "BLOCK_ANCHORS",
+    "CV_FOLDS",
+    "CV_PARTITION",
     "MAX_FRACTION",
     "MIN_FRACTION",
     "POSITION_EDGE",
     "POSITION_INTERIOR",
     "SPATIAL_HOLDOUT_ASSIGNMENT",
     "SPATIAL_HOLDOUT_CONFIG_ARMS",
+    "SPATIAL_HOLDOUT_CV_ARMS",
+    "SPATIAL_HOLDOUT_CV_ASSIGNMENTS",
+    "SPATIAL_HOLDOUT_CV_SEED",
     "Anchor",
     "AnchorCounts",
     "HoldoutAnchor",
@@ -436,10 +583,13 @@ __all__ = [
     "assignment_sha256",
     "block_of",
     "build_assignment",
+    "build_fold_assignments",
     "complete_blocks",
     "label_positions",
     "load_assignment",
     "parse_assignment",
+    "partition_blocks",
+    "render_fold_map",
     "render_map",
     "resolve_assignment_path",
     "spatial_holdout_from_config",
