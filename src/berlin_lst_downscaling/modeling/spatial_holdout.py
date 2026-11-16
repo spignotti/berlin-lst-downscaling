@@ -51,11 +51,21 @@ ASSIGNMENT_DIR: Path = (
     Path(__file__).resolve().parents[3] / "configs" / "modeling" / "spatial_holdout"
 )
 
-# The only configs that may enable the option, and the matrix arm each one repeats.
+# The only configs that may enable the option, and the matrix arm each one repeats:
+# one per arm of configs/ablation/v6_matrix.yaml (the TESSERA arm is not one of them).
 SPATIAL_HOLDOUT_CONFIG_ARMS: dict[str, str] = {
     "v6_l1_spatial_holdout": "L1",
+    "v6_l2_spatial_holdout": "L2",
+    "v6_l3_spatial_holdout": "L3",
     "v6_l4_spatial_holdout": "L4",
+    "v6_l5_spatial_holdout": "L5",
+    "v6_loo_morph_spatial_holdout": "LOO-M",
+    "v6_loo_shadow_spatial_holdout": "LOO-S",
+    "v6_no_ndvi_ndwi_spatial_holdout": "NO-NDVI-NDWI",
+    "v6_no_red_nir_index_spatial_holdout": "NO-RED-NIR-IDX",
 }
+# The only assignment a run may name (configs/modeling/spatial_holdout/v1.json).
+SPATIAL_HOLDOUT_ASSIGNMENT = "v1"
 _CONFIG_KEYS = frozenset({"enabled", "assignment"})
 
 Anchor = tuple[int, int]
@@ -414,6 +424,7 @@ __all__ = [
     "MIN_FRACTION",
     "POSITION_EDGE",
     "POSITION_INTERIOR",
+    "SPATIAL_HOLDOUT_ASSIGNMENT",
     "SPATIAL_HOLDOUT_CONFIG_ARMS",
     "Anchor",
     "AnchorCounts",

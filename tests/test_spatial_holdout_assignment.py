@@ -6,12 +6,20 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import DictConfig, OmegaConf
 
 from berlin_lst_downscaling.modeling import spatial_holdout as sh
-from berlin_lst_downscaling.modeling.guards import contract_invariants, guard_modeling_config
+from berlin_lst_downscaling.modeling import ssim_range
+from berlin_lst_downscaling.modeling.channels import V6_ABLATION_ARMS
+from berlin_lst_downscaling.modeling.guards import (
+    assert_spatial_holdout,
+    contract_invariants,
+    guard_modeling_config,
+)
+from berlin_lst_downscaling.modeling.run import resolve_run_ssim_data_range
 
 _REPO = Path(__file__).resolve().parents[1]
 _CONFIG_DIR = _REPO / "configs" / "modeling"
@@ -163,20 +171,70 @@ def _compose(name: str, overrides: list[str]) -> DictConfig:
         return compose(config_name=name, overrides=overrides)
 
 
-@pytest.mark.parametrize("arm", ["l1", "l4"])
-def test_holdout_config_equals_the_locked_arm_except_for_the_option(arm: str) -> None:
-    name = f"v6_{arm}_spatial_holdout"
+_HOLDOUT_CONFIGS = sorted(sh.SPATIAL_HOLDOUT_CONFIG_ARMS)
+
+
+def test_one_holdout_config_per_matrix_arm() -> None:
+    matrix = yaml.safe_load((_REPO / "configs" / "ablation" / "v6_matrix.yaml").read_text())
+    assert (
+        set(sh.SPATIAL_HOLDOUT_CONFIG_ARMS.values()) == set(matrix["arms"]) == set(V6_ABLATION_ARMS)
+    )
+    assert len(sh.SPATIAL_HOLDOUT_CONFIG_ARMS) == 9
+    for name, arm in sh.SPATIAL_HOLDOUT_CONFIG_ARMS.items():
+        locked = V6_ABLATION_ARMS[arm].config_name
+        assert name == locked.removesuffix("_locked") + "_spatial_holdout"
+        assert (_CONFIG_DIR / f"{name}.yaml").is_file()
+    assert {p.stem for p in _CONFIG_DIR.glob("*_spatial_holdout.yaml")} == set(_HOLDOUT_CONFIGS)
+
+
+@pytest.mark.parametrize("name", _HOLDOUT_CONFIGS)
+def test_holdout_config_equals_the_locked_arm_except_for_the_option(name: str) -> None:
+    arm = sh.SPATIAL_HOLDOUT_CONFIG_ARMS[name]
     holdout = _compose(name, _RUN_OVERRIDES)
     guard_modeling_config(holdout, name)
     contract_invariants(holdout)
-    locked = _compose(f"v6_{arm}_locked", _RUN_OVERRIDES)
+    locked = _compose(V6_ABLATION_ARMS[arm].config_name, _RUN_OVERRIDES)
     a = OmegaConf.to_container(holdout, resolve=True)
     b = OmegaConf.to_container(locked, resolve=True)
     assert isinstance(a, dict) and isinstance(b, dict)
     differing = {key for key in set(a) | set(b) if a.get(key) != b.get(key)}
     assert differing == {"output_root", "spatial_holdout"}
     assert a["spatial_holdout"] == {"enabled": True, "assignment": "v1"}
-    assert a["ablation_arm"] == sh.SPATIAL_HOLDOUT_CONFIG_ARMS[name] == arm.upper()
+    assert a["ablation_arm"] == arm
+    assert "spatial-holdout" in a["output_root"] and a["output_root"] != b["output_root"]
+
+
+def test_the_two_stage_one_configs_are_unchanged() -> None:
+    # L1 and L4 seed 0 already ran on these files; they must stay byte-identical.
+    for arm in ("l1", "l4"):
+        text = (_CONFIG_DIR / f"v6_{arm}_spatial_holdout.yaml").read_text()
+        assert f"  - v6_{arm}_locked\n" in text
+        assert f'output_root: "data/runs/modeling-spatial-holdout-v6-{arm}/seed-${{seed}}"' in text
+
+
+def test_l5_keeps_the_published_ssim_range_under_the_holdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The SSIM range of the thermal-aware loss is the published artifact, derived on all
+    # train targets 2017-2023 (held-out anchors included); the holdout does not refit it.
+    published = _REPO / "configs" / "modeling" / "ssim_data_range" / "v1.yaml"
+    monkeypatch.setattr(ssim_range, "SSIM_DATA_RANGE_ARTIFACT", published)  # not the test artifact
+    assignment = sh.load_assignment(_COMMITTED)
+    fingerprints = {
+        key: assignment.patch_index[key] for key in ("index_policy_hash", "source_policy_hash")
+    }
+    ranges = {}
+    for name in ("v6_l5_locked", "v6_l5_spatial_holdout"):
+        cfg = _compose(name, _RUN_OVERRIDES)
+        assert cfg.contract.loss == "thermal_aware"
+        assert OmegaConf.select(cfg, "ssim_data_range_test_override_k") is None
+        ranges[name] = resolve_run_ssim_data_range(cfg, expected_fingerprints=fingerprints)
+    assert ranges["v6_l5_locked"].payload() == ranges["v6_l5_spatial_holdout"].payload()
+    assert ranges["v6_l5_spatial_holdout"].source == "artifact"
+    assert (
+        ranges["v6_l5_spatial_holdout"].data_range_k
+        == yaml.safe_load(published.read_text())["data_range_k"]
+    )
 
 
 def test_option_is_absent_from_every_other_config() -> None:
@@ -189,11 +247,22 @@ def test_option_is_absent_from_every_other_config() -> None:
     assert sh.spatial_holdout_from_config(locked) is None
 
 
-def test_guard_rejects_the_option_elsewhere_and_off_contract_holdout_configs() -> None:
+def test_guard_rejects_the_option_on_any_non_holdout_config() -> None:
     on = ["+spatial_holdout.enabled=true", "+spatial_holdout.assignment=v1"]
+    for arm in V6_ABLATION_ARMS.values():  # all nine matrix configs, and the TESSERA one
+        cfg = _compose(arm.config_name, [*_RUN_OVERRIDES, *on])
+        with pytest.raises(ValueError, match="only admitted on"):
+            assert_spatial_holdout(cfg, arm.config_name)
+    for name in ("tessera_arm", "stage1_locked", "full"):
+        cfg = _compose(name, on)
+        with pytest.raises(ValueError, match="only admitted on"):
+            assert_spatial_holdout(cfg, name)
     with pytest.raises(ValueError, match="only admitted on"):
         guard_modeling_config(_compose("v6_l4_locked", [*_RUN_OVERRIDES, *on]), "v6_l4_locked")
-    name = "v6_l1_spatial_holdout"
+
+
+@pytest.mark.parametrize("name", _HOLDOUT_CONFIGS)
+def test_guard_pins_every_holdout_config(name: str, tmp_path: Path) -> None:
     for overrides, match in (
         (["evaluate_test=true"], "test 2025 stays sealed"),
         (["spatial_holdout.enabled=false"], "enabled must be true"),
@@ -203,5 +272,11 @@ def test_guard_rejects_the_option_elsewhere_and_off_contract_holdout_configs() -
     ):
         with pytest.raises(ValueError, match=match):
             guard_modeling_config(_compose(name, [*_RUN_OVERRIDES, *overrides]), name)
+    # a valid assignment file that is not v1 is refused as well
+    copy = tmp_path / "other.json"
+    copy.write_bytes(_COMMITTED.read_bytes())
+    cfg = _compose(name, [*_RUN_OVERRIDES, f"spatial_holdout.assignment={copy}"])
+    with pytest.raises(ValueError, match="only 'v1' is admitted"):
+        guard_modeling_config(cfg, name)
     with pytest.raises(ValueError, match="unknown spatial_holdout key"):
         sh.spatial_holdout_from_config(_compose(name, ["+spatial_holdout.buffer=1"]))

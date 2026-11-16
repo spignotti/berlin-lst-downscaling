@@ -39,6 +39,7 @@ from berlin_lst_downscaling.modeling.contracts import (
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
 from berlin_lst_downscaling.modeling.spatial_holdout import (
+    SPATIAL_HOLDOUT_ASSIGNMENT,
     SPATIAL_HOLDOUT_CONFIG_ARMS,
     load_assignment,
     resolve_assignment_path,
@@ -1140,7 +1141,7 @@ def _check_patch_cache(cfg: DictConfig) -> None:
 
 
 def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
-    """Admit the spatial holdout option on its two configs only, and pin them.
+    """Admit the spatial holdout option on its nine arm configs only, and pin them.
 
     A holdout config repeats one matrix arm on the v6 lock (checked by
     ``assert_ablation_lock``); on top of that the option must be on, the
@@ -1160,6 +1161,11 @@ def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
     if assignment is None:
         problems.append("spatial_holdout.enabled must be true")
     else:
+        if assignment != SPATIAL_HOLDOUT_ASSIGNMENT:
+            problems.append(
+                f"spatial_holdout.assignment={assignment!r} (only {SPATIAL_HOLDOUT_ASSIGNMENT!r} "
+                "is admitted)"
+            )
         try:
             load_assignment(resolve_assignment_path(assignment))
         except (OSError, ValueError) as exc:

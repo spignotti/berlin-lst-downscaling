@@ -19,6 +19,7 @@ from test_vertex_evidence_v6 import evidence  # noqa: F401  (``evidence`` is a f
 
 from berlin_lst_downscaling.modeling import run as run_module
 from berlin_lst_downscaling.modeling import spatial_holdout as sh
+from berlin_lst_downscaling.modeling.channels import V6_ABLATION_ARMS
 from berlin_lst_downscaling.modeling.patches import RealSourceConfig
 
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "modeling"
@@ -27,18 +28,44 @@ _SEEDED = ("--seed", "0", "--max-epochs", "40", "--lr-schedule", "cosine")
 # ---------------------------------------------------------------- launcher
 
 
-@pytest.mark.parametrize("arm", ["l1", "l4"])
+# matrix mode -> holdout mode and config; the stage-1 L1 and L4 names are part of
+# the display names of jobs that already ran
+_HOLDOUT_MODES = {
+    "v6-l1": "v6-l1-spatial-holdout",
+    "v6-l2": "v6-l2-spatial-holdout",
+    "v6-l3": "v6-l3-spatial-holdout",
+    "v6-l4": "v6-l4-spatial-holdout",
+    "v6-l5": "v6-l5-spatial-holdout",
+    "v6-loo-morph": "v6-loo-morph-spatial-holdout",
+    "v6-loo-shadow": "v6-loo-shadow-spatial-holdout",
+    "v6-no-ndvi-ndwi": "v6-no-ndvi-ndwi-spatial-holdout",
+    "v6-no-red-nir-index": "v6-no-red-nir-index-spatial-holdout",
+}
+
+
+def test_holdout_modes_cover_the_nine_matrix_arms(launcher: ModuleType) -> None:  # noqa: F811
+    assert dict(zip(_HOLDOUT_MODES, launcher.SPATIAL_HOLDOUT_MODES, strict=True)) == _HOLDOUT_MODES
+    arm_of = {arm.config_name: arm.arm_id for arm in V6_ABLATION_ARMS.values()}
+    for matrix_mode, mode in _HOLDOUT_MODES.items():
+        locked = launcher.MODE_CONFIG_NAME[matrix_mode]
+        config = launcher.MODE_CONFIG_NAME[mode]
+        assert config == locked.replace("_locked", "_spatial_holdout")
+        assert sh.SPATIAL_HOLDOUT_CONFIG_ARMS[config] == arm_of[locked]
+        assert launcher.MODE_EVIDENCE_PROFILE[mode] == "full"
+    assert set(launcher.SPATIAL_HOLDOUT_MODES) == set(_HOLDOUT_MODES.values())
+
+
+@pytest.mark.parametrize("mode", sorted(_HOLDOUT_MODES.values()))
 def test_holdout_preflight_is_validation_only_and_bounded(
     launcher: ModuleType,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    arm: str,
+    mode: str,
 ) -> None:
-    mode = f"v6-{arm}-spatial-holdout"
     monkeypatch.setattr(sys, "argv", _argv(mode, *_SEEDED, "--skip-test"))
     assert launcher.main() == 0
     out = capsys.readouterr().out
-    assert f"{mode} / v6_{arm}_spatial_holdout" in out
+    assert f"{mode} / {mode.replace('-', '_')}" in out
     assert "test pass      : skipped" in out and "evaluate_test=false" in out
     assert "patch cache    : job-local build" in out
     assert "timeout        : 10800s" in out and "~$3.17" in out
@@ -47,11 +74,12 @@ def test_holdout_preflight_is_validation_only_and_bounded(
     assert "preflight only: no job submitted" in out
 
 
+@pytest.mark.parametrize("mode", sorted(_HOLDOUT_MODES.values()))
 def test_holdout_modes_refuse_test_scoring_prebuilt_cache_and_higher_bounds(
     launcher: ModuleType,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
-    mode = "v6-l4-spatial-holdout"
     for extra, match in (
         ((), "requires --skip-test"),
         (("--skip-test", "--patch-cache", "prebuilt"), "builds its patch cache in the job"),

@@ -172,10 +172,20 @@ TESSERA_MODE = "tessera"
 TESSERA_TIMEOUT_SECONDS = 20400
 TESSERA_MAX_EXPOSURE_USD = 6.25
 TESSERA_MAX_HOURLY_RATE_USD = 1.0
-# Spatial holdout add-on test (docs/spatial-holdout.md): one 40-epoch L1 or L4
-# job without the held-out anchors, validation only. The matrix L4 job took
-# 2.38 h; the 3 h timeout caps one job at $3.17 at the $1/h cap.
-SPATIAL_HOLDOUT_MODES = ("v6-l1-spatial-holdout", "v6-l4-spatial-holdout")
+# Spatial holdout add-on test (docs/spatial-holdout.md): one 40-epoch job per
+# matrix arm without the held-out anchors, validation only. The matrix L4 job
+# took 2.38 h; the 3 h timeout caps one job at $3.17 at the $1/h cap.
+SPATIAL_HOLDOUT_MODES = (
+    "v6-l1-spatial-holdout",
+    "v6-l2-spatial-holdout",
+    "v6-l3-spatial-holdout",
+    "v6-l4-spatial-holdout",
+    "v6-l5-spatial-holdout",
+    "v6-loo-morph-spatial-holdout",
+    "v6-loo-shadow-spatial-holdout",
+    "v6-no-ndvi-ndwi-spatial-holdout",
+    "v6-no-red-nir-index-spatial-holdout",
+)
 SPATIAL_HOLDOUT_TIMEOUT_SECONDS = 10800
 SPATIAL_HOLDOUT_MAX_EXPOSURE_USD = 3.25
 SPATIAL_HOLDOUT_MAX_HOURLY_RATE_USD = 1.0
@@ -210,8 +220,7 @@ MODE_CONFIG_NAME = {
     "v6-no-ndvi-ndwi": "v6_no_ndvi_ndwi_locked",
     "v6-no-red-nir-index": "v6_no_red_nir_index_locked",
     TESSERA_MODE: "tessera_arm",
-    "v6-l1-spatial-holdout": "v6_l1_spatial_holdout",
-    "v6-l4-spatial-holdout": "v6_l4_spatial_holdout",
+    **{mode: mode.replace("-", "_") for mode in SPATIAL_HOLDOUT_MODES},
 }
 
 # Mode -> evidence profile. Both recovery trials emit `probe-residual` so the
@@ -282,8 +291,7 @@ MODE_EVIDENCE_PROFILE = {
     "v6-no-ndvi-ndwi": "full",
     "v6-no-red-nir-index": "full",
     TESSERA_MODE: "full",
-    "v6-l1-spatial-holdout": "full",
-    "v6-l4-spatial-holdout": "full",
+    **dict.fromkeys(SPATIAL_HOLDOUT_MODES, "full"),
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
