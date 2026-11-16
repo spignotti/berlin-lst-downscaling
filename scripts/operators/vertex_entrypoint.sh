@@ -25,7 +25,9 @@
 #   gs:// destination for the epoch curve, uploaded create-only also on failure),
 #   VERTEX_PATCH_CACHE_SOURCE ("", job_local or prebuilt; prebuilt appends
 #   +data.patch_cache.source=prebuilt) and VERTEX_PATCH_CACHE_FALLBACK=1 (only with
-#   prebuilt; +data.patch_cache.allow_job_local_fallback=true)
+#   prebuilt; +data.patch_cache.allow_job_local_fallback=true),
+#   VERTEX_VALIDATION_EXPORT_URI (spatial holdout modes; gs:// destination for the
+#   run's eval_validation_patches.parquet, uploaded create-only before the evidence)
 #
 # VERTEX_PROFILE=val-rescore (v6 validation-only rescore of the 27 frozen
 # checkpoints): runs scripts/operators/rescore_v6_validation.py, which uploads its
@@ -84,7 +86,8 @@ INFISICAL_TOKEN="$(infisical login --method=gcp-id-token \
 if [[ "$PROFILE" == "val-rescore" ]]; then
   for forbidden in VERTEX_SEED VERTEX_MAX_EPOCHS VERTEX_LR_SCHEDULE \
     VERTEX_EARLY_STOPPING_PATIENCE VERTEX_EARLY_STOPPING_MIN_DELTA VERTEX_SKIP_TEST \
-    VERTEX_PATCH_CACHE_SOURCE VERTEX_PATCH_CACHE_FALLBACK VERTEX_EPOCH_METRICS_URI; do
+    VERTEX_PATCH_CACHE_SOURCE VERTEX_PATCH_CACHE_FALLBACK VERTEX_EPOCH_METRICS_URI \
+    VERTEX_VALIDATION_EXPORT_URI; do
     if [[ -n "${!forbidden:-}" ]]; then
       echo "ERROR: $forbidden is not accepted by the val-rescore profile" >&2
       exit 2
@@ -239,6 +242,9 @@ fi
 epoch_args=()
 if [[ "$PROFILE" == "full" && -n "${VERTEX_EPOCH_METRICS_URI:-}" ]]; then
   epoch_args=(--epoch-metrics-uri "$VERTEX_EPOCH_METRICS_URI")
+fi
+if [[ "$PROFILE" == "full" && -n "${VERTEX_VALIDATION_EXPORT_URI:-}" ]]; then
+  epoch_args+=(--validation-export-uri "$VERTEX_VALIDATION_EXPORT_URI")
 fi
 
 if [[ "$PROFILE" == "efficiency" ]]; then

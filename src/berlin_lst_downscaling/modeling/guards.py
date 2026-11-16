@@ -38,6 +38,12 @@ from berlin_lst_downscaling.modeling.contracts import (
 )
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
+from berlin_lst_downscaling.modeling.spatial_holdout import (
+    SPATIAL_HOLDOUT_CONFIG_ARMS,
+    load_assignment,
+    resolve_assignment_path,
+    spatial_holdout_from_config,
+)
 
 _ALLOWED_CONTRACT_LOSSES = frozenset({"masked_l1", "thermal_aware"})
 _ALLOWED_FEATURE_ORDERS = frozenset(
@@ -1075,6 +1081,7 @@ _LOCKED_AGGREGATION_CONFIGS = frozenset(
         STAGE1_LOCKED_CONFIG_NAME,
         *ABLATION_LOCKED_CONFIG_NAMES,
         *V6_ABLATION_LOCKED_CONFIG_NAMES,
+        *SPATIAL_HOLDOUT_CONFIG_ARMS,
     }
 )
 
@@ -1132,6 +1139,46 @@ def _check_patch_cache(cfg: DictConfig) -> None:
             raise ValueError(f"data.patch_cache.{key} must be an int >= 1, got {value!r}")
 
 
+def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
+    """Admit the spatial holdout option on its two configs only, and pin them.
+
+    A holdout config repeats one matrix arm on the v6 lock (checked by
+    ``assert_ablation_lock``); on top of that the option must be on, the
+    committed assignment must load, the test split stays unscored and the patch
+    cache is built in the job (a prebuilt cache holds the published scaler).
+    """
+    assignment = spatial_holdout_from_config(cfg)
+    expected_arm = SPATIAL_HOLDOUT_CONFIG_ARMS.get(config_name or "")
+    if expected_arm is None:
+        if assignment is not None:
+            raise ValueError(
+                "spatial_holdout.enabled=true is only admitted on "
+                f"{sorted(SPATIAL_HOLDOUT_CONFIG_ARMS)}; got config {config_name!r}"
+            )
+        return
+    problems: list[str] = []
+    if assignment is None:
+        problems.append("spatial_holdout.enabled must be true")
+    else:
+        try:
+            load_assignment(resolve_assignment_path(assignment))
+        except (OSError, ValueError) as exc:
+            problems.append(f"spatial_holdout.assignment={assignment!r} does not load: {exc}")
+    if cfg.get("ablation_release") != "v6" or cfg.get("ablation_arm") != expected_arm:
+        problems.append(
+            f"ablation_release/arm={cfg.get('ablation_release')!r}/{cfg.get('ablation_arm')!r} "
+            f"(expected 'v6'/{expected_arm!r})"
+        )
+    if evaluate_test_from_config(cfg):
+        problems.append("evaluate_test must be false (test 2025 stays sealed)")
+    if OmegaConf.select(cfg, "data.patch_cache.source", default="job_local") != "job_local":
+        problems.append("data.patch_cache.source must be job_local")
+    if problems:
+        raise ValueError(
+            f"spatial holdout config {config_name!r} is off-contract: " + "; ".join(problems)
+        )
+
+
 def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     """Run the config-identity guards before any run directory or source read.
 
@@ -1170,6 +1217,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         STAGE1_PROBE_LR3_CONFIG_NAME,
         *ABLATION_LOCKED_CONFIG_NAMES,
         *V6_ABLATION_LOCKED_CONFIG_NAMES,
+        *SPATIAL_HOLDOUT_CONFIG_ARMS,
         "tessera_arm",
     }
     if bool(cfg.get("stage1_residual_prior", False)) and config_name not in _residual_prior_configs:
@@ -1182,7 +1230,11 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "stage1_full is the unbounded Stage-1 Vertex run marker "
             f"(issue #53) but is set on config {config_name!r}; refusing to run"
         )
-    _ablation_names = (*ABLATION_LOCKED_CONFIG_NAMES, *V6_ABLATION_LOCKED_CONFIG_NAMES)
+    _ablation_names = (
+        *ABLATION_LOCKED_CONFIG_NAMES,
+        *V6_ABLATION_LOCKED_CONFIG_NAMES,
+        *SPATIAL_HOLDOUT_CONFIG_ARMS,
+    )
     if (
         bool(cfg.get("ablation_lock", False))
         and config_name not in _ablation_names
@@ -1192,7 +1244,8 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "ablation_lock is the Tag-11 ablation marker (issue #57) but is set on "
             f"config {config_name!r}; refusing to run"
         )
-    v6_config = config_name in V6_ABLATION_LOCKED_CONFIG_NAMES
+    holdout_config = config_name in SPATIAL_HOLDOUT_CONFIG_ARMS
+    v6_config = config_name in V6_ABLATION_LOCKED_CONFIG_NAMES or holdout_config
     if early_stopping_from_config(cfg).enabled and not v6_config:
         raise ValueError(
             "early_stopping.enabled=true is only admitted on the v6 ablation configs; "
@@ -1232,13 +1285,14 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
                 f"config {config_name!r} requires ablation_release='v6' and its own "
                 f"ablation_arm; got release={release!r} arm={arm_id!r}"
             )
-    elif release is not None and config_name != "tessera_arm":
+    elif release is not None and config_name != "tessera_arm" and not holdout_config:
         raise ValueError(
             f"ablation_release={release!r} is only admitted on the v6 ablation configs; "
             f"got config {config_name!r}"
         )
     if config_name == "tessera_arm":
         assert_tessera_training_lock(cfg)
+    assert_spatial_holdout(cfg, config_name)
     if config_name in _ablation_names:
         assert_ablation_lock(cfg)
     if bool(cfg.get("vertex_smoke_bounds", False)):
@@ -1254,6 +1308,7 @@ __all__ = [
     "evaluate_test_from_config",
     "assert_aggregation_arithmetic_for_locked",
     "assert_ablation_lock",
+    "assert_spatial_holdout",
     "assert_efficiency_fit_runtime",
     "assert_probe_minima",
     "assert_stage1_efficiency",
