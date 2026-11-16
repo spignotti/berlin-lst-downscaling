@@ -1295,3 +1295,30 @@ def test_holdout_fold_batch_skips_a_succeeded_fold_and_prices_the_rest(env: Env)
     assert ("L1", "cv5-fold2") not in launched_folds(env) and len(launched_folds(env)) == 9
     over = env.run("holdout", "--max-total-usd", "29.24", *FOLD_FLAGS, **BATCH)
     assert over.returncode == 2 and "REFUSED" in over.stdout
+
+
+def test_holdout_fold_attached_pair_never_submits_when_its_job_ended_meanwhile(env: Env) -> None:
+    (env.log_dir / f"list.{fdn('L1', 'cv5-fold0')}").write_text("111\tJOB_STATE_RUNNING\n")
+    (env.log_dir / f"list.{fdn('L4', 'cv5-fold0')}").write_text("222\tJOB_STATE_RUNNING\n")
+    # at its own turn (second lookup) the L4 fold job is FAILED; the opt-in must not make it new
+    (env.log_dir / f"list2.{fdn('L4', 'cv5-fold0')}").write_text("222\tJOB_STATE_FAILED\n")
+    res = env.run(
+        "holdout",
+        "--max-total-usd",
+        "100",
+        "--assignments",
+        "cv5-fold0",
+        "--arms",
+        "L1,L4",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        **BATCH,
+        V6M_RESUBMIT_FAILED="1",
+        V6M_RESUBMIT_CANCELLED="1",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert launcher_calls(env) == []
+    assert "planned as attached to an active job" in res.stdout
+    assert "1 failed [L4/seed0/cv5-fold0]" in res.stdout

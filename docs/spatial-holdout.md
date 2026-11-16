@@ -237,7 +237,7 @@ are unchanged. The job reads the fold from `VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT`, 
 only an image built from a commit that contains this code understands: an older image
 would train `v1` under a fold label, so build the image from the merge commit first.
 
-Run recipe (10 runs, no stage-1 skip; projected USD 24.00, launcher ceiling USD 31.70, per-job
+Run recipe (10 runs, no stage-1 skip; projected USD 24.00, launcher ceiling USD 31.67, per-job
 caps USD 32.50 as the `--max-total-usd` limit; same environment as the batch launcher below):
 
 ```bash
@@ -497,13 +497,28 @@ rng seed 0, 95 %):
   (checked); a fold or arm without export is listed and the out-of-fold summary is
   marked incomplete instead of being computed on a subset.
 
+Copy the exports of the ten fold runs into their own directory (not into the `$E` of the
+`v1` recipe, whose `v6sh-*.parquet` glob would sweep them in), named by fold:
+
 ```bash
+P=gs://berlin-lst-training-data/qa/modeling/vertex-smoke
+C=data/analysis/spatial-holdout/exports-cv5
+mkdir -p $C
+for k in 0 1 2 3 4; do for arm in l1 l4; do
+  label=v6sh-<sha7>-$arm-cv5-fold$k-seed0-ep40-cos-notest
+  gsutil cp $P/$label/eval_validation_patches.parquet $C/$arm-fold$k.parquet
+done; done
+
 uv run python scripts/analyze_spatial_holdout.py \
   --matrix-export $E/v6m-*-l1-seed0-*.parquet $E/v6m-*-l4-seed0-*.parquet \
-  --fold-export cv5-fold0 $E/<fold0 L1>.parquet $E/<fold0 L4>.parquet \
-  --fold-export cv5-fold1 ... \
+  --fold-export cv5-fold0 $C/l1-fold0.parquet $C/l4-fold0.parquet \
+  --fold-export cv5-fold1 $C/l1-fold1.parquet $C/l4-fold1.parquet \
+  --fold-export cv5-fold2 $C/l1-fold2.parquet $C/l4-fold2.parquet \
+  --fold-export cv5-fold3 $C/l1-fold3.parquet $C/l4-fold3.parquet \
+  --fold-export cv5-fold4 $C/l1-fold4.parquet $C/l4-fold4.parquet \
   --output-prefix data/analysis/spatial-holdout/cv5
 ```
+
 
 ### Matrix models on the future strata
 
@@ -532,8 +547,8 @@ L4 - L1 of the matrix models is -0.020 K [-0.041, 0.000] on seen anchors
   not derived from an autocorrelation range.
 - The `cv5` folds are scattered blocks, so more anchors are edge and fewer are interior
   than in `v1` (6 to 11 interior anchors per fold against 14 in `v1`, which has one
-  contiguous area); they are less city-centre than `v1`, and every fold holds out
-  about a fifth of the anchors, incomplete blocks included. One seed per fold: the
+  contiguous area). Every fold holds out about a fifth of the anchors, incomplete
+  blocks included. The land-use mix of the folds was not measured. One seed per fold: the
   fold-to-fold spread mixes spatial and seed variation, and the out-of-fold interval
   carries scene variation only.
 - No buffer beyond the window edge; the interior / edge split stands in.
