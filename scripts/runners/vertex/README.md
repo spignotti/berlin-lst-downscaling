@@ -51,9 +51,22 @@ scripts/runners/vertex/launch_v6_matrix.sh preflight [ARM SEED] # launcher --pre
 scripts/runners/vertex/launch_v6_matrix.sh state ARM SEED       # read-only job lookup by displayName
 scripts/runners/vertex/launch_v6_matrix.sh submit ARM SEED      # PAID: one job, blocks until terminal
 scripts/runners/vertex/launch_v6_matrix.sh submit-all [--from ARM SEED]  # PAID: fixed order, resumable
+scripts/runners/vertex/launch_v6_matrix.sh holdout --max-total-usd USD [--arms ...] [--seeds ...] \
+    [--max-parallel N] [--dry-run | --preflight]   # PAID unless --dry-run/--preflight: spatial holdout batch
 ```
 
-Run `preflight` first. Only `submit` and `submit-all` can create a job.
+Run `preflight` first. Only `submit`, `submit-all` and `holdout` (without `--dry-run`
+or `--preflight`) can create a job.
+
+`holdout` is the spatial holdout batch of `docs/spatial-holdout.md`: the holdout mode of each
+arm, `--skip-test`, job-local cache, 10800 s timeout and 600 s queue allowance, at most
+`--max-parallel` (default and maximum 4) jobs in flight, seeds first. It looks each run up by
+displayName (SUCCEEDED skipped, active job waited on), refuses before the first submission
+when the summed per-job caps (USD 3.25 each) of the runs it would start exceed the required
+`--max-total-usd`, and `--dry-run` prices all requested runs without any cloud call. A run
+without capacity (queue-rule cancel, `RESOURCE_EXHAUSTED`/quota at submission) ends with exit
+3 and the others continue; any other failure starts no further run and waits for those in
+flight. `V6M_RESUBMIT_CANCELLED=1` allows retrying a cancelled pair, like `V6M_RESUBMIT_FAILED`.
 
 ### Required environment
 

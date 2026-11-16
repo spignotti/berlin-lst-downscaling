@@ -7,7 +7,21 @@
 #         launch_v6_matrix.sh submit ARM SEED               # one job (blocks until terminal)
 #         launch_v6_matrix.sh submit-all [--from ARM SEED]  # sequential jobs in fixed order, resumable
 #         launch_v6_matrix.sh state ARM SEED                # existing jobs for the pair (read-only)
+#         launch_v6_matrix.sh holdout --max-total-usd USD [--arms A,B|all] [--seeds 0,1,2]
+#                             [--max-parallel N] [--dry-run | --preflight]
+#                                                           # spatial holdout batch (docs/spatial-holdout.md)
 #         launch_v6_matrix.sh help | -h | --help            # this text, touches nothing
+#
+# `holdout` submits the spatial holdout runs (mode <matrix mode>-spatial-holdout, --skip-test, job-local
+# cache, 10800 s timeout, 600 s queue allowance) of the given arms and seeds, seeds first, with at most
+# N (default 4, max 4) jobs in flight. It is idempotent by displayName and resumable (run it again with
+# the same arguments). Before the first submission it looks up every run, and refuses (exit 2) when the
+# summed per-job exposure caps of the runs it would start exceed --max-total-usd; a pair whose only jobs
+# are not resubmittable (see V6M_RESUBMIT_*) refuses the whole batch (exit 1). --dry-run makes no cloud
+# call and prices every requested run. A run that is cancelled by the queue rule or whose submission is
+# refused for capacity or quota ends with code 3: the batch goes on with the remaining runs. Any other
+# failure stops new submissions; jobs in flight are waited for, never cancelled. Exit codes: 0 all runs
+# succeeded or were skipped, 1 failure, 2 refused, 3 only capacity failures.
 #
 # Environment (V6M_*):
 #   Required (no default):
@@ -25,6 +39,9 @@
 #     V6M_LAUNCHER_GRACE (120)     V6M_CREATE_WAIT (900)         V6M_SUBMIT_ATTEMPTS (3)
 #     V6M_MAX_POLL_ERR_SECONDS (21600)   V6M_LOOKUP_BACKOFF_SECONDS (30)
 #     V6M_GCLOUD (gcloud)          V6M_RESUBMIT_FAILED (0; 1 = operator opt-in, see below)
+#     V6M_RESUBMIT_CANCELLED (0; 1 = like V6M_RESUBMIT_FAILED for CANCELLED jobs, e.g. after a queue miss)
+#     V6M_BATCH_TICK_SECONDS (5)   (holdout) V6M_TIMEOUT_SECONDS defaults to 10800 and V6M_MAX_WAIT_SECONDS
+#                                  to 600 there; the launcher refuses more than 10800 s and USD 3.25 per job
 #
 # Hardening:
 #  - Idempotent: before submitting, existing jobs are looked up by exact displayName. SUCCEEDED
@@ -60,6 +77,10 @@ ARMS=(L1 L2 L3 L4 L5 LOO-M LOO-S NO-NDVI-NDWI NO-RED-NIR-IDX)
 # pinned in scripts/operators/launch_vertex_modeling.py (PROJECT/REGION)
 PIN_PROJECT=berlin-lst-training
 PIN_REGION=europe-west3
+# pinned in scripts/operators/launch_vertex_modeling.py (SPATIAL_HOLDOUT_*); a test compares them
+HOLDOUT_TIMEOUT_SECONDS=10800
+HOLDOUT_EXPOSURE_CENTS=325
+VARIANT=matrix  # matrix | holdout (the `holdout` subcommand)
 OPERATOR_WRAPPER="$REPO_ROOT/scripts/operators/with-gcp-operator.sh"
 
 usage() {
@@ -68,6 +89,7 @@ usage: $SELF preflight [ARM SEED]
        $SELF submit ARM SEED
        $SELF submit-all [--from ARM SEED]
        $SELF state ARM SEED
+       $SELF holdout --max-total-usd USD [--arms A,B,...|all] [--seeds 0,1,2] [--max-parallel N] [--dry-run|--preflight]
        $SELF help
 
 ARM: ${ARMS[*]}    SEED: 0 | 1 | 2
@@ -103,8 +125,13 @@ load_config() {  # needs: $1 = "run" if V6M_RUN_DIR is required
   INF_ID="${V6M_INFISICAL_IDENTITY:-7ba603e5-b94d-42d1-bc57-d64658dde09d}"
   INF_PROJECT="${V6M_INFISICAL_PROJECT:-5da7dfb7-954d-4736-ba2e-4471ade9d766}"
   RATE="${V6M_HOURLY_RATE_USD:-1.00}"
-  TIMEOUT="${V6M_TIMEOUT_SECONDS:-14400}"
-  MAX_WAIT="${V6M_MAX_WAIT_SECONDS:-1800}"
+  if [[ "$VARIANT" == holdout ]]; then
+    TIMEOUT="${V6M_TIMEOUT_SECONDS:-$HOLDOUT_TIMEOUT_SECONDS}"
+    MAX_WAIT="${V6M_MAX_WAIT_SECONDS:-600}"
+  else
+    TIMEOUT="${V6M_TIMEOUT_SECONDS:-14400}"
+    MAX_WAIT="${V6M_MAX_WAIT_SECONDS:-1800}"
+  fi
   MAX_EPOCHS="${V6M_MAX_EPOCHS:-40}"
   POLL="${V6M_POLL_SECONDS:-60}"
   GCLOUD_TIMEOUT="${V6M_GCLOUD_TIMEOUT:-120}"
@@ -115,6 +142,8 @@ load_config() {  # needs: $1 = "run" if V6M_RUN_DIR is required
   BACKOFF="${V6M_LOOKUP_BACKOFF_SECONDS:-30}"
   GCLOUD="${V6M_GCLOUD:-gcloud}"
   RESUBMIT_FAILED="${V6M_RESUBMIT_FAILED:-0}"
+  RESUBMIT_CANCELLED="${V6M_RESUBMIT_CANCELLED:-0}"
+  TICK="${V6M_BATCH_TICK_SECONDS:-5}"
   local n
   for n in TIMEOUT MAX_WAIT MAX_EPOCHS POLL GCLOUD_TIMEOUT LAUNCHER_GRACE CREATE_WAIT \
            SUBMIT_ATTEMPTS MAX_POLL_ERR_SECONDS; do
@@ -123,6 +152,16 @@ load_config() {  # needs: $1 = "run" if V6M_RUN_DIR is required
   [[ "$BACKOFF" =~ ^[0-9]+$ ]] || die "V6M_LOOKUP_BACKOFF_SECONDS must be a non-negative integer"
   [[ "$RATE" =~ ^[0-9]+(\.[0-9]+)?$ && "$RATE" =~ [1-9] ]] || die "V6M_HOURLY_RATE_USD must be a positive decimal"
   [[ "$RESUBMIT_FAILED" =~ ^[01]$ ]] || die "V6M_RESUBMIT_FAILED must be 0 or 1"
+  [[ "$RESUBMIT_CANCELLED" =~ ^[01]$ ]] || die "V6M_RESUBMIT_CANCELLED must be 0 or 1"
+  pos_int V6M_BATCH_TICK_SECONDS "$TICK"
+  if [[ "$VARIANT" == holdout ]]; then
+    # the launcher refuses these too; failing here keeps a misconfigured batch off the cloud
+    (( TIMEOUT <= HOLDOUT_TIMEOUT_SECONDS )) \
+      || die "V6M_TIMEOUT_SECONDS $TIMEOUT exceeds the holdout cap $HOLDOUT_TIMEOUT_SECONDS"
+    awk -v r="$RATE" -v t="$TIMEOUT" -v w="$MAX_WAIT" -v cap="$HOLDOUT_EXPOSURE_CENTS" \
+      'BEGIN { exit !(r <= 1.0 && r * (t + w) / 3600 * 100 <= cap + 1e-9) }' \
+      || die "holdout rate/timeout/queue allowance exceed the \$1.00/h cap or the per-job exposure cap"
+  fi
   [[ -n "$PROJECT" && -n "$REGION" && -n "$SA" && -n "$INF_ID" && -n "$INF_PROJECT" ]] \
     || die "V6M_PROJECT/REGION/SERVICE_ACCOUNT/INFISICAL_* must not be empty"
   [[ "$PROJECT" == "$PIN_PROJECT" && "$REGION" == "$PIN_REGION" ]] \
@@ -160,18 +199,26 @@ lower() { echo "$1" | tr 'A-Z' 'a-z'; }
 
 display_name() {  # arm seed -> exact Vertex displayName (mode-runlabel, as built by the launcher)
   local arm=$1 seed=$2
-  echo "${MODE[$arm]}-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos"
+  if [[ "$VARIANT" == holdout ]]; then
+    echo "${MODE[$arm]}-spatial-holdout-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos-notest"
+  else
+    echo "${MODE[$arm]}-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos"
+  fi
 }
 
 run() {  # arm seed [--preflight]
   local arm=$1 seed=$2; shift 2
-  local label="${LABEL_PREFIX}-$(lower "$arm")"
+  local label="${LABEL_PREFIX}-$(lower "$arm")" mode="${MODE[$arm]}"
+  local -a variant_args=(--patch-cache prebuilt)
+  if [[ "$VARIANT" == holdout ]]; then  # job-local cache is the launcher default; it refuses prebuilt
+    mode="$mode-spatial-holdout"; variant_args=(--skip-test)
+  fi
   cd "$REPO_ROOT"
   # operator SA key from Infisical /operator into a 0600 temp file for this command only
   "$OPERATOR_WRAPPER" -- \
     uv run --group operators python scripts/operators/launch_vertex_modeling.py \
-    --mode "${MODE[$arm]}" --seed "$seed" --max-epochs "$MAX_EPOCHS" --lr-schedule cosine \
-    --patch-cache prebuilt \
+    --mode "$mode" --seed "$seed" --max-epochs "$MAX_EPOCHS" --lr-schedule cosine \
+    "${variant_args[@]}" \
     --image-uri "$IMAGE" --source-sha "$SHA" --run-label "$label" \
     --service-account "$SA" --project "$PROJECT" --region "$REGION" \
     --infisical-identity "$INF_ID" --infisical-project "$INF_PROJECT" \
@@ -253,9 +300,21 @@ stop_launcher() {  # grace period, then kill a still-running launcher tree
   wait "$lpid" 2>/dev/null || true
 }
 
-# One pair, idempotent. Returns 0 only if the pair ends SUCCEEDED.
+# 0 when every listed job is in a state the operator opted to resubmit (V6M_RESUBMIT_*)
+resubmittable() {  # lookup lines
+  local pat=""
+  [[ "$RESUBMIT_FAILED" == 1 ]] && pat=$'\tJOB_STATE_FAILED$'
+  [[ "$RESUBMIT_CANCELLED" == 1 ]] && pat+="${pat:+|}"$'\tJOB_STATE_CANCELLED$'
+  [[ -n "$pat" ]] && ! grep -qvE "$pat" <<<"$1"
+}
+
+# Submission refusals that mean "no capacity" (batch: continue with the other runs)
+CAPACITY_RE='RESOURCE_EXHAUSTED|quota|stockout|insufficient capacity|no available capacity'
+
+# One pair, idempotent. Returns 0 only if the pair ends SUCCEEDED; 3 when the pair got no
+# capacity (queue rule cancel, or a submission refused for capacity); 1 for any other outcome.
 do_pair() {
-  local arm=$1 seed=$2 dn existing prior_ids id state attempt rc tmp pairlog lpid t0
+  local arm=$1 seed=$2 dn existing prior_ids id state attempt rc tmp pairlog lpid t0 capacity=0
   dn=$(display_name "$arm" "$seed")
   pairlog="$RUNDIR/submit-${arm}-seed${seed}.log"
   for attempt in $(seq 1 "$SUBMIT_ATTEMPTS"); do
@@ -270,10 +329,12 @@ do_pair() {
         state=$(poll_job "$id" | tail -1)
         log "$arm seed$seed: job $id final: $state"
         [[ "$state" == JOB_STATE_SUCCEEDED ]] && return 0
-        log "STOP: $arm seed$seed ended $state (job $id); no automatic resubmit"; return 1
+        log "STOP: $arm seed$seed ended $state (job $id); no automatic resubmit"
+        [[ "$state" == QUEUE_DEADLINE_MISSED ]] && return 3
+        return 1
       fi
-      if [[ "$RESUBMIT_FAILED" == 1 ]] && ! grep -qv $'\tJOB_STATE_FAILED$' <<<"$existing"; then
-        log "$arm seed$seed: only FAILED jobs exist ($(tr '\n\t' '; ' <<<"$existing")); V6M_RESUBMIT_FAILED=1 set by operator, resubmitting"
+      if resubmittable "$existing"; then
+        log "$arm seed$seed: only resubmittable jobs exist ($(tr '\n\t' '; ' <<<"$existing")); V6M_RESUBMIT_* set by operator, resubmitting"
       else
         log "STOP: $arm seed$seed has only non-successful jobs: $(tr '\n\t' '; ' <<<"$existing"); no automatic resubmit"; return 1
       fi
@@ -316,14 +377,19 @@ do_pair() {
       stop_launcher "$lpid"
       rm -f "$tmp"
       [[ "$state" == JOB_STATE_SUCCEEDED ]] && return 0
-      log "STOP: $arm seed$seed ended $state (job $id); no automatic resubmit"; return 1
+      log "STOP: $arm seed$seed ended $state (job $id); no automatic resubmit"
+      [[ "$state" == QUEUE_DEADLINE_MISSED ]] && return 3
+      return 1
     fi
+    grep -qiE "$CAPACITY_RE" "$tmp" 2>/dev/null && capacity=1
     rm -f "$tmp"
     rc=${rc:-?}
     log "launcher rc=$rc and no job exists for $dn; submission failed before create"
     (( attempt < SUBMIT_ATTEMPTS )) && sleep $(( 4 * BACKOFF * attempt * attempt ))
   done
-  log "STOP: $arm seed$seed submission failed $SUBMIT_ATTEMPTS times"; return 1
+  log "STOP: $arm seed$seed submission failed $SUBMIT_ATTEMPTS times"
+  (( capacity )) && return 3
+  return 1
 }
 
 submit_all() {
@@ -344,6 +410,119 @@ submit_all() {
   log "submit-all done: $n pair(s) SUCCEEDED/skipped in this invocation"
 }
 
+to_cents() {  # "12.5" -> REPLY=1250 (at most two decimals; no subshell, so die ends the script)
+  [[ "$1" =~ ^([0-9]+)(\.([0-9]{1,2}))?$ ]] || die "not a USD amount with at most two decimals: '$1'"
+  local frac="${BASH_REMATCH[3]:-0}"
+  [[ ${#frac} -eq 1 ]] && frac="${frac}0"
+  REPLY=$(( 10#${BASH_REMATCH[1]} * 100 + 10#$frac ))
+}
+fmt_cents() { printf '%d.%02d' $(( $1 / 100 )) $(( $1 % 100 )); }
+
+# Spatial holdout batch: the given arms x seeds (seeds first) with at most --max-parallel jobs in flight.
+holdout_batch() {
+  local arms_arg=all seeds_arg=0,1,2 par=4 max_total="" dry=0 pre=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --arms) arms_arg=${2:-}; shift 2 ;;
+      --seeds) seeds_arg=${2:-}; shift 2 ;;
+      --max-parallel) par=${2:-}; shift 2 ;;
+      --max-total-usd) max_total=${2:-}; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --preflight) pre=1; shift ;;
+      *) die "unexpected argument '$1'" ;;
+    esac
+  done
+  [[ "$par" =~ ^[1-4]$ ]] || die "--max-parallel must be 1, 2, 3 or 4, got '$par'"
+  [[ $dry == 0 || $pre == 0 ]] || die "--dry-run and --preflight exclude each other"
+  [[ -n "$max_total" || $pre == 1 ]] || die "--max-total-usd is required (summed per-job exposure caps must stay within it)"
+  local -a arms=() seeds=() plan=()
+  if [[ "$arms_arg" == all ]]; then arms=("${ARMS[@]}"); else IFS=, read -r -a arms <<<"$arms_arg"; fi
+  IFS=, read -r -a seeds <<<"$seeds_arg"
+  [[ ${#arms[@]} -gt 0 && ${#seeds[@]} -gt 0 ]] || die "--arms and --seeds must not be empty"
+  local a s n pair
+  for a in "${arms[@]}"; do for s in "${seeds[@]}"; do check_pair "$a" "$s"; done; done
+  for n in "${arms[@]}"; do [[ $(printf '%s\n' "${arms[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate arm '$n'"; done
+  for n in "${seeds[@]}"; do [[ $(printf '%s\n' "${seeds[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate seed '$n'"; done
+  for s in "${seeds[@]}"; do for a in "${arms[@]}"; do plan+=("$a $s"); done; done
+  local cap=$HOLDOUT_EXPOSURE_CENTS limit=0 total=0
+  if [[ -n "$max_total" ]]; then to_cents "$max_total"; limit=$REPLY; fi
+
+  if [[ $dry == 1 ]]; then  # no cloud call: every requested run is priced, none is looked up
+    log "holdout dry run: ${#plan[@]} run(s), at most $par in flight; no cloud call, no idempotency lookup"
+    for pair in "${plan[@]}"; do
+      read -r a s <<<"$pair"
+      printf 'PLAN %-14s seed%s label=%s-%s jobname=%s mode=%s-spatial-holdout cap=USD %s\n' \
+        "$a" "$s" "$LABEL_PREFIX" "$(lower "$a")" "$(display_name "$a" "$s")" "${MODE[$a]}" "$(fmt_cents $cap)"
+      total=$(( total + cap ))
+    done
+    log "summed exposure caps of all ${#plan[@]} run(s): USD $(fmt_cents $total); limit USD $(fmt_cents $limit)"
+    (( total <= limit )) || { log "REFUSED: summed exposure caps exceed --max-total-usd"; exit 2; }
+    return 0
+  fi
+  if [[ $pre == 1 ]]; then
+    check_repo
+    for pair in "${plan[@]}"; do read -r a s <<<"$pair"; run "$a" "$s" --preflight; done
+    return 0
+  fi
+
+  # look every run up first: what would be started decides the total, nothing is submitted before
+  check_repo
+  local dn existing status blocked=0 skipped=0
+  local -a queue=()
+  for pair in "${plan[@]}"; do
+    read -r a s <<<"$pair"
+    dn=$(display_name "$a" "$s")
+    existing=$(lookup "$dn") || { log "STOP: cannot list jobs for $dn (idempotency check impossible)"; exit 1; }
+    if grep -q $'\tJOB_STATE_SUCCEEDED$' <<<"$existing"; then status=skip
+    elif grep -qE $'\tJOB_STATE_(QUEUED|PENDING|RUNNING|CANCELLING|PAUSED|UPDATING)$' <<<"$existing"; then status=attach
+    elif [[ -z "$existing" ]]; then status=start
+    elif resubmittable "$existing"; then status=restart
+    else status=BLOCKED; blocked=$((blocked + 1)); fi
+    printf 'PLAN %-14s seed%s %-8s jobname=%s\n' "$a" "$s" "$status" "$dn"
+    case "$status" in
+      skip) skipped=$((skipped + 1)) ;;
+      attach) queue+=("$pair") ;;
+      *) queue+=("$pair"); [[ $status == BLOCKED ]] || total=$(( total + cap )) ;;
+    esac
+  done
+  log "plan: ${#queue[@]} run(s) to wait for or submit, $skipped already SUCCEEDED; to start: summed exposure caps USD $(fmt_cents $total), limit USD $(fmt_cents $limit)"
+  (( blocked == 0 )) || { log "REFUSED: $blocked pair(s) have only non-successful jobs (see V6M_RESUBMIT_FAILED, V6M_RESUBMIT_CANCELLED)"; exit 1; }
+  (( total <= limit )) || { log "REFUSED: summed exposure caps exceed --max-total-usd"; exit 2; }
+
+  local -A inflight=()  # pid -> "arm seed"
+  local -a ok=() capacity_miss=() failed=() unstarted=()
+  local i=0 stop=0 pid rc rcf
+  trap 'for pid in "${!inflight[@]}"; do kill_tree "$pid"; done; exit 130' INT TERM
+  while (( (stop == 0 && i < ${#queue[@]}) || ${#inflight[@]} > 0 )); do
+    while (( stop == 0 && i < ${#queue[@]} && ${#inflight[@]} < par )); do
+      read -r a s <<<"${queue[i]}"; i=$((i + 1))
+      rcf="$RUNDIR/.holdout-rc-${a}-seed${s}"; rm -f "$rcf"
+      ( rc=0; do_pair "$a" "$s" || rc=$?; echo "$rc" >"$rcf.tmp"; mv "$rcf.tmp" "$rcf" ) &
+      inflight[$!]="$a $s"
+      log "started $a seed$s (in flight ${#inflight[@]}/$par)"
+    done
+    for pid in "${!inflight[@]}"; do
+      read -r a s <<<"${inflight[$pid]}"
+      rcf="$RUNDIR/.holdout-rc-${a}-seed${s}"
+      [[ -f "$rcf" ]] || continue
+      wait "$pid" 2>/dev/null || true
+      rc=$(<"$rcf"); rm -f "$rcf"
+      unset "inflight[$pid]"
+      case "$rc" in
+        0) ok+=("$a/seed$s") ;;
+        3) capacity_miss+=("$a/seed$s"); log "$a seed$s: no capacity; continuing with the remaining runs" ;;
+        *) failed+=("$a/seed$s"); stop=1; log "STOP: $a seed$s failed (rc $rc); no further run is started, jobs in flight are waited for" ;;
+      esac
+    done
+    (( ${#inflight[@]} > 0 )) && sleep "$TICK"
+  done
+  trap - INT TERM
+  while (( i < ${#queue[@]} )); do unstarted+=("${queue[i]// //seed}"); i=$((i + 1)); done
+  log "holdout batch: ${#ok[@]} succeeded, $skipped skipped (already SUCCEEDED), ${#capacity_miss[@]} without capacity [${capacity_miss[*]:-}], ${#failed[@]} failed [${failed[*]:-}], ${#unstarted[@]} not started [${unstarted[*]:-}]"
+  (( ${#failed[@]} == 0 )) || exit 1
+  (( ${#capacity_miss[@]} == 0 )) || { log "re-run the same command to retry the runs without capacity (V6M_RESUBMIT_CANCELLED=1 after a queue cancel)"; exit 3; }
+}
+
 case "${1:-}" in
   ""|help|-h|--help) usage; exit 0 ;;
   preflight)
@@ -356,7 +535,7 @@ case "${1:-}" in
   submit)
     [[ $# -eq 3 ]] || { usage >&2; exit 2; }
     load_config run; check_pair "$2" "$3"; check_repo
-    do_pair "$2" "$3" ;;
+    do_pair "$2" "$3" || exit 1 ;;
   state)
     [[ $# -eq 3 ]] || { usage >&2; exit 2; }
     load_config; check_pair "$2" "$3"
@@ -367,5 +546,12 @@ case "${1:-}" in
     if [[ "${1:-}" == --from ]]; then check_pair "${2:-}" "${3:-}"; fi
     check_repo
     submit_all "$@" ;;
+  holdout)
+    shift
+    VARIANT=holdout
+    if [[ " $* " == *" --dry-run "* ]]; then load_config
+    elif [[ " $* " == *" --preflight "* ]]; then load_config image
+    else load_config run; fi
+    holdout_batch "$@" ;;
   *) usage >&2; exit 2 ;;
 esac
