@@ -215,7 +215,8 @@ create-only, under
 
 `scripts/runners/vertex/launch_v6_matrix.sh holdout` submits the holdout runs of
 the given arms and seeds (`--arms all` or a comma list, default all;
-`--seeds`, default `0,1,2`) seeds first, with at most `--max-parallel` jobs in
+`--seeds`, default `0,1,2`; the two stage-1 runs, L1 and L4 seed 0, are left out
+unless `--include-stage1` is given) seeds first, with at most `--max-parallel` jobs in
 flight (default 4, maximum 4). It uses the environment of the matrix launcher
 (`V6M_IMAGE_URI`, `V6M_SOURCE_SHA` = checkout HEAD, `V6M_LABEL_PREFIX`,
 `V6M_RUN_DIR`; see its header) and the holdout bounds of the Python launcher:
@@ -226,22 +227,36 @@ flight (default 4, maximum 4). It uses the environment of the matrix launcher
 export V6M_IMAGE_URI=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<digest>
 export V6M_SOURCE_SHA=<merge-commit-sha> V6M_LABEL_PREFIX=v6sh-<sha7> V6M_RUN_DIR=<dir outside the repo>
 S=scripts/runners/vertex/launch_v6_matrix.sh
-$S holdout --dry-run --max-total-usd 87.75                    # all 27 runs: plan, labels, summed caps; no cloud call
-$S holdout --preflight --seeds 0                              # launcher --preflight per run
-# the 25 runs that are left (L1 and L4 seed 0 ran in stage 1), in two calls, 4 jobs at a time:
-$S holdout --max-total-usd 22.75 --seeds 0 --arms L2,L3,L5,LOO-M,LOO-S,NO-NDVI-NDWI,NO-RED-NIR-IDX
+$S holdout --dry-run --max-total-usd 81.25     # the 25 runs that are left: plan, labels, summed caps; no cloud call
+$S holdout --preflight --seeds 0               # launcher --preflight per run
+$S holdout --max-total-usd 81.25               # the 25 runs that are left, 4 jobs at a time
+# or in two calls: seed 0 (7 runs, USD 22.75), then seeds 1 and 2 (18 runs, USD 58.50)
+$S holdout --max-total-usd 22.75 --seeds 0
 $S holdout --max-total-usd 58.50 --seeds 1,2
 ```
 
-The two calls cover 7 + 18 runs at USD 3.25. The stage-1 jobs were submitted under
-the label prefix of their own image, so a new prefix does not find them by
-displayName: leave L1 and L4 seed 0 out as above rather than relying on the skip.
+By default the batch skips L1 and L4 seed 0 and prints a note: they ran in stage 1
+(jobs `v6-l1-spatial-holdout-v6sh-99a71cf-l1-seed0-ep40-cos-notest` and the L4
+equivalent, SUCCEEDED), under a label prefix a new image does not share, so the
+displayName lookup could not find them. `--include-stage1` runs them again
+(27 runs, USD 87.75).
 
 - `--max-total-usd` is required. The launcher looks every run up by its Vertex
   displayName, then refuses (exit 2) before the first submission when the
   summed per-job caps of the runs it would start exceed it. Runs that already
-  SUCCEEDED, and runs whose job is active (the batch waits on it), are not
-  priced. `--dry-run` makes no cloud call and prices every requested run.
+  SUCCEEDED, and runs whose job is active, are not priced: the limit covers only
+  jobs this invocation may submit. `--dry-run` makes no cloud call and prices every requested run.
+- Active jobs found at the start (a resume after Ctrl-C) are watched first and hold
+  their slots; nothing new starts until a slot is free, and a pair planned as
+  attached never submits a new job in that invocation, even with
+  `V6M_RESUBMIT_*` set (if its job ended meanwhile the run is reported failed).
+- One batch per `V6M_RUN_DIR`: it holds the lock directory `holdout.lock` there and
+  a second batch is refused (exit 2), naming the path. After a crash, remove the
+  directory by hand once no batch runs. `--dry-run` and `--preflight` take no lock.
+- A cancel request that fails after the queue rule fired (`CANCEL_UNCONFIRMED`) is
+  a failure, not a capacity miss: the old job may still start, so no new run
+  starts and the job id is logged. A worker that dies without a result is also a
+  failure.
 - Idempotent and resumable: run the same command again. A pair whose only jobs
   are FAILED or CANCELLED refuses the whole batch (exit 1) unless the operator
   opts in with `V6M_RESUBMIT_FAILED=1` / `V6M_RESUBMIT_CANCELLED=1`.
@@ -250,9 +265,6 @@ displayName: leave L1 and L4 seed 0 out as above rather than relying on the skip
   stop the batch; the others go on and the exit code is 3. Re-run it with
   `V6M_RESUBMIT_CANCELLED=1` to retry the cancelled ones. Any other failure
   starts no further run; jobs in flight are waited for, never cancelled.
-- Stage-1 L1 and L4 seed 0 are skipped (their jobs SUCCEEDED) only when
-  `V6M_LABEL_PREFIX` is the run-label prefix of stage 1; with another prefix
-  they would run again, so leave them out with `--arms`/`--seeds`.
 - `--max-parallel` should not exceed the granted Vertex T4 training quota of
   `europe-west3`; its size is not written down in this repository (the quota
   was requested and approved, see "Region" in `docs/vertex-gpu-training.md`).

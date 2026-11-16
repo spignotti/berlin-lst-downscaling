@@ -67,6 +67,10 @@ when the summed per-job caps (USD 3.25 each) of the runs it would start exceed t
 without capacity (queue-rule cancel, `RESOURCE_EXHAUSTED`/quota at submission) ends with exit
 3 and the others continue; any other failure starts no further run and waits for those in
 flight. `V6M_RESUBMIT_CANCELLED=1` allows retrying a cancelled pair, like `V6M_RESUBMIT_FAILED`.
+It skips the two stage-1 runs (L1, L4 seed 0) unless `--include-stage1`, holds a lock directory
+`holdout.lock` in `V6M_RUN_DIR`, watches already-active jobs first (they hold slots and never
+trigger a new submission), and treats a failed cancel (`CANCEL_UNCONFIRMED`) or a dead worker as a
+failure, not as missing capacity.
 
 ### Required environment
 

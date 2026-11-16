@@ -8,7 +8,7 @@
 #         launch_v6_matrix.sh submit-all [--from ARM SEED]  # sequential jobs in fixed order, resumable
 #         launch_v6_matrix.sh state ARM SEED                # existing jobs for the pair (read-only)
 #         launch_v6_matrix.sh holdout --max-total-usd USD [--arms A,B|all] [--seeds 0,1,2]
-#                             [--max-parallel N] [--dry-run | --preflight]
+#                             [--max-parallel N] [--include-stage1] [--dry-run | --preflight]
 #                                                           # spatial holdout batch (docs/spatial-holdout.md)
 #         launch_v6_matrix.sh help | -h | --help            # this text, touches nothing
 #
@@ -22,6 +22,10 @@
 # refused for capacity or quota ends with code 3: the batch goes on with the remaining runs. Any other
 # failure stops new submissions; jobs in flight are waited for, never cancelled. Exit codes: 0 all runs
 # succeeded or were skipped, 1 failure, 2 refused, 3 only capacity failures.
+# L1 and L4 seed 0 (stage 1, already SUCCEEDED under another label) are skipped unless --include-stage1.
+# Jobs already active are watched first and hold slots; their pairs never submit. One batch per
+# V6M_RUN_DIR (lock directory holdout.lock). A cancel that fails (CANCEL_UNCONFIRMED) or a worker that
+# dies without a result is a failure, not a capacity miss.
 #
 # Environment (V6M_*):
 #   Required (no default):
@@ -89,7 +93,7 @@ usage: $SELF preflight [ARM SEED]
        $SELF submit ARM SEED
        $SELF submit-all [--from ARM SEED]
        $SELF state ARM SEED
-       $SELF holdout --max-total-usd USD [--arms A,B,...|all] [--seeds 0,1,2] [--max-parallel N] [--dry-run|--preflight]
+       $SELF holdout --max-total-usd USD [--arms A,B,...|all] [--seeds 0,1,2] [--max-parallel N] [--include-stage1] [--dry-run|--preflight]
        $SELF help
 
 ARM: ${ARMS[*]}    SEED: 0 | 1 | 2
@@ -244,8 +248,8 @@ lookup() {
 }
 
 # Poll one job until terminal; echoes the real Vertex terminal state on stdout (last line), or
-# QUEUE_DEADLINE_MISSED (not started within MAX_WAIT, cancel requested), WAIT_EXPIRED,
-# STATUS_UNKNOWN. A terminal job is never cancelled. Logs go to stderr.
+# QUEUE_DEADLINE_MISSED (not started within MAX_WAIT, cancel requested), CANCEL_UNCONFIRMED (same,
+# but the cancel call failed), WAIT_EXPIRED, STATUS_UNKNOWN. A terminal job is never cancelled. Logs go to stderr.
 poll_job() {
   local id=$1 out state ct st err_since="" last="" now ct_s
   while true; do
@@ -265,7 +269,11 @@ poll_job() {
       if [[ -z "${st:-}" && "$state" != JOB_STATE_RUNNING ]] && (( now > ct_s + MAX_WAIT )); then
         # same rule as the launcher: not started within max-wait -> cancel, never replace
         log "QUEUE_DEADLINE_VIOLATION: job $id ($state) not started within ${MAX_WAIT}s of creation; requesting cancellation (launcher queue rule)" >&2
-        gc ai custom-jobs cancel "$id" --region "$REGION" >&2 2>&1 || log "cancel request for $id returned an error; inspect manually" >&2
+        if ! gc ai custom-jobs cancel "$id" --region "$REGION" >&2 2>&1; then
+          # the old job may still start and run: not a capacity miss, nothing may replace it
+          log "cancel request for $id FAILED; job $id may still start, inspect it manually" >&2
+          echo "CANCEL_UNCONFIRMED"; return 0
+        fi
         echo "QUEUE_DEADLINE_MISSED"; return 0
       fi
       if (( now > ct_s + MAX_WAIT + TIMEOUT + 3600 )); then
@@ -319,6 +327,12 @@ do_pair() {
   pairlog="$RUNDIR/submit-${arm}-seed${seed}.log"
   for attempt in $(seq 1 "$SUBMIT_ATTEMPTS"); do
     existing=$(lookup "$dn") || { log "STOP: cannot list jobs for $dn (idempotency check impossible)"; return 1; }
+    # a pair planned as "attach" (its job was active when the batch was priced) never submits
+    if [[ "${ATTACH_ONLY:-0}" == 1 ]] \
+       && ! grep -qE $'\tJOB_STATE_(SUCCEEDED|QUEUED|PENDING|RUNNING|CANCELLING|PAUSED|UPDATING)$' <<<"$existing"; then
+      log "STOP: $arm seed$seed was planned as attached to an active job, which is no longer active ($(tr '\n\t' '; ' <<<"$existing")); nothing was priced for a new job"
+      return 1
+    fi
     if [[ -n "$existing" ]]; then
       if grep -q $'\tJOB_STATE_SUCCEEDED$' <<<"$existing"; then
         log "skip $arm seed$seed: SUCCEEDED job exists ($(grep $'\tJOB_STATE_SUCCEEDED$' <<<"$existing" | cut -f1 | head -1))"; return 0
@@ -420,7 +434,7 @@ fmt_cents() { printf '%d.%02d' $(( $1 / 100 )) $(( $1 % 100 )); }
 
 # Spatial holdout batch: the given arms x seeds (seeds first) with at most --max-parallel jobs in flight.
 holdout_batch() {
-  local arms_arg=all seeds_arg=0,1,2 par=4 max_total="" dry=0 pre=0
+  local arms_arg=all seeds_arg=0,1,2 par=4 max_total="" dry=0 pre=0 stage1=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --arms) arms_arg=${2:-}; shift 2 ;;
@@ -429,6 +443,7 @@ holdout_batch() {
       --max-total-usd) max_total=${2:-}; shift 2 ;;
       --dry-run) dry=1; shift ;;
       --preflight) pre=1; shift ;;
+      --include-stage1) stage1=1; shift ;;
       *) die "unexpected argument '$1'" ;;
     esac
   done
@@ -443,7 +458,15 @@ holdout_batch() {
   for a in "${arms[@]}"; do for s in "${seeds[@]}"; do check_pair "$a" "$s"; done; done
   for n in "${arms[@]}"; do [[ $(printf '%s\n' "${arms[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate arm '$n'"; done
   for n in "${seeds[@]}"; do [[ $(printf '%s\n' "${seeds[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate seed '$n'"; done
-  for s in "${seeds[@]}"; do for a in "${arms[@]}"; do plan+=("$a $s"); done; done
+  for s in "${seeds[@]}"; do for a in "${arms[@]}"; do
+    if [[ $stage1 == 0 && "$s" == 0 && ( "$a" == L1 || "$a" == L4 ) ]]; then
+      # stage 1 ran these two under another label prefix; their displayNames would not match
+      echo "NOTE $a seed0 is a stage-1 run (job ${MODE[$a]}-spatial-holdout-v6sh-99a71cf-$(lower "$a")-seed0-ep${MAX_EPOCHS}-cos-notest, SUCCEEDED): skipped; --include-stage1 runs it again"
+      continue
+    fi
+    plan+=("$a $s")
+  done; done
+  [[ ${#plan[@]} -gt 0 ]] || die "nothing to run: only stage-1 runs were requested (see --include-stage1)"
   local cap=$HOLDOUT_EXPOSURE_CENTS limit=0 total=0
   if [[ -n "$max_total" ]]; then to_cents "$max_total"; limit=$REPLY; fi
 
@@ -465,10 +488,18 @@ holdout_batch() {
     return 0
   fi
 
+  # one batch at a time per run directory: two concurrent batches would submit the same runs
+  HOLDOUT_LOCK="$RUNDIR/holdout.lock"
+  if ! mkdir "$HOLDOUT_LOCK" 2>/dev/null; then
+    die "another holdout batch holds the lock $HOLDOUT_LOCK (pid $(cat "$HOLDOUT_LOCK/pid" 2>/dev/null || echo unknown)); if none is running, remove that directory"
+  fi
+  echo $$ >"$HOLDOUT_LOCK/pid"
+  trap 'rm -rf "$HOLDOUT_LOCK"' EXIT
   # look every run up first: what would be started decides the total, nothing is submitted before
   check_repo
   local dn existing status blocked=0 skipped=0
-  local -a queue=()
+  local -a queue=() attached=()
+  local -A is_attach=()
   for pair in "${plan[@]}"; do
     read -r a s <<<"$pair"
     dn=$(display_name "$a" "$s")
@@ -481,30 +512,41 @@ holdout_batch() {
     printf 'PLAN %-14s seed%s %-8s jobname=%s\n' "$a" "$s" "$status" "$dn"
     case "$status" in
       skip) skipped=$((skipped + 1)) ;;
-      attach) queue+=("$pair") ;;
+      attach) attached+=("$pair"); is_attach["$pair"]=1 ;;
       *) queue+=("$pair"); [[ $status == BLOCKED ]] || total=$(( total + cap )) ;;
     esac
   done
-  log "plan: ${#queue[@]} run(s) to wait for or submit, $skipped already SUCCEEDED; to start: summed exposure caps USD $(fmt_cents $total), limit USD $(fmt_cents $limit)"
+  # jobs that are already active are watched first and hold their slots; they can never submit
+  queue=("${attached[@]}" "${queue[@]}")
+  log "plan: ${#attached[@]} active job(s) to watch first, ${#queue[@]} run(s) in all, $skipped already SUCCEEDED; to submit: summed exposure caps USD $(fmt_cents $total), limit USD $(fmt_cents $limit)"
   (( blocked == 0 )) || { log "REFUSED: $blocked pair(s) have only non-successful jobs (see V6M_RESUBMIT_FAILED, V6M_RESUBMIT_CANCELLED)"; exit 1; }
   (( total <= limit )) || { log "REFUSED: summed exposure caps exceed --max-total-usd"; exit 2; }
 
   local -A inflight=()  # pid -> "arm seed"
   local -a ok=() capacity_miss=() failed=() unstarted=()
-  local i=0 stop=0 pid rc rcf
+  local i=0 stop=0 pid rc rcf st
   trap 'for pid in "${!inflight[@]}"; do kill_tree "$pid"; done; exit 130' INT TERM
   while (( (stop == 0 && i < ${#queue[@]}) || ${#inflight[@]} > 0 )); do
     while (( stop == 0 && i < ${#queue[@]} && ${#inflight[@]} < par )); do
       read -r a s <<<"${queue[i]}"; i=$((i + 1))
       rcf="$RUNDIR/.holdout-rc-${a}-seed${s}"; rm -f "$rcf"
-      ( rc=0; do_pair "$a" "$s" || rc=$?; echo "$rc" >"$rcf.tmp"; mv "$rcf.tmp" "$rcf" ) &
+      ( ATTACH_ONLY=${is_attach["$a $s"]:-0}; rc=0; do_pair "$a" "$s" || rc=$?; echo "$rc" >"$rcf.tmp"; mv "$rcf.tmp" "$rcf" ) &
       inflight[$!]="$a $s"
       log "started $a seed$s (in flight ${#inflight[@]}/$par)"
     done
     for pid in "${!inflight[@]}"; do
       read -r a s <<<"${inflight[$pid]}"
       rcf="$RUNDIR/.holdout-rc-${a}-seed${s}"
-      [[ -f "$rcf" ]] || continue
+      if [[ ! -f "$rcf" ]]; then
+        # no result yet: still running, or dead without one (a finished child stays a zombie until waited for)
+        st=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+        [[ -z "$st" || "$st" == Z* ]] || continue
+        wait "$pid" 2>/dev/null || true
+        if [[ ! -f "$rcf" ]]; then
+          log "$a seed$s: its worker (pid $pid) ended without a result; its job, if any, is still on Vertex: look it up by displayName $(display_name "$a" "$s")"
+          echo 1 >"$rcf"
+        fi
+      fi
       wait "$pid" 2>/dev/null || true
       rc=$(<"$rcf"); rm -f "$rcf"
       unset "inflight[$pid]"

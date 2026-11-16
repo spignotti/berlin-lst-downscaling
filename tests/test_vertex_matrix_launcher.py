@@ -81,6 +81,11 @@ printf '%s\\n' "$*" >> "$FAKE_LOG_DIR/gcloud.log"
 case "$*" in
   *"custom-jobs list"*)
     dn=$(sed -n 's/.*--filter=displayName="\\([^"]*\\)".*/\\1/p' <<<"$*")
+    nl=$(cat "$FAKE_LOG_DIR/listn.$dn" 2>/dev/null || echo 0)
+    echo $((nl + 1)) > "$FAKE_LOG_DIR/listn.$dn"
+    if (( nl >= 1 )) && [[ -f "$FAKE_LOG_DIR/list2.$dn" ]]; then
+      cat "$FAKE_LOG_DIR/list2.$dn"; exit 0
+    fi
     if [[ -f "$FAKE_LOG_DIR/list.$dn" ]]; then cat "$FAKE_LOG_DIR/list.$dn"; exit 0; fi
     if [[ -n "${FAKE_ODD_DN:-}" && "$dn" == "$FAKE_ODD_DN" ]]; then
       [[ -n "${FAKE_LIST_ODD:-}" ]] && printf '%b\\n' "$FAKE_LIST_ODD"; exit 0
@@ -91,6 +96,14 @@ case "$*" in
       id=$(sed -n 's/.*custom-jobs describe \\([0-9]*\\).*/\\1/p' <<<"$*")
       mode=$(cat "$FAKE_LOG_DIR/job.$id" 2>/dev/null)
       now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      if [[ -n "$mode" && " ${FAKE_DIE_MODES:-} " == *" $mode "* ]]; then
+        # kill the batch's worker for this run: the second-to-last script process up the chain
+        chain=(); p=$PPID
+        while [[ "$(ps -o command= -p "$p")" == *launch_v6_matrix.sh* ]]; do
+          chain+=("$p"); p=$(ps -o ppid= -p "$p" | tr -d ' ')
+        done
+        kill -9 "${chain[$(( ${#chain[@]} - 2 ))]}"; exit 0
+      fi
       if [[ -n "$mode" && " ${FAKE_PENDING_MODES:-} " == *" $mode "* ]]; then
         printf 'JOB_STATE_PENDING\\t2026-01-01T00:00:00Z\\n'; exit 0
       fi
@@ -113,7 +126,7 @@ case "$*" in
     (( n >= ${#seq[@]} )) && n=$(( ${#seq[@]} - 1 ))
     (( n < 0 )) && exit 0
     printf '%b\\n' "${seq[$n]}"; exit 0 ;;
-  *"custom-jobs cancel"*) exit 0 ;;
+  *"custom-jobs cancel"*) [[ "${FAKE_CANCEL_FAIL:-0}" == 1 ]] && exit 1; exit 0 ;;
 esac
 exit 1
 """
@@ -647,7 +660,7 @@ def test_submit_all_halts_when_new_job_fails(env: Env) -> None:
 
 # --- spatial holdout batch ----------------------------------------------------------------
 
-HOLDOUT_FLAGS = ("--max-total-usd", "100")
+HOLDOUT_FLAGS = ("--max-total-usd", "100", "--include-stage1")
 
 
 def hdn(arm: str, seed: int) -> str:
@@ -705,6 +718,7 @@ def test_holdout_dry_run_prints_the_plan_and_touches_no_cloud(env: Env) -> None:
         "--dry-run",
         "--max-total-usd",
         "100",
+        "--include-stage1",
         V6M_IMAGE_URI="",
         V6M_SOURCE_SHA="",
         V6M_RUN_DIR="",
@@ -829,7 +843,7 @@ def test_holdout_everything_done_submits_nothing(env: Env) -> None:
 
 
 def test_holdout_refuses_before_any_submission_when_the_caps_exceed_the_limit(env: Env) -> None:
-    arms = ("--arms", "L1,L2,L3", "--seeds", "0")
+    arms = ("--arms", "L1,L2,L3", "--seeds", "0", "--include-stage1")
     res = env.run("holdout", "--max-total-usd", "9.74", *arms, **BATCH)
     assert res.returncode == 2 and "REFUSED" in res.stdout
     assert launcher_calls(env) == []
@@ -870,6 +884,7 @@ def test_holdout_keeps_at_most_n_jobs_in_flight(
         "holdout",
         "--max-total-usd",
         "29.25",  # nine runs x 3.25: exact
+        "--include-stage1",
         "--seeds",
         "0",
         *flags,
@@ -949,3 +964,153 @@ def test_holdout_stops_on_any_other_failure_and_leaves_running_jobs_alone(
     assert "1 failed [L2/seed0]" in res.stdout and "not started [L3/seed0 L4/seed0]" in res.stdout
     assert "custom-jobs cancel" not in env.log("gcloud.log")
     assert "1 succeeded" in res.stdout  # the job in flight was waited for
+
+
+# --- review fixes: attach slots, unconfirmed cancel, lock, stage 1, dead workers ---------------
+
+
+def run_batch(env: Env, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    return env.run("holdout", *args, **{**BATCH, **extra})
+
+
+def test_holdout_default_skips_the_two_stage_one_runs(env: Env) -> None:
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "81.25")
+    assert res.returncode == 0, res.stderr
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    assert len(plan) == 25 and "USD 81.25" in res.stdout
+    stage_one = [ln for ln in plan if ln.split()[2] == "seed0" and ln.split()[1] in ("L1", "L4")]
+    assert stage_one == []
+    assert "NOTE L1 seed0 is a stage-1 run" in res.stdout
+    assert "v6-l4-spatial-holdout-v6sh-99a71cf-l4-seed0-ep40-cos-notest" in res.stdout
+    only = env.run(
+        "holdout", "--dry-run", "--max-total-usd", "9.75", "--arms", "L1,L4", "--seeds", "0"
+    )
+    assert only.returncode == 2 and "only stage-1 runs" in only.stderr
+    full = env.run("holdout", "--dry-run", "--max-total-usd", "87.75", "--include-stage1")
+    assert full.returncode == 0 and "USD 87.75" in full.stdout
+    assert len([ln for ln in full.stdout.splitlines() if ln.startswith("PLAN")]) == 27
+
+
+def test_holdout_active_jobs_hold_their_slots_before_anything_new_starts(env: Env) -> None:
+    # Ctrl-C then resume: L1-L4 are still running on Vertex, L5 was cancelled before
+    for arm in ("L1", "L2", "L3", "L4"):
+        set_listed(env, arm, 0, f"11{arm[1]}\tJOB_STATE_RUNNING")
+    set_listed(env, "L5", 0, "555\tJOB_STATE_CANCELLED")
+    args = (*HOLDOUT_FLAGS, "--arms", "L1,L2,L3,L4,L5", "--seeds", "0", "--max-parallel", "4")
+    blocked = run_batch(env, *args)
+    assert blocked.returncode == 1 and "BLOCKED" in blocked.stdout
+    assert launcher_calls(env) == []
+    res = run_batch(env, *args, V6M_RESUBMIT_CANCELLED="1", FAKE_RUN_POLLS="3")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launched(env) == [("L5", 0)]
+    out = res.stdout
+    assert "4 active job(s) to watch first" in out
+    # L5 waits for a slot: it starts only after a watched job has ended
+    assert out.index("started L5") > out.index("final: JOB_STATE_SUCCEEDED")
+    assert "summed exposure caps USD 3.25" in out
+
+
+def test_holdout_more_active_jobs_than_slots_start_nothing_new_until_they_finish(
+    env: Env,
+) -> None:
+    for arm in ("L2", "L3", "L5"):
+        set_listed(env, arm, 0, f"11{arm[1]}\tJOB_STATE_RUNNING")
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L2,L3,L5,LOO-M",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "2",
+        FAKE_RUN_POLLS="2",
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launched(env) == [("LOO-M", 0)]
+    started = [m.group(1) for m in re.finditer(r"started (\S+) seed0", res.stdout)]
+    assert started == ["L2", "L3", "L5", "LOO-M"]  # watched jobs first, the new run last
+
+
+def test_holdout_attached_pair_never_submits_when_its_job_ended_meanwhile(env: Env) -> None:
+    set_listed(env, "L1", 0, "111\tJOB_STATE_RUNNING")
+    set_listed(env, "L2", 0, "222\tJOB_STATE_RUNNING")
+    # at its own turn (second lookup) L2's job is FAILED; the opt-in must not make it a new job
+    (env.log_dir / f"list2.{hdn('L2', 0)}").write_text("222\tJOB_STATE_FAILED\n")
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        V6M_RESUBMIT_FAILED="1",
+        V6M_RESUBMIT_CANCELLED="1",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert launcher_calls(env) == []
+    assert "planned as attached to an active job" in res.stdout
+    assert "1 failed [L2/seed0]" in res.stdout
+
+
+def test_holdout_unconfirmed_cancel_is_a_failure_and_names_the_job(env: Env) -> None:
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        FAKE_PENDING_MODES="v6-l1-spatial-holdout",
+        FAKE_CANCEL_FAIL="1",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert launched(env) == [("L1", 0)]  # nothing was started in its place
+    assert "CANCEL_UNCONFIRMED" in res.stdout
+    assert re.search(r"cancel request for \d+ FAILED", res.stdout + res.stderr)
+    assert "1 failed [L1/seed0]" in res.stdout and "0 without capacity" in res.stdout
+
+
+def test_holdout_second_batch_in_the_same_run_directory_is_refused(env: Env) -> None:
+    lock = env.run_dir / "holdout.lock"
+    lock.mkdir()
+    res = run_batch(env, *HOLDOUT_FLAGS, "--arms", "L2", "--seeds", "0")
+    assert res.returncode == 2
+    assert str(lock) in res.stderr and "lock" in res.stderr
+    assert env.log("gcloud.log") == "" and launcher_calls(env) == []
+    assert lock.is_dir()  # someone else's lock is left alone
+    lock.rmdir()
+    ok = run_batch(env, *HOLDOUT_FLAGS, "--arms", "L2", "--seeds", "0")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert not lock.exists()  # released on exit
+    refused = run_batch(env, "--arms", "L2", "--seeds", "0", "--max-total-usd", "1")
+    assert refused.returncode == 2 and not lock.exists()  # also released when it refuses
+
+
+def test_holdout_dry_run_and_preflight_take_no_lock(env: Env) -> None:
+    (env.run_dir / "holdout.lock").mkdir()
+    assert env.run("holdout", "--dry-run", *HOLDOUT_FLAGS).returncode == 0
+    assert env.run("holdout", "--preflight", "--arms", "L2", "--seeds", "0").returncode == 0
+
+
+def test_holdout_dead_worker_without_a_result_is_a_failure_not_a_held_slot(env: Env) -> None:
+    res = run_batch(
+        env,
+        *HOLDOUT_FLAGS,
+        "--arms",
+        "L1,L2,L3",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        FAKE_DIE_MODES="v6-l2-spatial-holdout",
+        TEST_TIMEOUT="90",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "ended without a result" in res.stdout
+    assert "1 failed [L2/seed0]" in res.stdout and "not started [L3/seed0]" in res.stdout
+    assert ("L3", 0) not in launched(env)
