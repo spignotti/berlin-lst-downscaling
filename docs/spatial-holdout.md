@@ -226,11 +226,16 @@ flight (default 4, maximum 4). It uses the environment of the matrix launcher
 export V6M_IMAGE_URI=europe-west3-docker.pkg.dev/berlin-lst-training/berlin-lst-runners/modeling-vertex@sha256:<digest>
 export V6M_SOURCE_SHA=<merge-commit-sha> V6M_LABEL_PREFIX=v6sh-<sha7> V6M_RUN_DIR=<dir outside the repo>
 S=scripts/runners/vertex/launch_v6_matrix.sh
-$S holdout --dry-run --max-total-usd 81.25                    # plan, labels, summed caps; no cloud call
-$S holdout --preflight                                        # launcher --preflight per run
-$S holdout --max-total-usd 81.25                              # all 27 runs, 4 at a time
-$S holdout --max-total-usd 6.50 --arms L5,LOO-M --seeds 0     # a subset
+$S holdout --dry-run --max-total-usd 87.75                    # all 27 runs: plan, labels, summed caps; no cloud call
+$S holdout --preflight --seeds 0                              # launcher --preflight per run
+# the 25 runs that are left (L1 and L4 seed 0 ran in stage 1), in two calls, 4 jobs at a time:
+$S holdout --max-total-usd 22.75 --seeds 0 --arms L2,L3,L5,LOO-M,LOO-S,NO-NDVI-NDWI,NO-RED-NIR-IDX
+$S holdout --max-total-usd 58.50 --seeds 1,2
 ```
+
+The two calls cover 7 + 18 runs at USD 3.25. The stage-1 jobs were submitted under
+the label prefix of their own image, so a new prefix does not find them by
+displayName: leave L1 and L4 seed 0 out as above rather than relying on the skip.
 
 - `--max-total-usd` is required. The launcher looks every run up by its Vertex
   displayName, then refuses (exit 2) before the first submission when the
@@ -247,7 +252,12 @@ $S holdout --max-total-usd 6.50 --arms L5,LOO-M --seeds 0     # a subset
   starts no further run; jobs in flight are waited for, never cancelled.
 - Stage-1 L1 and L4 seed 0 are skipped (their jobs SUCCEEDED) only when
   `V6M_LABEL_PREFIX` is the run-label prefix of stage 1; with another prefix
-  use `--arms`/`--seeds` to leave them out.
+  they would run again, so leave them out with `--arms`/`--seeds`.
+- `--max-parallel` should not exceed the granted Vertex T4 training quota of
+  `europe-west3`; its size is not written down in this repository (the quota
+  was requested and approved, see "Region" in `docs/vertex-gpu-training.md`).
+  Above the quota the queued jobs are cancelled after 600 s as capacity misses
+  and need `V6M_RESUBMIT_CANCELLED=1`.
 
 ### Cost and time
 
@@ -327,6 +337,8 @@ for arm in l1 l2 l3 l4 l5 loo-m loo-s no-ndvi-ndwi no-red-nir-idx; do for seed i
   label=v6sh-<sha7>-$arm-seed$seed-ep40-cos-notest
   gsutil cp $P/$label/eval_validation_patches.parquet $E/$label.parquet
 done; done
+# L1 and L4 seed 0 of stage 1 sit under the label prefix of stage 1, not v6sh-<sha7>;
+# copy them to $E/v6sh-stage1-<arm>-seed0.parquet (any v6sh-*.parquet name works).
 
 uv run python scripts/analyze_spatial_holdout.py \
   --matrix-export $E/v6m-*.parquet \
