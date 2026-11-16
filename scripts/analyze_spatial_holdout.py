@@ -26,6 +26,11 @@ and pass the matrix exports of L1 and L4 (seed 0 is used):
         --fold-export cv5-fold1 <fold1 L1> <fold1 L4> ... \\
         --output-prefix data/analysis/spatial-holdout/cv5
 
+Each fold export needs the record of its run next to it, ``<stem>.evidence.json`` (the run's
+evidence record or ``full_summary.json``). The record names the assignment the run trained
+with and the SHA-256 of that file; both must be those of the fold the export is filed under
+(the committed ``cv5-fold<k>.json``), otherwise the evaluation refuses it.
+
 The output holds each fold's evaluation, the mean and range of K and G over the
 folds, and the out-of-fold summary (incomplete when a fold or an arm is missing).
 
@@ -49,6 +54,7 @@ from berlin_lst_downscaling.analysis.spatial_holdout_eval import (
     SpatialHoldoutEvalError,
     evaluate,
     evaluate_cv,
+    load_fold_runs,
     load_runs,
     render_cv_markdown,
     render_markdown,
@@ -57,6 +63,7 @@ from berlin_lst_downscaling.analysis.spatial_holdout_eval import (
 from berlin_lst_downscaling.modeling.spatial_holdout import (
     SPATIAL_HOLDOUT_CV_ASSIGNMENTS,
     SpatialHoldoutError,
+    assignment_sha256,
     load_assignment,
     resolve_assignment_path,
 )
@@ -78,7 +85,7 @@ def _main_cv(args: argparse.Namespace) -> int:
             )
         if fold in by_fold or not files:
             raise SpatialHoldoutEvalError(f"fold {fold!r} is given twice or without exports")
-        by_fold[fold] = _by_arm(load_runs([Path(f) for f in files]))
+        by_fold[fold] = _by_arm(load_fold_runs([Path(f) for f in files]))
     result = evaluate_cv(
         {
             name: load_assignment(resolve_assignment_path(name))
@@ -86,6 +93,10 @@ def _main_cv(args: argparse.Namespace) -> int:
         },
         matrix=_by_arm(load_runs(args.matrix_export)),
         holdout=by_fold,
+        fold_sha256={
+            name: assignment_sha256(resolve_assignment_path(name))
+            for name in SPATIAL_HOLDOUT_CV_ASSIGNMENTS
+        },
         n_bootstrap=args.n_bootstrap,
         rng_seed=args.rng_seed,
     )

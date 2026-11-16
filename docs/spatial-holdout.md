@@ -497,6 +497,14 @@ rng seed 0, 95 %):
   (checked); a fold or arm without export is listed and the out-of-fold summary is
   marked incomplete instead of being computed on a subset.
 
+Fold runs need an image built from a commit that contains this code; an older image ignores
+the fold and trains `v1` under a fold label. The evaluation therefore verifies the
+assignment recorded by each run: the record next to each export (`<stem>.evidence.json`,
+the run's evidence or `full_summary.json`) must name exactly the fold the export is filed
+under, with the SHA-256 of the committed `cv5-fold<k>.json`; otherwise it refuses the export
+and names the file. The run itself refuses a configured assignment that differs from the
+fold named in its output root. (Not added for `v1` exports.)
+
 Copy the exports of the ten fold runs into their own directory (not into the `$E` of the
 `v1` recipe, whose `v6sh-*.parquet` glob would sweep them in), named by fold:
 
@@ -507,6 +515,7 @@ mkdir -p $C
 for k in 0 1 2 3 4; do for arm in l1 l4; do
   label=v6sh-<sha7>-$arm-cv5-fold$k-seed0-ep40-cos-notest
   gsutil cp $P/$label/eval_validation_patches.parquet $C/$arm-fold$k.parquet
+  gsutil cp $P/$label/evidence.json $C/$arm-fold$k.evidence.json   # the run's own record
 done; done
 
 uv run python scripts/analyze_spatial_holdout.py \

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import importlib.util
 import json
 import sys
@@ -462,6 +463,23 @@ def _scenes(folds: dict[str, sh.SpatialHoldoutAssignment]) -> dict[str, list[sh.
     return {**{f"scene{i}": every for i in range(4)}, "scene4": every[:20]}
 
 
+def _sha(fold: sh.SpatialHoldoutAssignment) -> str:
+    return hashlib.sha256(sh.assignment_bytes(fold)).hexdigest()
+
+
+def _write_record(path: Path, name: str, sha256: str, *, evidence: bool = True) -> Path:
+    """The run record next to an export: ``<stem>.evidence.json`` (evidence) or the raw summary."""
+    block = {"assignment": name, "assignment_sha256": sha256, "holdout_anchors": 54}
+    body = (
+        {"full": {"summary": {"spatial_holdout": block}}}
+        if evidence
+        else {"spatial_holdout": block}
+    )
+    target = path.with_suffix(".evidence.json")
+    target.write_text(json.dumps(body))
+    return target
+
+
 def _export(
     path: Path,
     folds: dict[str, sh.SpatialHoldoutAssignment],
@@ -470,6 +488,7 @@ def _export(
     fold: int | None = None,
     seed: int = 0,
     drop: str | None = None,
+    recorded: str | None = None,
 ) -> Path:
     cols: dict[str, list] = {name: [] for name in SCHEMA.names}
     for index, (scene, anchors) in enumerate(_scenes(folds).items()):
@@ -499,7 +518,11 @@ def _export(
             }
             for key, value in values.items():
                 cols[key].append(value)
-    return write_export(path, pa.table(cols, schema=SCHEMA))
+    write_export(path, pa.table(cols, schema=SCHEMA))
+    if fold is not None:  # the run's own record names the fold it trained without
+        named = recorded or f"cv5-fold{fold}"
+        _write_record(path, named, _sha(folds[named]))
+    return path
 
 
 def _runs(
@@ -521,7 +544,7 @@ def _runs(
                 continue
             path = tmp_path / f"{name}-{arm}.parquet"
             _export(path, folds, arm=arm, fold=fold.fold)
-            holdout.setdefault(name, {})[arm] = ev.load_runs([path])
+            holdout.setdefault(name, {})[arm] = ev.load_fold_runs([path])
     return matrix, holdout
 
 
@@ -667,7 +690,9 @@ def test_cv_refuses_inconsistent_inputs(
     }
     with pytest.raises(ev.SpatialHoldoutEvalError, match="one seed-0 run of each"):
         ev.evaluate_cv(folds, matrix=matrix, holdout=doubled, **kwargs)
-    seed_one = ev.load_runs([_export(tmp_path / "s1.parquet", folds, arm="L1", fold=0, seed=1)])
+    seed_one = ev.load_fold_runs(
+        [_export(tmp_path / "s1.parquet", folds, arm="L1", fold=0, seed=1)]
+    )
     wrong_seed = {**holdout, "cv5-fold0": {**holdout["cv5-fold0"], "L1": seed_one}}
     with pytest.raises(ev.SpatialHoldoutEvalError, match="one seed-0 run of each"):
         ev.evaluate_cv(folds, matrix=matrix, holdout=wrong_seed, **kwargs)
@@ -688,7 +713,7 @@ def test_cv_out_of_fold_needs_the_same_patches_as_the_matrix_model(
         fold=2,
         drop=f"scene0:{cell_id(*held)}",
     )
-    holdout["cv5-fold2"]["L1"] = ev.load_runs([short])
+    holdout["cv5-fold2"]["L1"] = ev.load_fold_runs([short])
     with pytest.raises(ev.SpatialHoldoutEvalError, match="different patches"):
         ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=50)
 
@@ -705,6 +730,7 @@ def test_cv_command_line(
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
     monkeypatch.setattr(cli, "load_assignment", lambda p: folds[Path(p).stem])
+    monkeypatch.setattr(cli, "assignment_sha256", lambda p: _sha(folds[Path(p).stem]))
     for s in (0, 1):
         for arm in ("L1", "L4"):
             _export(tmp_path / f"m-{arm}-{s}.parquet", folds, arm=arm, seed=s)
@@ -736,6 +762,24 @@ def test_cv_command_line(
     assert (
         cli.main(["--matrix-export", *argv[1:3], *bad, "--output-prefix", str(tmp_path / "x")]) == 2
     )
+    swapped = [
+        "--fold-export",
+        "cv5-fold0",
+        *(str(tmp_path / f"cv5-fold1-{a}.parquet") for a in ("L1", "L4")),
+    ]
+    assert (
+        cli.main(
+            [
+                "--matrix-export",
+                *map(str, sorted(tmp_path.glob("m-*.parquet"))),
+                *swapped,
+                "--output-prefix",
+                str(tmp_path / "x"),
+            ]
+        )
+        == 2
+    )
+    assert "run record names 'cv5-fold1'" in capsys.readouterr().err
     twice = [*fold_args[:4], *fold_args[:4]]
     assert (
         cli.main(["--matrix-export", *argv[1:3], *twice, "--output-prefix", str(tmp_path / "x")])
@@ -753,3 +797,87 @@ def test_cv_command_line(
                 str(tmp_path / "x"),
             ]
         )
+
+
+# ----------------------------------------------- the run's own record names the fold
+
+
+def test_a_fold_export_filed_under_another_fold_is_refused(
+    tmp_path: Path, folds: dict[str, sh.SpatialHoldoutAssignment]
+) -> None:
+    matrix, holdout = _runs(tmp_path, folds)
+    swapped = _export(tmp_path / "swap.parquet", folds, arm="L1", fold=1)
+    holdout["cv5-fold0"]["L1"] = ev.load_fold_runs([swapped])  # a fold-1 run filed as fold 0
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="swap.parquet.*cv5-fold0.*cv5-fold1"):
+        ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=50)
+
+
+def test_a_fold_export_whose_record_has_another_hash_is_refused(
+    tmp_path: Path, folds: dict[str, sh.SpatialHoldoutAssignment]
+) -> None:
+    matrix, holdout = _runs(tmp_path, folds)
+    # the expected hash is the committed file's: the command line passes it in
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="sha256"):
+        ev.evaluate_cv(
+            folds,
+            matrix=matrix,
+            holdout=holdout,
+            fold_sha256={name: "1" * 64 for name in folds},
+            n_bootstrap=50,
+        )
+    forged = _export(tmp_path / "forged.parquet", folds, arm="L4", fold=2)
+    _write_record(forged, "cv5-fold2", "0" * 64)  # the name matches, the file the run read does not
+    holdout["cv5-fold2"]["L4"] = ev.load_fold_runs([forged])
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="forged.parquet.*sha256"):
+        ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=50)
+
+
+def test_a_fold_export_without_a_record_or_with_a_v1_record_is_refused(
+    tmp_path: Path, folds: dict[str, sh.SpatialHoldoutAssignment]
+) -> None:
+    matrix, holdout = _runs(tmp_path, folds)
+    bare = _export(tmp_path / "bare.parquet", folds, arm="L1", fold=3)
+    bare.with_suffix(".evidence.json").unlink()
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="bare.parquet.*run record"):
+        ev.load_fold_runs([bare])
+    # a job that ran on an old image trained v1 under the fold label: its record says v1
+    old = _export(tmp_path / "old.parquet", folds, arm="L1", fold=3)
+    _write_record(old, "v1", "2" * 64)
+    holdout["cv5-fold3"]["L1"] = ev.load_fold_runs([old])
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="old.parquet.*'v1'.*cv5-fold3"):
+        ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=50)
+    # runs read without a record (plain load_runs) are not accepted in cross-validation
+    holdout["cv5-fold3"]["L1"] = ev.load_runs([bare])
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="no recorded assignment"):
+        ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=50)
+
+
+def test_the_record_may_be_the_raw_run_summary(
+    tmp_path: Path, folds: dict[str, sh.SpatialHoldoutAssignment]
+) -> None:
+    path = _export(tmp_path / "raw.parquet", folds, arm="L1", fold=4)
+    _write_record(path, "cv5-fold4", _sha(folds["cv5-fold4"]), evidence=False)
+    (run,) = ev.load_fold_runs([path])
+    assert (run.assignment, run.assignment_sha256) == ("cv5-fold4", _sha(folds["cv5-fold4"]))
+    broken = _export(tmp_path / "broken.parquet", folds, arm="L1", fold=4)
+    broken.with_suffix(".evidence.json").write_text(json.dumps({"full": {"summary": {}}}))
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="broken.parquet.*spatial_holdout"):
+        ev.load_fold_runs([broken])
+
+
+def test_guard_refuses_an_assignment_that_differs_from_the_one_in_the_output_root() -> None:
+    # the launcher puts the fold in the label and so in the output root: a wrong override fails
+    name = "v6_l1_spatial_holdout"
+    root = "output_root=data/runs/v6-l1-spatial-holdout/unit-cv5-fold1-seed0-ep40-cos-notest/seed-0"
+    guard_modeling_config(
+        _compose(name, [*_RUN_OVERRIDES, root, "spatial_holdout.assignment=cv5-fold1"]), name
+    )
+    for assignment in ("cv5-fold0", "v1"):
+        cfg = _compose(name, [*_RUN_OVERRIDES, root, f"spatial_holdout.assignment={assignment}"])
+        with pytest.raises(ValueError, match="output_root names.*cv5-fold1"):
+            guard_modeling_config(cfg, name)
+    # a v1 root carries no fold, and a run without a label in its root is not refused
+    v1 = "output_root=data/runs/v6-l1-spatial-holdout/unit-seed0-ep40-cos-notest/seed-0"
+    guard_modeling_config(_compose(name, [*_RUN_OVERRIDES, v1]), name)
+    cfg = _compose(name, [*_RUN_OVERRIDES, v1, "spatial_holdout.assignment=cv5-fold2"])
+    guard_modeling_config(cfg, name)

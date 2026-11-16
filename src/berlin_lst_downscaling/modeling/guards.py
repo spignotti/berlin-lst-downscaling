@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from dataclasses import dataclass
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -39,6 +40,7 @@ from berlin_lst_downscaling.modeling.contracts import (
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
 from berlin_lst_downscaling.modeling.spatial_holdout import (
+    CV_PARTITION,
     SPATIAL_HOLDOUT_ASSIGNMENT,
     SPATIAL_HOLDOUT_CONFIG_ARMS,
     SPATIAL_HOLDOUT_CV_ARMS,
@@ -1175,6 +1177,13 @@ def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
                 f"spatial_holdout.assignment={assignment!r} (only {SPATIAL_HOLDOUT_ASSIGNMENT!r} "
                 f"is admitted; the cross-validation folds {list(SPATIAL_HOLDOUT_CV_ASSIGNMENTS)} "
                 f"only on the arms {list(SPATIAL_HOLDOUT_CV_ARMS)})"
+            )
+        # The launcher puts a fold in the run label and so in the output root; a fold named
+        # there must be the configured one (a wrong override fails before training).
+        labelled = set(re.findall(rf"{CV_PARTITION}-fold\d+", str(cfg.get("output_root", ""))))
+        if labelled and labelled != {assignment}:
+            problems.append(
+                f"output_root names {sorted(labelled)} but the assignment is {assignment!r}"
             )
         if fold_run and cfg.get("seed") != SPATIAL_HOLDOUT_CV_SEED:
             problems.append(

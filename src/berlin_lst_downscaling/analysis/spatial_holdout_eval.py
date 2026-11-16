@@ -34,6 +34,8 @@ skipped with a note.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -56,6 +58,7 @@ from berlin_lst_downscaling.modeling.spatial_holdout import (
     POSITION_INTERIOR,
     Anchor,
     SpatialHoldoutAssignment,
+    assignment_bytes,
 )
 
 N_BOOTSTRAP = 10_000
@@ -120,6 +123,11 @@ class Run:
     patches: dict[str, PatchScore]
     # The validated export rows; the decision-rule criteria hand them to ``scene_bootstrap``.
     table: pa.Table | None = field(default=None, repr=False, compare=False)
+    # Where the export was read from, and the assignment the run itself recorded
+    # (``load_fold_runs``); both stay ``None`` for a plain ``load_runs``.
+    source: str | None = field(default=None, compare=False)
+    assignment: str | None = field(default=None, compare=False)
+    assignment_sha256: str | None = field(default=None, compare=False)
 
     @property
     def label(self) -> str:
@@ -155,6 +163,50 @@ def load_runs(paths: Sequence[Path]) -> list[Run]:
                 table=table,
             )
         )
+    return runs
+
+
+def read_recorded_assignment(path: Path) -> tuple[str, str]:
+    """Return ``(assignment, sha256)`` from a run record: the evidence or the raw summary.
+
+    The evidence record keeps the summary under ``full.summary``; ``full_summary.json``
+    holds it at the top level. Both carry ``spatial_holdout.assignment`` and
+    ``spatial_holdout.assignment_sha256``, written by the run itself.
+    """
+    record = json.loads(Path(path).read_text(encoding="utf-8"))
+    summary = record.get("full", {}).get("summary", record) if isinstance(record, dict) else None
+    block = summary.get("spatial_holdout") if isinstance(summary, dict) else None
+    name = block.get("assignment") if isinstance(block, dict) else None
+    sha = block.get("assignment_sha256") if isinstance(block, dict) else None
+    if not isinstance(name, str) or not isinstance(sha, str):
+        raise SpatialHoldoutEvalError(
+            f"{path}: the run record holds no spatial_holdout.assignment and assignment_sha256"
+        )
+    return name, sha
+
+
+def load_fold_runs(paths: Sequence[Path]) -> list[Run]:
+    """Load cross-validation exports together with the record of the run that wrote them.
+
+    The record sits next to the export as ``<stem>.evidence.json`` (the run's evidence record
+    or its ``full_summary.json``) and is required: ``evaluate_cv`` checks it against the fold.
+    """
+    runs: list[Run] = []
+    for path in map(Path, paths):
+        record = path.with_suffix(".evidence.json")
+        if not record.is_file():
+            raise SpatialHoldoutEvalError(
+                f"{path}: the run record {record.name} is missing next to the export; the "
+                "fold the run trained without is read from it, never from a label"
+            )
+        try:
+            name, sha = read_recorded_assignment(record)
+        except (SpatialHoldoutEvalError, ValueError) as exc:
+            raise SpatialHoldoutEvalError(f"{path}: {exc}") from exc
+        runs += [
+            dataclasses.replace(run, source=str(path), assignment=name, assignment_sha256=sha)
+            for run in load_runs([path])
+        ]
     return runs
 
 
@@ -861,6 +913,7 @@ def evaluate_cv(
     *,
     matrix: Mapping[str, Sequence[Run]],
     holdout: Mapping[str, Mapping[str, Sequence[Run]]],
+    fold_sha256: Mapping[str, str] | None = None,
     n_bootstrap: int = N_BOOTSTRAP,
     rng_seed: int = RNG_SEED,
 ) -> dict[str, Any]:
@@ -868,7 +921,12 @@ def evaluate_cv(
 
     ``folds`` maps ``cv5-fold0`` ... ``cv5-fold4`` to the fold assignments;
     ``holdout[fold][arm]`` holds the run of that arm trained without the fold's
-    anchors; ``matrix[arm]`` holds the matrix runs, of which seed 0 is used.
+    anchors, read with ``load_fold_runs``; ``matrix[arm]`` holds the matrix runs, of
+    which seed 0 is used. Every holdout run must carry the assignment and the SHA-256
+    its own record names, and both must be the fold's it is filed under:
+    ``fold_sha256`` (fold -> SHA-256 of the committed file) defaults to the hash of the
+    canonical file bytes. A run whose record names another fold, another file or none
+    (an image that predates the folds trains ``v1``) raises.
 
     - ``folds``: per fold the evaluation of ``evaluate`` on that fold's unseen
       anchors (MAE by stratum, G per arm against the matrix run of the same
@@ -905,6 +963,28 @@ def evaluate_cv(
                     f"{list(CV_ARMS)}, got {len(runs)} run(s) with seeds {[r.seed for r in runs]}"
                 )
             fold_runs[name][arm] = runs[0]
+
+    expected = {
+        name: (fold_sha256 or {}).get(name) or hashlib.sha256(assignment_bytes(fold)).hexdigest()
+        for name, fold in ordered.items()
+    }
+    for name, by_arm in fold_runs.items():
+        for arm, run in by_arm.items():
+            where = f"{run.source or run.label} ({name} {arm})"
+            if run.assignment is None or run.assignment_sha256 is None:
+                raise SpatialHoldoutEvalError(
+                    f"{where}: no recorded assignment; read the export with load_fold_runs"
+                )
+            if run.assignment != name:
+                raise SpatialHoldoutEvalError(
+                    f"{where}: filed under {name}, but its run record names "
+                    f"{run.assignment!r}; that run did not train without {name}"
+                )
+            if run.assignment_sha256 != expected[name]:
+                raise SpatialHoldoutEvalError(
+                    f"{where}: its run record has sha256 {run.assignment_sha256[:16]}, the "
+                    f"committed {name} file has {expected[name][:16]}"
+                )
 
     result: dict[str, Any] = {
         "kind": CV_KIND,
@@ -1178,8 +1258,10 @@ __all__ = [
     "anchor_from_patch_id",
     "evaluate",
     "evaluate_cv",
+    "load_fold_runs",
     "load_runs",
     "paired_difference",
+    "read_recorded_assignment",
     "render_cv_markdown",
     "render_markdown",
     "scene_bootstrap_mean",
