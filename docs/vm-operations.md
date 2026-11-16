@@ -61,7 +61,7 @@ Example:
 
 ## Accounts and secrets
 
-GCP and secret operations run from a Linux operator machine as the operator SA
+GCP and secret operations run from the owner's Mac or a Linux operator machine as the operator SA
 `berlin-lst-operator@berlin-lst-training.iam.gserviceaccount.com`. Its JSON key
 lives only in Infisical (EU, thesis project, env `dev`, folder `/operator`,
 secret `GCP_OPERATOR_SA_KEY`). Use it per command:
@@ -77,6 +77,14 @@ that command, and removes the file on exit. `--activate` does a persistent
 email. Infisical auth is Universal Auth (`INFISICAL_THESIS_CLIENT_ID` /
 `INFISICAL_THESIS_CLIENT_SECRET`, kept outside the repo), an existing
 `INFISICAL_TOKEN`, or an `infisical login` session.
+
+The default wrapper also sets `CLOUDSDK_CORE_ACCOUNT` to the operator SA for
+that command. A credential-file override alone does not change the account
+whose OS Login profile gcloud requests; otherwise a personal Mac login can
+cause an identity mismatch. The caller's persistent gcloud configuration stays
+unchanged. Use the repo's `ssh-vm.sh`, not an unrelated local VM SSH alias.
+`ssh-vm.sh --check` works while the GCP VM is stopped; it does not start it or
+prove a live SSH connection.
 
 | Infisical folder | Secrets | Read by |
 |---|---|---|
