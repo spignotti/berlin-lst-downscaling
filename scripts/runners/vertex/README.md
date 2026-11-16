@@ -52,7 +52,7 @@ scripts/runners/vertex/launch_v6_matrix.sh state ARM SEED       # read-only job 
 scripts/runners/vertex/launch_v6_matrix.sh submit ARM SEED      # PAID: one job, blocks until terminal
 scripts/runners/vertex/launch_v6_matrix.sh submit-all [--from ARM SEED]  # PAID: fixed order, resumable
 scripts/runners/vertex/launch_v6_matrix.sh holdout --max-total-usd USD [--arms ...] [--seeds ...] \
-    [--max-parallel N] [--dry-run | --preflight]   # PAID unless --dry-run/--preflight: spatial holdout batch
+    [--assignments v1|cv5-fold0,...] [--max-parallel N] [--dry-run | --preflight]   # PAID unless --dry-run/--preflight: spatial holdout batch
 ```
 
 Run `preflight` first. Only `submit`, `submit-all` and `holdout` (without `--dry-run`
@@ -67,7 +67,10 @@ when the summed per-job caps (USD 3.25 each) of the runs it would start exceed t
 without capacity (queue-rule cancel, `RESOURCE_EXHAUSTED`/quota at submission) ends with exit
 3 and the others continue; any other failure starts no further run and waits for those in
 flight. `V6M_RESUBMIT_CANCELLED=1` allows retrying a cancelled pair, like `V6M_RESUBMIT_FAILED`.
-It skips the two stage-1 runs (L1, L4 seed 0) unless `--include-stage1`, holds a lock directory
+It skips the two stage-1 runs (L1, L4 seed 0) of the assignment `v1` unless `--include-stage1`.
+`--assignments` (default `v1`) also takes the cross-validation folds `cv5-fold0` to `cv5-fold4`
+(arms L1 and L4, seed 0 only; the assignment is part of the run label and the displayName; the
+image must contain the fold code, see `docs/spatial-holdout.md`). It holds a lock directory
 `holdout.lock` in `V6M_RUN_DIR`, watches already-active jobs first (they hold slots and never
 trigger a new submission), and treats a failed cancel (`CANCEL_UNCONFIRMED`) or a dead worker as a
 failure, not as missing capacity.

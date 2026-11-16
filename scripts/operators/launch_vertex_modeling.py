@@ -82,6 +82,13 @@ from berlin_lst_downscaling.modeling.run import (
     contract_invariants,
     guard_modeling_config,
 )
+from berlin_lst_downscaling.modeling.spatial_holdout import (
+    SPATIAL_HOLDOUT_ASSIGNMENT,
+    SPATIAL_HOLDOUT_CONFIG_ARMS,
+    SPATIAL_HOLDOUT_CV_ARMS,
+    SPATIAL_HOLDOUT_CV_ASSIGNMENTS,
+    SPATIAL_HOLDOUT_CV_SEED,
+)
 from berlin_lst_downscaling.modeling.v6_val_rescore import (
     MATRIX_EVIDENCE_PREFIX,
     MATRIX_SOURCE_SHA,
@@ -1316,6 +1323,16 @@ def main() -> int:
         help="v6 modes only; do not score the 2025 test split (pilot/timing runs)",
     )
     parser.add_argument(
+        "--assignment",
+        choices=(SPATIAL_HOLDOUT_ASSIGNMENT, *SPATIAL_HOLDOUT_CV_ASSIGNMENTS),
+        default=None,
+        help=(
+            "spatial holdout modes only (default v1); the cross-validation folds cv5-fold0 ... "
+            "cv5-fold4 are admitted for the L1 and L4 modes at seed 0, and the assignment is "
+            "part of the run label"
+        ),
+    )
+    parser.add_argument(
         "--patch-cache",
         choices=("job_local", "prebuilt"),
         default="job_local",
@@ -1421,6 +1438,17 @@ def main() -> int:
         raise SystemExit("ERROR: --mode tessera requires --skip-test; test 2025 stays sealed")
     if is_holdout and not args.skip_test:
         raise SystemExit(f"ERROR: --mode {args.mode} requires --skip-test; test 2025 stays sealed")
+    assignment = args.assignment or SPATIAL_HOLDOUT_ASSIGNMENT
+    if args.assignment is not None and not is_holdout:
+        raise SystemExit(
+            f"ERROR: --assignment is only accepted by the spatial holdout modes, not {args.mode!r}"
+        )
+    fold_run = assignment != SPATIAL_HOLDOUT_ASSIGNMENT
+    if fold_run and SPATIAL_HOLDOUT_CONFIG_ARMS[config_name] not in SPATIAL_HOLDOUT_CV_ARMS:
+        raise SystemExit(
+            f"ERROR: --assignment {assignment} is admitted for the arms "
+            f"{list(SPATIAL_HOLDOUT_CV_ARMS)} only, not {SPATIAL_HOLDOUT_CONFIG_ARMS[config_name]}"
+        )
     if is_holdout and args.patch_cache != "job_local":
         raise SystemExit(
             f"ERROR: --mode {args.mode} builds its patch cache in the job; a prebuilt "
@@ -1459,7 +1487,14 @@ def main() -> int:
         )
     seed = V6_DEFAULT_SEED if args.seed is None else args.seed
     max_epochs = V6_DEFAULT_MAX_EPOCHS if args.max_epochs is None else args.max_epochs
-    run_label = f"{args.run_label}-seed{seed}-ep{max_epochs}" if is_seeded else args.run_label
+    if fold_run and seed != SPATIAL_HOLDOUT_CV_SEED:
+        raise SystemExit(
+            f"ERROR: --assignment {assignment} runs seed {SPATIAL_HOLDOUT_CV_SEED} only, got {seed}"
+        )
+    # A fold run carries its assignment in the label, so in the display name, the evidence
+    # prefix and the output root; with v1 the label is unchanged.
+    label_base = f"{args.run_label}-{assignment}" if fold_run else args.run_label
+    run_label = f"{label_base}-seed{seed}-ep{max_epochs}" if is_seeded else args.run_label
     if is_seeded and lr_schedule == "cosine":
         run_label += "-cos"
     if is_seeded and args.skip_test:
@@ -1482,6 +1517,8 @@ def main() -> int:
             hydra_overrides.append(f"early_stopping.min_delta={es_min_delta}")
     if args.skip_test:
         hydra_overrides.append("evaluate_test=false")
+    if fold_run:
+        hydra_overrides.append(f"spatial_holdout.assignment={assignment}")
     if args.patch_cache == "prebuilt":
         hydra_overrides.append("+data.patch_cache.source=prebuilt")
         if args.allow_job_local_fallback:
@@ -1758,6 +1795,8 @@ def main() -> int:
                 env.append(("VERTEX_EARLY_STOPPING_MIN_DELTA", str(es_min_delta)))
         if args.skip_test:
             env.append(("VERTEX_SKIP_TEST", "1"))
+        if fold_run:
+            env.append(("VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT", assignment))
         if args.patch_cache == "prebuilt":
             env.append(("VERTEX_PATCH_CACHE_SOURCE", "prebuilt"))
             if args.allow_job_local_fallback:
@@ -1857,6 +1896,8 @@ def main() -> int:
             "remaining train patches, checkpoint selected on seen validation anchors"
         )
         print(f"  val export     : {validation_export_uri}")
+        if fold_run:
+            print(f"  assignment     : {assignment} (cross-validation fold)")
     print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")
 
