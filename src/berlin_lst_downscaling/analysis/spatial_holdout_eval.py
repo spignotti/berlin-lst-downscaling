@@ -35,6 +35,12 @@ minus L4 (holdout models on the unseen anchors, temporal models on all validatio
 with the decision-rule criteria when seeds 0, 1 and 2 exist on both sides. All other
 comparisons keep the strict identical-patch-set check.
 
+Three exploratory additions sit next to the frozen rule and never replace it
+(docs/spatial-holdout.md): the overpass as resampling unit (``overpass_sensitivity``, off by
+default), the decomposition of G into G_seen and a difference-in-differences
+(``G_decomposition``), and the per-patch exports of the naive baseline and the random forest on
+the same strata (``baselines``).
+
 Intervals are 95% percentile intervals of the paired scene bootstrap with the
 resampling of ``scene_bootstrap.compare_arms`` (same generator, batch layout and
 quantile method; a test pins the two to each other). Arms without exports are
@@ -56,6 +62,7 @@ import numpy as np
 import pyarrow as pa
 
 from berlin_lst_downscaling.analysis import scene_bootstrap as sb
+from berlin_lst_downscaling.analysis import spatial_error
 from berlin_lst_downscaling.data.training.contracts import (
     CANON_GRID_ORIGIN_X,
     CANON_GRID_ORIGIN_Y,
@@ -98,6 +105,29 @@ FAMILY_B = (
 )
 FAMILY_K = ((ARM_FULL, ARM_SPECTRAL),)
 PAIRING_FAMILIES = (("A", FAMILY_A), ("B", FAMILY_B), ("K", FAMILY_K))
+# Baselines (exploratory): single-run exports of the naive baseline and the v6 val-only random
+# forest, trained on all anchors. Pairings are the matrix's family C: holdout U-Net minus baseline.
+NAIVE_ARM = "naive_prior_expand"
+BASELINE_PAIRINGS = (
+    (ARM_SPECTRAL, NAIVE_ARM),
+    (ARM_FULL, NAIVE_ARM),
+    (ARM_SPECTRAL, "random_forest_stage1"),
+    (ARM_FULL, "random_forest_stage4"),
+)
+BASELINE_CAVEAT = (
+    "Exploratory, not part of the frozen rule. The baseline was trained on all anchors, the "
+    "held-out ones included; the holdout U-Net has not seen them. The difference therefore "
+    "favours the baseline on the unseen anchors and is not a like-for-like model comparison."
+)
+G_DECOMPOSITION_NOTE = (
+    "Exploratory, not part of the frozen rule. G_unseen mixes two effects: unseen ground, and "
+    "21 % fewer training patches with a refit scaler. G_seen (holdout minus matrix model on the "
+    "seen anchors, same arm, seed and scene rule) carries only the second, so the "
+    "difference-in-differences G_unseen - G_seen, over the scenes that have both strata, "
+    "approximates the unseen-ground part. Limit: the matrix checkpoint was selected on all "
+    "validation anchors, the holdout checkpoint on the seen anchors only, so G_seen also "
+    "carries that difference in selection."
+)
 # Stage-2 trigger of the pre-registered plan: an interval of G or K excludes 0,
 # or the absolute point estimate reaches this many kelvin.
 STAGE2_ABS_THRESHOLD_K = 0.03
@@ -983,14 +1013,222 @@ def tessera_section(
     return out
 
 
+def _g_decomposition(
+    runs: Sequence[Run],
+    assignment: SpatialHoldoutAssignment,
+    g_unseen: Estimate,
+    g_seen: Estimate,
+    *,
+    label: str,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
+    """``G_seen`` and the difference-in-differences ``G_unseen - G_seen`` of one arm.
+
+    ``g_unseen`` and ``g_seen`` are the holdout-minus-matrix differences of the same arm and
+    seeds on the unseen and on the seen anchors. The difference-in-differences is taken
+    over the scenes that have a patch on both; ``G_unseen_common_scenes`` and
+    ``G_seen_common_scenes`` are the two terms on exactly those scenes.
+    """
+    unseen, seen = dict(g_unseen.scenes), dict(g_seen.scenes)
+    common = sorted(set(unseen) & set(seen))
+    if not common:
+        return {"note": G_DECOMPOSITION_NOTE, "available": False, "reason": "no scene has both"}
+    sets = {
+        stratum: _group(runs, assignment, stratum, label).patch_sets for stratum in (UNSEEN, SEEN)
+    }
+
+    def over_common(
+        name: str, stratum: str, values: Mapping[str, float], strata: Sequence[str]
+    ) -> dict[str, Any]:
+        patches = sum(len(sets[s][scene]) for scene in common for s in strata)
+        return _estimate(
+            "mae_100m_difference",
+            f"{label}: {name}",
+            stratum,
+            g_unseen.seeds,
+            values,
+            patches,
+            n_bootstrap=n_bootstrap,
+            rng_seed=rng_seed,
+        ).to_dict()
+
+    return {
+        "note": G_DECOMPOSITION_NOTE,
+        "available": True,
+        "G_seen": g_seen.to_dict(),
+        "G_unseen_common_scenes": over_common(
+            "G unseen, scenes with both", UNSEEN, {s: unseen[s] for s in common}, (UNSEEN,)
+        ),
+        "G_seen_common_scenes": over_common(
+            "G seen, scenes with both", SEEN, {s: seen[s] for s in common}, (SEEN,)
+        ),
+        "did": over_common(
+            "G unseen - G seen",
+            f"{UNSEEN}-{SEEN}",
+            {s: unseen[s] - seen[s] for s in common},
+            (UNSEEN, SEEN),
+        ),
+    }
+
+
+def _seen_patch_counts(
+    holdout_runs: Sequence[Run], matrix_runs: Sequence[Run], assignment: SpatialHoldoutAssignment
+) -> dict[str, int]:
+    """Patches the holdout and the matrix runs scored on the seen anchors, and how they differ."""
+    positions = assignment.positions()
+
+    def seen(runs: Sequence[Run]) -> set[str]:
+        return {
+            pid
+            for run in runs
+            for pid, score in run.patches.items()
+            if SEEN in _strata(score.anchor, assignment, positions)
+        }
+
+    holdout, matrix = seen(holdout_runs), seen(matrix_runs)
+    return {
+        "holdout": len(holdout),
+        "matrix": len(matrix),
+        "only_in_holdout": len(holdout - matrix),
+        "only_in_matrix": len(matrix - holdout),
+    }
+
+
+def _check_baseline_universe(
+    baselines: Mapping[str, Sequence[Run]],
+    matrix: Mapping[str, Sequence[Run]],
+    holdout: Mapping[str, Sequence[Run]],
+) -> None:
+    """A baseline export must hold the very patches (scene, valid cells) of the U-Net exports.
+
+    Checked on the whole split before any stratum is scored. The TESSERA arm drops patches
+    and is not a reference here.
+    """
+    references = [
+        run
+        for family in (matrix, holdout)
+        for arm, runs in family.items()
+        if arm != ARM_TESSERA
+        for run in runs
+    ]
+    for arm, runs in baselines.items():
+        base = {pid: (sc.scene_id, sc.valid_cells) for pid, sc in runs[0].patches.items()}
+        for ref in references:
+            other = {pid: (sc.scene_id, sc.valid_cells) for pid, sc in ref.patches.items()}
+            if base != other:
+                differing = {
+                    pid for pid in set(base) | set(other) if base.get(pid) != other.get(pid)
+                }
+                raise SpatialHoldoutEvalError(
+                    f"baseline {arm} and {ref.label} score different patches "
+                    f"({len(differing)} differ, e.g. {_examples(differing)}); a baseline export "
+                    "must hold the same validation patches as the U-Net exports"
+                )
+
+
+def baseline_section(
+    assignment: SpatialHoldoutAssignment,
+    matrix: Mapping[str, Sequence[Run]],
+    holdout: Mapping[str, Sequence[Run]],
+    baselines: Mapping[str, Sequence[Run]],
+    notes: list[str],
+    *,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
+    """MAE of the baselines per stratum and holdout U-Net minus baseline on the unseen anchors.
+
+    ``baselines`` maps a single-run reference arm (``naive_prior_expand``,
+    ``random_forest_stage<N>``) to its one export. The pairings are those of
+    ``BASELINE_PAIRINGS``; the baseline run is paired with every seed of the holdout arm
+    (replicated, as in ``scene_bootstrap``). A baseline with another patch set than the
+    U-Net exports raises. Both are exploratory: the baselines saw the held-out anchors.
+    """
+    kwargs = {"n_bootstrap": n_bootstrap, "rng_seed": rng_seed}
+    for arm, runs in baselines.items():
+        if not sb.REFERENCE_ARM_PATTERN.fullmatch(arm):
+            raise SpatialHoldoutEvalError(
+                f"{arm!r} is not a baseline arm (naive_prior_expand, random_forest_stage<N>)"
+            )
+        if len(runs) != 1:
+            raise SpatialHoldoutEvalError(f"baseline {arm}: expected one export, got {len(runs)}")
+    _check_baseline_universe(baselines, matrix, holdout)
+    out: dict[str, Any] = {
+        "caveat": BASELINE_CAVEAT,
+        "mae": {
+            arm: {
+                stratum: stratum_mae(
+                    runs, assignment, stratum, label=f"baseline/{arm}", **kwargs
+                ).to_dict()
+                for stratum in STRATA
+            }
+            for arm, runs in baselines.items()
+        },
+        "paired": [],
+    }
+    for arm_a, arm_b in BASELINE_PAIRINGS:
+        name = f"holdout {arm_a} - {arm_b}"
+        absent = [x for x, family in ((arm_a, holdout), (arm_b, baselines)) if x not in family]
+        if absent:
+            notes.append(f"{name} (baseline): skipped, no export of {', '.join(absent)}")
+            continue
+        strata: dict[str, Any] = {}
+        for stratum in (UNSEEN, UNSEEN_INTERIOR, UNSEEN_EDGE):
+            group_a = _group(holdout[arm_a], assignment, stratum, f"{name} (A)")
+            # one run, paired with every seed of A: its seed-mean is itself
+            group_b = dataclasses.replace(
+                _group(baselines[arm_b], assignment, stratum, f"{name} (B)"), seeds=group_a.seeds
+            )
+            strata[stratum] = _paired_groups(
+                group_a, group_b, stratum, label=name, **kwargs
+            ).to_dict()
+        out["paired"].append(
+            {"name": name, "a": arm_a, "b": arm_b, "caveat": BASELINE_CAVEAT, "strata": strata}
+        )
+    return out
+
+
+def add_overpass_sensitivity(result: dict[str, Any], *, n_bootstrap: int, rng_seed: int) -> None:
+    """Attach ``overpass_sensitivity`` to every estimate of ``result``, in place.
+
+    An estimate is any entry that lists its ``scenes``. The entry resamples the overpass
+    (``spatial_error.overpass_id``) instead of the scene and keeps the scene-equal point
+    estimate; it is a sensitivity next to the frozen rule, which stays under ``ci_95``.
+    """
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for child in list(node.values()):
+                walk(child)
+            if isinstance(node.get("scenes"), list) and "ci_95" in node and "point" in node:
+                scenes = node["scenes"]
+                try:
+                    node["overpass_sensitivity"] = spatial_error.overpass_sensitivity_ci(
+                        [row["scene_id"] for row in scenes],
+                        [row["value"] for row in scenes],
+                        n_bootstrap=n_bootstrap,
+                        rng_seed=rng_seed,
+                    )
+                except spatial_error.SpatialErrorError as exc:
+                    raise SpatialHoldoutEvalError(f"overpass sensitivity: {exc}") from exc
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(result)
+
+
 def evaluate(
     assignment: SpatialHoldoutAssignment,
     *,
     matrix: Mapping[str, Sequence[Run]],
     holdout: Mapping[str, Sequence[Run]] | None = None,
+    baselines: Mapping[str, Sequence[Run]] | None = None,
     tessera_invalid: frozenset[str] | None = None,
     n_bootstrap: int = N_BOOTSTRAP,
     rng_seed: int = RNG_SEED,
+    overpass_sensitivity: bool = False,
 ) -> dict[str, Any]:
     """Evaluate matrix runs, and holdout runs when given, under one assignment.
 
@@ -1000,7 +1238,38 @@ def evaluate(
     models, ``G`` per arm and ``K``, and applies the stage-2 trigger of the plan
     to ``G`` of L1 and L4 and to ``K``. ``pairings`` holds the matrix families
     for each model family; ``notes`` names what was skipped for lack of exports.
+
+    Exploratory additions, none of which changes a figure above: ``G_decomposition`` (G on the
+    seen anchors and the difference-in-differences, per arm with holdout and matrix runs);
+    ``baselines`` (single-run exports of the naive baseline and the random forest, trained on
+    all anchors, keyed by their arm label: MAE per stratum and holdout minus baseline on the
+    unseen anchors; the key is absent without them); with ``overpass_sensitivity`` every
+    estimate also carries the same scene-equal mean with the overpass as resampling unit.
     """
+    result = _evaluate(
+        assignment,
+        matrix=matrix,
+        holdout=holdout,
+        baselines=baselines,
+        tessera_invalid=tessera_invalid,
+        n_bootstrap=n_bootstrap,
+        rng_seed=rng_seed,
+    )
+    if overpass_sensitivity:
+        add_overpass_sensitivity(result, n_bootstrap=n_bootstrap, rng_seed=rng_seed)
+    return result
+
+
+def _evaluate(
+    assignment: SpatialHoldoutAssignment,
+    *,
+    matrix: Mapping[str, Sequence[Run]],
+    holdout: Mapping[str, Sequence[Run]] | None,
+    baselines: Mapping[str, Sequence[Run]] | None,
+    tessera_invalid: frozenset[str] | None,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
     kwargs = {"n_bootstrap": n_bootstrap, "rng_seed": rng_seed}
     groups: dict[str, Sequence[Run]] = {f"matrix/{arm}": runs for arm, runs in matrix.items()}
     for arm, runs in (holdout or {}).items():
@@ -1069,6 +1338,10 @@ def evaluate(
     )
     if section:
         result["tessera"] = section
+    if baselines:
+        result["baselines"] = baseline_section(
+            assignment, matrix, holdout or {}, baselines, notes, **kwargs
+        )
     if not holdout:
         return result
 
@@ -1093,6 +1366,22 @@ def evaluate(
         if arm in (ARM_SPECTRAL, ARM_FULL):
             decisive[f"G_{arm}"] = per_stratum[UNSEEN]
         result["G"][arm] = {stratum: est.to_dict() for stratum, est in per_stratum.items()}
+        # exploratory: a failure here must not stop the evaluation of the rule's quantities
+        try:
+            g_seen = paired_difference(
+                runs, paired, assignment, SEEN, label=f"G_seen {arm}: holdout - matrix", **kwargs
+            )
+            decomposition = _g_decomposition(
+                runs, assignment, per_stratum[UNSEEN], g_seen, label=f"G {arm}", **kwargs
+            )
+        except SpatialHoldoutEvalError as exc:
+            decomposition = {
+                "note": G_DECOMPOSITION_NOTE,
+                "available": False,
+                "reason": str(exc),
+                "seen_patches": _seen_patch_counts(runs, paired, assignment),
+            }
+        result.setdefault("G_decomposition", {})[arm] = decomposition
     if ARM_SPECTRAL in holdout and ARM_FULL in holdout:
         per_stratum = {
             stratum: paired_difference(
@@ -1248,6 +1537,7 @@ def evaluate_cv(
     fold_sha256: Mapping[str, str] | None = None,
     n_bootstrap: int = N_BOOTSTRAP,
     rng_seed: int = RNG_SEED,
+    overpass_sensitivity: bool = False,
 ) -> dict[str, Any]:
     """Evaluate the five-fold spatial cross-validation of L1 and L4 (seed 0).
 
@@ -1270,6 +1560,9 @@ def evaluate_cv(
       ``G_cv`` per arm against the matrix seed-0 models on the same patches.
       Only computed when all five folds have both arms; otherwise it is marked
       incomplete and names what is missing.
+
+    With ``overpass_sensitivity`` every estimate (per fold and out of fold) also carries the
+    overpass-unit sensitivity of ``evaluate``.
     """
     kwargs = {"n_bootstrap": n_bootstrap, "rng_seed": rng_seed}
     ordered = _cv_folds(folds)
@@ -1387,12 +1680,104 @@ def evaluate_cv(
     else:
         result[OUT_OF_FOLD] = _out_of_fold(ordered, base, fold_runs, **kwargs)
     result["notes"] = notes
+    if overpass_sensitivity:
+        add_overpass_sensitivity(result, **kwargs)
     return result
 
 
 def _fmt(est: Mapping[str, Any]) -> str:
     low, high = est["ci_95"]
     return f"{est['point']:.4f} [{low:.4f}, {high:.4f}]"
+
+
+def _decomposition_lines(decomposition: Mapping[str, Any]) -> list[str]:
+    lines = ["", "## G decomposition (exploratory)", ""]
+    lines += [next(iter(decomposition.values()))["note"], ""]
+    lines += [
+        "| arm | quantity | stratum | difference | scenes |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for arm, entry in decomposition.items():
+        if not entry["available"]:
+            lines.append(f"| {arm} | not computed: {entry['reason']} | | | |")
+            continue
+        for name, label in (
+            ("G_seen", "G_seen"),
+            ("G_unseen_common_scenes", "G_unseen, scenes with both"),
+            ("G_seen_common_scenes", "G_seen, scenes with both"),
+            ("did", "G_unseen - G_seen"),
+        ):
+            est = entry[name]
+            lines.append(
+                f"| {arm} | {label} | {est['stratum']} | {_fmt(est)} | {est['n_scenes']} |"
+            )
+    return lines
+
+
+def _baseline_lines(section: Mapping[str, Any]) -> list[str]:
+    lines = ["", "## Baselines on the strata (exploratory)", "", section["caveat"], ""]
+    lines += [
+        "| baseline | " + " | ".join(STRATA) + " |",
+        "| --- | " + " | ".join("---" for _ in STRATA) + " |",
+    ]
+    for arm, strata in section["mae"].items():
+        cells = [
+            f"{_fmt(strata[s])} (n={strata[s]['n_scenes']}/{strata[s]['n_patches']})"
+            for s in STRATA
+        ]
+        lines.append(f"| {arm} | " + " | ".join(cells) + " |")
+    if section["paired"]:
+        lines += [
+            "",
+            "Holdout U-Net minus baseline (paired scene bootstrap; the baseline run is paired "
+            "with every seed of the U-Net arm).",
+            "",
+            "| pairing | stratum | difference | scenes |",
+            "| --- | --- | --- | --- |",
+        ]
+        for pairing in section["paired"]:
+            for stratum, est in pairing["strata"].items():
+                lines.append(f"| {pairing['name']} | {stratum} | {_fmt(est)} | {est['n_scenes']} |")
+    return lines
+
+
+def _overpass_rows(node: Any) -> Iterable[Mapping[str, Any]]:
+    """Estimates of a result that carry an overpass sensitivity (differences only)."""
+    if isinstance(node, dict):
+        if "overpass_sensitivity" in node and node.get("quantity") == "mae_100m_difference":
+            yield node
+        for child in node.values():
+            yield from _overpass_rows(child)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _overpass_rows(child)
+
+
+def _overpass_lines(node: Any) -> list[str]:
+    rows = list(_overpass_rows(node))
+    if not rows:
+        return []
+    lines = [
+        "",
+        "## Sensitivity: overpass as resampling unit (not the frozen rule)",
+        "",
+        spatial_error.OVERPASS_NOTE,
+        "",
+        "| quantity | stratum | scene unit (frozen rule) | overpass unit | scenes / overpasses |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for est in rows:
+        sens = est["overpass_sensitivity"]
+        shown = (
+            f"{sens['point_estimate']:.4f} [{sens['ci'][0]:.4f}, {sens['ci'][1]:.4f}]"
+            if sens["available"]
+            else "n/a (fewer than two overpasses)"
+        )
+        lines.append(
+            f"| {est['label']} | {est['stratum']} | {_fmt(est)} | {shown} | "
+            f"{sens['n_scenes']} / {sens['n_overpasses']} |"
+        )
+    return lines
 
 
 def render_markdown(result: Mapping[str, Any]) -> str:
@@ -1438,6 +1823,8 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         for arm, strata in result["G"].items():
             for stratum, est in strata.items():
                 lines.append(f"| {arm} | {stratum} | {_fmt(est)} | {est['n_scenes']} |")
+    if "G_decomposition" in result:
+        lines += _decomposition_lines(result["G_decomposition"])
     if "tessera" in result:
         lines += ["", "## TESSERA, on patch-set intersections", "", result["tessera"]["rule"], ""]
         lines += [
@@ -1505,6 +1892,9 @@ def render_markdown(result: Mapping[str, Any]) -> str:
                     f"| {pairing['name']} | {pairing['family']} | {stratum} | {_fmt(est)} | "
                     f"{est['n_scenes']} | " + " | ".join(flags) + " |"
                 )
+    if "baselines" in result:
+        lines += _baseline_lines(result["baselines"])
+    lines += _overpass_lines(result)
     if result.get("notes"):
         lines += ["", "## Skipped", ""]
         lines += [f"- {note}" for note in result["notes"]]
@@ -1582,6 +1972,7 @@ def render_cv_markdown(result: Mapping[str, Any]) -> str:
         lines.append(f"| K_cv = L4 - L1 | {_fmt(oof['K_cv'])} | {oof['K_cv']['n_scenes']} |")
         for arm, est in oof["G_cv"].items():
             lines.append(f"| G_cv {arm} (out of fold - matrix) | {_fmt(est)} | {est['n_scenes']} |")
+        lines += _overpass_lines(oof)
     for name, fold in result["folds"].items():
         if fold["evaluation"] is None:
             continue
@@ -1608,6 +1999,7 @@ def write_outputs(result: Mapping[str, Any], output_prefix: Path) -> tuple[Path,
 __all__ = [
     "ALL",
     "ARM_TESSERA",
+    "BASELINE_PAIRINGS",
     "CV_ARMS",
     "CV_KIND",
     "FAMILY_A",
@@ -1621,7 +2013,9 @@ __all__ = [
     "PatchScore",
     "Run",
     "SpatialHoldoutEvalError",
+    "add_overpass_sensitivity",
     "anchor_from_patch_id",
+    "baseline_section",
     "evaluate",
     "evaluate_cv",
     "load_fold_runs",

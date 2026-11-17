@@ -258,6 +258,38 @@ def unit_bootstrap_ci(
     )
 
 
+def overpass_sensitivity_ci(
+    scene_ids: Sequence[str],
+    values: Sequence[float] | np.ndarray,
+    *,
+    n_bootstrap: int = DEFAULT_N_BOOTSTRAP,
+    rng_seed: int = DEFAULT_RNG_SEED,
+) -> dict[str, Any]:
+    """Scene-equal mean of ``values`` with the overpass as resampling unit (sensitivity).
+
+    The point estimate is the scene-equal mean of the frozen rule; only the unit that
+    is resampled changes (``overpass_id``). With fewer than two overpasses there is no
+    interval and the entry says so instead of failing.
+    """
+    units = [overpass_id(scene_id) for scene_id in scene_ids]
+    shared: dict[str, list[str]] = {}
+    for scene_id, unit in zip(scene_ids, units, strict=True):
+        shared.setdefault(unit, []).append(scene_id)
+    entry: dict[str, Any] = {
+        "note": OVERPASS_NOTE,
+        "unit": "overpass",
+        "n_scenes": len(units),
+        "n_overpasses": len(shared),
+        "overpasses_with_several_scenes": {
+            name: sorted(ids) for name, ids in sorted(shared.items()) if len(ids) > 1
+        },
+    }
+    if len(shared) < 2:
+        return {**entry, "available": False, "reason": "fewer than two overpasses"}
+    ci = unit_bootstrap_ci(values, units, n_bootstrap=n_bootstrap, rng_seed=rng_seed)
+    return {**entry, "available": True, **ci.as_dict("overpass")}
+
+
 # -------------------------------------------------------------------- scene helpers
 
 

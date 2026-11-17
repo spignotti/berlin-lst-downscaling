@@ -532,6 +532,110 @@ The two-arm stage-1 figures (L1 and L4, seed 0) are unchanged by the generic
 evaluation; a regression test pins them to the output of the two-arm version
 (`tests/test_spatial_holdout_eval.py`, `tests/fixtures/spatial_holdout_stage1_golden.json`).
 
+### Exploratory additions (pm #25, #553)
+
+Four additions sit NEXT TO the frozen rule (paired scene bootstrap, B = 10 000, rng seed 0,
+95 % percentile interval, criteria a-c). They are exploratory or sensitivity reports: none
+replaces an interval, changes B, the seed, the level or a threshold, or enters a verdict. The
+figures above and the golden fixture are unchanged; the only new key in the default output is
+`G_decomposition`.
+
+1. **Overpass as resampling unit** (`--overpass-sensitivity`, off by default). The 27
+   validation scenes come from 15 overpasses (adjacent rows of one platform, path and date,
+   `spatial_error.overpass_id`). With the option every estimate of the output (MAE, G, K,
+   the pairings, the decomposition, the baselines; per fold and out of fold with
+   `--fold-export`) carries `overpass_sensitivity`: the same scene-equal point estimate with a
+   percentile interval that resamples whole overpasses (`spatial_error.unit_bootstrap_ci`).
+   The Markdown adds a section "Sensitivity: overpass as resampling unit (not the frozen
+   rule)". The same option exists for `scripts/analyze_scene_bootstrap.py`
+   (`compare_arms(..., overpass_sensitivity=True)`), which covers the matrix families A-C.
+   Scene ids must be Landsat product ids. A stratum with fewer than two overpasses is marked
+   not available.
+2. **Baselines on the strata** (`--baseline-export FILE...`). Per-patch validation exports
+   of the naive baseline (`naive_prior_expand`) and of the random forest (arm
+   `random_forest_stage<N>`; v6 val-only run, stages 1 and 4), one export per arm, passed next
+   to the matrix and holdout exports. These models were trained on all anchors and are not
+   retrained here. The output key
+   `baselines` holds their scene-equal MAE on seen / unseen / unseen interior / unseen edge
+   (same bootstrap) and holdout U-Net minus baseline on the unseen strata for L1 and L4 against
+   naive, L1 against random forest stage 1 and L4 against random forest stage 4 (the matrix's
+   family C pairings). The baseline run is paired with every seed of the U-Net arm (replicated
+   reference, as in `scene_bootstrap`); no decision-rule criteria are formed. **Caveat, printed
+   with every pairing:** the baseline has seen the held-out anchors in training, the holdout
+   U-Net has not, so the difference favours the baseline on the unseen anchors and is not a
+   like-for-like model comparison. The evaluation checks the whole-split patch set (patch id,
+   scene, valid cells) of each baseline against every U-Net export before scoring anything and
+   raises on a difference; test exports are refused when read, as for every export. Not
+   available with `--fold-export`.
+3. **G decomposition** (always computed; key `G_decomposition`). Next to G on the unseen
+   anchors: `G_seen` = holdout model minus matrix model on the seen anchors (same arm, same
+   seed, same scene rule as G), and the difference-in-differences `G_unseen - G_seen` over the
+   scenes that have a patch on both strata (`did`, with the two terms on exactly those scenes:
+   `G_unseen_common_scenes`, `G_seen_common_scenes`), each with the paired scene bootstrap.
+   Reading: G_unseen mixes "unseen ground" with "21 % fewer training patches and a refit
+   scaler"; G_seen carries only the second, so `did` approximates the first. Limit: the matrix
+   checkpoint was selected on all validation anchors, the holdout checkpoint on the seen
+   anchors only, so G_seen also carries that difference in selection; it is an approximation,
+   not an identification. The TESSERA arm has no decomposition (its comparisons run on
+   patch-set intersections).
+4. **Checkpoint-selection optimism** (`scripts/operators/read_epoch_curve.py --arm`).
+   Read-only, local files only. Per arm, from the `epoch_metrics.json` of each seed: best-epoch
+   validation MAE (the epoch selection picks), last-epoch (40) MAE, mean of epochs 36-40, and
+   best minus last (and minus the mean), as mean and SD (ddof 1) over the seeds. Best minus last
+   is never positive (0 when the best epoch is the last); its size shows how much of the
+   selected figure is the minimum of a noisy curve. For holdout runs pass them as `--holdout-arm`: their
+   `validation_mae_100m` is the seen-anchor metric the checkpoint was selected on, and the
+   report says so. A curve that does not end at epoch 40 or lacks a value in epochs 36-40
+   raises. Test metrics are never read.
+
+```bash
+P=gs://berlin-lst-training-data/qa/modeling/vertex-smoke
+M=data/analysis/spatial-holdout/epoch-metrics
+mkdir -p $M
+for seed in 0 1 2; do
+  label=v6sh-<sha7>-l4-seed$seed-ep40-cos-notest          # holdout run
+  gsutil cp $P/$label/epoch_metrics.json $M/holdout-l4-seed$seed.json
+  label=<label of the matrix training run, l4 seed $seed>  # its own folder, not the rescore one
+  gsutil cp $P/$label/epoch_metrics.json $M/matrix-l4-seed$seed.json
+done
+
+uv run python scripts/operators/read_epoch_curve.py \
+  --arm L4 $M/matrix-l4-seed*.json \
+  --holdout-arm L4-holdout $M/holdout-l4-seed*.json
+```
+
+Where the baseline exports come from. Both runners already write the per-patch export next to
+their report; nothing new is needed, but `baseline_report.json` alone is not enough, the
+`.parquet` is the input of `--baseline-export`. The naive baseline is CPU-only (no training,
+no GPU) and reads the published GCS sources (ADC), so this is a heavy-pipeline run on the VM
+with its own Run OK (`docs/vm-operations.md`); it was not run for this document:
+
+```bash
+# naive baseline, validation 2024 only (test 2025 closed): writes
+# <output_root>/baseline_report.json and <output_root>/eval_validation_patches.parquet
+scripts/runners/vm/run-baseline-vm.sh <branch> baseline_v6_val
+# which runs on the VM:
+#   uv run python scripts/runners/run_baseline.py --config-name baseline_v6_val \
+#     splits=[validation] output_root=<dir>
+# the wrapper copies the whole output root back, under
+#   <tmp base>/vm/baseline-v6-notest/<run id>/eval_validation_patches.parquet
+```
+
+A run from before the per-patch export existed (PR #115) has only the report and must be
+rerun. The random forest (stages 1 and 4) writes `eval_stage<N>_validation_patches.parquet`
+(arm `random_forest_stage<N>`) into the output root of `run_random_forest.py --config-name
+random_forest_v6_val_full` (validation only), the VM step `rf-full` of
+`scripts/runners/vm/val-baselines-vm.sh`; it is bound to the evidence of the naive run.
+
+```bash
+# baselines on the strata, overpass sensitivity (add to the evaluation command above)
+uv run python scripts/analyze_spatial_holdout.py \
+  --matrix-export $E/v6m-*.parquet --holdout-export $E/v6sh-*.parquet \
+  --baseline-export <naive export> <rf stage 1 export> <rf stage 4 export> \
+  --overpass-sensitivity \
+  --output-prefix data/analysis/spatial-holdout/all-arms
+```
+
 ### Cross-validation output
 
 `scripts/analyze_spatial_holdout.py --fold-export cv5-foldK <files> ...` (once per fold;
@@ -637,8 +741,9 @@ L4 - L1 of the matrix models is -0.020 K [-0.041, 0.000] on seen anchors
   report, not a learned quantity, but L5's holdout run is therefore not
   strictly blind to the held-out anchors in that one constant. A test pins that
   the holdout config resolves the same range as the locked L5 config.
-- The random forest is not retrained. No naive-baseline export on the same
-  anchors is part of this evaluation yet.
+- The random forest and the naive baseline are not retrained. Their exports
+  (`--baseline-export`) were trained on all anchors, so every comparison with the holdout
+  U-Net on the unseen anchors is one-sided and exploratory (see "Exploratory additions").
 - With one seed per arm (stage 1: L1 and L4 seed 0), G and K intervals carry
   scene variation, not seed variation; the decision-rule criteria need all
   three seeds.
