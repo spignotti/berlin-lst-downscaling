@@ -582,8 +582,8 @@ figures above and the golden fixture are unchanged; the only new key in the defa
    Read-only, local files only. Per arm, from the `epoch_metrics.json` of each seed: best-epoch
    validation MAE (the epoch selection picks), last-epoch (40) MAE, mean of epochs 36-40, and
    best minus last (and minus the mean), as mean and SD (ddof 1) over the seeds. Best minus last
-   is negative by construction; its size shows how much of the selected figure is the minimum
-   of a noisy curve. For holdout runs pass them as `--holdout-arm`: their
+   is never positive (0 when the best epoch is the last); its size shows how much of the
+   selected figure is the minimum of a noisy curve. For holdout runs pass them as `--holdout-arm`: their
    `validation_mae_100m` is the seen-anchor metric the checkpoint was selected on, and the
    report says so. A curve that does not end at epoch 40 or lacks a value in epochs 36-40
    raises. Test metrics are never read.

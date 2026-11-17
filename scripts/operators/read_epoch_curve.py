@@ -11,9 +11,9 @@ Checkpoint-selection optimism (exploratory, next to the frozen rule): ``--arm LA
 ``epoch_metrics.json`` files of the seeds of one arm and reports, per arm, the best-epoch
 validation MAE (what checkpoint selection picks), the last-epoch MAE, the mean of the last five
 epochs (36-40 of a 40-epoch run) and best minus last, as mean and SD over the seeds. The
-selected checkpoint is the minimum of a noisy curve, so best minus last is a negative number
-that bounds how optimistic the selected figure is. A holdout run selects its checkpoint on the
-seen anchors only, so its curve is the seen-anchor metric; the report says so. This mode reads
+selected checkpoint is the minimum of a noisy curve, so best minus last is never positive
+(0 when the best epoch is the last) and shows how optimistic the selected figure is. A holdout
+run selects its checkpoint on the seen anchors only, so its curve is the seen-anchor metric; the report says so. This mode reads
 local files only (fetch them with ``gsutil cp``, see docs/spatial-holdout.md).
 """
 
