@@ -99,9 +99,15 @@ case "$*" in
       now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       if [[ -n "$mode" && " ${FAKE_DIE_MODES:-} " == *" $mode "* ]]; then
         # kill the batch's worker for this run: the second-to-last script process up the chain
+        # (GNU timeout is a process of its own between gcloud and the script; the macOS shim execs)
         chain=(); p=$PPID
-        while [[ "$(ps -o command= -p "$p")" == *launch_v6_matrix.sh* ]]; do
-          chain+=("$p"); p=$(ps -o ppid= -p "$p" | tr -d ' ')
+        while (( p > 1 )); do
+          if [[ "$(ps -o command= -p "$p")" == *launch_v6_matrix.sh* ]]; then
+            chain+=("$p")
+          elif (( ${#chain[@]} > 0 )); then
+            break
+          fi
+          p=$(ps -o ppid= -p "$p" | tr -d ' ')
         done
         kill -9 "${chain[$(( ${#chain[@]} - 2 ))]}"; exit 0
       fi
@@ -111,6 +117,9 @@ case "$*" in
       k=$(cat "$FAKE_LOG_DIR/desc.$id" 2>/dev/null || echo 0)
       echo $((k + 1)) > "$FAKE_LOG_DIR/desc.$id"
       polls=${FAKE_RUN_POLLS:-2}
+      if [[ -n "$mode" && " ${FAKE_SLOW_MODES:-} " == *" $mode "* ]]; then
+        polls=${FAKE_SLOW_POLLS:-8}
+      fi
       if (( k < polls )); then
         printf 'JOB_STATE_RUNNING\\t%s\\t%s\\n' "$now" "$now"; exit 0
       fi
@@ -955,7 +964,10 @@ def test_holdout_stops_on_any_other_failure_and_leaves_running_jobs_alone(
         "0",
         "--max-parallel",
         "2",
-        FAKE_RUN_POLLS="3",
+        # L1 runs long, so no slot frees before L2's failure is known: nothing may start in between
+        FAKE_RUN_POLLS="1",
+        FAKE_SLOW_MODES="v6-l1-spatial-holdout",
+        FAKE_SLOW_POLLS="8",
         **fail,
         **BATCH,
     )
