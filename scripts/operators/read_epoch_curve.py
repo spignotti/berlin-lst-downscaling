@@ -13,8 +13,9 @@ validation MAE (what checkpoint selection picks), the last-epoch MAE, the mean o
 epochs (36-40 of a 40-epoch run) and best minus last, as mean and SD over the seeds. The
 selected checkpoint is the minimum of a noisy curve, so best minus last is never positive
 (0 when the best epoch is the last) and shows how optimistic the selected figure is. A holdout
-run selects its checkpoint on the seen anchors only, so its curve is the seen-anchor metric; the report says so. This mode reads
-local files only (fetch them with ``gsutil cp``, see docs/spatial-holdout.md).
+run selects its checkpoint on the seen anchors only, so its curve is the seen-anchor metric; the
+report says so. This mode reads local files only (fetch them with ``gsutil cp``, see
+docs/spatial-holdout.md).
 """
 
 from __future__ import annotations
