@@ -35,6 +35,7 @@ dependencies = [
     "torch>=2.2,<2.3",
     "scikit-learn>=1.9.1",
     "skops>=0.16.0",
+    "matplotlib==3.11.0",
 ]
 
 [build-system]

@@ -1,0 +1,49 @@
+# Thesis figure style. Palette follows docs/thesis/06-ausarbeitung-design.md.
+# Colours are written without a leading "#" because "#" starts a comment in
+# matplotlib style files (matplotlib accepts bare 6-digit hex here).
+#   ink 14181F, muted 5B6370, accent 3358D4, accent dark 273EA5, border DFE3E8
+
+# Typography: Source Sans 3 (as in the Typst captions), DejaVu Sans fallback.
+font.family: sans-serif
+font.sans-serif: Source Sans 3, DejaVu Sans
+font.size: 8.5
+axes.titlesize: 8.5
+axes.labelsize: 8.5
+xtick.labelsize: 8.5
+ytick.labelsize: 8.5
+legend.fontsize: 8.5
+figure.titlesize: 8.5
+
+# Colours
+text.color: 14181F
+axes.titlecolor: 14181F
+axes.labelcolor: 5B6370
+axes.edgecolor: 5B6370
+xtick.color: 5B6370
+ytick.color: 5B6370
+xtick.labelcolor: 5B6370
+ytick.labelcolor: 5B6370
+figure.facecolor: FFFFFF
+axes.facecolor: FFFFFF
+axes.prop_cycle: cycler('color', ['3358D4', '14181F', '5B6370', '273EA5'])
+
+# Thin frame, no top/right spines, grid off (opt in per axes)
+axes.linewidth: 0.6
+axes.spines.top: False
+axes.spines.right: False
+axes.grid: False
+grid.color: DFE3E8
+grid.linewidth: 0.5
+axes.axisbelow: True
+xtick.major.width: 0.6
+ytick.major.width: 0.6
+xtick.major.size: 3
+ytick.major.size: 3
+lines.linewidth: 1.2
+legend.frameon: False
+
+# Export: embedded TrueType (editable text) in PDF, live text in SVG
+pdf.fonttype: 42
+svg.fonttype: none
+savefig.dpi: 300
+savefig.bbox: tight
