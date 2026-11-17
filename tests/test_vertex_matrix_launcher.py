@@ -1386,3 +1386,110 @@ def test_help_and_dry_run_need_no_gnu_tools(env: Env) -> None:
     res = env.run("holdout", "--dry-run", "--max-total-usd", "100", "--include-stage1", **gone)
     assert res.returncode == 0, res.stderr
     assert env.log("wrapper.log") == "" and env.log("gcloud.log") == ""
+
+
+# --- TESSERA seeds in the holdout batch ---------------------------------------------------
+
+TESSERA_ARMS = "TESSERA,TESSERA-TEMPORAL"
+
+
+def tdn(arm: str, seed: int) -> str:
+    mode = {"TESSERA": "tessera-spatial-holdout", "TESSERA-TEMPORAL": "tessera"}[arm]
+    return f"{mode}-{PREFIX}-{arm.lower()}-seed{seed}-ep40-cos-notest"
+
+
+def test_tessera_constants_equal_the_launcher_caps() -> None:
+    source = (REPO / "scripts" / "operators" / "launch_vertex_modeling.py").read_text()
+    timeout = re.search(r"^TESSERA_TIMEOUT_SECONDS = (\d+)$", source, re.M)
+    exposure = re.search(r"^TESSERA_MAX_EXPOSURE_USD = ([\d.]+)$", source, re.M)
+    assert timeout and exposure
+    script = SCRIPT.read_text()
+    assert f"TESSERA_TIMEOUT_SECONDS={timeout.group(1)}\n" in script
+    assert f"TESSERA_EXPOSURE_CENTS={round(float(exposure.group(1)) * 100)}\n" in script
+
+
+def test_tessera_dry_run_prices_three_temporal_and_three_holdout_seeds(env: Env) -> None:
+    res = env.run(
+        "holdout",
+        "--dry-run",
+        "--arms",
+        TESSERA_ARMS,
+        "--max-total-usd",
+        "37.50",
+        V6M_IMAGE_URI="",
+        V6M_SOURCE_SHA="",
+        V6M_RUN_DIR="",
+    )
+    assert res.returncode == 0, res.stderr
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    names = [re.search(r"jobname=(\S+)", line).group(1) for line in plan]  # type: ignore[union-attr]
+    assert len(plan) == len(set(names)) == 6
+    assert set(names) == {tdn(a, s) for a in TESSERA_ARMS.split(",") for s in (0, 1, 2)}
+    assert all("cap=USD 6.25" in line for line in plan)
+    assert "summed exposure caps of all 6 run(s): USD 37.50; limit USD 37.50" in res.stdout
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""
+    low = env.run("holdout", "--dry-run", "--arms", TESSERA_ARMS, "--max-total-usd", "37.49")
+    assert low.returncode == 2 and "REFUSED" in low.stdout
+
+
+def test_tessera_is_never_part_of_all_and_refuses_what_the_arm_does_not_have(env: Env) -> None:
+    res = env.run("holdout", "--dry-run", *HOLDOUT_FLAGS)
+    assert "TESSERA" not in res.stdout
+    dry = ("holdout", "--dry-run", "--max-total-usd", "100", "--arms", "TESSERA")
+    for args in (
+        (*dry, "--assignments", "cv5-fold0"),
+        ("submit", "TESSERA", "0"),
+        ("state", "TESSERA-TEMPORAL", "0"),
+    ):
+        assert env.run(*args).returncode == 2, args
+    over = env.run(*dry, V6M_TESSERA_TIMEOUT_SECONDS="20401")
+    assert over.returncode == 2 and "TESSERA cap" in over.stderr
+
+
+def test_tessera_preflight_uses_the_tessera_bounds(env: Env) -> None:
+    pre = env.run("holdout", "--preflight", "--arms", TESSERA_ARMS, "--seeds", "0", V6M_RUN_DIR="")
+    assert pre.returncode == 0, pre.stderr
+    lines = launcher_calls(env)
+    assert len(lines) == 2 and all("--preflight" in line for line in lines)
+    for line, mode in zip(lines, ("tessera-spatial-holdout", "tessera"), strict=True):
+        assert re.search(rf"--mode {mode} ", line) and "--skip-test" in line
+        assert "--patch-cache prebuilt" in line and "--timeout-seconds 20400" in line
+        assert "--max-wait-seconds 600" in line
+    assert env.log("gcloud.log") == ""
+
+
+def test_tessera_arms_join_a_batch_with_the_other_arms(env: Env) -> None:
+    arms = ("--arms", f"L5,{TESSERA_ARMS}", "--seeds", "0")
+    refused = env.run("holdout", "--max-total-usd", "15.74", *arms, **BATCH)
+    assert refused.returncode == 2 and "REFUSED" in refused.stdout and launcher_calls(env) == []
+    res = env.run("holdout", "--max-total-usd", "15.75", *arms, **BATCH)
+    assert res.returncode == 0, res.stdout + res.stderr
+    modes = {
+        re.search(r"--mode (\S+)", line).group(1): line  # type: ignore[union-attr]
+        for line in launcher_calls(env)
+    }
+    assert set(modes) == {"v6-l5-spatial-holdout", "tessera-spatial-holdout", "tessera"}
+    assert "--timeout-seconds 10800" in modes["v6-l5-spatial-holdout"]
+    assert "--patch-cache" not in modes["v6-l5-spatial-holdout"]
+    for mode in ("tessera-spatial-holdout", "tessera"):
+        assert "--timeout-seconds 20400" in modes[mode] and "--patch-cache prebuilt" in modes[mode]
+    assert set(listed_dns(env.log("gcloud.log"))) >= {
+        hdn("L5", 0),
+        tdn("TESSERA", 0),
+        tdn("TESSERA-TEMPORAL", 0),
+    }
+    assert max_in_flight(env) <= 4
+
+
+def test_tessera_attaches_to_an_active_job_and_skips_a_succeeded_one(env: Env) -> None:
+    (env.log_dir / f"list.{tdn('TESSERA', 0)}").write_text("222\tJOB_STATE_RUNNING\n")
+    (env.log_dir / f"list.{tdn('TESSERA-TEMPORAL', 0)}").write_text("333\tJOB_STATE_SUCCEEDED\n")
+    res = env.run(
+        "holdout", "--max-total-usd", "0", "--arms", TESSERA_ARMS, "--seeds", "0", **BATCH
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert launcher_calls(env) == []  # watched and skipped, nothing is submitted
+    assert "custom-jobs describe 222" in env.log("gcloud.log")
+    assert "custom-jobs describe 333" not in env.log("gcloud.log")
+    assert "1 skipped" in res.stdout

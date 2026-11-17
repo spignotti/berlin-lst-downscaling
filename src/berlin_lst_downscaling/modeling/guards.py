@@ -46,6 +46,7 @@ from berlin_lst_downscaling.modeling.spatial_holdout import (
     SPATIAL_HOLDOUT_CV_ARMS,
     SPATIAL_HOLDOUT_CV_ASSIGNMENTS,
     SPATIAL_HOLDOUT_CV_SEED,
+    TESSERA_SPATIAL_HOLDOUT_CONFIG,
     load_assignment,
     resolve_assignment_path,
     spatial_holdout_from_config,
@@ -1155,14 +1156,20 @@ def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
     ``assert_ablation_lock``); on top of that the option must be on, the
     committed assignment must load, the test split stays unscored and the patch
     cache is built in the job (a prebuilt cache holds the published scaler).
+
+    The TESSERA config (``tessera_arm_spatial_holdout``, assignment ``v1`` only, no
+    cross-validation fold) is the exception: it reads the published prebuilt cache, whose
+    features the data module re-scales, and never falls back to a job-local build.
     """
     assignment = spatial_holdout_from_config(cfg)
     expected_arm = SPATIAL_HOLDOUT_CONFIG_ARMS.get(config_name or "")
-    if expected_arm is None:
+    tessera = config_name == TESSERA_SPATIAL_HOLDOUT_CONFIG
+    if expected_arm is None and not tessera:
         if assignment is not None:
             raise ValueError(
                 "spatial_holdout.enabled=true is only admitted on "
-                f"{sorted(SPATIAL_HOLDOUT_CONFIG_ARMS)}; got config {config_name!r}"
+                f"{sorted([*SPATIAL_HOLDOUT_CONFIG_ARMS, TESSERA_SPATIAL_HOLDOUT_CONFIG])}; "
+                f"got config {config_name!r}"
             )
         return
     problems: list[str] = []
@@ -1201,7 +1208,13 @@ def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
         )
     if evaluate_test_from_config(cfg):
         problems.append("evaluate_test must be false (test 2025 stays sealed)")
-    if OmegaConf.select(cfg, "data.patch_cache.source", default="job_local") != "job_local":
+    source = OmegaConf.select(cfg, "data.patch_cache.source", default="job_local")
+    if tessera:
+        if source != "prebuilt":
+            problems.append("data.patch_cache.source must be prebuilt (launcher: --patch-cache)")
+        if OmegaConf.select(cfg, "data.patch_cache.allow_job_local_fallback", default=False):
+            problems.append("data.patch_cache.allow_job_local_fallback must be false")
+    elif source != "job_local":
         problems.append("data.patch_cache.source must be job_local")
     if problems:
         raise ValueError(
@@ -1249,6 +1262,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
         *V6_ABLATION_LOCKED_CONFIG_NAMES,
         *SPATIAL_HOLDOUT_CONFIG_ARMS,
         "tessera_arm",
+        TESSERA_SPATIAL_HOLDOUT_CONFIG,
     }
     if bool(cfg.get("stage1_residual_prior", False)) and config_name not in _residual_prior_configs:
         raise ValueError(
@@ -1268,7 +1282,7 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
     if (
         bool(cfg.get("ablation_lock", False))
         and config_name not in _ablation_names
-        and config_name != "tessera_arm"
+        and config_name not in ("tessera_arm", TESSERA_SPATIAL_HOLDOUT_CONFIG)
     ):
         raise ValueError(
             "ablation_lock is the Tag-11 ablation marker (issue #57) but is set on "
@@ -1281,7 +1295,8 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
             "early_stopping.enabled=true is only admitted on the v6 ablation configs; "
             "v1 locks stay frozen"
         )
-    if not evaluate_test_from_config(cfg) and not v6_config and config_name != "tessera_arm":
+    tessera_config = config_name in ("tessera_arm", TESSERA_SPATIAL_HOLDOUT_CONFIG)
+    if not evaluate_test_from_config(cfg) and not v6_config and not tessera_config:
         raise ValueError(
             "evaluate_test=false is only admitted on the v6 ablation configs "
             "and tessera_arm; v1 locks stay frozen"
@@ -1315,12 +1330,12 @@ def guard_modeling_config(cfg: DictConfig, config_name: str | None) -> None:
                 f"config {config_name!r} requires ablation_release='v6' and its own "
                 f"ablation_arm; got release={release!r} arm={arm_id!r}"
             )
-    elif release is not None and config_name != "tessera_arm" and not holdout_config:
+    elif release is not None and not tessera_config and not holdout_config:
         raise ValueError(
             f"ablation_release={release!r} is only admitted on the v6 ablation configs; "
             f"got config {config_name!r}"
         )
-    if config_name == "tessera_arm":
+    if tessera_config:
         assert_tessera_training_lock(cfg)
     assert_spatial_holdout(cfg, config_name)
     if config_name in _ablation_names:

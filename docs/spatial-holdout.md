@@ -8,7 +8,8 @@ Scope (owner decision 2026-11-16): all nine arms of the matrix (L1, L2, L3, L4,
 L5, LOO-M, LOO-S, NO-NDVI-NDWI, NO-RED-NIR-IDX) times seeds 0, 1 and 2 run
 under the existing assignment `v1`, 27 runs. L1 and L4 seed 0 ran first (image
 `99a71cf`, stage 1); the other 25 runs follow the same rules, so the figures stay
-comparable. The TESSERA arm is not part of this test.
+comparable. The TESSERA arm (a sibling of L4, `docs/tessera-arm.md`) runs under the same
+assignment `v1` with a separate mode and config; section "TESSERA arm" below.
 
 Addition (owner decision 2026-11-16, pm #553): the single draw `v1` is skewed to the
 inner city, so arms L1 and L4, seed 0, are also trained once per fold of a 5-fold
@@ -265,7 +266,8 @@ only with the assignment `v1` (on L1 and L4 also the folds `cv5-fold0` to `cv5-f
 seed 0, see "Spatial cross-validation `cv5`"), and refuses a run that scores test 2025 or uses
 a prebuilt cache. A run must pass
 `evaluate_test=false` (the launcher's `--skip-test`); the guard refuses a
-holdout run that would score the test split. No
+holdout run that would score the test split. (The tenth config, `tessera_arm_spatial_holdout`, is
+the TESSERA arm's; it is not a matrix arm and has its own guard branch.) No
 base or matrix config carries the key: absent means off, the resolved configs,
 cache provenance and prebuilt-cache keys of the matrix runs are unchanged, and
 `guard_modeling_config` rejects the option on any other config.
@@ -280,7 +282,8 @@ With the option on, `RealPatchDataModule`:
    8 decimals. The published scaler covers every eligible pixel of a train
    scene; the refit covers the pixels of the remaining train patches only;
 3. builds the job-local cache with the refit (train rows, then all validation
-   rows). A prebuilt cache is refused: it holds the published scaler;
+   rows). A prebuilt cache is refused: it holds the published scaler (the TESSERA
+   arm is the exception, see "TESSERA arm");
 4. yields the validation patches on seen anchors for the validation loop, so
    `validation/mae_100m`, the checkpoint choice, `best_metric` and
    `validation_report` are seen-anchor figures;
@@ -291,6 +294,48 @@ With the option on, `RealPatchDataModule`:
 (`full.summary.spatial_holdout`), carries the assignment name and SHA-256, the
 patch counts, the refit scaler and the report of the held-out patches. The
 checkpoint is only usable together with that scaler.
+
+## TESSERA arm
+
+pm #524, pm #553 (owner decision 2026-11-16): the TESSERA arm also runs under `v1`, 3 seeds, next
+to 3 seeds on the ordinary temporal split (mode `tessera`). It is a sibling of L4, not a ladder
+stage: it keeps L4's 14 spectral, index and ERA5 channels and replaces the morphology and shadow
+channels with 128 annual embedding channels projected to 8, so G_TESSERA and TESSERA minus L4 are
+read next to the matrix, not inside its families A and B.
+
+- Config `tessera_arm_spatial_holdout` inherits `tessera_arm` and adds `spatial_holdout`
+  (assignment `v1`) and an output root. Launcher mode `tessera-spatial-holdout`: `--skip-test`,
+  `--patch-cache prebuilt` and `--assignment v1` only (no fold, no job-local fallback); bounds are
+  the TESSERA seed bounds (20400 s, USD 6.25, USD 1/h). The guard admits it with assignment `v1`
+  and the prebuilt cache and refuses test scoring, a fold and a job-local cache.
+- Training: the published prebuilt cache `patch-cache/v1/<key>` is read as it is (same key, same
+  files); the held-out anchors only leave the train view. `docs/tessera-arm.md`, "Spatial holdout",
+  gives the equivalence argument and the load-time checks. The order differs from the nine arms:
+  the full train split is admitted with the published scaler, the cache is fetched and verified,
+  then held-out rows are dropped, the scaler is refit from the cached rows and the kept feature
+  channels are re-scaled when a sample is read. The run summary
+  (`spatial_holdout.feature_remap`) records the key, the patches checked and refit, the recorded
+  filled pixels and the stored zeros.
+- Evaluation: `scripts/analyze_spatial_holdout.py` accepts the arm `TESSERA` (an export labelled
+  `tessera_arm`, `tessera_arm_spatial_holdout`, `tessera` or `TESSERA` is read as TESSERA; matrix
+  exports are the temporal seeds, holdout exports the holdout seeds). The arm drops patches with
+  invalid embedding pixels, so every comparison that involves it is computed on the intersection of
+  the patch sets of the compared runs (all seeds, both sides) and the output names the patches and
+  scenes each side lost (`tessera.<quantity>.<stratum>.intersection`). Quantities: `G_TESSERA`
+  (holdout minus temporal TESSERA, unseen anchors), `TESSERA_minus_L4_holdout` (unseen anchors) and
+  `TESSERA_minus_L4_matrix` (all validation patches, stratum `all`), each with the paired scene
+  bootstrap and, with seeds 0, 1, 2 on both sides, the three criteria of the decision rule. All other
+  comparisons keep the strict identical-patch-set check and their numbers.
+- Batch: `launch_v6_matrix.sh holdout --arms TESSERA,TESSERA-TEMPORAL --seeds 0,1,2
+  --max-total-usd 37.50` submits the three holdout and the three temporal seeds (arm `TESSERA` is
+  mode `tessera-spatial-holdout`, `TESSERA-TEMPORAL` is mode `tessera`), with the batch's lock, at
+  most 4 jobs in flight and the attach-only rule. `--arms all` stays the nine matrix arms.
+
+Limits specific to the TESSERA arm: the annual embeddings include Sentinel imagery after the scene
+date and from the validation year 2024, also on the held-out anchors, so the arm does not measure
+causal transfer. The embeddings of the held-out anchors are not removed from the cache, and the
+adapter is trained on the remaining anchors only. The arm replaces morphology and shadow channels
+and drops patches with invalid embedding pixels; it is compared with L4 on the common patches.
 
 ## Launch
 

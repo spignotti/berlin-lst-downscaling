@@ -22,6 +22,11 @@
 # refused for capacity or quota ends with code 3: the batch goes on with the remaining runs. Any other
 # failure stops new submissions; jobs in flight are waited for, never cancelled. Exit codes: 0 all runs
 # succeeded or were skipped, 1 failure, 2 refused, 3 only capacity failures.
+# The TESSERA arm (a sibling of L4, docs/tessera-arm.md) is named explicitly and is never part of `all`:
+# arm TESSERA is mode tessera-spatial-holdout, arm TESSERA-TEMPORAL is the ordinary mode tessera (seeds on
+# the temporal split). Both run --skip-test with --patch-cache prebuilt, a 20400 s timeout and the TESSERA
+# exposure cap of USD 6.25 per job, v1 only (no cross-validation fold). This batch is the way to run the
+# TESSERA seeds; it replaces nothing of retry_tessera_seeds.sh, which stays as it is.
 # L1 and L4 seed 0 (stage 1, already SUCCEEDED under another label) are skipped unless --include-stage1;
 # that applies to the assignment v1 only.
 # --assignments (default v1) selects the spatial assignment of every run: v1, or the cross-validation
@@ -49,6 +54,7 @@
 #     V6M_MAX_POLL_ERR_SECONDS (21600)   V6M_LOOKUP_BACKOFF_SECONDS (30)
 #     V6M_GCLOUD (gcloud)          V6M_RESUBMIT_FAILED (0; 1 = operator opt-in, see below)
 #     V6M_RESUBMIT_CANCELLED (0; 1 = like V6M_RESUBMIT_FAILED for CANCELLED jobs, e.g. after a queue miss)
+#     V6M_TESSERA_TIMEOUT_SECONDS (20400)   (holdout) timeout of the TESSERA arms; the launcher refuses more
 #     V6M_BATCH_TICK_SECONDS (5)   (holdout) V6M_TIMEOUT_SECONDS defaults to 10800 and V6M_MAX_WAIT_SECONDS
 #                                  to 600 there; the launcher refuses more than 10800 s and USD 3.25 per job
 #
@@ -90,6 +96,11 @@ PIN_REGION=europe-west3
 # pinned in scripts/operators/launch_vertex_modeling.py (SPATIAL_HOLDOUT_*); a test compares them
 HOLDOUT_TIMEOUT_SECONDS=10800
 HOLDOUT_EXPOSURE_CENTS=325
+# pinned in scripts/operators/launch_vertex_modeling.py (TESSERA_*); a test compares them
+TESSERA_TIMEOUT_SECONDS=20400
+TESSERA_EXPOSURE_CENTS=625
+declare -A TESS_MODE=( [TESSERA]=tessera-spatial-holdout [TESSERA-TEMPORAL]=tessera )
+BATCH_ARMS=("${ARMS[@]}" TESSERA TESSERA-TEMPORAL)
 # pinned in src/berlin_lst_downscaling/modeling/spatial_holdout.py (SPATIAL_HOLDOUT_CV_*); a test compares them
 CV_ASSIGNMENTS=(cv5-fold0 cv5-fold1 cv5-fold2 cv5-fold3 cv5-fold4)
 CV_ARMS=(L1 L4)
@@ -152,6 +163,7 @@ load_config() {  # needs: $1 = "run" if V6M_RUN_DIR is required
   if [[ "$VARIANT" == holdout ]]; then
     TIMEOUT="${V6M_TIMEOUT_SECONDS:-$HOLDOUT_TIMEOUT_SECONDS}"
     MAX_WAIT="${V6M_MAX_WAIT_SECONDS:-600}"
+    TESSERA_TIMEOUT="${V6M_TESSERA_TIMEOUT_SECONDS:-$TESSERA_TIMEOUT_SECONDS}"
   else
     TIMEOUT="${V6M_TIMEOUT_SECONDS:-14400}"
     MAX_WAIT="${V6M_MAX_WAIT_SECONDS:-1800}"
@@ -179,6 +191,12 @@ load_config() {  # needs: $1 = "run" if V6M_RUN_DIR is required
   [[ "$RESUBMIT_CANCELLED" =~ ^[01]$ ]] || die "V6M_RESUBMIT_CANCELLED must be 0 or 1"
   pos_int V6M_BATCH_TICK_SECONDS "$TICK"
   if [[ "$VARIANT" == holdout ]]; then
+    pos_int V6M_TESSERA_TIMEOUT_SECONDS "$TESSERA_TIMEOUT"
+    (( TESSERA_TIMEOUT <= TESSERA_TIMEOUT_SECONDS )) \
+      || die "V6M_TESSERA_TIMEOUT_SECONDS $TESSERA_TIMEOUT exceeds the TESSERA cap $TESSERA_TIMEOUT_SECONDS"
+    awk -v r="$RATE" -v t="$TESSERA_TIMEOUT" -v w="$MAX_WAIT" -v cap="$TESSERA_EXPOSURE_CENTS" \
+      'BEGIN { exit !(r <= 1.0 && r * (t + w) / 3600 * 100 <= cap + 1e-9) }' \
+      || die "TESSERA rate/timeout/queue allowance exceed the \$1.00/h cap or the per-job exposure cap"
     # the launcher refuses these too; failing here keeps a misconfigured batch off the cloud
     (( TIMEOUT <= HOLDOUT_TIMEOUT_SECONDS )) \
       || die "V6M_TIMEOUT_SECONDS $TIMEOUT exceeds the holdout cap $HOLDOUT_TIMEOUT_SECONDS"
@@ -221,12 +239,27 @@ check_pair() {  # arm seed
 
 lower() { echo "$1" | tr 'A-Z' 'a-z'; }
 
+# The TESSERA arms exist in the holdout batch only; they have their own mode, timeout and exposure cap.
+is_tessera_arm() { [[ -n "${TESS_MODE[${1:-}]:-}" ]]; }
+arm_timeout() { if is_tessera_arm "$1"; then echo "$TESSERA_TIMEOUT"; else echo "$TIMEOUT"; fi; }
+arm_cap() { if is_tessera_arm "$1"; then echo "$TESSERA_EXPOSURE_CENTS"; else echo "$HOLDOUT_EXPOSURE_CENTS"; fi; }
+arm_mode() { if is_tessera_arm "$1"; then echo "${TESS_MODE[$1]}"; else echo "${MODE[$1]}-spatial-holdout"; fi; }
+check_batch_pair() {  # arm seed; the batch also knows the TESSERA arms
+  if is_tessera_arm "${1:-}"; then
+    [[ "${2:-}" =~ ^[012]$ ]] || die "SEED must be 0, 1 or 2, got '${2:-}'"
+  else
+    check_pair "$@"
+  fi
+}
+
 # the run-label part of a fold run: "" for v1, "-cv5-foldK" otherwise
 asg_suffix() { [[ "${1:-v1}" == v1 ]] || printf -- '-%s' "$1"; }
 
 display_name() {  # arm seed [assignment] -> exact Vertex displayName (mode-runlabel, as built by the launcher)
   local arm=$1 seed=$2 asg=${3:-v1}
-  if [[ "$VARIANT" == holdout ]]; then
+  if is_tessera_arm "$arm"; then
+    echo "${TESS_MODE[$arm]}-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos-notest"
+  elif [[ "$VARIANT" == holdout ]]; then
     echo "${MODE[$arm]}-spatial-holdout-${LABEL_PREFIX}-$(lower "$arm")$(asg_suffix "$asg")-seed${seed}-ep${MAX_EPOCHS}-cos-notest"
   else
     echo "${MODE[$arm]}-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos"
@@ -235,9 +268,11 @@ display_name() {  # arm seed [assignment] -> exact Vertex displayName (mode-runl
 
 run() {  # arm seed assignment [--preflight]
   local arm=$1 seed=$2 asg=$3; shift 3
-  local label="${LABEL_PREFIX}-$(lower "$arm")" mode="${MODE[$arm]}"
+  local label="${LABEL_PREFIX}-$(lower "$arm")" mode="${MODE[$arm]:-}"
   local -a variant_args=(--patch-cache prebuilt)
-  if [[ "$VARIANT" == holdout ]]; then  # job-local cache is the launcher default; it refuses prebuilt
+  if is_tessera_arm "$arm"; then  # published prebuilt cache, re-scaled in the job; test 2025 stays sealed
+    mode="${TESS_MODE[$arm]}"; variant_args=(--skip-test --patch-cache prebuilt)
+  elif [[ "$VARIANT" == holdout ]]; then  # job-local cache is the launcher default; it refuses prebuilt
     mode="$mode-spatial-holdout"; variant_args=(--skip-test)
     # the launcher appends the assignment to the run label (and refuses all but L1/L4 at seed 0)
     [[ "$asg" == v1 ]] || variant_args+=(--assignment "$asg")
@@ -252,7 +287,7 @@ run() {  # arm seed assignment [--preflight]
     --service-account "$SA" --project "$PROJECT" --region "$REGION" \
     --infisical-identity "$INF_ID" --infisical-project "$INF_PROJECT" \
     --infisical-env dev --infisical-path /vertex \
-    --hourly-rate-usd "$RATE" --timeout-seconds "$TIMEOUT" --max-wait-seconds "$MAX_WAIT" "$@"
+    --hourly-rate-usd "$RATE" --timeout-seconds "$(arm_timeout "$arm")" --max-wait-seconds "$MAX_WAIT" "$@"
 }
 
 # gcloud as the operator SA for this command only (same wrapper as run(), no --activate);
@@ -348,6 +383,8 @@ CAPACITY_RE='RESOURCE_EXHAUSTED|quota|stockout|insufficient capacity|no availabl
 # capacity (queue rule cancel, or a submission refused for capacity); 1 for any other outcome.
 do_pair() {  # arm seed [assignment]
   local arm=$1 seed=$2 asg=${3:-v1} dn existing prior_ids id state attempt rc tmp pairlog lpid t0 capacity=0
+  local pair_timeout; pair_timeout=$(arm_timeout "$arm")
+  local TIMEOUT=$pair_timeout  # poll_job's expiry bound is this pair's timeout
   dn=$(display_name "$arm" "$seed" "$asg")
   pairlog="$RUNDIR/submit-${arm}-seed${seed}$(asg_suffix "$asg").log"
   for attempt in $(seq 1 "$SUBMIT_ATTEMPTS"); do
@@ -486,7 +523,7 @@ holdout_batch() {
   IFS=, read -r -a asgs <<<"$asg_arg"
   [[ ${#arms[@]} -gt 0 && ${#seeds[@]} -gt 0 && ${#asgs[@]} -gt 0 ]] || die "--arms, --seeds and --assignments must not be empty"
   local a s g n pair
-  for a in "${arms[@]}"; do for s in "${seeds[@]}"; do check_pair "$a" "$s"; done; done
+  for a in "${arms[@]}"; do for s in "${seeds[@]}"; do check_batch_pair "$a" "$s"; done; done
   for n in "${arms[@]}"; do [[ $(printf '%s\n' "${arms[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate arm '$n'"; done
   for n in "${seeds[@]}"; do [[ $(printf '%s\n' "${seeds[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate seed '$n'"; done
   for n in "${asgs[@]}"; do [[ $(printf '%s\n' "${asgs[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate assignment '$n'"; done
@@ -508,15 +545,16 @@ holdout_batch() {
     plan+=("$a $s $g")
   done; done; done
   [[ ${#plan[@]} -gt 0 ]] || die "nothing to run: only stage-1 runs were requested (see --include-stage1)"
-  local cap=$HOLDOUT_EXPOSURE_CENTS limit=0 total=0
+  local cap limit=0 total=0
   if [[ -n "$max_total" ]]; then to_cents "$max_total"; limit=$REPLY; fi
 
   if [[ $dry == 1 ]]; then  # no cloud call: every requested run is priced, none is looked up
     log "holdout dry run: ${#plan[@]} run(s), at most $par in flight; no cloud call, no idempotency lookup"
     for pair in "${plan[@]}"; do
       read -r a s g <<<"$pair"
-      printf 'PLAN %-14s seed%s label=%s-%s%s jobname=%s mode=%s-spatial-holdout cap=USD %s\n' \
-        "$a" "$s" "$LABEL_PREFIX" "$(lower "$a")" "$(asg_suffix "$g")" "$(display_name "$a" "$s" "$g")" "${MODE[$a]}" "$(fmt_cents $cap)"
+      cap=$(arm_cap "$a")
+      printf 'PLAN %-16s seed%s label=%s-%s%s jobname=%s mode=%s cap=USD %s\n' \
+        "$a" "$s" "$LABEL_PREFIX" "$(lower "$a")" "$(asg_suffix "$g")" "$(display_name "$a" "$s" "$g")" "$(arm_mode "$a")" "$(fmt_cents $cap)"
       total=$(( total + cap ))
     done
     log "summed exposure caps of all ${#plan[@]} run(s): USD $(fmt_cents $total); limit USD $(fmt_cents $limit)"
@@ -550,11 +588,11 @@ holdout_batch() {
     elif [[ -z "$existing" ]]; then status=start
     elif resubmittable "$existing"; then status=restart
     else status=BLOCKED; blocked=$((blocked + 1)); fi
-    printf 'PLAN %-14s seed%s %-8s jobname=%s\n' "$a" "$s" "$status" "$dn"
+    printf 'PLAN %-16s seed%s %-8s jobname=%s\n' "$a" "$s" "$status" "$dn"
     case "$status" in
       skip) skipped=$((skipped + 1)) ;;
       attach) attached+=("$pair"); is_attach["$pair"]=1 ;;
-      *) queue+=("$pair"); [[ $status == BLOCKED ]] || total=$(( total + cap )) ;;
+      *) queue+=("$pair"); [[ $status == BLOCKED ]] || total=$(( total + $(arm_cap "$a") )) ;;
     esac
   done
   # jobs that are already active are watched first and hold their slots; they can never submit

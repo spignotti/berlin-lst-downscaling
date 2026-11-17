@@ -26,6 +26,15 @@ number of scenes behind every figure.
   both sides each carries the three criteria of the decision rule, read from
   ``scene_bootstrap.compare_arms`` run on the rows of the stratum.
 
+The TESSERA arm (``ARM_TESSERA``, a sibling of L4 that replaces morphology and shadow channels,
+docs/tessera-arm.md) drops patches with invalid embedding pixels, so its patch set is smaller than
+L4's. Every comparison that involves it (``tessera_section``) is computed on the intersection of
+the patch sets of all compared runs; the output names how many patches and scenes each side lost.
+The quantities are ``G_TESSERA`` (holdout minus temporal TESSERA, unseen anchors) and TESSERA
+minus L4 (holdout models on the unseen anchors, temporal models on all validation patches), each
+with the decision-rule criteria when seeds 0, 1 and 2 exist on both sides. All other
+comparisons keep the strict identical-patch-set check.
+
 Intervals are 95% percentile intervals of the paired scene bootstrap with the
 resampling of ``scene_bootstrap.compare_arms`` (same generator, batch layout and
 quantile method; a test pins the two to each other). Arms without exports are
@@ -70,6 +79,13 @@ UNSEEN_EDGE = "unseen_edge"
 STRATA: tuple[str, ...] = (SEEN, UNSEEN, UNSEEN_INTERIOR, UNSEEN_EDGE)
 ARM_SPECTRAL = "L1"
 ARM_FULL = "L4"
+ARM_TESSERA = "TESSERA"
+# Labels a TESSERA export can carry: the arm name, and the Hydra config names the runs use
+# (the arm has no ``ablation_arm``, so the export takes the config name).
+TESSERA_ARM_LABELS = frozenset(
+    {ARM_TESSERA, "tessera", "tessera_arm", "tessera_arm_spatial_holdout"}
+)
+ALL = "all"  # every validation patch; only the TESSERA comparisons use it
 # Matrix families of notes/statistikplan-matrix.md as (A, B) of "A minus B": the
 # ladder (A), the comparisons against L4 (B; LOO-ERA5 is L3) and K (L4 - L1).
 FAMILY_A = (("L2", "L1"), ("L3", "L2"), ("L4", "L3"), ("L5", "L4"))
@@ -154,9 +170,10 @@ def load_runs(paths: Sequence[Path]) -> list[Run]:
             )
             for i, pid in enumerate(cols["patch_id"])
         }
+        arm = cols["arm"][0]
         runs.append(
             Run(
-                arm=cols["arm"][0],
+                arm=ARM_TESSERA if arm in TESSERA_ARM_LABELS else arm,
                 seed=cols["seed"][0],
                 run_id=cols["run_id"][0],
                 patches=patches,
@@ -547,6 +564,29 @@ def seed_rule_criteria(
     metric) and the sign count are the matrix's own. ``compare_arms`` needs
     seeds 0, 1 and 2 on both sides; with fewer the criteria are not available.
     """
+    return _rule_criteria(
+        runs_a,
+        runs_b,
+        lambda: (
+            _stratum_table(runs_a, assignment, stratum),
+            _stratum_table(runs_b, assignment, stratum),
+        ),
+        stratum,
+        n_bootstrap=n_bootstrap,
+        rng_seed=rng_seed,
+    )
+
+
+def _rule_criteria(
+    runs_a: Sequence[Run],
+    runs_b: Sequence[Run],
+    tables: Callable[[], tuple[pa.Table, pa.Table]],
+    stratum: str,
+    *,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
+    """``seed_rule_criteria`` on the export rows ``tables`` selects."""
     seeds = {
         side: sorted((run.seed for run in runs), key=str)
         for side, runs in (("A", runs_a), ("B", runs_b))
@@ -560,9 +600,10 @@ def seed_rule_criteria(
             ),
         }
     try:
+        table_a, table_b = tables()
         result = sb.compare_arms(
-            _stratum_table(runs_a, assignment, stratum),
-            _stratum_table(runs_b, assignment, stratum),
+            table_a,
+            table_b,
             metric="mae_100m",
             n_bootstrap=n_bootstrap,
             rng_seed=rng_seed,
@@ -665,6 +706,160 @@ def _pairings(
     return out
 
 
+def _key(score: PatchScore) -> tuple[str, Anchor]:
+    return score.scene_id, score.anchor
+
+
+def _side_report(
+    runs: Sequence[Run], keep: Callable[[PatchScore], bool], common: frozenset[tuple[str, Anchor]]
+) -> dict[str, int]:
+    """Patches and scenes of one side on the stratum, and how many the intersection lost."""
+    patches = {_key(sc) for run in runs for sc in run.patches.values() if keep(sc)}
+    scenes = {scene for scene, _anchor in patches}
+    kept_scenes = {scene for scene, _anchor in patches & common}
+    return {
+        "patches": len(patches),
+        "patches_lost": len(patches - common),
+        "scenes": len(scenes),
+        "scenes_lost": len(scenes - kept_scenes),
+    }
+
+
+def _intersection_table(
+    runs: Sequence[Run], common: frozenset[tuple[str, Anchor]], arm: str
+) -> pa.Table:
+    """Export rows of ``runs`` on the common patches, under one arm label."""
+    parts: list[pa.Table] = []
+    for run in runs:
+        if run.table is None:
+            raise SpatialHoldoutEvalError(f"{run.label}: the run holds no export rows")
+        keep = [
+            _key(run.patches[pid]) in common for pid in run.table.column("patch_id").to_pylist()
+        ]
+        part = run.table.filter(pa.array(keep, type=pa.bool_()))
+        index = part.schema.get_field_index("arm")
+        parts.append(part.set_column(index, "arm", pa.array([arm] * part.num_rows, pa.string())))
+    return pa.concat_tables(parts)
+
+
+def _intersection_difference(
+    runs_a: Sequence[Run],
+    runs_b: Sequence[Run],
+    keep: Callable[[PatchScore], bool],
+    stratum: str,
+    *,
+    label: str,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
+    """A minus B on the patches every run of both sides scored on the stratum.
+
+    The scene-equal paired difference of ``paired_difference`` and the decision-rule
+    criteria, both computed on the intersection; the entry names what each side lost.
+    """
+    per_run = [{_key(sc) for sc in run.patches.values() if keep(sc)} for run in (*runs_a, *runs_b)]
+    common = frozenset(set.intersection(*per_run))
+    group_a = _group_where(runs_a, lambda sc: _key(sc) in common, stratum, f"{label} (A)")
+    group_b = _group_where(runs_b, lambda sc: _key(sc) in common, stratum, f"{label} (B)")
+    estimate = _paired_groups(
+        group_a, group_b, stratum, label=label, n_bootstrap=n_bootstrap, rng_seed=rng_seed
+    ).to_dict()
+    estimate["intersection"] = {
+        "patches": len(common),
+        "a": _side_report(runs_a, keep, common),
+        "b": _side_report(runs_b, keep, common),
+    }
+    estimate["criteria"] = _rule_criteria(
+        runs_a,
+        runs_b,
+        lambda: (
+            _intersection_table(runs_a, common, f"{label} (A)"),
+            _intersection_table(runs_b, common, f"{label} (B)"),
+        ),
+        stratum,
+        n_bootstrap=n_bootstrap,
+        rng_seed=rng_seed,
+    )
+    return estimate
+
+
+def tessera_section(
+    assignment: SpatialHoldoutAssignment,
+    matrix: Mapping[str, Sequence[Run]],
+    holdout: Mapping[str, Sequence[Run]],
+    notes: list[str],
+    *,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
+    """The TESSERA quantities on patch-set intersections; empty without a TESSERA export.
+
+    ``G_TESSERA``: holdout TESSERA minus temporal TESSERA on the unseen anchors.
+    ``TESSERA_minus_L4_holdout`` (unseen anchors) and ``TESSERA_minus_L4_matrix`` (all
+    validation patches). A quantity without both sides is skipped with a note.
+    """
+    if ARM_TESSERA not in matrix and ARM_TESSERA not in holdout:
+        return {}
+    positions = assignment.positions()
+
+    def on(stratum: str) -> Callable[[PatchScore], bool]:
+        if stratum == ALL:
+            return lambda score: bool(_strata(score.anchor, assignment, positions))
+        return lambda score: stratum in _strata(score.anchor, assignment, positions)
+
+    out: dict[str, Any] = {
+        "rule": (
+            "every comparison is computed on the intersection of the patch sets of all compared "
+            "runs; 'intersection' names the patches and scenes each side lost"
+        ),
+    }
+    # as for G of the nine arms, each holdout seed is paired with the matrix run of that seed
+    paired = (
+        _runs_for_seeds(
+            matrix[ARM_TESSERA], [run.seed for run in holdout[ARM_TESSERA]], "G_TESSERA"
+        )
+        if ARM_TESSERA in matrix and ARM_TESSERA in holdout
+        else None
+    )
+    plan = (
+        ("G_TESSERA", holdout.get(ARM_TESSERA), paired, UNSEEN, "G TESSERA"),
+        (
+            "TESSERA_minus_L4_holdout",
+            holdout.get(ARM_TESSERA),
+            holdout.get(ARM_FULL),
+            UNSEEN,
+            "holdout: TESSERA - L4",
+        ),
+        (
+            "TESSERA_minus_L4_matrix",
+            matrix.get(ARM_TESSERA),
+            matrix.get(ARM_FULL),
+            ALL,
+            "matrix: TESSERA - L4",
+        ),
+    )
+    for name, runs_a, runs_b, stratum, label in plan:
+        if not runs_a or not runs_b:
+            notes.append(f"{name}: skipped, the runs of one side are missing")
+            continue
+        seeds = [sorted((run.seed for run in runs), key=str) for runs in (runs_a, runs_b)]
+        if seeds[0] != seeds[1]:
+            notes.append(f"{name}: skipped, seeds differ ({seeds[0]} against {seeds[1]})")
+            continue
+        out[name] = {
+            stratum: _intersection_difference(
+                runs_a,
+                runs_b,
+                on(stratum),
+                stratum,
+                label=label,
+                n_bootstrap=n_bootstrap,
+                rng_seed=rng_seed,
+            )
+        }
+    return out
+
+
 def evaluate(
     assignment: SpatialHoldoutAssignment,
     *,
@@ -739,15 +934,22 @@ def evaluate(
         if arms:
             result["pairings"][family] = _pairings(assignment, arms, family, notes, **kwargs)
     result["notes"] = notes
+    section = tessera_section(
+        assignment, matrix, holdout or {}, notes, n_bootstrap=n_bootstrap, rng_seed=rng_seed
+    )
+    if section:
+        result["tessera"] = section
     if not holdout:
         return result
 
     unseen_strata = (UNSEEN, UNSEEN_INTERIOR, UNSEEN_EDGE)
     decisive: dict[str, Estimate] = {}
     result["G"] = {}
-    for arm in sorted(set(matrix) - set(holdout)):
+    for arm in sorted(set(matrix) - set(holdout) - {ARM_TESSERA}):
         notes.append(f"G {arm}: skipped, no holdout export")
     for arm, runs in holdout.items():
+        if arm == ARM_TESSERA:
+            continue  # G_TESSERA is computed on patch-set intersections (tessera_section)
         if arm not in matrix:
             notes.append(f"G {arm}: skipped, no matrix export")
             continue
@@ -1105,6 +1307,37 @@ def render_markdown(result: Mapping[str, Any]) -> str:
         for arm, strata in result["G"].items():
             for stratum, est in strata.items():
                 lines.append(f"| {arm} | {stratum} | {_fmt(est)} | {est['n_scenes']} |")
+    if "tessera" in result:
+        lines += ["", "## TESSERA, on patch-set intersections", "", result["tessera"]["rule"], ""]
+        lines += [
+            "| quantity | stratum | difference | scenes | patches | A lost (patches, scenes) "
+            "| B lost (patches, scenes) | a | b | c |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for name, strata in result["tessera"].items():
+            if name == "rule":
+                continue
+            for stratum, est in strata.items():
+                side = est["intersection"]
+                lost_a = f"{side['a']['patches_lost']}, {side['a']['scenes_lost']}"
+                lost_b = f"{side['b']['patches_lost']}, {side['b']['scenes_lost']}"
+                crit = est["criteria"]
+                flags = (
+                    [
+                        "yes" if crit[key] else "no"
+                        for key in (
+                            "a_interval_excludes_zero",
+                            "b_same_sign_all_seeds",
+                            "c_abs_difference_at_least_2_seed_sd",
+                        )
+                    ]
+                    if crit["available"]
+                    else ["n/a"] * 3
+                )
+                lines.append(
+                    f"| {name} | {stratum} | {_fmt(est)} | {est['n_scenes']} | "
+                    f"{side['patches']} | {lost_a} | {lost_b} | " + " | ".join(flags) + " |"
+                )
     if "K" in result:
         lines += ["", "## K: holdout L4 minus holdout L1, unseen anchors", ""]
         lines += ["| stratum | K | scenes |", "| --- | --- | --- |"]
@@ -1242,6 +1475,8 @@ def write_outputs(result: Mapping[str, Any], output_prefix: Path) -> tuple[Path,
 
 
 __all__ = [
+    "ALL",
+    "ARM_TESSERA",
     "CV_ARMS",
     "CV_KIND",
     "FAMILY_A",
@@ -1267,6 +1502,7 @@ __all__ = [
     "scene_bootstrap_mean",
     "seed_rule_criteria",
     "strata_of",
+    "tessera_section",
     "stratum_gap",
     "stratum_mae",
     "write_outputs",
