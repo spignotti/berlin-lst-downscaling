@@ -225,3 +225,34 @@ def test_cli_metric_choices_include_l250(cli: ModuleType) -> None:
         ["--arm-a", "a", "--arm-b", "b", "--output-prefix", "o", "--metric", "ssim_100m_L250"]
     )
     assert args.metric == "ssim_100m_L250"
+
+
+def test_cli_overpass_sensitivity_is_opt_in(
+    cli: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from test_scene_bootstrap import landsat_ids
+
+    world = make_world(8)
+    fn = effect_fn(dict.fromkeys(range(8), -1.0), noise=0.05)
+    files: dict[str, list[str]] = {}
+    for arm in ("A", "B"):
+        files[arm] = [
+            str(
+                write_export(
+                    tmp_path / f"{arm}{seed}.parquet",
+                    landsat_ids(export_table(arm, seed, "validation", world, fn)),
+                )
+            )
+            for seed in (0, 1, 2)
+        ]
+    assert cli.main(_argv(files["A"], files["B"], tmp_path / "plain")) == 0
+    assert cli.main(_argv(files["A"], files["B"], tmp_path / "sens", "--overpass-sensitivity")) == 0
+    plain = json.loads((tmp_path / "plain.json").read_text())
+    sens = json.loads((tmp_path / "sens.json").read_text())
+    assert "overpass_sensitivity" not in plain
+    assert sens.pop("overpass_sensitivity")["unit"] == "overpass"
+    assert sens == plain  # the rule's numbers are the same with and without the option
+    assert "Sensitivity: overpass" in (tmp_path / "sens.md").read_text()
+    capsys.readouterr()

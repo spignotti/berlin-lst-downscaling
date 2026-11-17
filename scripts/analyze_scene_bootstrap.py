@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-bootstrap", type=int, default=10_000)
     p.add_argument("--rng-seed", type=int, default=0)
     p.add_argument("--allow-scene-mismatch", action="store_true")
+    p.add_argument(
+        "--overpass-sensitivity",
+        action="store_true",
+        help=(
+            "also report the paired difference with the overpass (platform, path, date) as "
+            "resampling unit; a sensitivity next to the frozen scene rule, never replacing it"
+        ),
+    )
     p.add_argument("--output-prefix", type=Path, required=True)
     return p
 
@@ -70,6 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_bootstrap=args.n_bootstrap,
             rng_seed=args.rng_seed,
             allow_scene_mismatch=args.allow_scene_mismatch,
+            overpass_sensitivity=args.overpass_sensitivity,
         )
         write_outputs(result, prefix)
     except (SceneBootstrapError, FileNotFoundError) as exc:

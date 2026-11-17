@@ -1195,3 +1195,95 @@ def test_load_patch_exports_rejects_mixed_l250_columns(tmp_path: Path, world: li
     ]
     with pytest.raises(sb.SceneBootstrapError, match="ssim_100m_L250"):
         sb.load_patch_exports(paths, split="validation")
+
+
+# ------------------------------------------------------ overpass sensitivity
+
+
+def landsat_ids(table: pa.Table, rows_per_overpass: int = 2) -> pa.Table:
+    """Rename ``sceneNN`` to Landsat product ids; ``rows_per_overpass`` adjacent rows share one."""
+
+    def name(scene: str) -> str:
+        index = int(scene[5:])
+        overpass, row = divmod(index, rows_per_overpass)
+        return f"LC08_L2SP_193{23 + row:03d}_202406{overpass + 1:02d}_20240710_02_T1"
+
+    ids = [name(s) for s in table.column("scene_id").to_pylist()]
+    return table.set_column(table.schema.get_field_index("scene_id"), "scene_id", pa.array(ids))
+
+
+def _sensitivity_pair(world: list[Patch], rows: int) -> tuple[pa.Table, pa.Table]:
+    effects = {i: 0.4 * np.sin(i) for i in range(20)}
+    a = landsat_ids(build_arm("A", world, effect_fn(effects)), rows)
+    b = landsat_ids(build_arm("B", world, effect_fn(effects)), rows)
+    return a, b
+
+
+def test_overpass_sensitivity_is_off_by_default_and_changes_nothing(world: list[Patch]) -> None:
+    a, b = _sensitivity_pair(world, 2)
+    plain = sb.compare_arms(a, b, n_bootstrap=300)
+    asked = sb.compare_arms(a, b, n_bootstrap=300, overpass_sensitivity=True)
+    assert plain.overpass_sensitivity is None
+    assert "overpass_sensitivity" not in sb.result_to_dict(plain)
+    assert "overpass" not in sb.render_markdown(plain).lower()
+    # the frozen rule is untouched by the option
+    assert (asked.point_estimate, asked.ci_low, asked.ci_high) == (
+        plain.point_estimate,
+        plain.ci_low,
+        plain.ci_high,
+    )
+    assert asked.seed_diagnostics == plain.seed_diagnostics
+
+
+def test_overpass_sensitivity_resamples_overpasses_and_keeps_the_scene_point(
+    world: list[Patch],
+) -> None:
+    from berlin_lst_downscaling.analysis import spatial_error as se
+
+    a, b = _sensitivity_pair(world, 2)
+    result = sb.compare_arms(a, b, n_bootstrap=400, overpass_sensitivity=True)
+    sens = result.overpass_sensitivity
+    assert sens is not None and sens["available"] is True
+    assert sens["unit"] == "overpass" and sens["n_scenes"] == 20 and sens["n_overpasses"] == 10
+    assert len(sens["overpasses_with_several_scenes"]) == 10
+    assert sens["point_estimate"] == pytest.approx(result.point_estimate, abs=1e-12)
+    diffs = [s.diff for s in result.scenes]
+    units = [se.overpass_id(s.scene_id) for s in result.scenes]
+    expected = se.unit_bootstrap_ci(diffs, units, n_bootstrap=400, rng_seed=0)
+    assert sens["ci"] == [expected.ci_low, expected.ci_high]
+    # a different interval from the scene one: the scenes of an overpass are drawn together
+    assert sens["ci"][1] - sens["ci"][0] != pytest.approx(result.ci_high - result.ci_low)
+    data = sb.result_to_dict(result)
+    assert data["overpass_sensitivity"] == sens
+    assert data["bootstrap"]["unit"] == "scene"
+    text = sb.render_markdown(result)
+    assert "Sensitivity: overpass as resampling unit (not the frozen rule)" in text
+
+
+def test_overpass_sensitivity_equals_the_scene_interval_for_one_scene_per_overpass(
+    world: list[Patch],
+) -> None:
+    a, b = _sensitivity_pair(world, 1)
+    result = sb.compare_arms(a, b, n_bootstrap=400, overpass_sensitivity=True)
+    sens = result.overpass_sensitivity
+    assert sens is not None
+    assert sens["n_overpasses"] == 20 and sens["overpasses_with_several_scenes"] == {}
+    assert sens["ci"] == [pytest.approx(result.ci_low), pytest.approx(result.ci_high)]
+
+
+def test_overpass_sensitivity_with_one_overpass_is_unavailable(world: list[Patch]) -> None:
+    a, b = _sensitivity_pair(world, 20)
+    result = sb.compare_arms(a, b, n_bootstrap=50, overpass_sensitivity=True)
+    assert result.overpass_sensitivity is not None
+    assert result.overpass_sensitivity["available"] is False
+    assert "Not computed" in sb.render_markdown(result)
+
+
+def test_overpass_sensitivity_needs_landsat_scene_ids(world: list[Patch]) -> None:
+    with pytest.raises(sb.SceneBootstrapError, match="overpass sensitivity"):
+        sb.compare_arms(
+            build_arm("A", world, flat(1.0)),
+            build_arm("B", world, flat(2.0)),
+            n_bootstrap=50,
+            overpass_sensitivity=True,
+        )

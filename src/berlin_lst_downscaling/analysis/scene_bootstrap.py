@@ -12,8 +12,11 @@ sums and counts. ``metric="ssim_100m_L250"`` pools ``ssim_100m_L250 *
 ssim_windows`` (same windows, L = 250 K): the appendix comparison to stages
 1-4. A ``ssim_100m`` comparison of exports that carry the L250 column also
 reports that appendix comparison. The per-patch-range columns are ignored.
-Only NumPy and PyArrow are used; nothing here evaluates
-a model or reads data products.
+``compare_arms(..., overpass_sensitivity=True)`` adds the same scene-equal difference with
+the overpass (platform, path, date) as resampling unit, as a sensitivity next to the frozen
+rule; it is off by default and then changes nothing. Only NumPy and PyArrow are used (the
+sensitivity also loads ``analysis.spatial_error``, hence pandas, when asked for); nothing
+here evaluates a model or reads data products.
 """
 
 from __future__ import annotations
@@ -193,6 +196,7 @@ class ComparisonResult:
     allow_scene_mismatch: bool
     replicated_reference: bool = False
     appendix_l250: ComparisonResult | None = None
+    overpass_sensitivity: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------- load
@@ -581,11 +585,17 @@ def compare_arms(
     n_bootstrap: int = 10_000,
     rng_seed: int = 0,
     allow_scene_mismatch: bool = False,
+    overpass_sensitivity: bool = False,
 ) -> ComparisonResult:
     """Paired scene cluster bootstrap of arm A minus arm B on the 100 m metric.
 
     A single-run reference arm is paired with each seed of the other arm
     (replicated); its scene metric is that one run, its seed SD is 0.
+
+    ``overpass_sensitivity`` additionally resamples the overpasses (adjacent rows of one
+    platform, path and date) instead of the scenes. The point estimate stays the
+    scene-equal mean; the result is a sensitivity, never the interval of the frozen rule.
+    The scene ids must then be Landsat product ids.
     """
     if metric not in METRICS:
         raise SceneBootstrapError(f"unsupported metric {metric!r}")
@@ -815,6 +825,9 @@ def compare_arms(
         seed_diagnostics=diag,
         allow_scene_mismatch=allow_scene_mismatch,
         replicated_reference=replicated_a or replicated_b,
+        overpass_sensitivity=(
+            _overpass_sensitivity(contribs, n_bootstrap, rng_seed) if overpass_sensitivity else None
+        ),
         appendix_l250=(
             compare_arms(
                 arm_a,
@@ -828,6 +841,24 @@ def compare_arms(
             else None
         ),
     )
+
+
+def _overpass_sensitivity(
+    scenes: Sequence[SceneContribution], n_bootstrap: int, rng_seed: int
+) -> dict[str, Any]:
+    """The paired scene differences resampled by overpass (see ``compare_arms``)."""
+    # Local import: spatial_error imports this module at load time.
+    from berlin_lst_downscaling.analysis import spatial_error
+
+    try:
+        return spatial_error.overpass_sensitivity_ci(
+            [s.scene_id for s in scenes],
+            [s.diff for s in scenes],
+            n_bootstrap=n_bootstrap,
+            rng_seed=rng_seed,
+        )
+    except spatial_error.SpatialErrorError as exc:
+        raise SceneBootstrapError(f"overpass sensitivity: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------- holm
@@ -868,7 +899,7 @@ def result_to_dict(result: ComparisonResult) -> dict[str, Any]:
         }
 
     d = result.seed_diagnostics
-    return {
+    out: dict[str, Any] = {
         "schema_version": result.schema_version,
         "split": result.split,
         "metric": result.metric,
@@ -924,6 +955,9 @@ def result_to_dict(result: ComparisonResult) -> dict[str, Any]:
             "sign_consistency": d.sign_consistency,
         },
     }
+    if result.overpass_sensitivity is not None:
+        out["overpass_sensitivity"] = result.overpass_sensitivity
+    return out
 
 
 _L250_ROLE = (
@@ -960,6 +994,25 @@ def _replication_note(result: ComparisonResult) -> str | None:
         f"it is replicated and paired with each {other.arm} seed {list(other.seeds)}. "
         "Its seed SD is 0 by construction."
     )
+
+
+def _overpass_markdown(sens: Mapping[str, Any]) -> list[str]:
+    lines = [
+        "## Sensitivity: overpass as resampling unit (not the frozen rule)",
+        "",
+        sens["note"],
+        "",
+    ]
+    if not sens["available"]:
+        return [*lines, f"Not computed: {sens['reason']}.", ""]
+    low, high = sens["ci"]
+    return [
+        *lines,
+        f"Scene-equal point estimate {sens['point_estimate']:.4f}; 95% percentile CI "
+        f"[{low:.4f}, {high:.4f}] over {sens['n_overpasses']} overpasses "
+        f"({sens['n_scenes']} scenes; B={sens['n_bootstrap']}, rng_seed={sens['rng_seed']}).",
+        "",
+    ]
 
 
 def render_markdown(result: ComparisonResult) -> str:
@@ -1029,6 +1082,8 @@ def render_markdown(result: ComparisonResult) -> str:
             f"[{x.ci_low:.4f}, {x.ci_high:.4f}].",
             "",
         ]
+    if result.overpass_sensitivity is not None:
+        lines += _overpass_markdown(result.overpass_sensitivity)
     return "\n".join(lines)
 
 
