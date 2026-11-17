@@ -42,8 +42,12 @@ ytick.major.size: 3
 lines.linewidth: 1.2
 legend.frameon: False
 
-# Export: embedded TrueType (editable text) in PDF, live text in SVG
+# Layout: constrained layout, no tight cropping, so the figure keeps its
+# figsize (a TEXT_WIDTH_IN figure is exactly 155 mm wide).
+figure.constrained_layout.use: True
+
+# Export: SVG with text as paths (Typst would otherwise use the variable
+# font's ExtraLight default). pdf.fonttype stays embedded TrueType for PDFs.
 pdf.fonttype: 42
-svg.fonttype: none
+svg.fonttype: path
 savefig.dpi: 300
-savefig.bbox: tight

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import matplotlib
+import matplotlib.font_manager as fm
 import pytest
 from matplotlib.colors import to_hex
 from matplotlib.figure import Figure
@@ -25,9 +29,10 @@ def test_style_values_are_loaded(thesis_style):
     assert rc["axes.spines.right"] is False
     assert rc["axes.grid"] is False
     assert rc["pdf.fonttype"] == 42
-    assert rc["svg.fonttype"] == "none"
+    assert rc["svg.fonttype"] == "path"
     assert rc["savefig.dpi"] == 300
-    assert rc["savefig.bbox"] == "tight"
+    assert rc["figure.constrained_layout.use"] is True
+    assert rc["savefig.bbox"] is None  # no tight cropping
     assert to_hex(rc["axes.edgecolor"], keep_alpha=False).upper() == style.MUTED
     assert to_hex(rc["text.color"], keep_alpha=False).upper() == style.INK
 
@@ -42,14 +47,30 @@ def test_width_constants():
     assert style.HALF_WIDTH_IN == pytest.approx(style.TEXT_WIDTH_IN / 2)
 
 
-def test_save_figure_writes_nonempty_pdf(thesis_style, tmp_path):
-    fig = Figure(figsize=(style.HALF_WIDTH_IN, 2.0))
+def test_save_figure_writes_text_free_svg_of_text_width(thesis_style, tmp_path):
+    fig = Figure(figsize=(style.TEXT_WIDTH_IN, 2.0))
     ax = fig.subplots()
     ax.plot([0, 1, 2], [1, 3, 2])
     ax.set_xlabel("x")
+    ax.set_title("title")
     out_dir = tmp_path / "nested" / "out"
     path = style.save_figure(fig, "dummy", out_dir=out_dir)
-    assert path == out_dir / "dummy.pdf"
-    data = path.read_bytes()
-    assert data.startswith(b"%PDF")
-    assert len(data) > 1000
+    assert path == out_dir / "dummy.svg"
+    svg = path.read_text(encoding="utf-8")
+    assert len(svg) > 1000
+    assert "<text" not in svg  # svg.fonttype: path
+    root = re.search(r"<svg[^>]*>", svg)
+    assert root is not None
+    width = re.search(r'width="([\d.]+)pt"', root.group(0))
+    assert width is not None
+    assert float(width.group(1)) == pytest.approx(style.TEXT_WIDTH_IN * 72, abs=0.5)
+
+
+def test_static_source_sans_instance_is_used_for_regular():
+    if not any(f.name == style.FONT_FAMILY for f in fm.fontManager.ttflist):
+        pytest.skip("Source Sans 3 is not installed")
+    style._register_static_instances()
+    for weight, font_style in [(400, "normal"), (700, "normal"), (400, "italic"), (700, "italic")]:
+        prop = fm.FontProperties(family=style.FONT_FAMILY, weight=weight, style=font_style)
+        found = Path(fm.findfont(prop, fallback_to_default=False))
+        assert "[" not in found.name, f"{weight} {font_style} resolved to variable font {found}"

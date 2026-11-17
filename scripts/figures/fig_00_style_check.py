@@ -4,7 +4,7 @@ Shows the palette, a line plot with the default colour cycle and a small image
 with the LST colour map and a colourbar in kelvin. Not a thesis figure.
 
 Usage: uv run python scripts/figures/fig_00_style_check.py
-Output: figures/out/fig_00_style_check.pdf
+Output: figures/out/fig_00_style_check.svg
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def main() -> None:
     style.use_thesis_style()
 
     fig = plt.figure(figsize=(style.TEXT_WIDTH_IN, 4.0))
-    grid = fig.add_gridspec(2, 2, height_ratios=[0.5, 2.0], width_ratios=[1.3, 1.0], hspace=0.55)
+    grid = fig.add_gridspec(2, 2, height_ratios=[0.5, 2.0], width_ratios=[1.3, 1.0])
 
     # Palette swatches
     ax_sw = fig.add_subplot(grid[0, :])
@@ -66,7 +66,7 @@ def main() -> None:
     ax_img.set_xticks([])
     ax_img.set_yticks([])
     ax_img.set_title("Image, magma", loc="left")
-    colourbar = fig.colorbar(image, ax=ax_img, fraction=0.046, pad=0.03)
+    colourbar = fig.colorbar(image, ax=ax_img)
     colourbar.set_label("LST (K)")
     colourbar.outline.set_linewidth(0.6)
 
