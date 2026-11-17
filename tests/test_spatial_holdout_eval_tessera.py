@@ -233,6 +233,10 @@ def test_tessera_scope_file_lists_the_invalid_validation_patches(tmp_path: Path)
         )
     )
     assert ev.read_tessera_invalid(scope) == frozenset({"b"})
+    # The uploaded evidence record keeps the same list under ``data_scope``.
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(json.dumps({"run_label": "x", "data_scope": json.loads(scope.read_text())}))
+    assert ev.read_tessera_invalid(evidence) == frozenset({"b"})
     scope.write_text("{}")
     with pytest.raises(ev.SpatialHoldoutEvalError, match="skipped_refs"):
         ev.read_tessera_invalid(scope)

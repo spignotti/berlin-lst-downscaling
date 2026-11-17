@@ -186,14 +186,16 @@ def load_runs(paths: Sequence[Path]) -> list[Run]:
 def read_tessera_invalid(path: Path) -> frozenset[str]:
     """Validation patch ids a TESSERA run recorded as skipped for invalid embedding pixels.
 
-    ``path`` is the run's ``data_scope.json`` (``skipped_refs`` per split with a reason).
+    ``path`` is the run's ``data_scope.json`` (``skipped_refs`` per split with a reason) or
+    its uploaded ``evidence.json``, which keeps the same list under ``data_scope``.
     """
     record = json.loads(Path(path).read_text(encoding="utf-8"))
-    skipped = record.get("skipped_refs") if isinstance(record, dict) else None
+    scope = record.get("data_scope", record) if isinstance(record, dict) else None
+    skipped = scope.get("skipped_refs") if isinstance(scope, dict) else None
     rows = skipped.get("validation") if isinstance(skipped, dict) else None
     if not isinstance(rows, list):
         raise SpatialHoldoutEvalError(
-            f"{path}: no skipped_refs.validation list (a data_scope.json)"
+            f"{path}: no skipped_refs.validation list (a data_scope.json or an evidence.json)"
         )
     return frozenset(str(row["patch_id"]) for row in rows if row.get("reason") == "tessera_invalid")
 
