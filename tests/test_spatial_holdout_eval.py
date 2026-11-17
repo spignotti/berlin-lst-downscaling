@@ -825,3 +825,27 @@ def test_cli_takes_baseline_exports_and_the_overpass_option(
                 str(out / "d"),
             ]
         )
+
+
+def test_g_decomposition_fails_soft_when_the_seen_patch_sets_differ(
+    tmp_path: Path, assignment: sh.SpatialHoldoutAssignment, exports: dict[str, list[Path]]
+) -> None:
+    """The unseen patches match, the seen ones do not: the rule's figures are computed as before."""
+    seen = next(
+        a for a in _scene_anchors(assignment)["scene0"] if _stratum(a, assignment) == "seen"
+    )
+    lost = f"scene0:{cell_id(*seen)}"
+    short = _export(
+        tmp_path / "short.parquet", assignment, arm="L1", seed=0, unseen_shift=G_TRUE, drop=lost
+    )
+    kwargs = {"matrix": {"L1": ev.load_runs(exports["matrix_l1"])}, "n_bootstrap": 100}
+    full = ev.evaluate(assignment, holdout={"L1": ev.load_runs(exports["holdout_l1"])}, **kwargs)
+    result = ev.evaluate(assignment, holdout={"L1": ev.load_runs([short])}, **kwargs)
+    block = result["G_decomposition"]["L1"]
+    assert block["available"] is False and "seen" in block["reason"]
+    assert block["seen_patches"]["only_in_matrix"] == 1
+    assert block["seen_patches"]["only_in_holdout"] == 0
+    assert "not computed" in ev.render_markdown(result)
+    # G on the unseen anchors is the planted effect and equals the complete evaluation's
+    assert result["G"]["L1"][ev.UNSEEN] == full["G"]["L1"][ev.UNSEEN]
+    assert full["G_decomposition"]["L1"]["available"] is True

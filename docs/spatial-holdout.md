@@ -604,6 +604,29 @@ uv run python scripts/operators/read_epoch_curve.py \
   --holdout-arm L4-holdout $M/holdout-l4-seed*.json
 ```
 
+Where the baseline exports come from. Both runners already write the per-patch export next to
+their report; nothing new is needed, but `baseline_report.json` alone is not enough, the
+`.parquet` is the input of `--baseline-export`. The naive baseline is CPU-only (no training,
+no GPU) and reads the published GCS sources (ADC), so this is a heavy-pipeline run on the VM
+with its own Run OK (`docs/vm-operations.md`); it was not run for this document:
+
+```bash
+# naive baseline, validation 2024 only (test 2025 closed): writes
+# <output_root>/baseline_report.json and <output_root>/eval_validation_patches.parquet
+scripts/runners/vm/run-baseline-vm.sh <branch> baseline_v6_val
+# which runs on the VM:
+#   uv run python scripts/runners/run_baseline.py --config-name baseline_v6_val \
+#     splits=[validation] output_root=<dir>
+# the wrapper copies the whole output root back, under
+#   <tmp base>/vm/baseline-v6-notest/<run id>/eval_validation_patches.parquet
+```
+
+A run from before the per-patch export existed (PR #115) has only the report and must be
+rerun. The random forest (stages 1 and 4) writes `eval_stage<N>_validation_patches.parquet`
+(arm `random_forest_stage<N>`) into the output root of `run_random_forest.py --config-name
+random_forest_v6_val_full` (validation only), the VM step `rf-full` of
+`scripts/runners/vm/val-baselines-vm.sh`; it is bound to the evidence of the naive run.
+
 ```bash
 # baselines on the strata, overpass sensitivity (add to the evaluation command above)
 uv run python scripts/analyze_spatial_holdout.py \

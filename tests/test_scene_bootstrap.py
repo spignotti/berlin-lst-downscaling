@@ -1287,3 +1287,25 @@ def test_overpass_sensitivity_needs_landsat_scene_ids(world: list[Patch]) -> Non
             n_bootstrap=50,
             overpass_sensitivity=True,
         )
+
+
+def test_overpass_sensitivity_reaches_the_l250_appendix(tmp_path: Path, world: list[Patch]) -> None:
+    by_overpass = {scene: f"LC08_L2SP_193{23 + i % 2:03d}_202406{i // 2 + 1:02d}_20240710_02_T1"
+                   for i, scene in enumerate(sorted({p[1] for p in world}))}  # fmt: skip
+    landsat = [
+        (pid, by_overpass[scene], date, cells, wins) for pid, scene, date, cells, wins in world
+    ]
+    a = sb.load_patch_exports(
+        _writer_arm(tmp_path, "A", landsat, main=0.6, l250=0.1, lpatch=0.05), split="validation"
+    )
+    b = sb.load_patch_exports(
+        _writer_arm(tmp_path, "B", landsat, main=0.4, l250=0.9, lpatch=None), split="validation"
+    )
+    result = sb.compare_arms(a, b, metric="ssim_100m", n_bootstrap=50, overpass_sensitivity=True)
+    assert result.appendix_l250 is not None
+    sens = result.appendix_l250.overpass_sensitivity
+    assert sens is not None and sens["available"] is True and sens["n_overpasses"] == 10
+    assert sb.result_to_dict(result)["appendix_ssim_100m_L250"]["overpass_sensitivity"] == sens
+    assert "### Appendix ssim_100m_L250, sensitivity" in sb.render_markdown(result)
+    plain = sb.compare_arms(a, b, metric="ssim_100m", n_bootstrap=50)
+    assert "overpass_sensitivity" not in sb.result_to_dict(plain)["appendix_ssim_100m_L250"]

@@ -836,6 +836,7 @@ def compare_arms(
                 n_bootstrap=n_bootstrap,
                 rng_seed=rng_seed,
                 allow_scene_mismatch=allow_scene_mismatch,
+                overpass_sensitivity=overpass_sensitivity,
             )
             if metric == "ssim_100m" and has_l250
             else None
@@ -980,6 +981,11 @@ def _appendix_dict(appendix: ComparisonResult | None) -> dict[str, Any] | None:
         },
         "mean_a": appendix.seed_diagnostics.mean_a,
         "mean_b": appendix.seed_diagnostics.mean_b,
+        **(
+            {"overpass_sensitivity": appendix.overpass_sensitivity}
+            if appendix.overpass_sensitivity is not None
+            else {}
+        ),
     }
 
 
@@ -996,13 +1002,11 @@ def _replication_note(result: ComparisonResult) -> str | None:
     )
 
 
-def _overpass_markdown(sens: Mapping[str, Any]) -> list[str]:
-    lines = [
-        "## Sensitivity: overpass as resampling unit (not the frozen rule)",
-        "",
-        sens["note"],
-        "",
-    ]
+def _overpass_markdown(
+    sens: Mapping[str, Any],
+    title: str = "## Sensitivity: overpass as resampling unit (not the frozen rule)",
+) -> list[str]:
+    lines = [title, "", sens["note"], ""]
     if not sens["available"]:
         return [*lines, f"Not computed: {sens['reason']}.", ""]
     low, high = sens["ci"]
@@ -1082,6 +1086,11 @@ def render_markdown(result: ComparisonResult) -> str:
             f"[{x.ci_low:.4f}, {x.ci_high:.4f}].",
             "",
         ]
+        if x.overpass_sensitivity is not None:
+            lines += _overpass_markdown(
+                x.overpass_sensitivity,
+                "### Appendix ssim_100m_L250, sensitivity: overpass as resampling unit",
+            )
     if result.overpass_sensitivity is not None:
         lines += _overpass_markdown(result.overpass_sensitivity)
     return "\n".join(lines)

@@ -1072,6 +1072,29 @@ def _g_decomposition(
     }
 
 
+def _seen_patch_counts(
+    holdout_runs: Sequence[Run], matrix_runs: Sequence[Run], assignment: SpatialHoldoutAssignment
+) -> dict[str, int]:
+    """Patches the holdout and the matrix runs scored on the seen anchors, and how they differ."""
+    positions = assignment.positions()
+
+    def seen(runs: Sequence[Run]) -> set[str]:
+        return {
+            pid
+            for run in runs
+            for pid, score in run.patches.items()
+            if SEEN in _strata(score.anchor, assignment, positions)
+        }
+
+    holdout, matrix = seen(holdout_runs), seen(matrix_runs)
+    return {
+        "holdout": len(holdout),
+        "matrix": len(matrix),
+        "only_in_holdout": len(holdout - matrix),
+        "only_in_matrix": len(matrix - holdout),
+    }
+
+
 def _check_baseline_universe(
     baselines: Mapping[str, Sequence[Run]],
     matrix: Mapping[str, Sequence[Run]],
@@ -1343,12 +1366,22 @@ def _evaluate(
         if arm in (ARM_SPECTRAL, ARM_FULL):
             decisive[f"G_{arm}"] = per_stratum[UNSEEN]
         result["G"][arm] = {stratum: est.to_dict() for stratum, est in per_stratum.items()}
-        g_seen = paired_difference(
-            runs, paired, assignment, SEEN, label=f"G_seen {arm}: holdout - matrix", **kwargs
-        )
-        result.setdefault("G_decomposition", {})[arm] = _g_decomposition(
-            runs, assignment, per_stratum[UNSEEN], g_seen, label=f"G {arm}", **kwargs
-        )
+        # exploratory: a failure here must not stop the evaluation of the rule's quantities
+        try:
+            g_seen = paired_difference(
+                runs, paired, assignment, SEEN, label=f"G_seen {arm}: holdout - matrix", **kwargs
+            )
+            decomposition = _g_decomposition(
+                runs, assignment, per_stratum[UNSEEN], g_seen, label=f"G {arm}", **kwargs
+            )
+        except SpatialHoldoutEvalError as exc:
+            decomposition = {
+                "note": G_DECOMPOSITION_NOTE,
+                "available": False,
+                "reason": str(exc),
+                "seen_patches": _seen_patch_counts(runs, paired, assignment),
+            }
+        result.setdefault("G_decomposition", {})[arm] = decomposition
     if ARM_SPECTRAL in holdout and ARM_FULL in holdout:
         per_stratum = {
             stratum: paired_difference(

@@ -909,4 +909,35 @@ def test_cv_overpass_sensitivity_is_opt_in(
     fold = asked["folds"]["cv5-fold1"]["evaluation"]
     assert fold["G"]["L1"][ev.UNSEEN]["overpass_sensitivity"]["n_overpasses"] == 4
     assert asked[ev.OUT_OF_FOLD]["K_cv"]["overpass_sensitivity"]["available"] is True
-    assert "Sensitivity: overpass" in ev.render_cv_markdown(asked)
+    text = ev.render_cv_markdown(asked)
+    # the out-of-fold table and the table of each of the five folds
+    assert text.count("Sensitivity: overpass as resampling unit") == 6
+    assert "Sensitivity: overpass" not in ev.render_cv_markdown(plain)
+
+
+def test_cv_g_decomposition_fails_soft_for_one_fold(
+    tmp_path: Path, folds: dict[str, sh.SpatialHoldoutAssignment]
+) -> None:
+    matrix, holdout = _runs(tmp_path, folds)
+    fold = folds["cv5-fold1"]
+    seen = next(a for a in _scenes(folds)["scene0"] if a not in fold.holdout_anchors)
+    # both fold models miss one seen patch that the matrix models scored (L4 - L1 stays valid)
+    reference = ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=100)
+    for arm in ("L1", "L4"):
+        path = tmp_path / f"short-fold1-{arm}.parquet"
+        _export(path, folds, arm=arm, fold=1, drop=f"scene0:{cell_id(*seen)}")
+        holdout["cv5-fold1"][arm] = ev.load_fold_runs([path])
+    result = ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=100)
+    decomposition = result["folds"]["cv5-fold1"]["evaluation"]["G_decomposition"]
+    assert decomposition["L1"]["available"] is False
+    assert decomposition["L1"]["seen_patches"]["only_in_matrix"] == 1
+    assert decomposition["L4"]["available"] is False
+    for name in ("cv5-fold0", "cv5-fold2"):
+        assert result["folds"][name]["evaluation"]["G_decomposition"]["L1"]["available"] is True
+    # everything but that decomposition is as with the complete export
+    assert result["fold_summary"] == reference["fold_summary"]
+    assert result[ev.OUT_OF_FOLD] == reference[ev.OUT_OF_FOLD]
+    assert (
+        result["folds"]["cv5-fold1"]["evaluation"]["G"]
+        == reference["folds"]["cv5-fold1"]["evaluation"]["G"]
+    )
