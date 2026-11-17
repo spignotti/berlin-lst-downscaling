@@ -881,3 +881,32 @@ def test_guard_refuses_an_assignment_that_differs_from_the_one_in_the_output_roo
     guard_modeling_config(_compose(name, [*_RUN_OVERRIDES, v1]), name)
     cfg = _compose(name, [*_RUN_OVERRIDES, v1, "spatial_holdout.assignment=cv5-fold2"])
     guard_modeling_config(cfg, name)
+
+
+def test_cv_overpass_sensitivity_is_opt_in(
+    tmp_path: Path,
+    folds: dict[str, sh.SpatialHoldoutAssignment],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from berlin_lst_downscaling.analysis import spatial_error
+
+    # the synthetic scenes are no Landsat products: let scene0 and scene1 share an overpass
+    overpass = {"scene0": "o0", "scene1": "o0", "scene2": "o2", "scene3": "o3", "scene4": "o4"}
+    monkeypatch.setattr(spatial_error, "overpass_id", lambda scene_id: overpass[scene_id])
+    matrix, holdout = _runs(tmp_path, folds)
+    plain = ev.evaluate_cv(folds, matrix=matrix, holdout=holdout, n_bootstrap=100)
+    asked = ev.evaluate_cv(
+        folds, matrix=matrix, holdout=holdout, n_bootstrap=100, overpass_sensitivity=True
+    )
+    assert "overpass_sensitivity" not in json.dumps(plain)
+
+    def strip(node: object) -> object:
+        if isinstance(node, dict):
+            return {k: strip(v) for k, v in node.items() if k != "overpass_sensitivity"}
+        return [strip(v) for v in node] if isinstance(node, list) else node
+
+    assert strip(asked) == plain
+    fold = asked["folds"]["cv5-fold1"]["evaluation"]
+    assert fold["G"]["L1"][ev.UNSEEN]["overpass_sensitivity"]["n_overpasses"] == 4
+    assert asked[ev.OUT_OF_FOLD]["K_cv"]["overpass_sensitivity"]["available"] is True
+    assert "Sensitivity: overpass" in ev.render_cv_markdown(asked)

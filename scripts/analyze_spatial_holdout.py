@@ -34,6 +34,19 @@ with and the SHA-256 of that file; both must be those of the fold the export is 
 The output holds each fold's evaluation, the mean and range of K and G over the
 folds, and the out-of-fold summary (incomplete when a fold or an arm is missing).
 
+Exploratory additions, reported next to the frozen rule and never replacing it:
+
+    # G on the seen anchors and the difference-in-differences are always part of the output
+    # (key G_decomposition). Per-patch validation exports of the naive baseline and of the
+    # random forest (stages 1 and 4; trained on all anchors, not retrained) add their MAE on
+    # the strata and holdout U-Net minus baseline on the unseen anchors:
+    uv run python scripts/analyze_spatial_holdout.py ... \\
+        --baseline-export <naive export> <rf stage 1 export> <rf stage 4 export>
+
+    # the overpass (platform, path, date) as resampling unit, next to the scene unit, for every
+    # estimate (also with --fold-export):
+    uv run python scripts/analyze_spatial_holdout.py ... --overpass-sensitivity
+
 The arm and seed of an export are read from the file. G pairs each holdout run
 with the matrix run of the same arm and seed. An arm without exports is skipped
 with a note under "Skipped" in the output.
@@ -100,6 +113,7 @@ def _main_cv(args: argparse.Namespace) -> int:
         },
         n_bootstrap=args.n_bootstrap,
         rng_seed=args.rng_seed,
+        overpass_sensitivity=args.overpass_sensitivity,
     )
     json_path, md_path = write_outputs(result, args.output_prefix)
     print(render_cv_markdown(result))
@@ -112,6 +126,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--assignment", default="v1", help="assignment version or .json path")
     parser.add_argument("--matrix-export", nargs="+", type=Path, required=True, metavar="FILE")
     parser.add_argument("--holdout-export", nargs="+", type=Path, default=[], metavar="FILE")
+    parser.add_argument(
+        "--baseline-export",
+        nargs="+",
+        type=Path,
+        default=[],
+        metavar="FILE",
+        help="exploratory: single-run validation exports of the naive baseline and the random "
+        "forest (arm read from the file); the pairings need the holdout export of the U-Net arm",
+    )
+    parser.add_argument(
+        "--overpass-sensitivity",
+        action="store_true",
+        help="also resample overpasses instead of scenes for every estimate; a sensitivity "
+        "next to the frozen scene rule, never replacing it",
+    )
     parser.add_argument(
         "--fold-export",
         nargs="+",
@@ -134,6 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.fold_export and args.holdout_export:
         parser.error("--fold-export replaces --holdout-export; pass one of them")
+    if args.fold_export and args.baseline_export:
+        parser.error("--baseline-export is not part of the cross-validation")
     try:
         if args.fold_export:
             return _main_cv(args)
@@ -143,11 +174,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             assignment,
             matrix=_by_arm(load_runs(args.matrix_export)),
             holdout=holdout,
+            baselines=_by_arm(load_runs(args.baseline_export)) if args.baseline_export else None,
             tessera_invalid=(
                 read_tessera_invalid(args.tessera_scope) if args.tessera_scope else None
             ),
             n_bootstrap=args.n_bootstrap,
             rng_seed=args.rng_seed,
+            overpass_sensitivity=args.overpass_sensitivity,
         )
     except (
         SceneBootstrapError,
