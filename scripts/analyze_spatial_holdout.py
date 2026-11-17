@@ -56,6 +56,7 @@ from berlin_lst_downscaling.analysis.spatial_holdout_eval import (
     evaluate_cv,
     load_fold_runs,
     load_runs,
+    read_tessera_invalid,
     render_cv_markdown,
     render_markdown,
     write_outputs,
@@ -119,6 +120,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar=("FOLD", "FILE"),
         help="cross-validation: a fold (cv5-fold0 ... cv5-fold4) followed by its holdout exports",
     )
+    parser.add_argument(
+        "--tessera-scope",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="data_scope.json of one TESSERA run: its tessera_invalid validation patches are "
+        "checked against the patches L4 lost in the TESSERA comparisons",
+    )
     parser.add_argument("--n-bootstrap", type=int, default=N_BOOTSTRAP)
     parser.add_argument("--rng-seed", type=int, default=RNG_SEED)
     parser.add_argument("--output-prefix", type=Path, required=True)
@@ -134,6 +143,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             assignment,
             matrix=_by_arm(load_runs(args.matrix_export)),
             holdout=holdout,
+            tessera_invalid=(
+                read_tessera_invalid(args.tessera_scope) if args.tessera_scope else None
+            ),
             n_bootstrap=args.n_bootstrap,
             rng_seed=args.rng_seed,
         )

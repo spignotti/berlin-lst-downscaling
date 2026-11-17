@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -144,3 +146,93 @@ def test_without_both_sides_a_quantity_is_skipped_with_a_note(world: dict) -> No
     assert set(result["tessera"]) == {"rule", "TESSERA_minus_L4_matrix"}
     assert any(note.startswith("G_TESSERA: skipped") for note in result["notes"])
     assert "G" not in result  # the matrix-only output keeps its shape
+
+
+def _run_eval(world: dict, **overrides: Any) -> dict:
+    paths = {**world["paths"], **overrides}
+    return ev.evaluate(
+        world["assignment"],
+        matrix={"L4": _load(paths["matrix_l4"]), "TESSERA": _load(paths["matrix_t"])},
+        holdout={"L4": _load(paths["holdout_l4"]), "TESSERA": _load(paths["holdout_t"])},
+        n_bootstrap=50,
+    )
+
+
+def _held_patch(world: dict) -> str:
+    held = sorted(world["assignment"].holdout_anchors)
+    return f"scene2:{cell_id(*held[0])}"
+
+
+def test_g_tessera_raises_when_either_side_loses_a_patch(world: dict) -> None:
+    for path in world["paths"]["holdout_t"]:
+        _without(path, {_held_patch(world)})
+    with pytest.raises(ev.SpatialHoldoutEvalError, match=r"G TESSERA.*side B lost 1") as err:
+        _run_eval(world)
+    assert _held_patch(world) in str(err.value)
+
+
+def test_tessera_minus_l4_raises_when_the_tessera_side_loses_a_patch(world: dict) -> None:
+    for path in world["paths"]["holdout_l4"]:
+        _without(path, {_held_patch(world)})
+    with pytest.raises(ev.SpatialHoldoutEvalError, match=r"TESSERA side lost 1 patch") as err:
+        _run_eval(world)
+    assert _held_patch(world) in str(err.value)
+
+
+def test_l4_may_lose_only_patches_the_tessera_export_lacks_and_the_scope_is_checked(
+    world: dict,
+) -> None:
+    held = world["assignment"].holdout_anchors
+    dropped = sorted(p for p in world["lost"] if ev.anchor_from_patch_id(p) in held)
+    scope = frozenset(world["lost"])
+    paths = world["paths"]
+    result = ev.evaluate(
+        world["assignment"],
+        matrix={"L4": _load(paths["matrix_l4"]), "TESSERA": _load(paths["matrix_t"])},
+        holdout={"L4": _load(paths["holdout_l4"]), "TESSERA": _load(paths["holdout_t"])},
+        n_bootstrap=50,
+        tessera_invalid=scope,
+    )
+    est = result["tessera"]["TESSERA_minus_L4_holdout"][ev.UNSEEN]
+    assert est["intersection"]["b"]["patches_lost"] == len(dropped)
+    assert est["intersection"]["scope_verified"] is True
+    assert not any("unverified" in note for note in result["notes"])
+    # without the scope file the loss is reported as unverified
+    unverified = _run_eval(world)
+    assert any("tessera_invalid" in n and "unverified" in n for n in unverified["notes"])
+    assert (
+        unverified["tessera"]["TESSERA_minus_L4_holdout"][ev.UNSEEN]["intersection"][
+            "scope_verified"
+        ]
+        is False
+    )
+    # a scope that records fewer invalid patches than L4 lost is refused
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="tessera_invalid"):
+        ev.evaluate(
+            world["assignment"],
+            matrix={"L4": _load(paths["matrix_l4"]), "TESSERA": _load(paths["matrix_t"])},
+            holdout={"L4": _load(paths["holdout_l4"]), "TESSERA": _load(paths["holdout_t"])},
+            n_bootstrap=50,
+            tessera_invalid=frozenset(sorted(scope)[1:]),
+        )
+
+
+def test_tessera_scope_file_lists_the_invalid_validation_patches(tmp_path: Path) -> None:
+    scope = tmp_path / "data_scope.json"
+    scope.write_text(
+        json.dumps(
+            {
+                "skipped_refs": {
+                    "train": [{"patch_id": "a", "reason": "tessera_invalid"}],
+                    "validation": [
+                        {"patch_id": "b", "reason": "tessera_invalid"},
+                        {"patch_id": "c", "reason": "no_landsat"},
+                    ],
+                }
+            }
+        )
+    )
+    assert ev.read_tessera_invalid(scope) == frozenset({"b"})
+    scope.write_text("{}")
+    with pytest.raises(ev.SpatialHoldoutEvalError, match="skipped_refs"):
+        ev.read_tessera_invalid(scope)

@@ -1331,6 +1331,14 @@ def main() -> int:
         help="v6 modes only; do not score the 2025 test split (pilot/timing runs)",
     )
     parser.add_argument(
+        "--export-validation",
+        action="store_true",
+        help=(
+            "--mode tessera only: also upload the per-patch validation export "
+            "(the holdout modes always do); default off, the run is otherwise unchanged"
+        ),
+    )
+    parser.add_argument(
         "--assignment",
         choices=(SPATIAL_HOLDOUT_ASSIGNMENT, *SPATIAL_HOLDOUT_CV_ASSIGNMENTS),
         default=None,
@@ -1446,6 +1454,11 @@ def main() -> int:
         raise SystemExit(f"ERROR: --mode {args.mode} requires --skip-test; test 2025 stays sealed")
     if is_holdout and not args.skip_test:
         raise SystemExit(f"ERROR: --mode {args.mode} requires --skip-test; test 2025 stays sealed")
+    if args.export_validation and args.mode != TESSERA_MODE:
+        raise SystemExit(
+            "ERROR: --export-validation is only accepted by --mode tessera; "
+            f"{args.mode!r} {'always exports' if is_holdout else 'has no per-patch export upload'}"
+        )
     assignment = args.assignment or SPATIAL_HOLDOUT_ASSIGNMENT
     if args.assignment is not None and not is_holdout:
         raise SystemExit(
@@ -1781,7 +1794,13 @@ def main() -> int:
         )
     # A holdout run is read through its per-patch validation export (seen and
     # held-out anchors); it is uploaded create-only next to the evidence.
-    validation_export_uri = f"{run_prefix}/eval_validation_patches.parquet" if is_holdout else None
+    # A holdout run is read through its per-patch validation export; plain tessera uploads one
+    # only on request (the temporal seeds that G_TESSERA and TESSERA minus L4 compare with).
+    validation_export_uri = (
+        f"{run_prefix}/eval_validation_patches.parquet"
+        if is_holdout or args.export_validation
+        else None
+    )
     if validation_export_uri is not None and _evidence_exists(validation_export_uri):
         raise SystemExit(
             f"ERROR: validation export already exists at {validation_export_uri}; the run "
@@ -1905,14 +1924,15 @@ def main() -> int:
             )
         )
         print(f"  hydra overrides: {' '.join(hydra_overrides)}")
-    if validation_export_uri is not None:
+    if is_holdout:
         print(
             "  spatial holdout: held-out anchors leave the train split, scaler refit on the "
             "remaining train patches, checkpoint selected on seen validation anchors"
         )
+    if validation_export_uri is not None:
         print(f"  val export     : {validation_export_uri}")
-        if fold_run:
-            print(f"  assignment     : {assignment} (cross-validation fold)")
+    if is_holdout and fold_run:
+        print(f"  assignment     : {assignment} (cross-validation fold)")
     print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")
 

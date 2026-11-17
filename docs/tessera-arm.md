@@ -125,6 +125,9 @@ features in the job. This is equivalent to a job-local holdout build with the re
    and shadow channels, which the arm replaces, keep their published entries and are not used.
 5. The embeddings path (`dequantize_tessera`, int8 plus per-pixel scale) is untouched.
 
+The mean check (step 2) runs in the job right after the scaler is read, before admission and the
+download; the launcher `--preflight` makes no read of `scaler.json` and so cannot run it.
+
 Offline tests (`tests/test_tessera_spatial_holdout.py`) show on a synthetic cache with NaN features:
 filled pixels are exactly 0.0 in both paths, other pixels differ by less than 1e-5 (float32
 rounding of the stored value), the refit scaler equals the job-local holdout scaler within 1e-6, a
@@ -135,9 +138,11 @@ pixels and the stored zeros (`spatial_holdout.feature_remap`).
 Limits: the annual embeddings include imagery after the scene date and from the validation year,
 also on held-out anchors. The arm replaces morphology and shadow channels, so it is a sibling of
 L4, not a ladder stage. Because it drops patches with invalid embedding pixels, every comparison
-with L4 uses the intersection of the patch sets and reports what each side lost. Run the seeds with
-the batch launcher: `scripts/runners/vertex/launch_v6_matrix.sh holdout --arms TESSERA,TESSERA-TEMPORAL`.
-The old launchd watcher `scripts/runners/vertex/retry_tessera_seeds.sh` stays as it is.
+with L4 uses the intersection of the patch sets and reports what each side lost. The only way to run
+TESSERA seeds is `scripts/runners/vertex/launch_v6_matrix.sh holdout --arms TESSERA,TESSERA-TEMPORAL`
+(the launchd watcher `retry_tessera_seeds.sh` is removed). A capacity miss ends with exit code 3;
+re-run the same command with `V6M_RESUBMIT_CANCELLED=1`. A TESSERA batch must use the same
+`V6M_RUN_DIR` as any v6 batch running at the same time (one lock, at most 4 jobs in flight overall).
 
 ## How to run the operator later
 

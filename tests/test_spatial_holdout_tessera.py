@@ -125,3 +125,37 @@ def test_launcher_refusals(
     monkeypatch.setattr(sys, "argv", _argv(_MODE, *_SEEDED, *extra))
     with pytest.raises(SystemExit, match=match):
         launcher.main()
+
+
+def _plain_tessera_argv(*extra: str) -> list[str]:
+    return _argv("tessera", "--seed", "0", "--max-epochs", "40", "--skip-test", *extra)
+
+
+def test_plain_tessera_is_unchanged_and_the_export_is_opt_in(
+    launcher: ModuleType,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", _plain_tessera_argv())
+    assert launcher.main() == 0
+    plain = capsys.readouterr().out
+    assert "val export" not in plain and "spatial holdout" not in plain
+    monkeypatch.setattr(sys, "argv", _plain_tessera_argv("--export-validation"))
+    assert launcher.main() == 0
+    exported = capsys.readouterr().out
+    # label, display name, output root, hydra overrides and bounds are the same; one line is added
+    extra = [line for line in exported.splitlines() if line not in plain.splitlines()]
+    assert len(extra) == 1 and "val export     : gs://" in extra[0]
+    assert extra[0].endswith("/unit-seed0-ep40-notest/eval_validation_patches.parquet")
+    assert "spatial holdout" not in exported  # no holdout wording on a temporal run
+
+
+@pytest.mark.parametrize("mode", ["v6-l4", "v6-l4-spatial-holdout", "tessera-spatial-holdout"])
+def test_export_flag_is_for_mode_tessera_only(
+    launcher: ModuleType,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    monkeypatch.setattr(sys, "argv", _argv(mode, *_SEEDED, "--skip-test", "--export-validation"))
+    with pytest.raises(SystemExit, match="--export-validation is only accepted by --mode tessera"):
+        launcher.main()

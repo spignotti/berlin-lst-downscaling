@@ -1474,6 +1474,8 @@ def test_tessera_arms_join_a_batch_with_the_other_arms(env: Env) -> None:
     assert "--patch-cache" not in modes["v6-l5-spatial-holdout"]
     for mode in ("tessera-spatial-holdout", "tessera"):
         assert "--timeout-seconds 20400" in modes[mode] and "--patch-cache prebuilt" in modes[mode]
+    assert "--export-validation" in modes["tessera"]  # the temporal seeds export per patch
+    assert "--export-validation" not in modes["tessera-spatial-holdout"]
     assert set(listed_dns(env.log("gcloud.log"))) >= {
         hdn("L5", 0),
         tdn("TESSERA", 0),

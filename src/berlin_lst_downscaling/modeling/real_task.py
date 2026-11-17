@@ -106,6 +106,7 @@ from berlin_lst_downscaling.modeling.prebuilt_cache import (
 )
 from berlin_lst_downscaling.modeling.published_cache_remap import (
     FeatureRemap,
+    assert_zero_means_filled,
     fit_feature_remap,
 )
 from berlin_lst_downscaling.modeling.ssim_range import resolve_task_ssim_data_range
@@ -488,6 +489,15 @@ class RealPatchDataModule(LightningDataModule):
     def _prepare(self) -> None:
         with timed_phase("data_ref_loading", logger=logger):
             self.reader = RealPatchReader(self.source)
+            if self._remap_published:
+                # As early as the scaler is known: before admission and before the download.
+                from berlin_lst_downscaling.modeling.tessera_adapter import (
+                    tessera_kept_channel_indices,
+                )
+
+                assert_zero_means_filled(
+                    self.reader.scaler, self.channel_indices, tessera_kept_channel_indices()
+                )
             refs = load_patch_refs(self.source, splits=self.splits, scene_ids=self.scene_ids)
         # Bound the *refs* per split, before any exclusion, so the requested
         # universe matches the baseline's selection exactly.
@@ -709,7 +719,10 @@ class RealPatchDataModule(LightningDataModule):
         self.holdout_scaler = refit
         self._feature_remap_evidence = {**evidence, "patch_cache_key": self.patch_cache_key}
         self._published_provenance = provenance
-        self._holdout_train_removed = n_train - len(kept)
+        # counted as for the v6 holdout: the requested held-out train refs, admitted or not
+        requested = self._requested["train"]
+        self._requested["train"] = [ref for ref in requested if not self._held_out(ref)]
+        self._holdout_train_removed = len(requested) - len(self._requested["train"])
         self._admitted["train"] = [train_refs[i] for i in kept]
         self._datasets["train"] = CachedRealPatchDataset(cache_root, provenance, kept, remap)
         self._datasets["validation"] = CachedRealPatchDataset(

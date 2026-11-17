@@ -25,8 +25,10 @@
 # The TESSERA arm (a sibling of L4, docs/tessera-arm.md) is named explicitly and is never part of `all`:
 # arm TESSERA is mode tessera-spatial-holdout, arm TESSERA-TEMPORAL is the ordinary mode tessera (seeds on
 # the temporal split). Both run --skip-test with --patch-cache prebuilt, a 20400 s timeout and the TESSERA
-# exposure cap of USD 6.25 per job, v1 only (no cross-validation fold). This batch is the way to run the
-# TESSERA seeds; it replaces nothing of retry_tessera_seeds.sh, which stays as it is.
+# exposure cap of USD 6.25 per job, v1 only (no cross-validation fold); TESSERA-TEMPORAL also uploads its
+# per-patch validation export (--export-validation). This batch is the only way to run the TESSERA seeds.
+# A capacity miss ends with exit 3: re-run with V6M_RESUBMIT_CANCELLED=1. A TESSERA batch uses the same
+# V6M_RUN_DIR as any v6 batch running at the same time (one lock, at most 4 jobs in flight overall).
 # L1 and L4 seed 0 (stage 1, already SUCCEEDED under another label) are skipped unless --include-stage1;
 # that applies to the assignment v1 only.
 # --assignments (default v1) selects the spatial assignment of every run: v1, or the cross-validation
@@ -272,6 +274,8 @@ run() {  # arm seed assignment [--preflight]
   local -a variant_args=(--patch-cache prebuilt)
   if is_tessera_arm "$arm"; then  # published prebuilt cache, re-scaled in the job; test 2025 stays sealed
     mode="${TESS_MODE[$arm]}"; variant_args=(--skip-test --patch-cache prebuilt)
+    # the temporal seeds also upload the per-patch export that G_TESSERA and TESSERA - L4 read
+    [[ "$arm" == TESSERA-TEMPORAL ]] && variant_args+=(--export-validation)
   elif [[ "$VARIANT" == holdout ]]; then  # job-local cache is the launcher default; it refuses prebuilt
     mode="$mode-spatial-holdout"; variant_args=(--skip-test)
     # the launcher appends the assignment to the run label (and refuses all but L1/L4 at seed 0)

@@ -275,6 +275,12 @@ def test_a_kept_mean_the_input_can_take_aborts_the_load(
     _sources(monkeypatch, world)
     _published(world, tmp_path)
     module = _holdout_module(world, tmp_path)
+
+    def too_late(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the mean check must run before admission and the download")
+
+    monkeypatch.setattr(real_task, "fetch_prebuilt_cache", too_late)
+    monkeypatch.setattr(RealPatchReader, "admission_reason", too_late)
     with pytest.raises(RuntimeError, match="published mean 0.5"):
         module.setup("fit")
 
@@ -358,7 +364,11 @@ def test_order_of_operations_differs_from_the_v6_holdout_and_both_refuse_the_wro
     _published(world, tmp_path)
     module = _holdout_module(world, tmp_path)
     module.setup("fit")
-    assert [r.patch_id for r in module._requested["train"]] == ["p0", "p1", "p2"]
+    published_admitted = module.cache_provenance()["admitted_patch_ids"]
+    assert published_admitted["train"] == ["p0", "p1", "p2"]  # admitted before the drop
+    # the evidence counts as for the v6 holdout: requested train refs without the held-out ones
+    assert module.stats()["requested_per_split"] == v6.stats()["requested_per_split"]
+    assert module.stats()["spatial_holdout"]["train_removed"] == 1
     assert module.reader is not None and module.reader.scaler == world.scaler
     # the TESSERA holdout never builds a cache job-local, and has no fallback to it
     with pytest.raises(ValueError, match="prebuilt patch cache without a job-local fallback"):

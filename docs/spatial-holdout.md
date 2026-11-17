@@ -313,15 +313,25 @@ read next to the matrix, not inside its families A and B.
   gives the equivalence argument and the load-time checks. The order differs from the nine arms:
   the full train split is admitted with the published scaler, the cache is fetched and verified,
   then held-out rows are dropped, the scaler is refit from the cached rows and the kept feature
-  channels are re-scaled when a sample is read. The run summary
+  channels are re-scaled when a sample is read. The mean check runs in the job as soon as the
+  scaler is read, before admission and the download (the launcher preflight does not read the
+  scaler, so it cannot run it). `train_removed` and `requested_per_split.train` count as for the
+  nine arms (requested held-out train refs removed). The run summary
   (`spatial_holdout.feature_remap`) records the key, the patches checked and refit, the recorded
   filled pixels and the stored zeros.
 - Evaluation: `scripts/analyze_spatial_holdout.py` accepts the arm `TESSERA` (an export labelled
   `tessera_arm`, `tessera_arm_spatial_holdout`, `tessera` or `TESSERA` is read as TESSERA; matrix
-  exports are the temporal seeds, holdout exports the holdout seeds). The arm drops patches with
+  exports are the temporal seeds, holdout exports the holdout seeds). The temporal seeds upload no
+  per-patch export unless launched with `--export-validation` (the batch arm `TESSERA-TEMPORAL`
+  does; plain `tessera` is unchanged without the flag). The arm drops patches with
   invalid embedding pixels, so every comparison that involves it is computed on the intersection of
   the patch sets of the compared runs (all seeds, both sides) and the output names the patches and
-  scenes each side lost (`tessera.<quantity>.<stratum>.intersection`). Quantities: `G_TESSERA`
+  scenes each side lost (`tessera.<quantity>.<stratum>.intersection`). The evaluation fails closed:
+  G_TESSERA loses no patch on either side; in TESSERA minus L4 the TESSERA side loses none and L4
+  only patches absent from the TESSERA export of the whole split (dropped at admission); anything
+  else raises with the counts and example ids. With `--tessera-scope <data_scope.json of a TESSERA
+  run>` L4's loss must also equal that run's recorded `tessera_invalid` validation patches;
+  without it the output says so under "Skipped" and `scope_verified` is false. Quantities: `G_TESSERA`
   (holdout minus temporal TESSERA, unseen anchors), `TESSERA_minus_L4_holdout` (unseen anchors) and
   `TESSERA_minus_L4_matrix` (all validation patches, stratum `all`), each with the paired scene
   bootstrap and, with seeds 0, 1, 2 on both sides, the three criteria of the decision rule. All other

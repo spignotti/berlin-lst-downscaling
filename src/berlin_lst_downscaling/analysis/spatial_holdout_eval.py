@@ -47,7 +47,7 @@ import dataclasses
 import hashlib
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -181,6 +181,21 @@ def load_runs(paths: Sequence[Path]) -> list[Run]:
             )
         )
     return runs
+
+
+def read_tessera_invalid(path: Path) -> frozenset[str]:
+    """Validation patch ids a TESSERA run recorded as skipped for invalid embedding pixels.
+
+    ``path`` is the run's ``data_scope.json`` (``skipped_refs`` per split with a reason).
+    """
+    record = json.loads(Path(path).read_text(encoding="utf-8"))
+    skipped = record.get("skipped_refs") if isinstance(record, dict) else None
+    rows = skipped.get("validation") if isinstance(skipped, dict) else None
+    if not isinstance(rows, list):
+        raise SpatialHoldoutEvalError(
+            f"{path}: no skipped_refs.validation list (a data_scope.json)"
+        )
+    return frozenset(str(row["patch_id"]) for row in rows if row.get("reason") == "tessera_invalid")
 
 
 def read_recorded_assignment(path: Path) -> tuple[str, str]:
@@ -742,6 +757,85 @@ def _intersection_table(
     return pa.concat_tables(parts)
 
 
+def _lost_ids(
+    runs: Sequence[Run], keep: Callable[[PatchScore], bool], common: frozenset[tuple[str, Anchor]]
+) -> set[str]:
+    return {
+        pid
+        for run in runs
+        for pid, sc in run.patches.items()
+        if keep(sc) and _key(sc) not in common
+    }
+
+
+def _examples(ids: Iterable[str]) -> str:
+    ordered = sorted(ids)
+    return ", ".join(ordered[:5]) + (
+        f", ... (+{len(ordered) - 5} more)" if len(ordered) > 5 else ""
+    )
+
+
+def _check_losses(
+    runs_a: Sequence[Run],
+    runs_b: Sequence[Run],
+    keep: Callable[[PatchScore], bool],
+    common: frozenset[tuple[str, Anchor]],
+    *,
+    same_arm: bool,
+    label: str,
+    tessera_invalid: frozenset[str] | None,
+) -> bool:
+    """Fail closed on a loss the TESSERA arm cannot explain; return whether the scope was checked.
+
+    ``same_arm`` (G_TESSERA): neither side may lose a patch. Otherwise A is TESSERA and B is
+    L4: TESSERA loses none, and L4 only patches absent from the TESSERA export of the whole
+    split (dropped at admission). With ``tessera_invalid`` (the validation patches a TESSERA
+    run recorded as skipped for invalid embedding pixels) L4's loss must equal that set on the
+    stratum.
+    """
+    lost_a, lost_b = _lost_ids(runs_a, keep, common), _lost_ids(runs_b, keep, common)
+    if same_arm:
+        if lost_a or lost_b:
+            raise SpatialHoldoutEvalError(
+                f"{label}: the holdout and the temporal TESSERA runs must score the same patches, "
+                f"but side A lost {len(lost_a)} patch(es) and side B lost {len(lost_b)} on the "
+                f"intersection, e.g. {_examples(lost_a | lost_b)}"
+            )
+        return False
+    if lost_a:
+        raise SpatialHoldoutEvalError(
+            f"{label}: the TESSERA side lost {len(lost_a)} patch(es) on the intersection with L4 "
+            f"(L4 lacks them or a TESSERA seed differs), e.g. {_examples(lost_a)}"
+        )
+    in_tessera = {_key(sc) for run in runs_a for sc in run.patches.values()}
+    present = {
+        pid
+        for run in runs_b
+        for pid, sc in run.patches.items()
+        if keep(sc) and pid in lost_b and _key(sc) in in_tessera
+    }
+    if present:
+        raise SpatialHoldoutEvalError(
+            f"{label}: L4 lost {len(present)} patch(es) that the TESSERA export holds, "
+            f"e.g. {_examples(present)}"
+        )
+    if tessera_invalid is None:
+        return False
+    expected = {
+        pid
+        for run in runs_b
+        for pid, sc in run.patches.items()
+        if keep(sc) and pid in tessera_invalid
+    }
+    if lost_b != expected:
+        raise SpatialHoldoutEvalError(
+            f"{label}: L4 lost {len(lost_b)} patch(es) but the TESSERA run recorded "
+            f"{len(expected)} tessera_invalid validation patch(es) on this stratum, "
+            f"e.g. {_examples(lost_b ^ expected)}"
+        )
+    return True
+
+
 def _intersection_difference(
     runs_a: Sequence[Run],
     runs_b: Sequence[Run],
@@ -749,6 +843,8 @@ def _intersection_difference(
     stratum: str,
     *,
     label: str,
+    same_arm: bool,
+    tessera_invalid: frozenset[str] | None,
     n_bootstrap: int,
     rng_seed: int,
 ) -> dict[str, Any]:
@@ -756,9 +852,19 @@ def _intersection_difference(
 
     The scene-equal paired difference of ``paired_difference`` and the decision-rule
     criteria, both computed on the intersection; the entry names what each side lost.
+    A loss ``_check_losses`` cannot explain raises.
     """
     per_run = [{_key(sc) for sc in run.patches.values() if keep(sc)} for run in (*runs_a, *runs_b)]
     common = frozenset(set.intersection(*per_run))
+    verified = _check_losses(
+        runs_a,
+        runs_b,
+        keep,
+        common,
+        same_arm=same_arm,
+        label=label,
+        tessera_invalid=tessera_invalid,
+    )
     group_a = _group_where(runs_a, lambda sc: _key(sc) in common, stratum, f"{label} (A)")
     group_b = _group_where(runs_b, lambda sc: _key(sc) in common, stratum, f"{label} (B)")
     estimate = _paired_groups(
@@ -768,6 +874,7 @@ def _intersection_difference(
         "patches": len(common),
         "a": _side_report(runs_a, keep, common),
         "b": _side_report(runs_b, keep, common),
+        "scope_verified": verified,
     }
     estimate["criteria"] = _rule_criteria(
         runs_a,
@@ -789,10 +896,15 @@ def tessera_section(
     holdout: Mapping[str, Sequence[Run]],
     notes: list[str],
     *,
+    tessera_invalid: frozenset[str] | None = None,
     n_bootstrap: int,
     rng_seed: int,
 ) -> dict[str, Any]:
     """The TESSERA quantities on patch-set intersections; empty without a TESSERA export.
+
+    Fails closed: G_TESSERA loses no patch on either side; in TESSERA minus L4 the TESSERA side
+    loses none and L4 only the patches the TESSERA arm dropped at admission
+    (``tessera_invalid`` checks that against the run's own record, else it is unverified).
 
     ``G_TESSERA``: holdout TESSERA minus temporal TESSERA on the unseen anchors.
     ``TESSERA_minus_L4_holdout`` (unseen anchors) and ``TESSERA_minus_L4_matrix`` (all
@@ -822,13 +934,14 @@ def tessera_section(
         else None
     )
     plan = (
-        ("G_TESSERA", holdout.get(ARM_TESSERA), paired, UNSEEN, "G TESSERA"),
+        ("G_TESSERA", holdout.get(ARM_TESSERA), paired, UNSEEN, "G TESSERA", True),
         (
             "TESSERA_minus_L4_holdout",
             holdout.get(ARM_TESSERA),
             holdout.get(ARM_FULL),
             UNSEEN,
             "holdout: TESSERA - L4",
+            False,
         ),
         (
             "TESSERA_minus_L4_matrix",
@@ -836,9 +949,10 @@ def tessera_section(
             matrix.get(ARM_FULL),
             ALL,
             "matrix: TESSERA - L4",
+            False,
         ),
     )
-    for name, runs_a, runs_b, stratum, label in plan:
+    for name, runs_a, runs_b, stratum, label, same_arm in plan:
         if not runs_a or not runs_b:
             notes.append(f"{name}: skipped, the runs of one side are missing")
             continue
@@ -853,10 +967,17 @@ def tessera_section(
                 on(stratum),
                 stratum,
                 label=label,
+                same_arm=same_arm,
+                tessera_invalid=tessera_invalid,
                 n_bootstrap=n_bootstrap,
                 rng_seed=rng_seed,
             )
         }
+    if tessera_invalid is None and any(not q.endswith("G_TESSERA") for q in out if q != "rule"):
+        notes.append(
+            "TESSERA minus L4: L4's patch loss is unverified against the TESSERA run's own "
+            "tessera_invalid record (pass its data_scope.json: --tessera-scope)"
+        )
     return out
 
 
@@ -865,6 +986,7 @@ def evaluate(
     *,
     matrix: Mapping[str, Sequence[Run]],
     holdout: Mapping[str, Sequence[Run]] | None = None,
+    tessera_invalid: frozenset[str] | None = None,
     n_bootstrap: int = N_BOOTSTRAP,
     rng_seed: int = RNG_SEED,
 ) -> dict[str, Any]:
@@ -935,7 +1057,13 @@ def evaluate(
             result["pairings"][family] = _pairings(assignment, arms, family, notes, **kwargs)
     result["notes"] = notes
     section = tessera_section(
-        assignment, matrix, holdout or {}, notes, n_bootstrap=n_bootstrap, rng_seed=rng_seed
+        assignment,
+        matrix,
+        holdout or {},
+        notes,
+        tessera_invalid=tessera_invalid,
+        n_bootstrap=n_bootstrap,
+        rng_seed=rng_seed,
     )
     if section:
         result["tessera"] = section
@@ -1221,7 +1349,8 @@ def evaluate_cv(
                     fold,
                     matrix={arm: [base[arm]] for arm in CV_ARMS},
                     holdout={arm: [run] for arm, run in present.items()},
-                    **kwargs,
+                    n_bootstrap=n_bootstrap,
+                    rng_seed=rng_seed,
                 )
                 if present
                 else None
@@ -1497,6 +1626,7 @@ __all__ = [
     "load_runs",
     "paired_difference",
     "read_recorded_assignment",
+    "read_tessera_invalid",
     "render_cv_markdown",
     "render_markdown",
     "scene_bootstrap_mean",
