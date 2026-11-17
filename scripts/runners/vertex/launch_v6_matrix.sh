@@ -74,7 +74,8 @@
 #    cancelled and always reports its real Vertex state; a late start only adds a
 #    QUEUE_DEADLINE_VIOLATION log line, so a late-start SUCCEEDED still continues the loop.
 #  - Only JOB_STATE_SUCCEEDED continues the loop; anything else stops it cleanly with a STOP log line.
-# Needs bash 4+ and GNU date (`date -d`), i.e. a Linux operator machine.
+# Needs bash 4+, GNU `timeout` and GNU `date -d`, i.e. a Linux operator machine (on macOS: brew install
+# coreutils and put its gnubin directory on PATH); every cloud subcommand checks this first and exits 2.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -122,6 +123,17 @@ USAGE
 }
 
 die() { echo "$SELF: $*" >&2; exit 2; }
+
+# GNU tools the cloud paths rely on (V6M_TIMEOUT_BIN / V6M_DATE_BIN name them for a test or a gnubin-less PATH)
+TIMEOUT_BIN="${V6M_TIMEOUT_BIN:-timeout}"
+DATE_BIN="${V6M_DATE_BIN:-date}"
+GNU_FIX="on macOS run: brew install coreutils, then put \"\$(brew --prefix coreutils)/libexec/gnubin\" first on PATH"
+require_gnu_tools() {  # every subcommand that touches the cloud; fails at once instead of retrying for minutes
+  "$TIMEOUT_BIN" 5 true >/dev/null 2>&1 \
+    || die "GNU 'timeout' is missing or not working ($TIMEOUT_BIN); $GNU_FIX"
+  "$DATE_BIN" -d 2026-01-01T00:00:00Z +%s >/dev/null 2>&1 \
+    || die "'$DATE_BIN -d' is not GNU date (BSD date has no -d); $GNU_FIX"
+}
 
 ts() { date '+%Y-%m-%d %H:%M:%S %Z'; }
 log() { echo "[$(ts)] $SELF: $*"; }
@@ -245,7 +257,7 @@ run() {  # arm seed assignment [--preflight]
 
 # gcloud as the operator SA for this command only (same wrapper as run(), no --activate);
 # `timeout` covers the credential fetch as well as the gcloud call.
-gc() { timeout -k 10 "$GCLOUD_TIMEOUT" "$OPERATOR_WRAPPER" -- "$GCLOUD" "$@" --project "$PROJECT"; }
+gc() { "$TIMEOUT_BIN" -k 10 "$GCLOUD_TIMEOUT" "$OPERATOR_WRAPPER" -- "$GCLOUD" "$@" --project "$PROJECT"; }
 
 # Existing jobs for a displayName: lines "id<TAB>state". Retries; returns 1 if lookup impossible.
 lookup() {
@@ -273,12 +285,12 @@ poll_job() {
       [[ "$state" != "$last" ]] && { log "job $id state: $state" >&2; last=$state; }
       case "$state" in
         JOB_STATE_SUCCEEDED|JOB_STATE_FAILED|JOB_STATE_CANCELLED|JOB_STATE_EXPIRED|JOB_STATE_PARTIALLY_SUCCEEDED)
-          if [[ -n "${st:-}" ]] && (( $(date -d "$st" +%s) > $(date -d "$ct" +%s) + MAX_WAIT )); then
+          if [[ -n "${st:-}" ]] && (( $("$DATE_BIN" -d "$st" +%s) > $("$DATE_BIN" -d "$ct" +%s) + MAX_WAIT )); then
             log "QUEUE_DEADLINE_VIOLATION: job $id started at $st, more than ${MAX_WAIT}s after creation ($ct); terminal state $state is reported as is, no cancel" >&2
           fi
           echo "$state"; return 0 ;;
       esac
-      now=$(date +%s); ct_s=$(date -d "$ct" +%s)
+      now=$(date +%s); ct_s=$("$DATE_BIN" -d "$ct" +%s)
       if [[ -z "${st:-}" && "$state" != JOB_STATE_RUNNING ]] && (( now > ct_s + MAX_WAIT )); then
         # same rule as the launcher: not started within max-wait -> cancel, never replace
         log "QUEUE_DEADLINE_VIOLATION: job $id ($state) not started within ${MAX_WAIT}s of creation; requesting cancellation (launcher queue rule)" >&2
@@ -601,22 +613,24 @@ case "${1:-}" in
   preflight)
     [[ $# -eq 1 || $# -eq 3 ]] || { usage >&2; exit 2; }
     load_config image
+    require_gnu_tools
     [[ $# -eq 3 ]] && check_pair "$2" "$3"
     check_repo
     if [[ $# -eq 3 ]]; then run "$2" "$3" v1 --preflight
     else for a in "${ARMS[@]}"; do for s in 0 1 2; do run "$a" "$s" v1 --preflight; done; done; fi ;;
   submit)
     [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-    load_config run; check_pair "$2" "$3"; check_repo
+    load_config run; check_pair "$2" "$3"; require_gnu_tools; check_repo
     do_pair "$2" "$3" || exit 1 ;;
   state)
     [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-    load_config; check_pair "$2" "$3"
+    load_config; check_pair "$2" "$3"; require_gnu_tools
     lookup "$(display_name "$2" "$3")"; echo ;;
   submit-all)
     shift
     load_config run
     if [[ "${1:-}" == --from ]]; then check_pair "${2:-}" "${3:-}"; fi
+    require_gnu_tools
     check_repo
     submit_all "$@" ;;
   holdout)
@@ -625,6 +639,7 @@ case "${1:-}" in
     if [[ " $* " == *" --dry-run "* ]]; then load_config
     elif [[ " $* " == *" --preflight "* ]]; then load_config image
     else load_config run; fi
+    [[ " $* " == *" --dry-run "* ]] || require_gnu_tools  # a dry run makes no cloud call
     holdout_batch "$@" ;;
   *) usage >&2; exit 2 ;;
 esac

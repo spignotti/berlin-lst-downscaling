@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1334,3 +1335,54 @@ def test_holdout_fold_attached_pair_never_submits_when_its_job_ended_meanwhile(e
     assert launcher_calls(env) == []
     assert "planned as attached to an active job" in res.stdout
     assert "1 failed [L4/seed0/cv5-fold0]" in res.stdout
+
+
+# --- GNU tools: fail at once, not after minutes of retries -----------------------------------
+
+CLOUD_COMMANDS = [
+    ("preflight",),
+    ("preflight", "L1", "0"),
+    ("submit", "L1", "0"),
+    ("submit-all",),
+    ("state", "L1", "0"),
+    ("holdout", "--preflight", "--arms", "L1", "--seeds", "1"),
+    ("holdout", "--max-total-usd", "100", "--arms", "L1", "--seeds", "1"),
+]
+
+
+def _bsd_date(env: Env) -> str:
+    shim = env.root / "bsd-date"
+    _write_exec(
+        shim,
+        '#!/bin/bash\n[[ "${1:-}" == -d ]] && { echo "illegal option -- d" >&2; exit 1; }\n'
+        'exec /bin/date "$@"\n',
+    )
+    return str(shim)
+
+
+@pytest.mark.parametrize("args", CLOUD_COMMANDS)
+@pytest.mark.parametrize("missing", ["timeout", "date"])
+def test_cloud_subcommands_fail_at_once_without_gnu_timeout_or_date(
+    env: Env, args: tuple[str, ...], missing: str
+) -> None:
+    extra = (
+        {"V6M_TIMEOUT_BIN": str(env.root / "no-such-timeout")}
+        if missing == "timeout"
+        else {"V6M_DATE_BIN": _bsd_date(env)}
+    )
+    started = time.monotonic()
+    res = env.run(*args, **extra)
+    assert time.monotonic() - started < 10
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "brew install coreutils" in res.stderr and "gnubin" in res.stderr
+    assert ("GNU 'timeout'" if missing == "timeout" else "-d' is not GNU date") in res.stderr
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""  # nothing was looked up, launched or retried
+
+
+def test_help_and_dry_run_need_no_gnu_tools(env: Env) -> None:
+    gone = {"V6M_TIMEOUT_BIN": str(env.root / "no-such-timeout"), "V6M_DATE_BIN": _bsd_date(env)}
+    assert env.run("help", **gone).returncode == 0
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "100", "--include-stage1", **gone)
+    assert res.returncode == 0, res.stderr
+    assert env.log("wrapper.log") == "" and env.log("gcloud.log") == ""

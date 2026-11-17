@@ -130,7 +130,9 @@ After submit, the job is polled independently of the launcher process (transient
 
 No notification watchdog and no cache-verification helper ship here. A watchdog would
 need a webhook secret, and a safe launch does not need one. The script needs bash 4+
-and GNU `date` (a Linux operator machine).
+GNU `timeout` and GNU `date` (a Linux operator machine; on macOS `brew install coreutils` and
+put `$(brew --prefix coreutils)/libexec/gnubin` first on PATH). Every subcommand that touches the
+cloud checks this first and exits 2 with that hint; `help` and `holdout --dry-run` need neither.
 
 ### Epoch numbering
 
