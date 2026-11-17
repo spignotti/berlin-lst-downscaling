@@ -10,6 +10,11 @@ under the existing assignment `v1`, 27 runs. L1 and L4 seed 0 ran first (image
 `99a71cf`, stage 1); the other 25 runs follow the same rules, so the figures stay
 comparable. The TESSERA arm is not part of this test.
 
+Addition (owner decision 2026-11-16, pm #553): the single draw `v1` is skewed to the
+inner city, so arms L1 and L4, seed 0, are also trained once per fold of a 5-fold
+spatial block cross-validation over all anchors (assignments `cv5-fold0` to
+`cv5-fold4`, section "Spatial cross-validation `cv5`"): ten more runs.
+
 ## Why
 
 The matrix splits by time only (train 2017-2023, validation 2024, test 2025).
@@ -142,6 +147,111 @@ uv run python scripts/operators/build_spatial_holdout.py --check configs/modelin
 Both read the `gs://` patch index (operator credentials); `--patch-index-dir`
 reads a local copy of `patch_index.parquet` and `complete.json`.
 
+## Spatial cross-validation `cv5`
+
+To answer "only one draw": a second assignment family partitions ALL 263 anchors into
+five folds; fold `k` holds its anchors out, trains on the other four folds' anchors
+and is scored on fold `k`. Arms L1 and L4, seed 0 only. A fold run is exactly a
+holdout run with that fold's anchors held out (train 2017-2023 without them, scaler
+refit on the remaining admitted train patches, job-local cache, checkpoint selected
+on validation 2024 on the seen anchors, 40 epochs cosine, test 2025 never scored,
+edge / interior by the same 8-neighbour rule with the fold as the held-out set).
+
+Rule, fixed by the owner, no random draw:
+
+- Blocks: the tessellation of `v1`, `block = (row // 48, col // 48)`, but every
+  block that holds at least one anchor, complete or not: 45 blocks.
+- Partition: blocks sorted by `(train patches descending, block_row, block_col)`;
+  each block, in that order, goes to the fold that currently has the fewest train
+  patches, ties to the lowest fold index. Train patches are the index rows per anchor
+  stored in the files (the same patch index v3 as `v1`).
+
+Files: `configs/modeling/spatial_holdout/cv5-fold0.json` to `cv5-fold4.json`, one
+assignment file per fold in the existing schema (the fold's `holdout`, `blocks` and
+positions, the whole anchor table, the index fingerprints, and the rule with
+`partition: cv5` and `fold: k`; there is no seed or share bound). They are written by
+
+```bash
+# the anchor table and the fingerprints come from v1.json, which `--check` verified against
+# the published index; nothing is read from the cloud
+uv run python scripts/operators/build_spatial_holdout.py --partition cv5 \
+  --anchors-from configs/modeling/spatial_holdout/v1.json \
+  --output-dir configs/modeling/spatial_holdout          # or --check-dir to compare
+```
+
+Loading re-derives the whole partition from the file's own anchor table and refuses a
+file that disagrees with its rule (a changed fold index, anchor, position or count). A
+run refuses a fold drawn from another patch index, as for `v1`.
+
+| fold | blocks | anchors | train patches | validation patches | interior / edge anchors |
+| --- | --- | --- | --- | --- | --- |
+| `cv5-fold0` | 9 | 49 | 1100 | 199 | 8 / 41 |
+| `cv5-fold1` | 9 | 54 | 1107 | 201 | 10 / 44 |
+| `cv5-fold2` | 9 | 54 | 1100 | 204 | 11 / 43 |
+| `cv5-fold3` | 9 | 54 | 1111 | 213 | 10 / 44 |
+| `cv5-fold4` | 9 | 52 | 1105 | 230 | 6 / 46 |
+| all | 45 | 263 | 5523 | 1047 | 45 / 218 |
+
+Index rows before admission. The train and validation counts of a fold are those of
+its held-out anchors; the model trains on the other 5523 minus those rows. Interior
+and edge anchors are labelled per fold with that fold as the held-out set; every
+fold has both. Blocks per fold, `(block_row, block_col)`:
+
+- fold 0: (1, 3), (1, 5), (2, 6), (3, 3), (3, 5), (5, 4), (5, 8), (6, 5), (7, 8)
+- fold 1: (1, 4), (1, 6), (2, 5), (3, 1), (3, 4), (5, 1), (5, 6), (6, 2), (6, 6)
+- fold 2: (2, 1), (2, 3), (2, 4), (4, 1), (4, 5), (4, 6), (5, 7), (6, 1), (6, 3)
+- fold 3: (1, 2), (3, 2), (3, 6), (4, 0), (4, 2), (4, 4), (4, 7), (5, 3), (6, 8)
+- fold 4: (2, 2), (3, 7), (4, 3), (5, 0), (5, 2), (5, 5), (6, 0), (6, 4), (6, 7)
+
+```text
+digit = fold that holds the anchor out, . no anchor; north up, one cell = 1.6 km
+. . . . . . . 0 . . . . . . 0 0 1 . . . . . . . .
+. . . . . 3 . 0 0 . . 1 1 0 0 0 . . . . . . . . .
+. . . . 3 . 3 0 0 0 1 1 1 0 0 0 . . . . . . . . .
+. . . . . . 4 2 2 2 2 2 2 1 1 1 . . . . . . . . .
+. . 2 . 4 4 4 2 2 2 2 2 2 1 1 1 0 0 . . . . . . .
+. . 2 2 4 4 4 . 2 2 2 2 2 1 1 1 0 0 0 . . . . . .
+. 1 1 1 3 3 3 0 0 0 1 1 1 0 0 0 3 3 3 . . . . . .
+. 1 1 1 3 3 3 0 0 0 1 1 1 0 0 . 3 3 3 4 4 . . . .
+. . 1 1 3 3 3 0 0 0 1 1 1 0 0 0 3 3 3 4 4 4 . . .
+. . 2 2 . 3 3 4 4 4 3 3 3 2 2 2 2 2 2 3 3 . . . .
+. 2 2 . . 3 3 4 4 4 3 3 3 2 2 2 2 2 2 3 3 . . . .
+3 2 2 . . 3 3 4 4 4 3 3 3 2 2 2 2 2 2 3 . . . . .
+4 1 . . . 4 4 3 3 3 0 0 0 4 4 4 1 1 1 2 2 . . . .
+4 1 1 1 4 4 4 3 3 3 0 0 0 4 4 4 1 1 1 2 2 2 0 . .
+4 1 1 1 4 4 4 3 3 3 0 0 0 4 4 4 1 1 1 2 2 . . . 0
+4 2 . . . . 1 . 2 2 4 4 4 . . 0 1 1 1 4 . 4 3 . 3
+. . . . . . . . . . 4 4 . . . . . 1 1 4 . 4 3 . .
+. . . . . . . . . . . . . . . . . . . . . 4 . . .
+. . . . . . . . . . . . . . . . . . . . . . 0 . .
+```
+
+Selecting a fold: `spatial_holdout.assignment=cv5-fold<k>` on the L1 or L4 holdout
+config, `--assignment cv5-fold<k>` on the launcher, `--assignments` on the batch
+launcher. The guard (`assert_spatial_holdout`) and the launcher admit the folds for
+the two arms L1 and L4 at seed 0 only; every other arm, the TESSERA arm, a prebuilt
+cache, a run without `--skip-test` and any other assignment name are refused. The
+assignment is part of the run label (`<prefix>-<arm>-cv5-fold<k>-seed0-ep40-cos-notest`),
+so of the Vertex display name, the evidence prefix and the output root; with `v1` they
+are unchanged. The job reads the fold from `VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT`, which
+only an image built from a commit that contains this code understands: an older image
+would train `v1` under a fold label, so build the image from the merge commit first.
+
+Run recipe (10 runs, no stage-1 skip; projected USD 24.00, launcher ceiling USD 31.67, per-job
+caps USD 32.50 as the `--max-total-usd` limit; same environment as the batch launcher below):
+
+```bash
+S=scripts/runners/vertex/launch_v6_matrix.sh
+F=cv5-fold0,cv5-fold1,cv5-fold2,cv5-fold3,cv5-fold4
+$S holdout --dry-run --assignments $F --arms l1,l4 --seeds 0 --max-total-usd 32.50
+$S holdout --preflight --assignments $F --arms l1,l4 --seeds 0
+$S holdout --assignments $F --arms l1,l4 --seeds 0 --max-total-usd 32.50
+```
+
+Evaluation: `scripts/analyze_spatial_holdout.py --fold-export cv5-fold<k> <L1 export>
+<L4 export>` once per fold next to the matrix exports of L1 and L4 (section
+"Evaluation").
+
 ## Training option
 
 `spatial_holdout: {enabled, assignment}` exists only in the nine configs
@@ -151,7 +261,8 @@ arm. Each inherits its locked arm and differs from it in `spatial_holdout` and
 `output_root` only (`SPATIAL_HOLDOUT_CONFIG_ARMS` in
 `modeling/spatial_holdout.py`; a test composes all nine and compares them with
 the locked configs). The guard admits the option on these nine configs only,
-only with the assignment `v1`, and refuses a run that scores test 2025 or uses
+only with the assignment `v1` (on L1 and L4 also the folds `cv5-fold0` to `cv5-fold4`,
+seed 0, see "Spatial cross-validation `cv5`"), and refuses a run that scores test 2025 or uses
 a prebuilt cache. A run must pass
 `evaluate_test=false` (the launcher's `--skip-test`); the guard refuses a
 holdout run that would score the test split. No
@@ -366,6 +477,58 @@ The two-arm stage-1 figures (L1 and L4, seed 0) are unchanged by the generic
 evaluation; a regression test pins them to the output of the two-arm version
 (`tests/test_spatial_holdout_eval.py`, `tests/fixtures/spatial_holdout_stage1_golden.json`).
 
+### Cross-validation output
+
+`scripts/analyze_spatial_holdout.py --fold-export cv5-foldK <files> ...` (once per fold;
+the fold of an export is named, never inferred from the file name) with
+`--matrix-export` of L1 and L4 (seed 0 is used) writes `<prefix>.json` and `<prefix>.md`
+(`evaluate_cv` in `analysis/spatial_holdout_eval.py`, same bootstrap: B = 10 000,
+rng seed 0, 95 %):
+
+- per fold, on that fold's unseen anchors, what `evaluate` gives for one assignment: MAE
+  seen / unseen / unseen interior / unseen edge per arm, `G` per arm against the matrix
+  run of the same arm and seed, `K` = L4 - L1.
+- the mean and range of `K` and of `G` per arm over the folds (unseen stratum); with
+  a fold missing the spread names the folds it covers.
+- out of fold: for every validation patch the error of the fold model that did NOT train
+  on its anchor, so all 1047 patches are scored once. Scene-equal MAE of L1 and L4,
+  `K_cv` = L4 - L1, and `G_cv` per arm against the matrix seed-0 model on the same
+  patches. Every anchor with validation patches must be unseen in exactly one fold
+  (checked); a fold or arm without export is listed and the out-of-fold summary is
+  marked incomplete instead of being computed on a subset.
+
+Fold runs need an image built from a commit that contains this code; an older image ignores
+the fold and trains `v1` under a fold label. The evaluation therefore verifies the
+assignment recorded by each run: the record next to each export (`<stem>.evidence.json`,
+the run's evidence or `full_summary.json`) must name exactly the fold the export is filed
+under, with the SHA-256 of the committed `cv5-fold<k>.json`; otherwise it refuses the export
+and names the file. The run itself refuses a configured assignment that differs from the
+fold named in its output root. (Not added for `v1` exports.)
+
+Copy the exports of the ten fold runs into their own directory (not into the `$E` of the
+`v1` recipe, whose `v6sh-*.parquet` glob would sweep them in), named by fold:
+
+```bash
+P=gs://berlin-lst-training-data/qa/modeling/vertex-smoke
+C=data/analysis/spatial-holdout/exports-cv5
+mkdir -p $C
+for k in 0 1 2 3 4; do for arm in l1 l4; do
+  label=v6sh-<sha7>-$arm-cv5-fold$k-seed0-ep40-cos-notest
+  gsutil cp $P/$label/eval_validation_patches.parquet $C/$arm-fold$k.parquet
+  gsutil cp $P/$label/evidence.json $C/$arm-fold$k.evidence.json   # the run's own record
+done; done
+
+uv run python scripts/analyze_spatial_holdout.py \
+  --matrix-export $E/v6m-*-l1-seed0-*.parquet $E/v6m-*-l4-seed0-*.parquet \
+  --fold-export cv5-fold0 $C/l1-fold0.parquet $C/l4-fold0.parquet \
+  --fold-export cv5-fold1 $C/l1-fold1.parquet $C/l4-fold1.parquet \
+  --fold-export cv5-fold2 $C/l1-fold2.parquet $C/l4-fold2.parquet \
+  --fold-export cv5-fold3 $C/l1-fold3.parquet $C/l4-fold3.parquet \
+  --fold-export cv5-fold4 $C/l1-fold4.parquet $C/l4-fold4.parquet \
+  --output-prefix data/analysis/spatial-holdout/cv5
+```
+
+
 ### Matrix models on the future strata
 
 Run before any holdout job, on the six matrix exports (L1 and L4, seeds
@@ -388,8 +551,15 @@ L4 - L1 of the matrix models is -0.020 K [-0.041, 0.000] on seen anchors
 
 ## Limits
 
-- One holdout draw, no spatial cross-validation. The block size is not
-  derived from an autocorrelation range.
+- `v1` is one holdout draw. `cv5` adds a five-fold partition of all anchors for L1 and
+  L4 at seed 0; the other arms and seeds have no cross-validation. The block size is
+  not derived from an autocorrelation range.
+- The `cv5` folds are scattered blocks, so more anchors are edge and fewer are interior
+  than in `v1` (6 to 11 interior anchors per fold against 14 in `v1`, which has one
+  contiguous area). Every fold holds out about a fifth of the anchors, incomplete
+  blocks included. The land-use mix of the folds was not measured. One seed per fold: the
+  fold-to-fold spread mixes spatial and seed variation, and the out-of-fold interval
+  carries scene variation only.
 - No buffer beyond the window edge; the interior / edge split stands in.
 - Five of the six blocks touch and form one cross-shaped area in the centre;
   one block lies apart. The 14 interior anchors exist because of that

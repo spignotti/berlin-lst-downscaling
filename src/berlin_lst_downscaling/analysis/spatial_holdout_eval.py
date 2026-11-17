@@ -34,9 +34,11 @@ skipped with a note.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -51,9 +53,12 @@ from berlin_lst_downscaling.data.training.contracts import (
     CELL_SIZE_M,
 )
 from berlin_lst_downscaling.modeling.spatial_holdout import (
+    CV_FOLDS,
+    CV_PARTITION,
     POSITION_INTERIOR,
     Anchor,
     SpatialHoldoutAssignment,
+    assignment_bytes,
 )
 
 N_BOOTSTRAP = 10_000
@@ -118,6 +123,11 @@ class Run:
     patches: dict[str, PatchScore]
     # The validated export rows; the decision-rule criteria hand them to ``scene_bootstrap``.
     table: pa.Table | None = field(default=None, repr=False, compare=False)
+    # Where the export was read from, and the assignment the run itself recorded
+    # (``load_fold_runs``); both stay ``None`` for a plain ``load_runs``.
+    source: str | None = field(default=None, compare=False)
+    assignment: str | None = field(default=None, compare=False)
+    assignment_sha256: str | None = field(default=None, compare=False)
 
     @property
     def label(self) -> str:
@@ -156,6 +166,50 @@ def load_runs(paths: Sequence[Path]) -> list[Run]:
     return runs
 
 
+def read_recorded_assignment(path: Path) -> tuple[str, str]:
+    """Return ``(assignment, sha256)`` from a run record: the evidence or the raw summary.
+
+    The evidence record keeps the summary under ``full.summary``; ``full_summary.json``
+    holds it at the top level. Both carry ``spatial_holdout.assignment`` and
+    ``spatial_holdout.assignment_sha256``, written by the run itself.
+    """
+    record = json.loads(Path(path).read_text(encoding="utf-8"))
+    summary = record.get("full", {}).get("summary", record) if isinstance(record, dict) else None
+    block = summary.get("spatial_holdout") if isinstance(summary, dict) else None
+    name = block.get("assignment") if isinstance(block, dict) else None
+    sha = block.get("assignment_sha256") if isinstance(block, dict) else None
+    if not isinstance(name, str) or not isinstance(sha, str):
+        raise SpatialHoldoutEvalError(
+            f"{path}: the run record holds no spatial_holdout.assignment and assignment_sha256"
+        )
+    return name, sha
+
+
+def load_fold_runs(paths: Sequence[Path]) -> list[Run]:
+    """Load cross-validation exports together with the record of the run that wrote them.
+
+    The record sits next to the export as ``<stem>.evidence.json`` (the run's evidence record
+    or its ``full_summary.json``) and is required: ``evaluate_cv`` checks it against the fold.
+    """
+    runs: list[Run] = []
+    for path in map(Path, paths):
+        record = path.with_suffix(".evidence.json")
+        if not record.is_file():
+            raise SpatialHoldoutEvalError(
+                f"{path}: the run record {record.name} is missing next to the export; the "
+                "fold the run trained without is read from it, never from a label"
+            )
+        try:
+            name, sha = read_recorded_assignment(record)
+        except (SpatialHoldoutEvalError, ValueError) as exc:
+            raise SpatialHoldoutEvalError(f"{path}: {exc}") from exc
+        runs += [
+            dataclasses.replace(run, source=str(path), assignment=name, assignment_sha256=sha)
+            for run in load_runs([path])
+        ]
+    return runs
+
+
 def strata_of(anchor: Anchor, assignment: SpatialHoldoutAssignment) -> tuple[str, ...]:
     """Return the strata an anchor belongs to; an anchor outside the assignment raises."""
     return _strata(anchor, assignment, assignment.positions())
@@ -176,6 +230,19 @@ def _group(
 ) -> _Group:
     if stratum not in STRATA:
         raise SpatialHoldoutEvalError(f"unknown stratum {stratum!r}; expected one of {STRATA}")
+    positions = assignment.positions()
+    return _group_where(
+        runs,
+        lambda score: stratum in _strata(score.anchor, assignment, positions),
+        stratum,
+        label,
+    )
+
+
+def _group_where(
+    runs: Sequence[Run], keep: Callable[[PatchScore], bool], stratum: str, label: str
+) -> _Group:
+    """Seed-averaged scene MAE of the patches ``keep`` selects (``stratum`` only names them)."""
     if not runs:
         raise SpatialHoldoutEvalError(f"{label}: no runs")
     arms = {run.arm for run in runs}
@@ -184,7 +251,6 @@ def _group(
     seeds = tuple(run.seed for run in runs)
     if len(set(seeds)) != len(seeds):
         raise SpatialHoldoutEvalError(f"{label}: duplicate seeds {list(seeds)}")
-    positions = assignment.positions()
     per_run: list[dict[str, tuple[float, int]]] = []
     patch_sets: dict[str, frozenset[str]] | None = None
     cells_ref: dict[str, int] = {}
@@ -193,7 +259,7 @@ def _group(
         members: dict[str, set[str]] = {}
         for pid in sorted(run.patches):
             score = run.patches[pid]
-            if stratum not in _strata(score.anchor, assignment, positions):
+            if not keep(score):
                 continue
             if cells_ref.setdefault(pid, score.valid_cells) != score.valid_cells:
                 raise SpatialHoldoutEvalError(
@@ -368,8 +434,25 @@ def paired_difference(
     in every scene of the stratum; anything else raises instead of comparing
     different universes.
     """
-    a = _group(runs_a, assignment, stratum, f"{label} (A)")
-    b = _group(runs_b, assignment, stratum, f"{label} (B)")
+    return _paired_groups(
+        _group(runs_a, assignment, stratum, f"{label} (A)"),
+        _group(runs_b, assignment, stratum, f"{label} (B)"),
+        stratum,
+        label=label,
+        n_bootstrap=n_bootstrap,
+        rng_seed=rng_seed,
+    )
+
+
+def _paired_groups(
+    a: _Group,
+    b: _Group,
+    stratum: str,
+    *,
+    label: str,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> Estimate:
     if sorted(a.seeds, key=str) != sorted(b.seeds, key=str):
         raise SpatialHoldoutEvalError(
             f"{label}: seeds differ between A {list(a.seeds)} and B {list(b.seeds)}"
@@ -697,6 +780,283 @@ def evaluate(
     return result
 
 
+CV_KIND = "spatial_holdout_cv"
+CV_ARMS = (ARM_SPECTRAL, ARM_FULL)
+CV_SEED = 0
+OUT_OF_FOLD = "out_of_fold"
+
+
+def _cv_folds(folds: Mapping[str, SpatialHoldoutAssignment]) -> dict[str, SpatialHoldoutAssignment]:
+    """Check the five fold assignments and return them in fold order."""
+    expected = {f"{CV_PARTITION}-fold{k}" for k in range(CV_FOLDS)}
+    if set(folds) != expected:
+        raise SpatialHoldoutEvalError(
+            f"the cross-validation needs the assignments {sorted(expected)}, got {sorted(folds)}"
+        )
+    ordered = {name: folds[name] for name in sorted(expected)}
+    first = ordered[f"{CV_PARTITION}-fold0"]
+    for name, fold in ordered.items():
+        if fold.fold != int(name.removeprefix(f"{CV_PARTITION}-fold")):
+            raise SpatialHoldoutEvalError(f"{name} is not the fold file of that name")
+        if fold.anchors != first.anchors or fold.patch_index != first.patch_index:
+            raise SpatialHoldoutEvalError(
+                f"{name} was drawn from another anchor table or patch index than the other folds"
+            )
+    unseen_in: dict[Anchor, list[str]] = {a: [] for a in first.anchors}
+    for name, fold in ordered.items():
+        for anchor in fold.holdout_anchors:
+            unseen_in[anchor].append(name)
+    bad = {
+        a: names
+        for a, names in unseen_in.items()
+        if first.anchors[a].validation > 0 and len(names) != 1
+    }
+    if bad:
+        raise SpatialHoldoutEvalError(
+            f"{len(bad)} anchor(s) with validation patches are not unseen in exactly one fold, "
+            f"e.g. {dict(sorted(bad.items())[:3])}"
+        )
+    return ordered
+
+
+def _spread(points: Mapping[str, float]) -> dict[str, Any]:
+    """Mean and range of one point estimate over the folds that have it."""
+    values = list(points.values())
+    return {
+        "folds": list(points),
+        "n_folds": len(values),
+        "points": dict(points),
+        "mean": float(np.mean(values)),
+        "min": float(min(values)),
+        "max": float(max(values)),
+    }
+
+
+def _out_of_fold_runs(
+    folds: Mapping[str, SpatialHoldoutAssignment],
+    holdout: Mapping[str, Mapping[str, Run]],
+    arm: str,
+) -> Run:
+    """One run of ``arm`` that scores every patch with the fold model that did not train on it."""
+    patches: dict[str, PatchScore] = {}
+    for name, fold in folds.items():
+        for pid, score in holdout[name][arm].patches.items():
+            if score.anchor not in fold.holdout_anchors:
+                continue
+            if pid in patches:
+                raise SpatialHoldoutEvalError(f"patch {pid!r} is out of fold in two folds")
+            patches[pid] = score
+    return Run(arm=arm, seed=CV_SEED, run_id=f"{OUT_OF_FOLD}/{arm}", patches=patches)
+
+
+def _out_of_fold(
+    folds: Mapping[str, SpatialHoldoutAssignment],
+    matrix: Mapping[str, Run],
+    holdout: Mapping[str, Mapping[str, Run]],
+    *,
+    n_bootstrap: int,
+    rng_seed: int,
+) -> dict[str, Any]:
+    kwargs = {"n_bootstrap": n_bootstrap, "rng_seed": rng_seed}
+    oof = {arm: _out_of_fold_runs(folds, holdout, arm) for arm in CV_ARMS}
+
+    def keep_all(_score: PatchScore) -> bool:
+        return True
+
+    groups = {
+        arm: _group_where([oof[arm]], keep_all, OUT_OF_FOLD, f"{OUT_OF_FOLD} {arm}")
+        for arm in CV_ARMS
+    }
+    base = {
+        arm: _group_where([matrix[arm]], keep_all, OUT_OF_FOLD, f"matrix {arm}") for arm in CV_ARMS
+    }
+    mae = {
+        arm: _estimate(
+            "mae_100m",
+            f"{OUT_OF_FOLD} {arm}",
+            OUT_OF_FOLD,
+            group.seeds,
+            group.values,
+            sum(len(ids) for ids in group.patch_sets.values()),
+            **kwargs,
+        ).to_dict()
+        for arm, group in groups.items()
+    }
+    k_cv = _paired_groups(
+        groups[ARM_FULL],
+        groups[ARM_SPECTRAL],
+        OUT_OF_FOLD,
+        label=f"K_cv: {OUT_OF_FOLD} {ARM_FULL} - {OUT_OF_FOLD} {ARM_SPECTRAL}",
+        **kwargs,
+    )
+    g_cv = {
+        arm: _paired_groups(
+            groups[arm],
+            base[arm],
+            OUT_OF_FOLD,
+            label=f"G_cv {arm}: {OUT_OF_FOLD} - matrix",
+            **kwargs,
+        )
+        for arm in CV_ARMS
+    }
+    return {
+        "complete": True,
+        "patches": len(oof[ARM_SPECTRAL].patches),
+        "mae": mae,
+        "K_cv": k_cv.to_dict(),
+        "G_cv": {arm: est.to_dict() for arm, est in g_cv.items()},
+    }
+
+
+def evaluate_cv(
+    folds: Mapping[str, SpatialHoldoutAssignment],
+    *,
+    matrix: Mapping[str, Sequence[Run]],
+    holdout: Mapping[str, Mapping[str, Sequence[Run]]],
+    fold_sha256: Mapping[str, str] | None = None,
+    n_bootstrap: int = N_BOOTSTRAP,
+    rng_seed: int = RNG_SEED,
+) -> dict[str, Any]:
+    """Evaluate the five-fold spatial cross-validation of L1 and L4 (seed 0).
+
+    ``folds`` maps ``cv5-fold0`` ... ``cv5-fold4`` to the fold assignments;
+    ``holdout[fold][arm]`` holds the run of that arm trained without the fold's
+    anchors, read with ``load_fold_runs``; ``matrix[arm]`` holds the matrix runs, of
+    which seed 0 is used. Every holdout run must carry the assignment and the SHA-256
+    its own record names, and both must be the fold's it is filed under:
+    ``fold_sha256`` (fold -> SHA-256 of the committed file) defaults to the hash of the
+    canonical file bytes. A run whose record names another fold, another file or none
+    (an image that predates the folds trains ``v1``) raises.
+
+    - ``folds``: per fold the evaluation of ``evaluate`` on that fold's unseen
+      anchors (MAE by stratum, G per arm against the matrix run of the same
+      arm and seed, K = L4 - L1).
+    - ``fold_summary``: mean and range of K and of G per arm over the folds
+      that have them (the unseen stratum).
+    - ``out_of_fold``: every validation patch scored by the fold model that did
+      not train on its anchor: scene-equal MAE of L1 and L4, ``K_cv`` and
+      ``G_cv`` per arm against the matrix seed-0 models on the same patches.
+      Only computed when all five folds have both arms; otherwise it is marked
+      incomplete and names what is missing.
+    """
+    kwargs = {"n_bootstrap": n_bootstrap, "rng_seed": rng_seed}
+    ordered = _cv_folds(folds)
+    unknown = sorted(set(holdout) - set(ordered))
+    if unknown:
+        raise SpatialHoldoutEvalError(f"holdout runs for unknown fold(s) {unknown}")
+    base: dict[str, Run] = {}
+    for arm in CV_ARMS:
+        runs = [run for run in matrix.get(arm, ()) if run.seed == CV_SEED]
+        if len(runs) != 1:
+            raise SpatialHoldoutEvalError(
+                f"the cross-validation needs exactly one matrix seed-{CV_SEED} run of {arm}, "
+                f"got {len(runs)}"
+            )
+        base[arm] = runs[0]
+    fold_runs: dict[str, dict[str, Run]] = {}
+    for name, by_arm in holdout.items():
+        fold_runs[name] = {}
+        for arm, runs in by_arm.items():
+            if arm not in CV_ARMS or len(runs) != 1 or runs[0].seed != CV_SEED:
+                raise SpatialHoldoutEvalError(
+                    f"{name} {arm}: the cross-validation holds one seed-{CV_SEED} run of each of "
+                    f"{list(CV_ARMS)}, got {len(runs)} run(s) with seeds {[r.seed for r in runs]}"
+                )
+            fold_runs[name][arm] = runs[0]
+
+    expected = {
+        name: (fold_sha256 or {}).get(name) or hashlib.sha256(assignment_bytes(fold)).hexdigest()
+        for name, fold in ordered.items()
+    }
+    for name, by_arm in fold_runs.items():
+        for arm, run in by_arm.items():
+            where = f"{run.source or run.label} ({name} {arm})"
+            if run.assignment is None or run.assignment_sha256 is None:
+                raise SpatialHoldoutEvalError(
+                    f"{where}: no recorded assignment; read the export with load_fold_runs"
+                )
+            if run.assignment != name:
+                raise SpatialHoldoutEvalError(
+                    f"{where}: filed under {name}, but its run record names "
+                    f"{run.assignment!r}; that run did not train without {name}"
+                )
+            if run.assignment_sha256 != expected[name]:
+                raise SpatialHoldoutEvalError(
+                    f"{where}: its run record has sha256 {run.assignment_sha256[:16]}, the "
+                    f"committed {name} file has {expected[name][:16]}"
+                )
+
+    result: dict[str, Any] = {
+        "kind": CV_KIND,
+        "partition": CV_PARTITION,
+        "split": "validation",
+        "metric": "mae_100m",
+        "bootstrap": {
+            "n_bootstrap": n_bootstrap,
+            "rng_seed": rng_seed,
+            "method": "percentile",
+            "level": 0.95,
+            "unit": "scene",
+        },
+        "folds": {},
+    }
+    notes: list[str] = []
+    missing: dict[str, list[str]] = {}
+    for name, fold in ordered.items():
+        held = fold.holdout_anchors
+        present = fold_runs.get(name, {})
+        absent = [arm for arm in CV_ARMS if arm not in present]
+        if absent:
+            missing[name] = absent
+            notes.append(f"{name}: no holdout export of {', '.join(absent)}")
+        result["folds"][name] = {
+            "blocks": len(fold.blocks),
+            "anchors": len(held),
+            "train_patches": sum(fold.anchors[a].train for a in held),
+            "validation_patches": sum(fold.anchors[a].validation for a in held),
+            "evaluation": (
+                evaluate(
+                    fold,
+                    matrix={arm: [base[arm]] for arm in CV_ARMS},
+                    holdout={arm: [run] for arm, run in present.items()},
+                    **kwargs,
+                )
+                if present
+                else None
+            ),
+        }
+    result["missing"] = missing
+
+    summary: dict[str, Any] = {}
+    k_points = {
+        name: ev["K"][UNSEEN]["point"]
+        for name, entry in result["folds"].items()
+        if (ev := entry["evaluation"]) is not None and "K" in ev
+    }
+    if k_points:
+        summary["K"] = _spread(k_points)
+    for arm in CV_ARMS:
+        g_points = {
+            name: ev["G"][arm][UNSEEN]["point"]
+            for name, entry in result["folds"].items()
+            if (ev := entry["evaluation"]) is not None and arm in ev.get("G", {})
+        }
+        if g_points:
+            summary.setdefault("G", {})[arm] = _spread(g_points)
+    result["fold_summary"] = summary
+
+    if missing:
+        result[OUT_OF_FOLD] = {
+            "complete": False,
+            "reason": "folds without both arms: "
+            + "; ".join(f"{name} lacks {', '.join(arms)}" for name, arms in missing.items()),
+        }
+    else:
+        result[OUT_OF_FOLD] = _out_of_fold(ordered, base, fold_runs, **kwargs)
+    result["notes"] = notes
+    return result
+
+
 def _fmt(est: Mapping[str, Any]) -> str:
     low, high = est["ci_95"]
     return f"{est['point']:.4f} [{low:.4f}, {high:.4f}]"
@@ -796,6 +1156,79 @@ def render_markdown(result: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_cv_markdown(result: Mapping[str, Any]) -> str:
+    """Render the cross-validation: fold table, fold summary, out-of-fold, then each fold."""
+    boot = result["bootstrap"]
+    lines = [
+        "# Spatial holdout cross-validation (cv5, L1 and L4, seed 0)",
+        "",
+        f"Split: {result['split']}; metric: {result['metric']} in K, scene-equal. Intervals: 95% "
+        f"percentile, paired scene bootstrap (B={boot['n_bootstrap']}, "
+        f"rng_seed={boot['rng_seed']}).",
+        "",
+        "## Folds",
+        "",
+        "| fold | blocks | anchors | train patches | validation patches | evaluated |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for name, fold in result["folds"].items():
+        done = "no" if fold["evaluation"] is None else "yes"
+        lines.append(
+            f"| {name} | {fold['blocks']} | {fold['anchors']} | {fold['train_patches']} | "
+            f"{fold['validation_patches']} | {done} |"
+        )
+    if result["missing"]:
+        lines += [
+            "",
+            "Missing: "
+            + "; ".join(f"{n} lacks {', '.join(a)}" for n, a in result["missing"].items())
+            + ".",
+        ]
+    summary = result["fold_summary"]
+    if summary:
+        lines += [
+            "",
+            "## K and G over the folds (unseen anchors of each fold)",
+            "",
+            "| quantity | folds | mean | min | max |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        rows = ([("K = L4 - L1", summary["K"])] if "K" in summary else []) + [
+            (f"G {arm}", spread) for arm, spread in summary.get("G", {}).items()
+        ]
+        for label, spread in rows:
+            lines.append(
+                f"| {label} | {spread['n_folds']} | {spread['mean']:.4f} | "
+                f"{spread['min']:.4f} | {spread['max']:.4f} |"
+            )
+    oof = result[OUT_OF_FOLD]
+    lines += ["", "## Out of fold", ""]
+    if not oof["complete"]:
+        lines.append(f"Incomplete, not computed: {oof['reason']}.")
+    else:
+        lines += [
+            f"Every validation patch ({oof['patches']}) scored by the fold model that did not "
+            "train on its anchor.",
+            "",
+            "| quantity | value | scenes |",
+            "| --- | --- | --- |",
+        ]
+        for arm, est in oof["mae"].items():
+            lines.append(f"| MAE {arm} | {_fmt(est)} | {est['n_scenes']} |")
+        lines.append(f"| K_cv = L4 - L1 | {_fmt(oof['K_cv'])} | {oof['K_cv']['n_scenes']} |")
+        for arm, est in oof["G_cv"].items():
+            lines.append(f"| G_cv {arm} (out of fold - matrix) | {_fmt(est)} | {est['n_scenes']} |")
+    for name, fold in result["folds"].items():
+        if fold["evaluation"] is None:
+            continue
+        text = render_markdown(fold["evaluation"]).splitlines()
+        lines += ["", f"# Fold {name}", ""]
+        lines += [f"#{line}" if line.startswith("#") else line for line in text[2:]]
+    if result["notes"]:
+        lines += ["", "## Skipped", ""] + [f"- {note}" for note in result["notes"]]
+    return "\n".join(lines) + "\n"
+
+
 def write_outputs(result: Mapping[str, Any], output_prefix: Path) -> tuple[Path, Path]:
     """Write ``<prefix>.json`` and ``<prefix>.md``."""
     prefix = Path(output_prefix)
@@ -803,11 +1236,14 @@ def write_outputs(result: Mapping[str, Any], output_prefix: Path) -> tuple[Path,
     json_path = prefix.parent / (prefix.name + ".json")
     md_path = prefix.parent / (prefix.name + ".md")
     json_path.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    md_path.write_text(render_markdown(result), encoding="utf-8")
+    text = render_cv_markdown(result) if result.get("kind") == CV_KIND else render_markdown(result)
+    md_path.write_text(text, encoding="utf-8")
     return json_path, md_path
 
 
 __all__ = [
+    "CV_ARMS",
+    "CV_KIND",
     "FAMILY_A",
     "FAMILY_B",
     "FAMILY_K",
@@ -821,8 +1257,12 @@ __all__ = [
     "SpatialHoldoutEvalError",
     "anchor_from_patch_id",
     "evaluate",
+    "evaluate_cv",
+    "load_fold_runs",
     "load_runs",
     "paired_difference",
+    "read_recorded_assignment",
+    "render_cv_markdown",
     "render_markdown",
     "scene_bootstrap_mean",
     "seed_rule_criteria",

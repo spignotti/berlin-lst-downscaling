@@ -13,11 +13,13 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from test_spatial_holdout_cv import load_launcher
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "runners" / "vertex" / "launch_v6_matrix.sh"
@@ -1126,3 +1128,261 @@ def test_holdout_dead_worker_without_a_result_is_a_failure_not_a_held_slot(env: 
     assert "ended without a result" in res.stdout
     assert "1 failed [L2/seed0]" in res.stdout and "not started [L3/seed0]" in res.stdout
     assert ("L3", 0) not in launched(env)
+
+
+# --- spatial holdout batch: cross-validation folds ----------------------------------------
+
+FOLDS = [f"cv5-fold{k}" for k in range(5)]
+FOLD_FLAGS = ("--assignments", ",".join(FOLDS), "--arms", "l1,l4", "--seeds", "0")
+
+
+def fdn(arm: str, fold: str) -> str:
+    return f"{MODES[arm]}-spatial-holdout-{PREFIX}-{arm.lower()}-{fold}-seed0-ep40-cos-notest"
+
+
+def launched_folds(env: Env) -> list[tuple[str, str]]:
+    out = []
+    for line in launcher_calls(env):
+        mode = re.search(r"--mode (\S+)", line)
+        fold = re.search(r"--assignment (\S+)", line)
+        assert mode and fold
+        arm = next(a for a in ARMS if f"{MODES[a]}-spatial-holdout" == mode.group(1))
+        out.append((arm, fold.group(1)))
+    return out
+
+
+def test_cv_constants_equal_the_python_side() -> None:
+    from berlin_lst_downscaling.modeling import spatial_holdout as sh
+
+    script = SCRIPT.read_text()
+    assert f"CV_ASSIGNMENTS=({' '.join(sh.SPATIAL_HOLDOUT_CV_ASSIGNMENTS)})\n" in script
+    assert f"CV_ARMS=({' '.join(sh.SPATIAL_HOLDOUT_CV_ARMS)})\n" in script
+    assert FOLDS == list(sh.SPATIAL_HOLDOUT_CV_ASSIGNMENTS)
+
+
+def test_holdout_fold_dry_run_prints_ten_distinct_labels_at_the_caps(env: Env) -> None:
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "32.50", *FOLD_FLAGS)
+    assert res.returncode == 0, res.stderr
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    assert len(plan) == 10 and "summed exposure caps of all 10 run(s): USD 32.50" in res.stdout
+    labels = [re.search(r"label=(\S+)", line).group(1) for line in plan]  # type: ignore[union-attr]
+    assert len(set(labels)) == 10
+    assert f"{PREFIX}-l1-cv5-fold0" in labels and f"{PREFIX}-l4-cv5-fold4" in labels
+    for arm in ("L1", "L4"):
+        for fold in FOLDS:
+            assert any(
+                f"jobname={fdn(arm, fold)} " in line
+                and f"label={PREFIX}-{arm.lower()}-{fold} " in line
+                for line in plan
+            )
+    # the stage-1 skip is for v1 only: seed-0 L1 and L4 are planned under every fold
+    assert "NOTE" not in res.stdout
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""
+    over = env.run("holdout", "--dry-run", "--max-total-usd", "32.49", *FOLD_FLAGS)
+    assert over.returncode == 2 and "REFUSED" in over.stdout
+
+
+def test_holdout_v1_and_folds_in_one_batch_keep_the_stage_one_skip_for_v1_only(env: Env) -> None:
+    res = env.run(
+        "holdout",
+        "--dry-run",
+        "--max-total-usd",
+        "6.50",
+        "--assignments",
+        "v1,cv5-fold0",
+        "--arms",
+        "L1,L4",
+        "--seeds",
+        "0",
+    )
+    assert res.returncode == 0, res.stderr
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    assert [line.split()[1] for line in plan] == ["L1", "L4"]
+    assert all("-cv5-fold0-seed0" in line for line in plan)
+    assert res.stdout.count("NOTE") == 2  # the two v1 runs are skipped as stage 1
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--assignments", "cv5-fold5", "--arms", "L1", "--seeds", "0"),
+        ("--assignments", "cv5-fold0", "--arms", "L1,L2", "--seeds", "0"),
+        ("--assignments", "cv5-fold0", "--arms", "all", "--seeds", "0"),
+        ("--assignments", "cv5-fold0", "--arms", "L1", "--seeds", "0,1"),
+        ("--assignments", "cv5-fold0", "--arms", "L1", "--seeds", "1"),
+        ("--assignments", "cv5-fold0,cv5-fold0", "--arms", "L1", "--seeds", "0"),
+        ("--assignments", "", "--arms", "L1", "--seeds", "0"),
+        ("--assignments", "v2", "--arms", "L1", "--seeds", "0"),
+        ("--assignments", "cv5-fold0,v1", "--arms", "L1,L5", "--seeds", "0"),
+    ],
+)
+def test_holdout_folds_are_refused_for_other_assignments_arms_and_seeds(
+    env: Env, args: tuple[str, ...]
+) -> None:
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "100", *args)
+    assert res.returncode == 2, res.stdout
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""
+
+
+def test_holdout_fold_preflight_passes_the_assignment_to_the_launcher(env: Env) -> None:
+    res = env.run("holdout", "--preflight", *FOLD_FLAGS, V6M_RUN_DIR="")
+    assert res.returncode == 0, res.stderr
+    lines = launcher_calls(env)
+    assert len(lines) == 10
+    assert all("--preflight" in line and "--skip-test" in line for line in lines)
+    assert sorted(launched_folds(env)) == sorted((a, f) for a in ("L1", "L4") for f in FOLDS)
+    assert all(f"--run-label {PREFIX}-" in line and "--seed 0" in line for line in lines)
+    # a v1 run never gets the flag
+    env.run("holdout", "--preflight", "--arms", "L5", "--seeds", "0", V6M_RUN_DIR="")
+    assert "--assignment" not in launcher_calls(env)[-1]
+
+
+def test_holdout_fold_jobnames_are_the_launchers_display_names(
+    env: Env,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    python_launcher = load_launcher(monkeypatch)
+    # Batch idempotency looks a run up by displayName: the script must build the launcher's name.
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "32.50", *FOLD_FLAGS)
+    plan = [line for line in res.stdout.splitlines() if line.startswith("PLAN")]
+    assert len(plan) == 10
+    for line in plan:
+        arm = line.split()[1]
+        label = re.search(r"label=(\S+)", line).group(1)  # type: ignore[union-attr]
+        jobname = re.search(r"jobname=(\S+)", line).group(1)  # type: ignore[union-attr]
+        fold = re.search(r"(cv5-fold\d)$", label).group(1)  # type: ignore[union-attr]
+        argv = [
+            "launch_vertex_modeling.py",
+            "--mode",
+            f"{MODES[arm]}-spatial-holdout",
+            "--image-uri",
+            IMAGE,
+            "--source-sha",
+            "0" * 40,
+            "--run-label",
+            label.removesuffix(f"-{fold}"),
+            "--service-account",
+            "sa",
+            "--infisical-identity",
+            "i",
+            "--infisical-project",
+            "p",
+            "--seed",
+            "0",
+            "--max-epochs",
+            "40",
+            "--lr-schedule",
+            "cosine",
+            "--skip-test",
+            "--assignment",
+            fold,
+            "--hourly-rate-usd",
+            "1.0",
+            "--preflight",
+        ]
+        monkeypatch.setattr(sys, "argv", argv)
+        assert python_launcher.main() == 0
+        run_label = re.search(r"run label +: (\S+)", capsys.readouterr().out).group(1)  # type: ignore[union-attr]
+        assert jobname == f"{MODES[arm]}-spatial-holdout-{run_label}"
+
+
+def test_holdout_fold_batch_submits_each_fold_once_within_four_in_flight(env: Env) -> None:
+    res = env.run("holdout", "--max-total-usd", "32.50", *FOLD_FLAGS, **BATCH, TEST_TIMEOUT="120")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert sorted(launched_folds(env)) == sorted((a, f) for a in ("L1", "L4") for f in FOLDS)
+    assert max_in_flight(env) <= 4
+    assert "10 succeeded, 0 skipped" in res.stdout
+    looked_up = listed_dns(env.log("gcloud.log"))[:10]
+    assert sorted(looked_up) == sorted(fdn(a, f) for a in ("L1", "L4") for f in FOLDS)
+    # one log per run: no two folds share a result or submit log
+    assert len({p.name for p in env.run_dir.glob("submit-*.log")}) == 10
+
+
+def test_holdout_fold_batch_skips_a_succeeded_fold_and_prices_the_rest(env: Env) -> None:
+    (env.log_dir / f"list.{fdn('L1', 'cv5-fold2')}").write_text("111\tJOB_STATE_SUCCEEDED\n")
+    res = env.run("holdout", "--max-total-usd", "29.25", *FOLD_FLAGS, **BATCH, TEST_TIMEOUT="120")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert ("L1", "cv5-fold2") not in launched_folds(env) and len(launched_folds(env)) == 9
+    over = env.run("holdout", "--max-total-usd", "29.24", *FOLD_FLAGS, **BATCH)
+    assert over.returncode == 2 and "REFUSED" in over.stdout
+
+
+def test_holdout_fold_attached_pair_never_submits_when_its_job_ended_meanwhile(env: Env) -> None:
+    (env.log_dir / f"list.{fdn('L1', 'cv5-fold0')}").write_text("111\tJOB_STATE_RUNNING\n")
+    (env.log_dir / f"list.{fdn('L4', 'cv5-fold0')}").write_text("222\tJOB_STATE_RUNNING\n")
+    # at its own turn (second lookup) the L4 fold job is FAILED; the opt-in must not make it new
+    (env.log_dir / f"list2.{fdn('L4', 'cv5-fold0')}").write_text("222\tJOB_STATE_FAILED\n")
+    res = env.run(
+        "holdout",
+        "--max-total-usd",
+        "100",
+        "--assignments",
+        "cv5-fold0",
+        "--arms",
+        "L1,L4",
+        "--seeds",
+        "0",
+        "--max-parallel",
+        "1",
+        **BATCH,
+        V6M_RESUBMIT_FAILED="1",
+        V6M_RESUBMIT_CANCELLED="1",
+    )
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert launcher_calls(env) == []
+    assert "planned as attached to an active job" in res.stdout
+    assert "1 failed [L4/seed0/cv5-fold0]" in res.stdout
+
+
+# --- GNU tools: fail at once, not after minutes of retries -----------------------------------
+
+CLOUD_COMMANDS = [
+    ("preflight",),
+    ("preflight", "L1", "0"),
+    ("submit", "L1", "0"),
+    ("submit-all",),
+    ("state", "L1", "0"),
+    ("holdout", "--preflight", "--arms", "L1", "--seeds", "1"),
+    ("holdout", "--max-total-usd", "100", "--arms", "L1", "--seeds", "1"),
+]
+
+
+def _bsd_date(env: Env) -> str:
+    shim = env.root / "bsd-date"
+    _write_exec(
+        shim,
+        '#!/bin/bash\n[[ "${1:-}" == -d ]] && { echo "illegal option -- d" >&2; exit 1; }\n'
+        'exec /bin/date "$@"\n',
+    )
+    return str(shim)
+
+
+@pytest.mark.parametrize("args", CLOUD_COMMANDS)
+@pytest.mark.parametrize("missing", ["timeout", "date"])
+def test_cloud_subcommands_fail_at_once_without_gnu_timeout_or_date(
+    env: Env, args: tuple[str, ...], missing: str
+) -> None:
+    extra = (
+        {"V6M_TIMEOUT_BIN": str(env.root / "no-such-timeout")}
+        if missing == "timeout"
+        else {"V6M_DATE_BIN": _bsd_date(env)}
+    )
+    started = time.monotonic()
+    res = env.run(*args, **extra)
+    assert time.monotonic() - started < 10
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "brew install coreutils" in res.stderr and "gnubin" in res.stderr
+    assert ("GNU 'timeout'" if missing == "timeout" else "-d' is not GNU date") in res.stderr
+    for name in ("wrapper.log", "gcloud.log", "launcher.log"):
+        assert env.log(name) == ""  # nothing was looked up, launched or retried
+
+
+def test_help_and_dry_run_need_no_gnu_tools(env: Env) -> None:
+    gone = {"V6M_TIMEOUT_BIN": str(env.root / "no-such-timeout"), "V6M_DATE_BIN": _bsd_date(env)}
+    assert env.run("help", **gone).returncode == 0
+    res = env.run("holdout", "--dry-run", "--max-total-usd", "100", "--include-stage1", **gone)
+    assert res.returncode == 0, res.stderr
+    assert env.log("wrapper.log") == "" and env.log("gcloud.log") == ""

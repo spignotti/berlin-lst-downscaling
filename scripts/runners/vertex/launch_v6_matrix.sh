@@ -8,8 +8,8 @@
 #         launch_v6_matrix.sh submit-all [--from ARM SEED]  # sequential jobs in fixed order, resumable
 #         launch_v6_matrix.sh state ARM SEED                # existing jobs for the pair (read-only)
 #         launch_v6_matrix.sh holdout --max-total-usd USD [--arms A,B|all] [--seeds 0,1,2]
-#                             [--max-parallel N] [--include-stage1] [--dry-run | --preflight]
-#                                                           # spatial holdout batch (docs/spatial-holdout.md)
+#                             [--assignments v1|cv5-fold0,...] [--max-parallel N] [--include-stage1]
+#                             [--dry-run | --preflight]     # spatial holdout batch (docs/spatial-holdout.md)
 #         launch_v6_matrix.sh help | -h | --help            # this text, touches nothing
 #
 # `holdout` submits the spatial holdout runs (mode <matrix mode>-spatial-holdout, --skip-test, job-local
@@ -22,7 +22,12 @@
 # refused for capacity or quota ends with code 3: the batch goes on with the remaining runs. Any other
 # failure stops new submissions; jobs in flight are waited for, never cancelled. Exit codes: 0 all runs
 # succeeded or were skipped, 1 failure, 2 refused, 3 only capacity failures.
-# L1 and L4 seed 0 (stage 1, already SUCCEEDED under another label) are skipped unless --include-stage1.
+# L1 and L4 seed 0 (stage 1, already SUCCEEDED under another label) are skipped unless --include-stage1;
+# that applies to the assignment v1 only.
+# --assignments (default v1) selects the spatial assignment of every run: v1, or the cross-validation
+# folds cv5-fold0 ... cv5-fold4, which exist for arms L1 and L4 at seed 0 only. A fold run carries its
+# assignment in the run label and the displayName (<label>-<arm>-cv5-fold0-seed0-...), so it never
+# collides with a v1 run or another fold. The image must be built from a commit that knows the folds.
 # Jobs already active are watched first and hold slots; their pairs never submit. One batch per
 # V6M_RUN_DIR (lock directory holdout.lock). A cancel that fails (CANCEL_UNCONFIRMED) or a worker that
 # dies without a result is a failure, not a capacity miss.
@@ -69,7 +74,8 @@
 #    cancelled and always reports its real Vertex state; a late start only adds a
 #    QUEUE_DEADLINE_VIOLATION log line, so a late-start SUCCEEDED still continues the loop.
 #  - Only JOB_STATE_SUCCEEDED continues the loop; anything else stops it cleanly with a STOP log line.
-# Needs bash 4+ and GNU date (`date -d`), i.e. a Linux operator machine.
+# Needs bash 4+, GNU `timeout` and GNU `date -d`, i.e. a Linux operator machine (on macOS: brew install
+# coreutils and put its gnubin directory on PATH); every cloud subcommand checks this first and exits 2.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -84,6 +90,9 @@ PIN_REGION=europe-west3
 # pinned in scripts/operators/launch_vertex_modeling.py (SPATIAL_HOLDOUT_*); a test compares them
 HOLDOUT_TIMEOUT_SECONDS=10800
 HOLDOUT_EXPOSURE_CENTS=325
+# pinned in src/berlin_lst_downscaling/modeling/spatial_holdout.py (SPATIAL_HOLDOUT_CV_*); a test compares them
+CV_ASSIGNMENTS=(cv5-fold0 cv5-fold1 cv5-fold2 cv5-fold3 cv5-fold4)
+CV_ARMS=(L1 L4)
 VARIANT=matrix  # matrix | holdout (the `holdout` subcommand)
 OPERATOR_WRAPPER="$REPO_ROOT/scripts/operators/with-gcp-operator.sh"
 
@@ -93,7 +102,7 @@ usage: $SELF preflight [ARM SEED]
        $SELF submit ARM SEED
        $SELF submit-all [--from ARM SEED]
        $SELF state ARM SEED
-       $SELF holdout --max-total-usd USD [--arms A,B,...|all] [--seeds 0,1,2] [--max-parallel N] [--include-stage1] [--dry-run|--preflight]
+       $SELF holdout --max-total-usd USD [--arms A,B,...|all] [--seeds 0,1,2] [--assignments v1|cv5-fold0,...] [--max-parallel N] [--include-stage1] [--dry-run|--preflight]
        $SELF help
 
 ARM: ${ARMS[*]}    SEED: 0 | 1 | 2
@@ -114,6 +123,17 @@ USAGE
 }
 
 die() { echo "$SELF: $*" >&2; exit 2; }
+
+# GNU tools the cloud paths rely on (V6M_TIMEOUT_BIN / V6M_DATE_BIN name them for a test or a gnubin-less PATH)
+TIMEOUT_BIN="${V6M_TIMEOUT_BIN:-timeout}"
+DATE_BIN="${V6M_DATE_BIN:-date}"
+GNU_FIX="on macOS run: brew install coreutils, then put \"\$(brew --prefix coreutils)/libexec/gnubin\" first on PATH"
+require_gnu_tools() {  # every subcommand that touches the cloud; fails at once instead of retrying for minutes
+  "$TIMEOUT_BIN" 5 true >/dev/null 2>&1 \
+    || die "GNU 'timeout' is missing or not working ($TIMEOUT_BIN); $GNU_FIX"
+  "$DATE_BIN" -d 2026-01-01T00:00:00Z +%s >/dev/null 2>&1 \
+    || die "'$DATE_BIN -d' is not GNU date (BSD date has no -d); $GNU_FIX"
+}
 
 ts() { date '+%Y-%m-%d %H:%M:%S %Z'; }
 log() { echo "[$(ts)] $SELF: $*"; }
@@ -201,21 +221,26 @@ check_pair() {  # arm seed
 
 lower() { echo "$1" | tr 'A-Z' 'a-z'; }
 
-display_name() {  # arm seed -> exact Vertex displayName (mode-runlabel, as built by the launcher)
-  local arm=$1 seed=$2
+# the run-label part of a fold run: "" for v1, "-cv5-foldK" otherwise
+asg_suffix() { [[ "${1:-v1}" == v1 ]] || printf -- '-%s' "$1"; }
+
+display_name() {  # arm seed [assignment] -> exact Vertex displayName (mode-runlabel, as built by the launcher)
+  local arm=$1 seed=$2 asg=${3:-v1}
   if [[ "$VARIANT" == holdout ]]; then
-    echo "${MODE[$arm]}-spatial-holdout-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos-notest"
+    echo "${MODE[$arm]}-spatial-holdout-${LABEL_PREFIX}-$(lower "$arm")$(asg_suffix "$asg")-seed${seed}-ep${MAX_EPOCHS}-cos-notest"
   else
     echo "${MODE[$arm]}-${LABEL_PREFIX}-$(lower "$arm")-seed${seed}-ep${MAX_EPOCHS}-cos"
   fi
 }
 
-run() {  # arm seed [--preflight]
-  local arm=$1 seed=$2; shift 2
+run() {  # arm seed assignment [--preflight]
+  local arm=$1 seed=$2 asg=$3; shift 3
   local label="${LABEL_PREFIX}-$(lower "$arm")" mode="${MODE[$arm]}"
   local -a variant_args=(--patch-cache prebuilt)
   if [[ "$VARIANT" == holdout ]]; then  # job-local cache is the launcher default; it refuses prebuilt
     mode="$mode-spatial-holdout"; variant_args=(--skip-test)
+    # the launcher appends the assignment to the run label (and refuses all but L1/L4 at seed 0)
+    [[ "$asg" == v1 ]] || variant_args+=(--assignment "$asg")
   fi
   cd "$REPO_ROOT"
   # operator SA key from Infisical /operator into a 0600 temp file for this command only
@@ -232,7 +257,7 @@ run() {  # arm seed [--preflight]
 
 # gcloud as the operator SA for this command only (same wrapper as run(), no --activate);
 # `timeout` covers the credential fetch as well as the gcloud call.
-gc() { timeout -k 10 "$GCLOUD_TIMEOUT" "$OPERATOR_WRAPPER" -- "$GCLOUD" "$@" --project "$PROJECT"; }
+gc() { "$TIMEOUT_BIN" -k 10 "$GCLOUD_TIMEOUT" "$OPERATOR_WRAPPER" -- "$GCLOUD" "$@" --project "$PROJECT"; }
 
 # Existing jobs for a displayName: lines "id<TAB>state". Retries; returns 1 if lookup impossible.
 lookup() {
@@ -260,12 +285,12 @@ poll_job() {
       [[ "$state" != "$last" ]] && { log "job $id state: $state" >&2; last=$state; }
       case "$state" in
         JOB_STATE_SUCCEEDED|JOB_STATE_FAILED|JOB_STATE_CANCELLED|JOB_STATE_EXPIRED|JOB_STATE_PARTIALLY_SUCCEEDED)
-          if [[ -n "${st:-}" ]] && (( $(date -d "$st" +%s) > $(date -d "$ct" +%s) + MAX_WAIT )); then
+          if [[ -n "${st:-}" ]] && (( $("$DATE_BIN" -d "$st" +%s) > $("$DATE_BIN" -d "$ct" +%s) + MAX_WAIT )); then
             log "QUEUE_DEADLINE_VIOLATION: job $id started at $st, more than ${MAX_WAIT}s after creation ($ct); terminal state $state is reported as is, no cancel" >&2
           fi
           echo "$state"; return 0 ;;
       esac
-      now=$(date +%s); ct_s=$(date -d "$ct" +%s)
+      now=$(date +%s); ct_s=$("$DATE_BIN" -d "$ct" +%s)
       if [[ -z "${st:-}" && "$state" != JOB_STATE_RUNNING ]] && (( now > ct_s + MAX_WAIT )); then
         # same rule as the launcher: not started within max-wait -> cancel, never replace
         log "QUEUE_DEADLINE_VIOLATION: job $id ($state) not started within ${MAX_WAIT}s of creation; requesting cancellation (launcher queue rule)" >&2
@@ -321,10 +346,10 @@ CAPACITY_RE='RESOURCE_EXHAUSTED|quota|stockout|insufficient capacity|no availabl
 
 # One pair, idempotent. Returns 0 only if the pair ends SUCCEEDED; 3 when the pair got no
 # capacity (queue rule cancel, or a submission refused for capacity); 1 for any other outcome.
-do_pair() {
-  local arm=$1 seed=$2 dn existing prior_ids id state attempt rc tmp pairlog lpid t0 capacity=0
-  dn=$(display_name "$arm" "$seed")
-  pairlog="$RUNDIR/submit-${arm}-seed${seed}.log"
+do_pair() {  # arm seed [assignment]
+  local arm=$1 seed=$2 asg=${3:-v1} dn existing prior_ids id state attempt rc tmp pairlog lpid t0 capacity=0
+  dn=$(display_name "$arm" "$seed" "$asg")
+  pairlog="$RUNDIR/submit-${arm}-seed${seed}$(asg_suffix "$asg").log"
   for attempt in $(seq 1 "$SUBMIT_ATTEMPTS"); do
     existing=$(lookup "$dn") || { log "STOP: cannot list jobs for $dn (idempotency check impossible)"; return 1; }
     # a pair planned as "attach" (its job was active when the batch was priced) never submits
@@ -358,7 +383,7 @@ do_pair() {
     prior_ids=$(cut -f1 <<<"$existing")
     log "submit $arm seed$seed ($dn), attempt $attempt/$SUBMIT_ATTEMPTS"
     tmp=$(mktemp "$RUNDIR/.attempt.XXXXXX"); rc=""
-    ( run "$arm" "$seed" 2>&1 | tee "$tmp" | tee -a "$pairlog" ) &
+    ( run "$arm" "$seed" "$asg" 2>&1 | tee "$tmp" | tee -a "$pairlog" ) &
     lpid=$!
     id=""; t0=$(date +%s)
     # wait until the job exists (id printed or found by name) or the launcher exits
@@ -433,12 +458,17 @@ to_cents() {  # "12.5" -> REPLY=1250 (at most two decimals; no subshell, so die 
 fmt_cents() { printf '%d.%02d' $(( $1 / 100 )) $(( $1 % 100 )); }
 
 # Spatial holdout batch: the given arms x seeds (seeds first) with at most --max-parallel jobs in flight.
+# "L1/seed0" for v1, "L1/seed0/cv5-fold0" for a fold run; ptext: "L1 seed0" / "L1 seed0 cv5-fold0"
+pname() { printf '%s/seed%s%s' "$1" "$2" "$([[ "${3:-v1}" == v1 ]] || printf '/%s' "$3")"; }
+ptext() { printf '%s seed%s%s' "$1" "$2" "$([[ "${3:-v1}" == v1 ]] || printf ' %s' "$3")"; }
+
 holdout_batch() {
-  local arms_arg=all seeds_arg=0,1,2 par=4 max_total="" dry=0 pre=0 stage1=0
+  local arms_arg=all seeds_arg=0,1,2 asg_arg=v1 par=4 max_total="" dry=0 pre=0 stage1=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --arms) arms_arg=${2:-}; shift 2 ;;
       --seeds) seeds_arg=${2:-}; shift 2 ;;
+      --assignments) asg_arg=${2:-}; shift 2 ;;
       --max-parallel) par=${2:-}; shift 2 ;;
       --max-total-usd) max_total=${2:-}; shift 2 ;;
       --dry-run) dry=1; shift ;;
@@ -450,22 +480,33 @@ holdout_batch() {
   [[ "$par" =~ ^[1-4]$ ]] || die "--max-parallel must be 1, 2, 3 or 4, got '$par'"
   [[ $dry == 0 || $pre == 0 ]] || die "--dry-run and --preflight exclude each other"
   [[ -n "$max_total" || $pre == 1 ]] || die "--max-total-usd is required (summed per-job exposure caps must stay within it)"
-  local -a arms=() seeds=() plan=()
-  if [[ "$arms_arg" == all ]]; then arms=("${ARMS[@]}"); else IFS=, read -r -a arms <<<"$arms_arg"; fi
+  local -a arms=() seeds=() asgs=() plan=()
+  if [[ "${arms_arg,,}" == all ]]; then arms=("${ARMS[@]}"); else IFS=, read -r -a arms <<<"${arms_arg^^}"; fi
   IFS=, read -r -a seeds <<<"$seeds_arg"
-  [[ ${#arms[@]} -gt 0 && ${#seeds[@]} -gt 0 ]] || die "--arms and --seeds must not be empty"
-  local a s n pair
+  IFS=, read -r -a asgs <<<"$asg_arg"
+  [[ ${#arms[@]} -gt 0 && ${#seeds[@]} -gt 0 && ${#asgs[@]} -gt 0 ]] || die "--arms, --seeds and --assignments must not be empty"
+  local a s g n pair
   for a in "${arms[@]}"; do for s in "${seeds[@]}"; do check_pair "$a" "$s"; done; done
   for n in "${arms[@]}"; do [[ $(printf '%s\n' "${arms[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate arm '$n'"; done
   for n in "${seeds[@]}"; do [[ $(printf '%s\n' "${seeds[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate seed '$n'"; done
-  for s in "${seeds[@]}"; do for a in "${arms[@]}"; do
-    if [[ $stage1 == 0 && "$s" == 0 && ( "$a" == L1 || "$a" == L4 ) ]]; then
+  for n in "${asgs[@]}"; do [[ $(printf '%s\n' "${asgs[@]}" | grep -cxF -- "$n") == 1 ]] || die "duplicate assignment '$n'"; done
+  for g in "${asgs[@]}"; do
+    [[ "$g" == v1 ]] && continue
+    [[ " ${CV_ASSIGNMENTS[*]} " == *" $g "* ]] || die "unknown assignment '$g' (expected v1 or one of: ${CV_ASSIGNMENTS[*]})"
+    # the folds exist for two arms and one seed; the launcher and the config guard refuse the rest too
+    for a in "${arms[@]}"; do
+      [[ " ${CV_ARMS[*]} " == *" $a "* ]] || die "assignment $g is defined for arms ${CV_ARMS[*]} only, not $a"
+    done
+    for s in "${seeds[@]}"; do [[ "$s" == 0 ]] || die "assignment $g is defined for seed 0 only, not seed $s"; done
+  done
+  for s in "${seeds[@]}"; do for g in "${asgs[@]}"; do for a in "${arms[@]}"; do
+    if [[ $g == v1 && $stage1 == 0 && "$s" == 0 && ( "$a" == L1 || "$a" == L4 ) ]]; then
       # stage 1 ran these two under another label prefix; their displayNames would not match
       echo "NOTE $a seed0 is a stage-1 run (job ${MODE[$a]}-spatial-holdout-v6sh-99a71cf-$(lower "$a")-seed0-ep${MAX_EPOCHS}-cos-notest, SUCCEEDED): skipped; --include-stage1 runs it again"
       continue
     fi
-    plan+=("$a $s")
-  done; done
+    plan+=("$a $s $g")
+  done; done; done
   [[ ${#plan[@]} -gt 0 ]] || die "nothing to run: only stage-1 runs were requested (see --include-stage1)"
   local cap=$HOLDOUT_EXPOSURE_CENTS limit=0 total=0
   if [[ -n "$max_total" ]]; then to_cents "$max_total"; limit=$REPLY; fi
@@ -473,9 +514,9 @@ holdout_batch() {
   if [[ $dry == 1 ]]; then  # no cloud call: every requested run is priced, none is looked up
     log "holdout dry run: ${#plan[@]} run(s), at most $par in flight; no cloud call, no idempotency lookup"
     for pair in "${plan[@]}"; do
-      read -r a s <<<"$pair"
-      printf 'PLAN %-14s seed%s label=%s-%s jobname=%s mode=%s-spatial-holdout cap=USD %s\n' \
-        "$a" "$s" "$LABEL_PREFIX" "$(lower "$a")" "$(display_name "$a" "$s")" "${MODE[$a]}" "$(fmt_cents $cap)"
+      read -r a s g <<<"$pair"
+      printf 'PLAN %-14s seed%s label=%s-%s%s jobname=%s mode=%s-spatial-holdout cap=USD %s\n' \
+        "$a" "$s" "$LABEL_PREFIX" "$(lower "$a")" "$(asg_suffix "$g")" "$(display_name "$a" "$s" "$g")" "${MODE[$a]}" "$(fmt_cents $cap)"
       total=$(( total + cap ))
     done
     log "summed exposure caps of all ${#plan[@]} run(s): USD $(fmt_cents $total); limit USD $(fmt_cents $limit)"
@@ -484,7 +525,7 @@ holdout_batch() {
   fi
   if [[ $pre == 1 ]]; then
     check_repo
-    for pair in "${plan[@]}"; do read -r a s <<<"$pair"; run "$a" "$s" --preflight; done
+    for pair in "${plan[@]}"; do read -r a s g <<<"$pair"; run "$a" "$s" "$g" --preflight; done
     return 0
   fi
 
@@ -501,8 +542,8 @@ holdout_batch() {
   local -a queue=() attached=()
   local -A is_attach=()
   for pair in "${plan[@]}"; do
-    read -r a s <<<"$pair"
-    dn=$(display_name "$a" "$s")
+    read -r a s g <<<"$pair"
+    dn=$(display_name "$a" "$s" "$g")
     existing=$(lookup "$dn") || { log "STOP: cannot list jobs for $dn (idempotency check impossible)"; exit 1; }
     if grep -q $'\tJOB_STATE_SUCCEEDED$' <<<"$existing"; then status=skip
     elif grep -qE $'\tJOB_STATE_(QUEUED|PENDING|RUNNING|CANCELLING|PAUSED|UPDATING)$' <<<"$existing"; then status=attach
@@ -528,22 +569,22 @@ holdout_batch() {
   trap 'for pid in "${!inflight[@]}"; do kill_tree "$pid"; done; exit 130' INT TERM
   while (( (stop == 0 && i < ${#queue[@]}) || ${#inflight[@]} > 0 )); do
     while (( stop == 0 && i < ${#queue[@]} && ${#inflight[@]} < par )); do
-      read -r a s <<<"${queue[i]}"; i=$((i + 1))
-      rcf="$RUNDIR/.holdout-rc-${a}-seed${s}"; rm -f "$rcf"
-      ( ATTACH_ONLY=${is_attach["$a $s"]:-0}; rc=0; do_pair "$a" "$s" || rc=$?; echo "$rc" >"$rcf.tmp"; mv "$rcf.tmp" "$rcf" ) &
-      inflight[$!]="$a $s"
-      log "started $a seed$s (in flight ${#inflight[@]}/$par)"
+      read -r a s g <<<"${queue[i]}"; i=$((i + 1))
+      rcf="$RUNDIR/.holdout-rc-${a}-seed${s}$(asg_suffix "$g")"; rm -f "$rcf"
+      ( ATTACH_ONLY=${is_attach["$a $s $g"]:-0}; rc=0; do_pair "$a" "$s" "$g" || rc=$?; echo "$rc" >"$rcf.tmp"; mv "$rcf.tmp" "$rcf" ) &
+      inflight[$!]="$a $s $g"
+      log "started $(ptext "$a" "$s" "$g") (in flight ${#inflight[@]}/$par)"
     done
     for pid in "${!inflight[@]}"; do
-      read -r a s <<<"${inflight[$pid]}"
-      rcf="$RUNDIR/.holdout-rc-${a}-seed${s}"
+      read -r a s g <<<"${inflight[$pid]}"
+      rcf="$RUNDIR/.holdout-rc-${a}-seed${s}$(asg_suffix "$g")"
       if [[ ! -f "$rcf" ]]; then
         # no result yet: still running, or dead without one (a finished child stays a zombie until waited for)
         st=$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' || true)
         [[ -z "$st" || "$st" == Z* ]] || continue
         wait "$pid" 2>/dev/null || true
         if [[ ! -f "$rcf" ]]; then
-          log "$a seed$s: its worker (pid $pid) ended without a result; its job, if any, is still on Vertex: look it up by displayName $(display_name "$a" "$s")"
+          log "$(ptext "$a" "$s" "$g"): its worker (pid $pid) ended without a result; its job, if any, is still on Vertex: look it up by displayName $(display_name "$a" "$s" "$g")"
           echo 1 >"$rcf"
         fi
       fi
@@ -551,15 +592,17 @@ holdout_batch() {
       rc=$(<"$rcf"); rm -f "$rcf"
       unset "inflight[$pid]"
       case "$rc" in
-        0) ok+=("$a/seed$s") ;;
-        3) capacity_miss+=("$a/seed$s"); log "$a seed$s: no capacity; continuing with the remaining runs" ;;
-        *) failed+=("$a/seed$s"); stop=1; log "STOP: $a seed$s failed (rc $rc); no further run is started, jobs in flight are waited for" ;;
+        0) ok+=("$(pname "$a" "$s" "$g")") ;;
+        3) capacity_miss+=("$(pname "$a" "$s" "$g")"); log "$(ptext "$a" "$s" "$g"): no capacity; continuing with the remaining runs" ;;
+        *) failed+=("$(pname "$a" "$s" "$g")"); stop=1; log "STOP: $(ptext "$a" "$s" "$g") failed (rc $rc); no further run is started, jobs in flight are waited for" ;;
       esac
     done
     (( ${#inflight[@]} > 0 )) && sleep "$TICK"
   done
   trap - INT TERM
-  while (( i < ${#queue[@]} )); do unstarted+=("${queue[i]// //seed}"); i=$((i + 1)); done
+  while (( i < ${#queue[@]} )); do
+    read -r a s g <<<"${queue[i]}"; unstarted+=("$(pname "$a" "$s" "$g")"); i=$((i + 1))
+  done
   log "holdout batch: ${#ok[@]} succeeded, $skipped skipped (already SUCCEEDED), ${#capacity_miss[@]} without capacity [${capacity_miss[*]:-}], ${#failed[@]} failed [${failed[*]:-}], ${#unstarted[@]} not started [${unstarted[*]:-}]"
   (( ${#failed[@]} == 0 )) || exit 1
   (( ${#capacity_miss[@]} == 0 )) || { log "re-run the same command to retry the runs without capacity (V6M_RESUBMIT_CANCELLED=1 after a queue cancel)"; exit 3; }
@@ -570,22 +613,24 @@ case "${1:-}" in
   preflight)
     [[ $# -eq 1 || $# -eq 3 ]] || { usage >&2; exit 2; }
     load_config image
+    require_gnu_tools
     [[ $# -eq 3 ]] && check_pair "$2" "$3"
     check_repo
-    if [[ $# -eq 3 ]]; then run "$2" "$3" --preflight
-    else for a in "${ARMS[@]}"; do for s in 0 1 2; do run "$a" "$s" --preflight; done; done; fi ;;
+    if [[ $# -eq 3 ]]; then run "$2" "$3" v1 --preflight
+    else for a in "${ARMS[@]}"; do for s in 0 1 2; do run "$a" "$s" v1 --preflight; done; done; fi ;;
   submit)
     [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-    load_config run; check_pair "$2" "$3"; check_repo
+    load_config run; check_pair "$2" "$3"; require_gnu_tools; check_repo
     do_pair "$2" "$3" || exit 1 ;;
   state)
     [[ $# -eq 3 ]] || { usage >&2; exit 2; }
-    load_config; check_pair "$2" "$3"
+    load_config; check_pair "$2" "$3"; require_gnu_tools
     lookup "$(display_name "$2" "$3")"; echo ;;
   submit-all)
     shift
     load_config run
     if [[ "${1:-}" == --from ]]; then check_pair "${2:-}" "${3:-}"; fi
+    require_gnu_tools
     check_repo
     submit_all "$@" ;;
   holdout)
@@ -594,6 +639,7 @@ case "${1:-}" in
     if [[ " $* " == *" --dry-run "* ]]; then load_config
     elif [[ " $* " == *" --preflight "* ]]; then load_config image
     else load_config run; fi
+    [[ " $* " == *" --dry-run "* ]] || require_gnu_tools  # a dry run makes no cloud call
     holdout_batch "$@" ;;
   *) usage >&2; exit 2 ;;
 esac

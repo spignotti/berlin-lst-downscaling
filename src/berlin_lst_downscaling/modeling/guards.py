@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from dataclasses import dataclass
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -39,8 +40,12 @@ from berlin_lst_downscaling.modeling.contracts import (
 from berlin_lst_downscaling.modeling.efficiency_protocol import EFFICIENCY_SESSION_ID
 from berlin_lst_downscaling.modeling.lr_schedule import lr_schedule_from_config
 from berlin_lst_downscaling.modeling.spatial_holdout import (
+    CV_PARTITION,
     SPATIAL_HOLDOUT_ASSIGNMENT,
     SPATIAL_HOLDOUT_CONFIG_ARMS,
+    SPATIAL_HOLDOUT_CV_ARMS,
+    SPATIAL_HOLDOUT_CV_ASSIGNMENTS,
+    SPATIAL_HOLDOUT_CV_SEED,
     load_assignment,
     resolve_assignment_path,
     spatial_holdout_from_config,
@@ -1143,6 +1148,9 @@ def _check_patch_cache(cfg: DictConfig) -> None:
 def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
     """Admit the spatial holdout option on its nine arm configs only, and pin them.
 
+    The assignment is ``v1``; the cross-validation folds ``cv5-fold0`` ... ``cv5-fold4``
+    are admitted on the L1 and L4 configs at seed 0 only.
+
     A holdout config repeats one matrix arm on the v6 lock (checked by
     ``assert_ablation_lock``); on top of that the option must be on, the
     committed assignment must load, the test split stays unscored and the patch
@@ -1161,10 +1169,26 @@ def assert_spatial_holdout(cfg: DictConfig, config_name: str | None) -> None:
     if assignment is None:
         problems.append("spatial_holdout.enabled must be true")
     else:
-        if assignment != SPATIAL_HOLDOUT_ASSIGNMENT:
+        fold_run = assignment in SPATIAL_HOLDOUT_CV_ASSIGNMENTS and expected_arm in (
+            SPATIAL_HOLDOUT_CV_ARMS
+        )
+        if assignment != SPATIAL_HOLDOUT_ASSIGNMENT and not fold_run:
             problems.append(
                 f"spatial_holdout.assignment={assignment!r} (only {SPATIAL_HOLDOUT_ASSIGNMENT!r} "
-                "is admitted)"
+                f"is admitted; the cross-validation folds {list(SPATIAL_HOLDOUT_CV_ASSIGNMENTS)} "
+                f"only on the arms {list(SPATIAL_HOLDOUT_CV_ARMS)})"
+            )
+        # The launcher puts a fold in the run label and so in the output root; a fold named
+        # there must be the configured one (a wrong override fails before training).
+        labelled = set(re.findall(rf"{CV_PARTITION}-fold\d+", str(cfg.get("output_root", ""))))
+        if labelled and labelled != {assignment}:
+            problems.append(
+                f"output_root names {sorted(labelled)} but the assignment is {assignment!r}"
+            )
+        if fold_run and cfg.get("seed") != SPATIAL_HOLDOUT_CV_SEED:
+            problems.append(
+                f"a cross-validation fold runs seed {SPATIAL_HOLDOUT_CV_SEED} only, "
+                f"got seed={cfg.get('seed')!r}"
             )
         try:
             load_assignment(resolve_assignment_path(assignment))

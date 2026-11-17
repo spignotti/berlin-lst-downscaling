@@ -27,7 +27,9 @@
 #   +data.patch_cache.source=prebuilt) and VERTEX_PATCH_CACHE_FALLBACK=1 (only with
 #   prebuilt; +data.patch_cache.allow_job_local_fallback=true),
 #   VERTEX_VALIDATION_EXPORT_URI (spatial holdout modes; gs:// destination for the
-#   run's eval_validation_patches.parquet, uploaded create-only before the evidence)
+#   run's eval_validation_patches.parquet, uploaded create-only before the evidence),
+#   VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT (spatial holdout cross-validation fold, e.g.
+#   cv5-fold0; appends spatial_holdout.assignment=...; unset means the config's v1)
 #
 # VERTEX_PROFILE=val-rescore (v6 validation-only rescore of the 27 frozen
 # checkpoints): runs scripts/operators/rescore_v6_validation.py, which uploads its
@@ -87,7 +89,7 @@ if [[ "$PROFILE" == "val-rescore" ]]; then
   for forbidden in VERTEX_SEED VERTEX_MAX_EPOCHS VERTEX_LR_SCHEDULE \
     VERTEX_EARLY_STOPPING_PATIENCE VERTEX_EARLY_STOPPING_MIN_DELTA VERTEX_SKIP_TEST \
     VERTEX_PATCH_CACHE_SOURCE VERTEX_PATCH_CACHE_FALLBACK VERTEX_EPOCH_METRICS_URI \
-    VERTEX_VALIDATION_EXPORT_URI; do
+    VERTEX_VALIDATION_EXPORT_URI VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT; do
     if [[ -n "${!forbidden:-}" ]]; then
       echo "ERROR: $forbidden is not accepted by the val-rescore profile" >&2
       exit 2
@@ -164,6 +166,9 @@ else
   fi
   if [[ "${VERTEX_SKIP_TEST:-}" == "1" ]]; then
     run_command+=("evaluate_test=false")
+  fi
+  if [[ -n "${VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT:-}" ]]; then
+    run_command+=("spatial_holdout.assignment=$VERTEX_SPATIAL_HOLDOUT_ASSIGNMENT")
   fi
   case "${VERTEX_PATCH_CACHE_SOURCE:-}" in
     ""|job_local) ;;
