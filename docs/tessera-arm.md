@@ -92,6 +92,58 @@ Int8 + scale ≈ 2.3 GB per year on the Berlin bbox. Canonical product
 Years 2017–2025 are published and listed in `_FROZEN_TESSERA_ROOTS`.
 Republish paths fail closed. A new release needs a new prefix.
 
+## Spatial holdout (pm #524, pm #553)
+
+The arm also runs under the spatial holdout `v1` (config `tessera_arm_spatial_holdout`, mode
+`tessera-spatial-holdout`, `docs/spatial-holdout.md`, "TESSERA arm"): held-out anchors leave the
+train split, the scaler is refit on the remaining train patches, the checkpoint is selected on
+validation 2024 on seen anchors, test 2025 is never scored. A job-local TESSERA cache was never
+measured on the T4 worker (window reads from GCS were far too slow), so the run reads the published
+prebuilt cache (6,245 patches, about 35 GB) read-only under its unchanged key and re-scales its
+features in the job. This is equivalent to a job-local holdout build with the refit scaler because:
+
+1. The cache holds the 22 features scaled with the published scaler, non-finite pixels set to 0.0
+   afterwards (`RealPatchReader._read_features`). Per kept channel the scaling is
+   `(t - mean) / std`, `t` = the value, or `log1p` of it for precipitation. Hence
+   `t = stored * std + mean` and the refit value is `(t - mean_refit) / std_refit`, the order of
+   operations of `ScalerSpec.apply`; `src/berlin_lst_downscaling/modeling/published_cache_remap.py`.
+2. A stored exact 0.0 is kept at 0.0: it is a filled pixel (a job-local build zero-fills it too).
+   That holds only if no valid pixel scales to exactly 0.0. The reader evaluates the quotient in
+   float64 on float32 input and stores float32. For `zscore` a zero needs an input value equal to the
+   published mean, for `log1p_zscore` an input whose float64 `log1p` equals it. At load, per kept
+   channel (all 14 are scaled, none `identity`), the nearest float32 values (3 steps each side) must
+   differ from the mean by more than `1e-30 * std`, far above float32 underflow (1.2e-38), otherwise
+   the run aborts. A float32-representable mean (for example 0.5) fails this check.
+3. The recorded `filled_feature_pixels` counts non-finite pixels over all 22 channels, shadows
+   included, so equality with the stored zeros cannot be checked. The load checks the sound
+   inequality instead: per patch (kept train rows and all validation rows) the stored zeros in the
+   14 kept channels must not exceed the recorded count; otherwise the run aborts before training,
+   naming the patch and both counts.
+4. The refit uses the pixels of eligible cells with a stored value other than 0.0 (eligible cells
+   are finite), `scaler_moments` and `merge_scaler_moments` of the nine v6 holdout arms, and
+   `scaler_from_moments` (8 decimals). Only the kept channels are refit and re-scaled; morphology
+   and shadow channels, which the arm replaces, keep their published entries and are not used.
+5. The embeddings path (`dequantize_tessera`, int8 plus per-pixel scale) is untouched.
+
+The mean check (step 2) runs in the job right after the scaler is read, before admission and the
+download; the launcher `--preflight` makes no read of `scaler.json` and so cannot run it.
+
+Offline tests (`tests/test_tessera_spatial_holdout.py`) show on a synthetic cache with NaN features:
+filled pixels are exactly 0.0 in both paths, other pixels differ by less than 1e-5 (float32
+rounding of the stored value), the refit scaler equals the job-local holdout scaler within 1e-6, a
+wrong filled count and a representable mean abort the load, and a training step opens no cloud
+storage. The run summary records the cache key, the patches checked and refit, the recorded filled
+pixels and the stored zeros (`spatial_holdout.feature_remap`).
+
+Limits: the annual embeddings include imagery after the scene date and from the validation year,
+also on held-out anchors. The arm replaces morphology and shadow channels, so it is a sibling of
+L4, not a ladder stage. Because it drops patches with invalid embedding pixels, every comparison
+with L4 uses the intersection of the patch sets and reports what each side lost. The only way to run
+TESSERA seeds is `scripts/runners/vertex/launch_v6_matrix.sh holdout --arms TESSERA,TESSERA-TEMPORAL`
+(the launchd watcher `retry_tessera_seeds.sh` is removed). A capacity miss ends with exit code 3;
+re-run the same command with `V6M_RESUBMIT_CANCELLED=1`. A TESSERA batch must use the same
+`V6M_RUN_DIR` as any v6 batch running at the same time (one lock, at most 4 jobs in flight overall).
+
 ## How to run the operator later
 
 The 2017–2025 products are already in the bucket. Do not republish them.

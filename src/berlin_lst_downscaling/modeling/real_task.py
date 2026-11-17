@@ -25,7 +25,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -103,6 +103,11 @@ from berlin_lst_downscaling.modeling.prebuilt_cache import (
     prebuilt_key,
     prebuilt_key_components,
     prebuilt_prefix,
+)
+from berlin_lst_downscaling.modeling.published_cache_remap import (
+    FeatureRemap,
+    assert_zero_means_filled,
+    fit_feature_remap,
 )
 from berlin_lst_downscaling.modeling.ssim_range import resolve_task_ssim_data_range
 from berlin_lst_downscaling.modeling.timing import timed_phase
@@ -220,10 +225,17 @@ class RealPatchDataset(Dataset[RealSample]):
 class CachedRealPatchDataset(Dataset[RealSample]):
     """Lazy read-only view into a job-local cache, reopened per worker process."""
 
-    def __init__(self, root: Path, provenance: dict[str, object], indices: Sequence[int]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        provenance: dict[str, object],
+        indices: Sequence[int],
+        remap: FeatureRemap | None = None,
+    ) -> None:
         self.root = root
         self.provenance = provenance
         self.indices = list(indices)
+        self.remap = remap
         self._cache: PatchCache | None = None
 
     def __len__(self) -> int:
@@ -234,7 +246,10 @@ class CachedRealPatchDataset(Dataset[RealSample]):
             raise IndexError(idx)
         if self._cache is None:
             self._cache = PatchCache(self.root, self.provenance)
-        return self._cache[self.indices[idx]]
+        sample = self._cache[self.indices[idx]]
+        if self.remap is None:
+            return sample
+        return replace(sample, features=self.remap(sample.features))
 
 
 class RealPatchDataModule(LightningDataModule):
@@ -263,7 +278,9 @@ class RealPatchDataModule(LightningDataModule):
     admission, the scaler is refit on the admitted train patches only, and the
     validation loader yields the patches on the other anchors;
     ``holdout_val_dataloader`` yields the validation patches on the held-out
-    anchors. With ``None`` nothing changes.
+    anchors. With ``None`` nothing changes. For the TESSERA arm the published prebuilt
+    cache is read as it is: every train ref is admitted, then held-out rows leave the train
+    view and the kept features are re-scaled (``published_cache_remap``).
     """
 
     def __init__(
@@ -300,11 +317,18 @@ class RealPatchDataModule(LightningDataModule):
                 raise ValueError("holdout_anchors must be None or a non-empty set")
             if tuple(splits) != ("train", "validation"):
                 raise ValueError("spatial holdout requires splits ('train', 'validation')")
-            if cache_source != "job_local":
-                raise ValueError("spatial holdout supports only the job-local patch cache")
             if tessera_embeddings_root:
-                raise ValueError("spatial holdout is not defined for the TESSERA arm")
+                # TESSERA: read the published cache (read-only), then drop held-out rows,
+                # refit the scaler and re-scale the cached features (published_cache_remap).
+                if cache_source != "prebuilt" or allow_job_local_fallback:
+                    raise ValueError(
+                        "spatial holdout for the TESSERA arm needs the prebuilt patch cache "
+                        "without a job-local fallback"
+                    )
+            elif cache_source != "job_local":
+                raise ValueError("spatial holdout supports only the job-local patch cache")
         self.holdout_anchors = holdout_anchors
+        self._remap_published = holdout_anchors is not None and bool(tessera_embeddings_root)
         self.reuse_ready_cache = reuse_ready_cache
         if cache_source not in ("job_local", "prebuilt"):
             raise ValueError(f"cache_source {cache_source!r} is not one of 'job_local', 'prebuilt'")
@@ -373,6 +397,8 @@ class RealPatchDataModule(LightningDataModule):
         self.prebuilt_build_commit: str | None = None
         self.prebuilt_running_commit: str | None = None
         self.holdout_scaler: ScalerSpec | None = None
+        self._feature_remap_evidence: dict[str, Any] | None = None
+        self._published_provenance: dict[str, object] | None = None
         self.holdout_scaler_fit_seconds = 0.0
         self._holdout_train_removed = 0
         self.reader: RealPatchReader | None = None
@@ -463,11 +489,20 @@ class RealPatchDataModule(LightningDataModule):
     def _prepare(self) -> None:
         with timed_phase("data_ref_loading", logger=logger):
             self.reader = RealPatchReader(self.source)
+            if self._remap_published:
+                # As early as the scaler is known: before admission and before the download.
+                from berlin_lst_downscaling.modeling.tessera_adapter import (
+                    tessera_kept_channel_indices,
+                )
+
+                assert_zero_means_filled(
+                    self.reader.scaler, self.channel_indices, tessera_kept_channel_indices()
+                )
             refs = load_patch_refs(self.source, splits=self.splits, scene_ids=self.scene_ids)
         # Bound the *refs* per split, before any exclusion, so the requested
         # universe matches the baseline's selection exactly.
         requested = self._select_refs(refs)
-        if self.holdout_anchors is not None:
+        if self.holdout_anchors is not None and not self._remap_published:
             kept = [ref for ref in requested["train"] if not self._held_out(ref)]
             self._holdout_train_removed = len(requested["train"]) - len(kept)
             requested["train"] = kept
@@ -494,7 +529,8 @@ class RealPatchDataModule(LightningDataModule):
                     f"spatial holdout needs validation patches on both sides, got "
                     f"{len(seen)} seen and {len(unseen)} held out"
                 )
-            self._fit_holdout_scaler()
+            if not self._remap_published:
+                self._fit_holdout_scaler()
         if self.cache_root is not None:
             # The cache build reads every admitted patch once; an eager
             # pre-collation would read the features a second time.
@@ -635,6 +671,8 @@ class RealPatchDataModule(LightningDataModule):
 
     def cache_provenance(self) -> dict[str, object]:
         """The provenance the cache of this (set up) module is keyed on."""
+        if self._published_provenance is not None:
+            return self._published_provenance
         return self._cache_provenance(self._cache_patch_order())[0]
 
     def prebuilt_components(self) -> dict[str, object]:
@@ -647,7 +685,57 @@ class RealPatchDataModule(LightningDataModule):
             splits=("train", "validation"),
         )
 
+    def _install_remapped_datasets(self, cache_root: Path, provenance: dict[str, object]) -> None:
+        """Install the TESSERA holdout datasets over the unchanged published cache.
+
+        The cache holds every admitted train row scaled with the published scaler. The
+        held-out train rows are left out of the train view, the scaler is refit on the
+        remaining train rows and every dataset re-scales the kept feature channels with it.
+        """
+        # tessera_adapter imports this module, so the import cannot sit at the top.
+        from berlin_lst_downscaling.modeling.tessera_adapter import tessera_kept_channel_indices
+
+        if self.reader is None:
+            raise RuntimeError("the holdout remap requires an initialized reader")
+        train_refs = self._admitted["train"]
+        n_train = len(train_refs)
+        kept = [i for i, ref in enumerate(train_refs) if not self._held_out(ref)]
+        if not kept:
+            raise RuntimeError("spatial holdout left no admitted train patch to fit the scaler")
+        seen, unseen = self._validation_partition()
+        validation_rows = [n_train + i for i in sorted(seen + unseen)]
+        started = time.perf_counter()
+        with timed_phase("holdout_scaler_fit", logger=logger, patch_count=len(kept)):
+            remap, refit, evidence = fit_feature_remap(
+                PatchCache(cache_root, provenance),
+                published=self.reader.scaler,
+                channel_indices=self.channel_indices,
+                columns=tessera_kept_channel_indices(),
+                train_rows=kept,
+                check_rows=[*kept, *validation_rows],
+                workers=self.cache_build_workers,
+            )
+        self.holdout_scaler_fit_seconds = time.perf_counter() - started
+        self.holdout_scaler = refit
+        self._feature_remap_evidence = {**evidence, "patch_cache_key": self.patch_cache_key}
+        self._published_provenance = provenance
+        # counted as for the v6 holdout: the requested held-out train refs, admitted or not
+        requested = self._requested["train"]
+        self._requested["train"] = [ref for ref in requested if not self._held_out(ref)]
+        self._holdout_train_removed = len(requested) - len(self._requested["train"])
+        self._admitted["train"] = [train_refs[i] for i in kept]
+        self._datasets["train"] = CachedRealPatchDataset(cache_root, provenance, kept, remap)
+        self._datasets["validation"] = CachedRealPatchDataset(
+            cache_root, provenance, [n_train + i for i in seen], remap
+        )
+        self._datasets[_HOLDOUT_VALIDATION] = CachedRealPatchDataset(
+            cache_root, provenance, [n_train + i for i in unseen], remap
+        )
+
     def _install_cached_datasets(self, cache_root: Path, provenance: dict[str, object]) -> None:
+        if self._remap_published:
+            self._install_remapped_datasets(cache_root, provenance)
+            return
         offset = 0
         for split in ("train", "validation"):
             refs = self._admitted[split]
@@ -903,6 +991,8 @@ class RealPatchDataModule(LightningDataModule):
                 "scaler_fit_seconds": self.holdout_scaler_fit_seconds,
                 "scaler": None if self.holdout_scaler is None else asdict(self.holdout_scaler),
             }
+            if self._feature_remap_evidence is not None:
+                scope["spatial_holdout"]["feature_remap"] = self._feature_remap_evidence
         return scope
 
     def _base_stats(self) -> dict[str, object]:

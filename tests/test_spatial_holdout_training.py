@@ -227,7 +227,7 @@ def test_holdout_fails_closed_on_unsupported_setups(
         )
     with pytest.raises(ValueError, match="splits"):
         _module(world, holdout=held, splits=("train", "validation", "test"))
-    with pytest.raises(ValueError, match="TESSERA"):
+    with pytest.raises(ValueError, match="TESSERA arm needs the prebuilt"):
         _module(world, holdout=held, tessera_embeddings_root="gs://bucket/embeddings")
     row0, col0 = world.refs[0].row, world.refs[0].col
     nothing_unseen = _module(world, holdout=frozenset({(row0 + CELLS, col0)}))

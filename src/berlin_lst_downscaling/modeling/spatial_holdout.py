@@ -63,7 +63,7 @@ ASSIGNMENT_DIR: Path = (
 )
 
 # The only configs that may enable the option, and the matrix arm each one repeats:
-# one per arm of configs/ablation/v6_matrix.yaml (the TESSERA arm is not one of them).
+# one per arm of configs/ablation/v6_matrix.yaml (the TESSERA arm is not one of them; see below).
 SPATIAL_HOLDOUT_CONFIG_ARMS: dict[str, str] = {
     "v6_l1_spatial_holdout": "L1",
     "v6_l2_spatial_holdout": "L2",
@@ -75,6 +75,8 @@ SPATIAL_HOLDOUT_CONFIG_ARMS: dict[str, str] = {
     "v6_no_ndvi_ndwi_spatial_holdout": "NO-NDVI-NDWI",
     "v6_no_red_nir_index_spatial_holdout": "NO-RED-NIR-IDX",
 }
+# The TESSERA arm is a sibling of L4, not a matrix arm: its own config, admitted with v1 only.
+TESSERA_SPATIAL_HOLDOUT_CONFIG = "tessera_arm_spatial_holdout"
 # The only assignment a run may name (configs/modeling/spatial_holdout/v1.json).
 SPATIAL_HOLDOUT_ASSIGNMENT = "v1"
 # Spatial cross-validation: the fold assignments, admitted on two arms only and seed 0.

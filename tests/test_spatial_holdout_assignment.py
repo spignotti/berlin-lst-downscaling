@@ -184,7 +184,11 @@ def test_one_holdout_config_per_matrix_arm() -> None:
         locked = V6_ABLATION_ARMS[arm].config_name
         assert name == locked.removesuffix("_locked") + "_spatial_holdout"
         assert (_CONFIG_DIR / f"{name}.yaml").is_file()
-    assert {p.stem for p in _CONFIG_DIR.glob("*_spatial_holdout.yaml")} == set(_HOLDOUT_CONFIGS)
+    # the TESSERA arm is a sibling of L4, not a matrix arm: its config is tested in
+    # test_spatial_holdout_tessera.py
+    found = {p.stem for p in _CONFIG_DIR.glob("*_spatial_holdout.yaml")}
+    assert found - {sh.TESSERA_SPATIAL_HOLDOUT_CONFIG} == set(_HOLDOUT_CONFIGS)
+    assert sh.TESSERA_SPATIAL_HOLDOUT_CONFIG in found
 
 
 @pytest.mark.parametrize("name", _HOLDOUT_CONFIGS)
@@ -239,7 +243,7 @@ def test_l5_keeps_the_published_ssim_range_under_the_holdout(
 
 def test_option_is_absent_from_every_other_config() -> None:
     for path in sorted(_CONFIG_DIR.glob("*.yaml")):
-        if path.stem in sh.SPATIAL_HOLDOUT_CONFIG_ARMS:
+        if path.stem in (*sh.SPATIAL_HOLDOUT_CONFIG_ARMS, sh.TESSERA_SPATIAL_HOLDOUT_CONFIG):
             continue
         assert "spatial_holdout" not in path.read_text(), path.name
     locked = _compose("v6_l4_locked", _RUN_OVERRIDES)

@@ -7,39 +7,6 @@ there is no second Vertex client here. Background on the Vertex path:
 
 Coding agents never run these scripts. A paid submit needs the project owner's explicit OK.
 
-## `retry_tessera_seeds.sh`
-
-Mac watcher for the three validation-only TESSERA seeds. Each tick walks seeds 0, 1, 2
-in order: 40 epochs, cosine, `--skip-test`, `--patch-cache prebuilt`, T4 in Frankfurt,
-at most $6.25 projected exposure per seed. A seed is submitted only after the previous one
-succeeded. Only code-14 capacity stockouts ("Resources are insufficient") are retried on
-a later tick; every other failure, an unknown state and a failed lookup write `STOP` and
-submit nothing. An active attempt prevents a duplicate.
-
-One sequence is one image, its source commit and a fresh label. None has a default; a
-missing or malformed value, or the retired window-read image `sha256:e5aa497c…`, exits 2
-before any `gcloud` or launcher call:
-
-| Variable | Meaning |
-| --- | --- |
-| `TESSERA_IMAGE` | image pinned by digest (`…@sha256:<64 hex>`) |
-| `TESSERA_SOURCE_SHA` | the 40-hex commit the image was built from |
-| `TESSERA_LABEL` | fresh run-label prefix; never reuse one while an old job is active |
-
-Optional: `TESSERA_TIMEOUT_SECONDS` (default and launcher maximum 20400; the smoke
-measured about 18030 s for 40 epochs), `TESSERA_MAX_WAIT_SECONDS` (default 600) and
-`TESSERA_MAX_EXPOSURE_USD` (default and launcher maximum 6.25). The launcher cancels a job that starts later
-than the queue allowance after creation, and the watcher then stops; T4 provisioning in
-Frankfurt took 18.6 minutes on 2026-11-16, while Vertex reports a stockout by itself
-after about 30 minutes. The launcher refuses the pair when `rate x (timeout + wait)`
-exceeds the exposure ceiling. `TESSERA_REPO`, `TESSERA_STATE_DIR` and `TESSERA_LOG` set the deployment paths. The default
-authentication is the operator wrapper; `TESSERA_AUTH=user-adc` selects the owner's own
-gcloud login and user ADC instead (the alternative submitter in
-`docs/vertex-gpu-training.md`).
-
-A `STOP` file blocks every tick. Investigate it; do not remove it automatically. The
-script installs no scheduler.
-
 ## `launch_v6_matrix.sh`
 
 9 arms (`L1`…`L5`, `LOO-M`, `LOO-S`, `NO-NDVI-NDWI`, `NO-RED-NIR-IDX`) x seeds 0/1/2,
@@ -57,6 +24,13 @@ scripts/runners/vertex/launch_v6_matrix.sh holdout --max-total-usd USD [--arms .
 
 Run `preflight` first. Only `submit`, `submit-all` and `holdout` (without `--dry-run`
 or `--preflight`) can create a job.
+
+`holdout` also runs the TESSERA seeds, and is the only way to run them: `--arms TESSERA,TESSERA-TEMPORAL
+--seeds 0,1,2 --max-total-usd 37.50` (arm `TESSERA` = mode `tessera-spatial-holdout`, `TESSERA-TEMPORAL` =
+mode `tessera` with `--export-validation`; `--skip-test`, `--patch-cache prebuilt`, 20400 s, USD 6.25 per
+job; `--arms all` stays the nine matrix arms). A capacity miss ends with exit 3; re-run the same command with
+`V6M_RESUBMIT_CANCELLED=1`. A TESSERA batch must use the same `V6M_RUN_DIR` as any v6 batch running at the same
+time: one lock, at most 4 jobs in flight overall.
 
 `holdout` is the spatial holdout batch of `docs/spatial-holdout.md`: the holdout mode of each
 arm, `--skip-test`, job-local cache, 10800 s timeout and 600 s queue allowance, at most

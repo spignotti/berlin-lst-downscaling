@@ -1,0 +1,20 @@
+# @package _global_
+# Spatial holdout add-on test, TESSERA arm (docs/spatial-holdout.md, pm #524, pm #553).
+# Everything is inherited from tessera_arm; only the option below and the output
+# root differ. The option removes the held-out anchors of the committed assignment
+# from the train split, refits the scaler on the remaining train patches and selects
+# the checkpoint on the validation patches of the other anchors. The published
+# prebuilt cache is read as is and its features are re-scaled in the job
+# (docs/tessera-arm.md); the launcher passes --patch-cache prebuilt.
+# Parameters: seed and trainer.max_epochs, as for tessera_arm. A run must pass
+# evaluate_test=false (launcher: --skip-test); the guard refuses a run that would
+# score test 2025.
+defaults:
+  - tessera_arm
+  - _self_
+
+spatial_holdout:
+  enabled: true
+  assignment: "v1"            # configs/modeling/spatial_holdout/v1.json
+
+output_root: "data/runs/modeling-spatial-holdout-tessera/seed-${seed}"

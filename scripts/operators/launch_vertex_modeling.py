@@ -88,6 +88,7 @@ from berlin_lst_downscaling.modeling.spatial_holdout import (
     SPATIAL_HOLDOUT_CV_ARMS,
     SPATIAL_HOLDOUT_CV_ASSIGNMENTS,
     SPATIAL_HOLDOUT_CV_SEED,
+    TESSERA_SPATIAL_HOLDOUT_CONFIG,
 )
 from berlin_lst_downscaling.modeling.v6_val_rescore import (
     MATRIX_EVIDENCE_PREFIX,
@@ -176,6 +177,10 @@ DEFAULT_MAX_EXPOSURE_USD = 3.0
 # about 18030 s for 40 epochs. The timeout leaves 13 % margin; the owner raised
 # the seed cap on 2026-11-16 to $6.25 projected exposure per job at the $1/h cap.
 TESSERA_MODE = "tessera"
+# The same arm under the spatial holdout (docs/tessera-arm.md): the published prebuilt cache is
+# read as is, so the job has the TESSERA seed bounds, not the nine holdout arms' bounds.
+TESSERA_SPATIAL_HOLDOUT_MODE = "tessera-spatial-holdout"
+_TESSERA_MODES = (TESSERA_MODE, TESSERA_SPATIAL_HOLDOUT_MODE)
 TESSERA_TIMEOUT_SECONDS = 20400
 TESSERA_MAX_EXPOSURE_USD = 6.25
 TESSERA_MAX_HOURLY_RATE_USD = 1.0
@@ -196,6 +201,7 @@ SPATIAL_HOLDOUT_MODES = (
 SPATIAL_HOLDOUT_TIMEOUT_SECONDS = 10800
 SPATIAL_HOLDOUT_MAX_EXPOSURE_USD = 3.25
 SPATIAL_HOLDOUT_MAX_HOURLY_RATE_USD = 1.0
+HOLDOUT_RUN_MODES = (*SPATIAL_HOLDOUT_MODES, TESSERA_SPATIAL_HOLDOUT_MODE)
 POLL_SECONDS = 20
 CANCEL_CONFIRMATION_SECONDS = 300
 
@@ -227,6 +233,7 @@ MODE_CONFIG_NAME = {
     "v6-no-ndvi-ndwi": "v6_no_ndvi_ndwi_locked",
     "v6-no-red-nir-index": "v6_no_red_nir_index_locked",
     TESSERA_MODE: "tessera_arm",
+    TESSERA_SPATIAL_HOLDOUT_MODE: TESSERA_SPATIAL_HOLDOUT_CONFIG,
     **{mode: mode.replace("-", "_") for mode in SPATIAL_HOLDOUT_MODES},
 }
 
@@ -273,7 +280,7 @@ _ABLATION_MODES = (
 _RATE_REQUIRED_MODES = (
     "probe",
     "probe-lr3",
-    TESSERA_MODE,
+    *_TESSERA_MODES,
     *SPATIAL_HOLDOUT_MODES,
     *_FULL_TEMPORAL_MODES,
 )
@@ -298,6 +305,7 @@ MODE_EVIDENCE_PROFILE = {
     "v6-no-ndvi-ndwi": "full",
     "v6-no-red-nir-index": "full",
     TESSERA_MODE: "full",
+    TESSERA_SPATIAL_HOLDOUT_MODE: "full",
     **dict.fromkeys(SPATIAL_HOLDOUT_MODES, "full"),
 }
 
@@ -327,7 +335,7 @@ def check_bounds(
         if efficiency_role is not None:
             compose_overrides.append(f"stage1_efficiency_role={efficiency_role}")
         cfg = compose(config_name=config_name, overrides=compose_overrides)
-    seeded = {MODE_CONFIG_NAME[m] for m in (*_V6_ABLATION_MODES, *SPATIAL_HOLDOUT_MODES)} | {
+    seeded = {MODE_CONFIG_NAME[m] for m in (*_V6_ABLATION_MODES, *HOLDOUT_RUN_MODES)} | {
         "tessera_arm"
     }
     if config_name in seeded:
@@ -1323,6 +1331,14 @@ def main() -> int:
         help="v6 modes only; do not score the 2025 test split (pilot/timing runs)",
     )
     parser.add_argument(
+        "--export-validation",
+        action="store_true",
+        help=(
+            "--mode tessera only: also upload the per-patch validation export "
+            "(the holdout modes always do); default off, the run is otherwise unchanged"
+        ),
+    )
+    parser.add_argument(
         "--assignment",
         choices=(SPATIAL_HOLDOUT_ASSIGNMENT, *SPATIAL_HOLDOUT_CV_ASSIGNMENTS),
         default=None,
@@ -1431,25 +1447,37 @@ def main() -> int:
 
     config_name = MODE_CONFIG_NAME[args.mode]
     is_seeded = args.mode in _V6_ABLATION_MODES
-    is_tessera = args.mode == TESSERA_MODE
-    is_holdout = args.mode in SPATIAL_HOLDOUT_MODES
+    is_tessera = args.mode in _TESSERA_MODES
+    is_holdout = args.mode in HOLDOUT_RUN_MODES
     is_seeded = is_seeded or is_tessera or is_holdout
     if is_tessera and not args.skip_test:
-        raise SystemExit("ERROR: --mode tessera requires --skip-test; test 2025 stays sealed")
+        raise SystemExit(f"ERROR: --mode {args.mode} requires --skip-test; test 2025 stays sealed")
     if is_holdout and not args.skip_test:
         raise SystemExit(f"ERROR: --mode {args.mode} requires --skip-test; test 2025 stays sealed")
+    if args.export_validation and args.mode != TESSERA_MODE:
+        raise SystemExit(
+            "ERROR: --export-validation is only accepted by --mode tessera; "
+            f"{args.mode!r} {'always exports' if is_holdout else 'has no per-patch export upload'}"
+        )
     assignment = args.assignment or SPATIAL_HOLDOUT_ASSIGNMENT
     if args.assignment is not None and not is_holdout:
         raise SystemExit(
             f"ERROR: --assignment is only accepted by the spatial holdout modes, not {args.mode!r}"
         )
     fold_run = assignment != SPATIAL_HOLDOUT_ASSIGNMENT
-    if fold_run and SPATIAL_HOLDOUT_CONFIG_ARMS[config_name] not in SPATIAL_HOLDOUT_CV_ARMS:
+    holdout_arm = SPATIAL_HOLDOUT_CONFIG_ARMS.get(config_name, "TESSERA")
+    if fold_run and holdout_arm not in SPATIAL_HOLDOUT_CV_ARMS:
         raise SystemExit(
             f"ERROR: --assignment {assignment} is admitted for the arms "
-            f"{list(SPATIAL_HOLDOUT_CV_ARMS)} only, not {SPATIAL_HOLDOUT_CONFIG_ARMS[config_name]}"
+            f"{list(SPATIAL_HOLDOUT_CV_ARMS)} only, not {holdout_arm}"
         )
-    if is_holdout and args.patch_cache != "job_local":
+    if args.mode == TESSERA_SPATIAL_HOLDOUT_MODE:
+        if args.patch_cache != "prebuilt" or args.allow_job_local_fallback:
+            raise SystemExit(
+                f"ERROR: --mode {args.mode} reads the published prebuilt cache and re-scales its "
+                "features; pass --patch-cache prebuilt without --allow-job-local-fallback"
+            )
+    elif is_holdout and args.patch_cache != "job_local":
         raise SystemExit(
             f"ERROR: --mode {args.mode} builds its patch cache in the job; a prebuilt "
             "cache holds the published scaler and every train anchor"
@@ -1533,7 +1561,7 @@ def main() -> int:
         timeout_seconds = VERIFICATION_TIMEOUT_SECONDS
     elif args.mode in _PROBE_MODES:
         timeout_seconds = PROBE_TIMEOUT_SECONDS
-    elif args.mode == TESSERA_MODE:
+    elif is_tessera:
         timeout_seconds = TESSERA_TIMEOUT_SECONDS
     elif is_holdout:
         timeout_seconds = SPATIAL_HOLDOUT_TIMEOUT_SECONDS
@@ -1575,7 +1603,7 @@ def main() -> int:
                     if args.mode in _FULL_TEMPORAL_MODES
                     else (
                         TESSERA_MAX_EXPOSURE_USD
-                        if args.mode == TESSERA_MODE
+                        if is_tessera
                         else (
                             SPATIAL_HOLDOUT_MAX_EXPOSURE_USD
                             if is_holdout
@@ -1615,7 +1643,7 @@ def main() -> int:
                 f"${FULL_MAX_HOURLY_RATE_USD:.2f}/hour cap"
             )
 
-    if args.mode == TESSERA_MODE:
+    if is_tessera:
         if timeout_seconds > TESSERA_TIMEOUT_SECONDS:
             raise SystemExit(
                 f"ERROR: tessera timeout cannot exceed {TESSERA_TIMEOUT_SECONDS} seconds"
@@ -1627,7 +1655,7 @@ def main() -> int:
         if hourly_rate > TESSERA_MAX_HOURLY_RATE_USD:
             raise SystemExit("ERROR: tessera rate exceeds the user-authorized $1.00/hour cap")
 
-    if is_holdout:
+    if args.mode in SPATIAL_HOLDOUT_MODES:
         if timeout_seconds > SPATIAL_HOLDOUT_TIMEOUT_SECONDS:
             raise SystemExit(
                 f"ERROR: spatial holdout timeout cannot exceed "
@@ -1752,7 +1780,7 @@ def main() -> int:
     run_prefix = evidence_uri.rsplit("/", 1)[0]
     _checkpoint_uploading = (
         args.mode in _FULL_TEMPORAL_MODES
-        or args.mode == TESSERA_MODE
+        or is_tessera
         or is_holdout
         or (args.mode == "efficiency" and args.efficiency_role in ("baseline", "final"))
     )
@@ -1766,7 +1794,13 @@ def main() -> int:
         )
     # A holdout run is read through its per-patch validation export (seen and
     # held-out anchors); it is uploaded create-only next to the evidence.
-    validation_export_uri = f"{run_prefix}/eval_validation_patches.parquet" if is_holdout else None
+    # A holdout run is read through its per-patch validation export; plain tessera uploads one
+    # only on request (the temporal seeds that G_TESSERA and TESSERA minus L4 compare with).
+    validation_export_uri = (
+        f"{run_prefix}/eval_validation_patches.parquet"
+        if is_holdout or args.export_validation
+        else None
+    )
     if validation_export_uri is not None and _evidence_exists(validation_export_uri):
         raise SystemExit(
             f"ERROR: validation export already exists at {validation_export_uri}; the run "
@@ -1890,14 +1924,15 @@ def main() -> int:
             )
         )
         print(f"  hydra overrides: {' '.join(hydra_overrides)}")
-    if validation_export_uri is not None:
+    if is_holdout:
         print(
             "  spatial holdout: held-out anchors leave the train split, scaler refit on the "
             "remaining train patches, checkpoint selected on seen validation anchors"
         )
+    if validation_export_uri is not None:
         print(f"  val export     : {validation_export_uri}")
-        if fold_run:
-            print(f"  assignment     : {assignment} (cross-validation fold)")
+    if is_holdout and fold_run:
+        print(f"  assignment     : {assignment} (cross-validation fold)")
     print(f"  run label      : {run_label}")
     print(f"  evidence       : {evidence_uri}")
 
