@@ -1,5 +1,7 @@
 """Validation sessions for the berlin-lst-downscaling project."""
 
+from pathlib import Path
+
 import nox
 
 nox.options.sessions = [
@@ -133,6 +135,27 @@ def typecheck(session: nox.Session) -> None:
 def tests(session: nox.Session) -> None:
     """Run the offline unit tests. No network and no published data."""
     session.run("uv", "run", "pytest", external=True)
+
+
+@nox.session(venv_backend="none")
+def figures(session: nox.Session) -> None:
+    """Build the thesis figures into ``figures/out/`` (not a default session).
+
+    Runs every ``scripts/figures/fig_*.py`` in name order. See
+    ``scripts/figures/README.md``.
+    """
+    scripts = sorted(Path("scripts/figures").glob("fig_*.py"))
+    if not scripts:
+        session.error("no scripts/figures/fig_*.py found")
+    for script in scripts:
+        session.run(
+            "uv",
+            "run",
+            "python",
+            str(script),
+            env={"MPLBACKEND": "Agg"},
+            external=True,
+        )
 
 
 @nox.session(venv_backend="none", name="secret-scan")

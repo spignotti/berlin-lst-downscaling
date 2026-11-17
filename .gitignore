@@ -54,3 +54,6 @@ wandb/
 
 # Claude Code local overrides
 .claude/settings.local.json
+
+# Figure output (built by scripts/figures, synced into the Typst repo)
+/figures/out/
