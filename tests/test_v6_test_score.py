@@ -466,3 +466,14 @@ def test_all_and_run_labels_are_mutually_exclusive(cli: ModuleType, tmp_path: Pa
             ["--all", "--run-labels", LABELS[0], "--output-root", str(tmp_path), "--device", "cpu"]
         )
     assert exc.value.code == 2
+
+
+def test_staged_checkpoint_dir_stops_before_any_work(harness: _Harness) -> None:
+    staged = harness.out / "checkpoints"
+    staged.mkdir(parents=True)
+    keep = staged / "keep.ckpt"
+    keep.write_bytes(b"x")
+    with pytest.raises(FileExistsError, match="create-only"):
+        harness.run()
+    assert harness.built == [] and harness.fetched == []
+    assert keep.read_bytes() == b"x"

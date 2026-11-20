@@ -33,8 +33,9 @@ clamped per-patch rows; its ``mae_100m`` is what the scene bootstrap pools.
 
 Outputs
 -------
-Local files only, create-only (an existing output file stops the job before any
-cache build or checkpoint download)::
+Local files only, create-only (an existing output file, or a staged checkpoint
+or cache directory, stops the job before any cache build or checkpoint
+download)::
 
     <output_root>/<run-label>/eval_test_patches.parquet
     <output_root>/test_export_manifest.json
@@ -105,7 +106,12 @@ def run_test_export(
     runs = select_runs(run_labels)
     export_paths = {run.run_label: _export_path(output_root, run) for run in runs}
     manifest_path = output_root / MANIFEST_NAME
-    for path in (manifest_path, *export_paths.values()):
+    staged = (
+        output_root / "checkpoints",
+        output_root / "cache-test",
+        output_root / "cache-validation",
+    )
+    for path in (manifest_path, *export_paths.values(), *staged):
         if path.exists():
             raise FileExistsError(f"create-only output already exists: {path}")
     cfgs = {

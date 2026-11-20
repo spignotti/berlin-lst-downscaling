@@ -593,7 +593,8 @@ prebuilt GCS cache, which still never holds the test split.
 ```bash
 uv run --locked python scripts/operators/export_v6_test_patches.py --list
 
-uv run --locked python scripts/operators/export_v6_test_patches.py \
+scripts/operators/with-gcp-operator.sh -- \
+  uv run --locked python scripts/operators/export_v6_test_patches.py \
   --all \
   --output-root data/runs/v6-test-patches \
   --device cpu
