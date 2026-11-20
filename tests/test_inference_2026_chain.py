@@ -414,8 +414,10 @@ def test_ard_launcher_chains_inference_2026_without_the_training_manifest() -> N
     assert "'" not in remote
     assert 'S2_CONFIG="sentinel2_mosaic_v10_inference_2026"' in text
     assert 'LANDSAT_CONFIG="landsat_v10_inference_2026"' in text
+    selection = text.split('SELECTION_CMD="', 1)[1].split('"\n', 1)[0]
+    assert "build_manifest.py" in selection
+    assert remote.startswith("${SELECTION_CMD}")
     steps = [
-        "build_manifest.py",
         "seed_ard_v10_reuse.py",
         "${S2_CONFIG}",
         "${LANDSAT_CONFIG}",
@@ -424,7 +426,7 @@ def test_ard_launcher_chains_inference_2026_without_the_training_manifest() -> N
     ]
     positions = [remote.index(step) for step in steps]
     assert positions == sorted(positions)
-    assert remote.count(" && ") == 5
+    assert remote.count(" && ") == 4
     assert text.index("validate_ard.py") < text.index("validate_dynamic.py")
     assert text.index("validate_dynamic.py") < text.index("validate_feature_stacks.py")
     assert text.index("validate_feature_stacks.py") < text.index("vm_stop")
