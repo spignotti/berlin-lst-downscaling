@@ -44,7 +44,14 @@ EXTRA_MARKER_JSON="  \"manifest_uri\": \"$MANIFEST_URI\",
   \"dynamic_root\": \"$DYNAMIC_ROOT\",
   \"features_root\": \"$FEATURES_ROOT\",
 "
-REMOTE_CMD="uv run python scripts/runners/build_manifest.py --config-dir configs/selection --config-name ${SELECTION_CONFIG} && uv run python scripts/operators/seed_ard_v10_reuse.py --source-ledger ${SEED_LEDGER} --manifest-uri ${MANIFEST_URI} --dest-root ${ARD_ROOT} --gap-out ${ARD_ROOT}/seed_gaps.json && uv run python scripts/runners/run_ard.py --config-name ${S2_CONFIG} && uv run python scripts/runners/run_ard.py --config-name ${LANDSAT_CONFIG} && uv run python scripts/runners/run_dynamic.py --config-name ${DYNAMIC_CONFIG} && uv run python scripts/runners/run_features_isolated.py --config-name ${FEATURES_CONFIG}"
+# A rerun after an interrupted chain reuses the immutable selection bundle;
+# every later step is idempotent and resumes from its ledger.
+SELECTION_CMD="uv run python scripts/runners/build_manifest.py --config-dir configs/selection --config-name ${SELECTION_CONFIG} && "
+if gcloud storage ls "${MANIFEST_ROOT}/pairings.parquet" >/dev/null 2>&1; then
+  echo "Selection bundle exists: ${MANIFEST_ROOT} (reused, not rebuilt)"
+  SELECTION_CMD=""
+fi
+REMOTE_CMD="${SELECTION_CMD}uv run python scripts/operators/seed_ard_v10_reuse.py --source-ledger ${SEED_LEDGER} --manifest-uri ${MANIFEST_URI} --dest-root ${ARD_ROOT} --gap-out ${ARD_ROOT}/seed_gaps.json && uv run python scripts/runners/run_ard.py --config-name ${S2_CONFIG} && uv run python scripts/runners/run_ard.py --config-name ${LANDSAT_CONFIG} && uv run python scripts/runners/run_dynamic.py --config-name ${DYNAMIC_CONFIG} && uv run python scripts/runners/run_features_isolated.py --config-name ${FEATURES_CONFIG}"
 POLL_MAX_SECONDS=172800
 
 vm_init_run "inference-2026"
