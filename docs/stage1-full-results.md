@@ -182,6 +182,13 @@ uv run python scripts/validators/validate_stage1_full.py \
 - The run is the single authorized full temporal fit under issue #53. No retune
   and no second full run are authorized by this outcome.
 
+## Scoring definitions
+
+- Both splits are cell-pooled (`abs_error_sum / valid_cells`) and unclamped. The evaluation clamp to [150, 400] K (`clamp_eval_prediction`) was introduced later (#118) and does not apply to this run.
+- The checkpoint is the argmin of `validation/mae_100m` over 20 epochs (`selection_metric` in the evidence); the `validation/loss` monitor in `run_training` belongs to the synthetic CI lifecycle only.
+- One seed, no interval. The selected 0.50285 K is the curve minimum: epoch 20 is 0.51427 K, the mean of epochs 16-20 is 0.51944 K. No scene-equal value exists for this run; for the v6 matrix the scene-equal validation MAE lies 0.05-0.08 K above the pooled one.
+- Superseded by the training/v3 (features/v6) matrix; these numbers are historical.
+
 ## 5. Limitations
 
 - Temporal holdout at recurring locations: scenes are held apart by year, but

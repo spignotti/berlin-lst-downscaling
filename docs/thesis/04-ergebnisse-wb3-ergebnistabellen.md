@@ -36,7 +36,7 @@ Diese **begrenzten** Probe-Kohorten sind **nicht** mit den nachfolgenden Full-Sp
 | Naive blockweise Expansion des Grobpriors | 1.61010 | 1.39523 |
 | Stage 1: spektral/Indizes, residual (10 Kanäle) | **0.50285** | **0.53257** |
 
-Stage 1: 20 Epochen, bester Validierungscheckpoint Epoche 19. Originale [Baseline](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/baseline-full-results.md), [Stage-1-Full-Evidenz](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/stage1-full-results.md) und [Stage-1-W&B-Run](https://wandb.ai/pignottisilas-berliner-hochschule-f-r-technik/berlin-lst-downscaling/runs/30e5g89u).
+Stage 1: 20 Epochen, bester Validierungscheckpoint Epoche 19 (Auswahl nach `validation/mae_100m`). Beide Werte zellgepoolt, ungeklemmt (die Evaluationsklemmung kam erst mit #118), ein Seed, ohne Intervall. Der Validierungswert ist das Minimum der Kurve: Epoche 20 0.51427, Mittel Epochen 16–20 0.51944 K. Originale [Baseline](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/baseline-full-results.md), [Stage-1-Full-Evidenz](https://github.com/spignotti/berlin-lst-downscaling/blob/main/docs/stage1-full-results.md) und [Stage-1-W&B-Run](https://wandb.ai/pignottisilas-berliner-hochschule-f-r-technik/berlin-lst-downscaling/runs/30e5g89u).
 
 ## C. Kumulative Ablation
 
