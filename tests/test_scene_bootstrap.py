@@ -695,11 +695,29 @@ def test_compare_rejects_empty_identifiers(world: list[Patch], col: str, bad: st
         sb.compare_arms(a, build_arm("B", world, flat(1.0)), n_bootstrap=10)
 
 
-def test_compare_rejects_test_tables(world: list[Patch]) -> None:
-    a = build_arm("A", world, flat(1.0), split="test")
-    b = build_arm("B", world, flat(1.0), split="test")
+def test_compare_rejects_other_splits(world: list[Patch]) -> None:
+    a = build_arm("A", world, flat(1.0), split="train")
+    b = build_arm("B", world, flat(1.0), split="train")
     with pytest.raises(sb.SceneBootstrapError, match="validation"):
         sb.compare_arms(a, b, n_bootstrap=10)
+
+
+def test_compare_accepts_matching_test_tables(world: list[Patch]) -> None:
+    test = sb.compare_arms(
+        build_arm("A", world, flat(1.0), split="test"),
+        build_arm("B", world, flat(2.0), split="test"),
+        n_bootstrap=20,
+        rng_seed=0,
+    )
+    validation = sb.compare_arms(
+        build_arm("A", world, flat(1.0)),
+        build_arm("B", world, flat(2.0)),
+        n_bootstrap=20,
+        rng_seed=0,
+    )
+    assert test.split == "test"
+    assert test.point_estimate == validation.point_estimate
+    assert test.ci_low == validation.ci_low and test.ci_high == validation.ci_high
 
 
 def test_nonvalidation_split_rejected_before_path_access(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -711,7 +729,7 @@ def test_nonvalidation_split_rejected_before_path_access(monkeypatch: pytest.Mon
     monkeypatch.setattr(sb.pq, "read_schema", boom)
     monkeypatch.setattr(sb.pq, "read_table", boom)
     with pytest.raises(sb.SceneBootstrapError, match="validation"):
-        sb.load_patch_exports([Path("x")], split="test")
+        sb.load_patch_exports([Path("x")], split="train")
 
 
 @pytest.mark.parametrize("empty_arm", ["A", "B"])

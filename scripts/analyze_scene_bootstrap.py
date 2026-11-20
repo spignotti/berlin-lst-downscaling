@@ -1,6 +1,8 @@
 """CLI: paired scene bootstrap between two ablation arms from existing patch exports.
 
 This tool only reads explicit local export files; it never launches evaluation.
+``--split`` is ``validation`` (the default) or ``test`` (the one-time 2025 opening).
+A file whose footer or rows name a different split is refused.
 """
 
 from __future__ import annotations
@@ -28,7 +30,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--arm-a", nargs="+", type=Path, required=True, metavar="FILE", help=arm_help)
     p.add_argument("--arm-b", nargs="+", type=Path, required=True, metavar="FILE", help=arm_help)
-    p.add_argument("--split", choices=("validation",), default="validation")
+    p.add_argument(
+        "--split",
+        choices=("validation", "test"),
+        default="validation",
+        help="validation (default) or the one-time test opening",
+    )
     p.add_argument(
         "--metric",
         choices=METRICS,

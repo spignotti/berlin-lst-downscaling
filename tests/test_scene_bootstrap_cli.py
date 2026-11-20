@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -69,11 +70,8 @@ def test_defaults_to_validation(cli: ModuleType) -> None:
     assert not hasattr(args, "i_know_test_is_frozen")
 
 
-@pytest.mark.parametrize(
-    "extra", [["--split", "test"], ["--split", "test", "--i-know-test-is-frozen"]]
-)
-def test_test_split_rejected_before_input_access(
-    cli: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: list[str]
+def test_unknown_split_rejected_before_input_access(
+    cli: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def boom(*_a: object, **_k: object) -> None:
         raise AssertionError("input accessed")
@@ -82,8 +80,16 @@ def test_test_split_rejected_before_input_access(
     monkeypatch.setattr("builtins.open", boom)
     names = ["nope1", "nope2", "nope3"]
     with pytest.raises(SystemExit) as exc:
-        cli.main(_argv(names, names, tmp_path / "o", *extra))
+        cli.main(_argv(names, names, tmp_path / "o", "--split", "train"))
     assert exc.value.code == 2
+
+
+def test_test_split_runs(cli: ModuleType, tmp_path: Path) -> None:
+    a, b = _write_arms(tmp_path, "test")
+    rc = cli.main(_argv(a, b, tmp_path / "sub" / "res", "--split", "test"))
+    assert rc == 0
+    payload = json.loads((tmp_path / "sub" / "res.json").read_text())
+    assert payload["split"] == "test"
 
 
 def test_validation_rejects_test_export(
