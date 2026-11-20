@@ -75,7 +75,12 @@ def load_config(config_name: str) -> OmegaConf:
 
 
 def assessable_scene_ids(cfg: OmegaConf) -> list[str]:
-    """Return the assessable Landsat anchor scene ids (2017-2025)."""
+    """Return the assessable Landsat anchor scene ids.
+
+    The default list is the 2017-2025 training universe. Set
+    ``include_inference_scenes`` to also admit year >= 2026 anchors and
+    dynamic rows with role ``inference``.
+    """
     inventory = build_inventory(
         manifest_uri=str(cfg.manifest_uri),
         ard_root=str(cfg.ard_root),
@@ -83,6 +88,7 @@ def assessable_scene_ids(cfg: OmegaConf) -> list[str]:
         static_derived_root=str(cfg.static_derived_root),
         dynamic_root=str(cfg.dynamic_root),
         geometry_mapping_uri=str(cfg.geometry_mapping_uri),
+        include_inference_scenes=bool(cfg.get("include_inference_scenes", False)),
     )
     if not inventory.ok:
         raise RuntimeError(f"Feature inventory failed: {inventory.errors}")

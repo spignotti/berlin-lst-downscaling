@@ -1,0 +1,19 @@
+# @package _global_
+# Sentinel-2 ARD v10 mosaics for the 2026 inference bundle.
+# Same schema-10 mosaic contract as sentinel2_mosaic_v10.yaml, new manifest
+# and a new output root. S2 rows are reprocessed: the mosaic schema hash is
+# per scene, so the v10 seeder cannot copy them.
+defaults:
+  - sentinel2_mosaic_v10
+  - _self_
+
+sources: ["sentinel-2-l2a"]
+mode: full
+manifest_uri: "gs://berlin-lst-training-data/manifests/v4-inference/2026-cutoff-20260930T235959Z/manifest.parquet"
+output_root: "gs://berlin-lst-training-data/ard/inference/2026-s2-mosaic-v10"
+
+sentinel2:
+  schema_version: 10
+  mosaic:
+    enabled: true
+    max_missing_aoi_fraction: 0.005

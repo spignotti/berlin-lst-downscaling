@@ -17,9 +17,22 @@ import pyarrow.parquet as pq
 from berlin_lst_downscaling.data.io import exists, read_bytes
 
 # Training universe: 2017-2023 train, 2024 validation, 2025 test.
-# 2026 is inference-only (metadata, never processed).
+# 2026 is inference-only. The default count window stays 2017-2025.
+# include_inference_scenes switches the first count to years after 2025.
+# The second return value (every anchor) never changes.
 ASSESSABLE_YEAR_MIN = 2017
 ASSESSABLE_YEAR_MAX = 2025
+
+
+def _in_universe(year: int, *, include_inference_scenes: bool) -> bool:
+    """True when ``year`` belongs to the requested count window.
+
+    Default window: 2017-2025. With ``include_inference_scenes``, years
+    after 2025 (the inference chain). The two windows do not overlap.
+    """
+    if include_inference_scenes:
+        return year > ASSESSABLE_YEAR_MAX
+    return ASSESSABLE_YEAR_MIN <= year <= ASSESSABLE_YEAR_MAX
 
 
 def anchor_years(manifest_table) -> dict[str, int]:
@@ -35,12 +48,18 @@ def anchor_years(manifest_table) -> dict[str, int]:
     return out
 
 
-def expected_counts(manifest_table, pairings_table) -> tuple[int, int]:
-    """Return ``(assessable_2017_2025, total_anchors)`` for the bundle.
+def expected_counts(
+    manifest_table,
+    pairings_table,
+    *,
+    include_inference_scenes: bool = False,
+) -> tuple[int, int]:
+    """Return ``(universe_count, total_anchors)`` for the bundle.
 
     Every manifest anchor row must have exactly one pairing row (fail
-    closed otherwise): the features universe is the 2017-2025 anchors,
-    the training manifest universe is every anchor including 2026.
+    closed otherwise). The default universe is the 2017-2025 anchors.
+    ``include_inference_scenes`` counts years after 2025 instead. The
+    second value is every anchor, including years outside that window.
     """
     anchors = anchor_years(manifest_table)
     pairing_ids = {str(v) for v in pairings_table.column("landsat_scene_id").to_pylist()}
@@ -53,12 +72,18 @@ def expected_counts(manifest_table, pairings_table) -> tuple[int, int]:
             f"pairings without anchor: {extra[:5]})"
         )
     assessable = sum(
-        1 for year in anchors.values() if ASSESSABLE_YEAR_MIN <= year <= ASSESSABLE_YEAR_MAX
+        1
+        for year in anchors.values()
+        if _in_universe(year, include_inference_scenes=include_inference_scenes)
     )
     return assessable, len(anchors)
 
 
-def expected_counts_for_bundle(manifest_parquet_uri: str) -> tuple[int, int]:
+def expected_counts_for_bundle(
+    manifest_parquet_uri: str,
+    *,
+    include_inference_scenes: bool = False,
+) -> tuple[int, int]:
     """Read a bundle from its manifest URI and return expected counts."""
     manifest_uri = manifest_parquet_uri.rstrip("/")
     bundle_root = manifest_uri.rsplit("/", 1)[0]
@@ -68,7 +93,11 @@ def expected_counts_for_bundle(manifest_parquet_uri: str) -> tuple[int, int]:
             raise FileNotFoundError(f"bundle artifact missing: {uri}")
     manifest_table = pq.read_table(io.BytesIO(read_bytes(manifest_uri)))
     pairings_table = pq.read_table(io.BytesIO(read_bytes(pairings_uri)))
-    return expected_counts(manifest_table, pairings_table)
+    return expected_counts(
+        manifest_table,
+        pairings_table,
+        include_inference_scenes=include_inference_scenes,
+    )
 
 
 def excluded_landsat_scene_ids(manifest_parquet_uri: str, ard_ledger_uri: str) -> list[str]:
@@ -97,17 +126,26 @@ def excluded_landsat_scene_ids(manifest_parquet_uri: str, ard_ledger_uri: str) -
 
 
 def expected_features_count_for_bundle(
-    manifest_parquet_uri: str, ard_ledger_uri: str | None = None
+    manifest_parquet_uri: str,
+    ard_ledger_uri: str | None = None,
+    *,
+    include_inference_scenes: bool = False,
 ) -> tuple[int, int, list[dict]]:
-    """Return ``(expected_feature_scenes, assessable, exclusions)``.
+    """Return ``(expected_feature_scenes, universe, exclusions)``.
 
     ``exclusions`` are pairings whose S2 partner failed the ARD v10 mosaic
     AOI coverage gate (conservative rule: excluded pairings drop out, no
-    replacement partner). When ``ard_ledger_uri`` is None the expected
-    count equals the assessable 2017-2025 universe. The dynamic universe is
-    unaffected (per-Landsat-anchor products never read S2 ARD).
+    replacement partner). Only exclusions inside the count window are
+    subtracted. The default window is 2017-2025. ``include_inference_scenes``
+    uses years after 2025 instead. When ``ard_ledger_uri`` is None the
+    expected count equals that universe. The dynamic universe is unaffected
+    (per-Landsat-anchor products never read S2 ARD) except for the same
+    year-window switch.
     """
-    assessable, _total = expected_counts_for_bundle(manifest_parquet_uri)
+    assessable, _total = expected_counts_for_bundle(
+        manifest_parquet_uri,
+        include_inference_scenes=include_inference_scenes,
+    )
     if ard_ledger_uri is None:
         return assessable, assessable, []
     from berlin_lst_downscaling.data.ard.coverage_gate import (
@@ -126,7 +164,10 @@ def expected_features_count_for_bundle(
     assessable_excluded = [
         row
         for row in exclusions
-        if ASSESSABLE_YEAR_MIN <= years.get(row["landsat_scene_id"], -1) <= ASSESSABLE_YEAR_MAX
+        if _in_universe(
+            years.get(row["landsat_scene_id"], -1),
+            include_inference_scenes=include_inference_scenes,
+        )
     ]
     return assessable - len(assessable_excluded), assessable, assessable_excluded
 

@@ -247,3 +247,40 @@ after each run.
    published v1/v2, patch-index v1/v2, and manifests/v3 roots). The new
    roots join the unconditional frozen sets in a follow-up once this
    chain is published (one line each).
+
+## Inference 2026 chain
+
+Warm-season 2026 only (May–September, cutoff `2026-09-30T23:59:59Z`).
+Same v6 contracts: feature schema 5, ERA5 `scene_value` v6 channels, v6
+shadows, published `lod2-area-exact-v2` static and derived roots. New
+prefixes only. `include_inference_scenes` defaults to false;
+`features/v6` is refused when it is true, so 2026 stacks cannot land in
+the training release. Training and the patch index read `features/v6` by
+exact root and do not read this chain.
+
+| Step | Config | Prefix |
+|------|--------|--------|
+| Selection | `configs/selection/inference_2026_v4.yaml` | `manifests/v4-inference/2026-cutoff-20260930T235959Z` |
+| S2 mosaic + Landsat | `configs/ard/sentinel2_mosaic_v10_inference_2026.yaml`, `configs/ard/landsat_v10_inference_2026.yaml` | `ard/inference/2026-s2-mosaic-v10` |
+| Dynamic | `configs/dynamic/v6_inference_2026.yaml` | `dynamic/inference/2026-v6` |
+| Features | `configs/features/v6_inference_2026.yaml` | `features/v6-inference-2026` |
+
+Launcher: `scripts/runners/vm/run-inference-2026-chain-vm.sh`. One VM
+session runs selection, then the ARD seed, the S2 mosaic, the Landsat
+pass, dynamic, and features, and stops on the first failure. Afterwards
+it runs `validate_ard.py`, `validate_dynamic.py --expected-role inference
+--include-inference-scenes`, and `validate_feature_stacks.py
+--include-inference-scenes` against the new roots. The VM is stopped
+after a recorded exit. Connection loss or a poll timeout (exit 2) leaves
+it running, same as the other launchers. Preflight is
+`preflight_republish_v6.py --step inference_2026`.
+
+Reused, not rebuilt: the selection rules (months 5–9, S2 partner rule,
+AOI-overlap 0.05, mosaic membership; the six 2018 ECOSTRESS validation
+ids stay in the bundle), the published static and derived
+`lod2-area-exact-v2` products, and the geometry mapping. Landsat rows
+and those ECOSTRESS rows are seeded from
+`ard/full/2017-2026-s2-mosaic-v10/ledger.parquet`. S2 is reprocessed:
+the mosaic hash is per scene, so the seeder cannot copy S2 rows. The
+Landsat config does not run ECOSTRESS. `configs/dynamic/inference_2026.yaml`
+is the legacy v3 contract and is not used.

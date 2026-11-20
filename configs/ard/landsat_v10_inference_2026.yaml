@@ -1,0 +1,14 @@
+# @package _global_
+# Landsat gap pass for the 2026 inference bundle. Landsat only: ECOSTRESS
+# is not reprocessed. The six fixed 2018 ECOSTRESS validation rows that the
+# selection contract always writes are seeded from the published v10 ledger
+# (scripts/operators/seed_ard_v10_reuse.py) before this pass. Contract is
+# unchanged (landsat-c2-l2 schema 7, area-mean lwir11, native_bit_or QA).
+defaults:
+  - landsat_ecostress_v10
+  - _self_
+
+sources: ["landsat-c2-l2"]
+mode: full
+manifest_uri: "gs://berlin-lst-training-data/manifests/v4-inference/2026-cutoff-20260930T235959Z/manifest.parquet"
+output_root: "gs://berlin-lst-training-data/ard/inference/2026-s2-mosaic-v10"

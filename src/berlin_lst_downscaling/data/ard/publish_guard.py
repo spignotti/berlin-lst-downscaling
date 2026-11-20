@@ -43,6 +43,15 @@ STATIC_V6_ROOTS = frozenset(
 )
 EDA_V3_ROOT = "gs://berlin-lst-training-data/evaluation/eda/v3"
 
+# Inference-2026 chain. Not frozen: the chain publishes into these prefixes.
+# They are not the training release. features/v6 stays training-only.
+INFERENCE_2026_MANIFEST_ROOT = (
+    "gs://berlin-lst-training-data/manifests/v4-inference/2026-cutoff-20260930T235959Z"
+)
+INFERENCE_2026_ARD_ROOT = "gs://berlin-lst-training-data/ard/inference/2026-s2-mosaic-v10"
+INFERENCE_2026_DYNAMIC_ROOT = "gs://berlin-lst-training-data/dynamic/inference/2026-v6"
+INFERENCE_2026_FEATURES_ROOT = "gs://berlin-lst-training-data/features/v6-inference-2026"
+
 # Published training/patch-index roots (immutable; new writes go to v3).
 _FROZEN_TRAINING_ROOTS = frozenset(
     {
@@ -117,7 +126,12 @@ def assert_sentinel2_output_root(output_root: str, *, schema_version: int = 9) -
         )
 
 
-def assert_feature_output_root(output_root: str, *, schema_version: int | None = None) -> None:
+def assert_feature_output_root(
+    output_root: str,
+    *,
+    schema_version: int | None = None,
+    include_inference_scenes: bool = False,
+) -> None:
     """Block feature-stack writes into features/v3, v4, or v5.
 
     A legacy feature schema (anything but 5) is additionally refused
@@ -125,19 +139,36 @@ def assert_feature_output_root(output_root: str, *, schema_version: int | None =
     never pollute the v6 release. The designated v6 run (schema 5)
     passes; callers that do not know their schema pass nothing and keep
     the previous behaviour.
+
+    ``include_inference_scenes`` defaults to false. When it is true the
+    training release (``features/v6``) is refused: 2026 inference stacks
+    publish only under :data:`INFERENCE_2026_FEATURES_ROOT`. Schema 5 is
+    the only writer there. The default leaves every existing call unchanged.
     """
-    if _normalize(output_root) in _FROZEN_FEATURE_ROOTS:
+    normalized = _normalize(output_root)
+    if normalized in _FROZEN_FEATURE_ROOTS:
         raise FrozenPrefixError(
             f"{output_root} is a published feature prefix. "
             "The next feature release is published only by configs/features/v6.yaml."
         )
+    if schema_version is not None and schema_version != 5 and normalized == FEATURES_V6_ROOT:
+        raise FrozenPrefixError(
+            f"{output_root} is the v6 (schema 5) release. "
+            "Older feature schemas must not write there."
+        )
+    if include_inference_scenes and normalized == FEATURES_V6_ROOT:
+        raise FrozenPrefixError(
+            f"{output_root} is the training feature release. "
+            "Inference scenes must not write there; "
+            "use configs/features/v6_inference_2026.yaml."
+        )
     if (
         schema_version is not None
         and schema_version != 5
-        and _normalize(output_root) == FEATURES_V6_ROOT
+        and normalized == INFERENCE_2026_FEATURES_ROOT
     ):
         raise FrozenPrefixError(
-            f"{output_root} is the v6 (schema 5) release. "
+            f"{output_root} is the inference-2026 (schema 5) release. "
             "Older feature schemas must not write there."
         )
 
@@ -192,6 +223,10 @@ def assert_tessera_output_root(output_root: str) -> None:
 __all__ = [
     "EDA_V3_ROOT",
     "FEATURES_V6_ROOT",
+    "INFERENCE_2026_ARD_ROOT",
+    "INFERENCE_2026_DYNAMIC_ROOT",
+    "INFERENCE_2026_FEATURES_ROOT",
+    "INFERENCE_2026_MANIFEST_ROOT",
     "MANIFESTS_V4_ROOT",
     "PATCH_INDEX_V3_ROOT",
     "SENTINEL2_V10_ROOT",

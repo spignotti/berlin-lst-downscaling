@@ -153,8 +153,11 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         run_id = uuid4().hex[:8]
     timestamp = datetime.now(UTC).isoformat()
     output_root = str(cfg.output_root)
+    include_inference_scenes = bool(cfg.get("include_inference_scenes", False))
     assert_feature_output_root(
-        output_root, schema_version=int(cfg.get("feature_schema_version", 4))
+        output_root,
+        schema_version=int(cfg.get("feature_schema_version", 4)),
+        include_inference_scenes=include_inference_scenes,
     )
 
     manifest_uri = str(cfg.manifest_uri)
@@ -197,6 +200,7 @@ def run_features(cfg, *, run_id: str | None = None) -> FeatureRunReport:
         dynamic_root=dynamic_root,
         geometry_mapping_uri=geometry_mapping_uri,
         scene_ids=scene_ids,
+        include_inference_scenes=include_inference_scenes,
     )
     if not inventory.ok:
         raise RuntimeError(f"Feature inventory failed: {inventory.errors}")

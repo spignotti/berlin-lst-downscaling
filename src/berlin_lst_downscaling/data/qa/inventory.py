@@ -115,6 +115,7 @@ def build_inventory(
     dynamic_root: str,
     geometry_mapping_uri: str,
     scene_ids: list[str] | None = None,
+    include_inference_scenes: bool = False,
 ) -> InventoryReport:
     """Resolve every paired Landsat anchor against the published ledgers.
 
@@ -122,6 +123,11 @@ def build_inventory(
     (used by the smoke run). Returns an :class:`InventoryReport` with one
     :class:`ResolvedScene` per pairing, explicit exclusion reasons, and
     fingerprints of every source ledger.
+
+    ``include_inference_scenes`` defaults to false. Year >= 2026 anchors
+    and dynamic rows with ``role == "inference"`` stay excluded, exactly
+    as before. The inference-2026 feature config is the caller that sets
+    it true.
     """
     errors: list[str] = []
     fingerprints: dict[str, str] = {}
@@ -227,6 +233,7 @@ def build_inventory(
             mapping=mapping,
             ard_root=ard_root,
             dynamic_root=dynamic_root,
+            include_inference_scenes=include_inference_scenes,
         )
         if resolved.exclusion_reason:
             exclusion_reasons[resolved.exclusion_reason] = (
@@ -263,6 +270,7 @@ def _resolve_scene(
     mapping,
     ard_root: str,
     dynamic_root: str,
+    include_inference_scenes: bool = False,
 ) -> ResolvedScene:
     """Resolve a single pairing; returns the scene (assessable or excluded)."""
     errors: list[str] = []
@@ -273,7 +281,8 @@ def _resolve_scene(
     # 2026 anchors are inference scenes — by design outside the training
     # universe. They are excluded up front regardless of artifact state,
     # so an incomplete 2026 ledger never produces a hard finding.
-    if year is not None and year >= 2026:
+    # include_inference_scenes (default false) is the only opt-in.
+    if not include_inference_scenes and year is not None and year >= 2026:
         return ResolvedScene(
             scene_id=ls_id,
             year=year,
@@ -388,7 +397,7 @@ def _resolve_scene(
             if exclusion is None:
                 exclusion = f"dynamic {source} not done"
             continue
-        if row.get("role") == "inference":
+        if row.get("role") == "inference" and not include_inference_scenes:
             if exclusion is None:
                 exclusion = INFERENCE_EXCLUSION_REASON
             continue

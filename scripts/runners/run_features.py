@@ -13,7 +13,8 @@ Usage
     uv run python scripts/runners/run_features.py --config-name full
 
 Exits non-zero when any assessable scene fails to publish (fail-closed).
-Excluded scenes (2026 role=inference) are reported, never processed.
+Excluded scenes (2026 role=inference) are reported, never processed,
+unless the config sets ``include_inference_scenes`` (default false).
 """
 
 from __future__ import annotations
