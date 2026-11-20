@@ -573,6 +573,54 @@ merge and the image build, once. Reconnect with `--mode v6-val-rescore --status
 - Old images: an image built before this fix still deletes and must not be used.
 - The fix PR itself builds, pushes, and submits nothing.
 
+### One-time test 2025 opening
+
+The 2025 test split stays sealed except for this one opening, after the
+validation freeze above. It scores the 27 frozen checkpoints (the same run
+labels as `v6_val_rescore.rescore_inventory()`) and writes local per-patch
+exports. It is not a second training run and not a rescore of validation. Do
+not run it again for a new arm, seed, or code change. Nothing is uploaded.
+An existing output file stops the job before any cache build or download.
+
+The export cache is the test split only. Train is not read. The stored
+`best_model_score` is still checked by recomputing the unclamped validation
+MAE (the same identity check as the validation rescore); that is the only use
+of the validation split, and those rows are not exported. Clamping and
+aggregation match the validation exports, so the scene bootstrap can compare
+them. The job-local caches live under the output directory. They are not the
+prebuilt GCS cache, which still never holds the test split.
+
+```bash
+uv run --locked python scripts/operators/export_v6_test_patches.py --list
+
+scripts/operators/with-gcp-operator.sh -- \
+  uv run --locked python scripts/operators/export_v6_test_patches.py \
+  --all \
+  --output-root data/runs/v6-test-patches \
+  --device cpu
+```
+
+Then the paired scene bootstrap, once per frozen matrix family, with
+`--split test`. Families, as A minus B: A is L2−L1, L3−L2, L4−L3, L5−L4; B is
+LOO-M−L4, LOO-S−L4, L3−L4, NO-NDVI-NDWI−L4, NO-RED-NIR-IDX−L4; K is L4−L1.
+Same resampling as validation (B = 10 000, rng seed 0). Example for K, three
+seeds each:
+
+```bash
+uv run --locked python scripts/analyze_scene_bootstrap.py \
+  --split test \
+  --arm-a data/runs/v6-test-patches/v6m-070b33c-l4-seed0-ep40-cos/eval_test_patches.parquet \
+          data/runs/v6-test-patches/v6m-070b33c-l4-seed1-ep40-cos/eval_test_patches.parquet \
+          data/runs/v6-test-patches/v6m-070b33c-l4-seed2-ep40-cos/eval_test_patches.parquet \
+  --arm-b data/runs/v6-test-patches/v6m-070b33c-l1-seed0-ep40-cos/eval_test_patches.parquet \
+          data/runs/v6-test-patches/v6m-070b33c-l1-seed1-ep40-cos/eval_test_patches.parquet \
+          data/runs/v6-test-patches/v6m-070b33c-l1-seed2-ep40-cos/eval_test_patches.parquet \
+  --output-prefix data/runs/v6-test-patches/bootstrap/L4_vs_L1
+```
+
+Repeat with the export paths of each pair. `--split` defaults to validation
+everywhere else; a footer or row that names a different split is refused.
+
 ### Prebuilt patch cache
 
 By default each v6 job builds its patch cache from the rasters (the threaded

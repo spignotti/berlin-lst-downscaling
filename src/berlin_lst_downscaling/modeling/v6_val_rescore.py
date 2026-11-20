@@ -5,8 +5,13 @@ Scope
 One job scores the 27 retained best checkpoints (9 arms x seeds 0, 1, 2 of the
 matrix at source SHA ``070b33c``) on the 2024 validation split only. No training
 step runs, no checkpoint is written, and no test (2025) ref, metric, or export
-is ever loaded: the data module is built with ``splits == ("validation",)`` and
-every run is composed with ``evaluate_test=false``.
+is loaded by this job: the data module is built with ``splits == ("validation",)``
+and every run is composed with ``evaluate_test=false``.
+
+``build_validation_cache`` and ``score_validation`` take an optional split and
+default to validation. ``run_rescore`` always uses that default. The one-time
+test opening (``modeling.v6_test_score``) passes the test split and does not
+change this job.
 
 Cache reuse
 -----------
@@ -405,7 +410,12 @@ def load_rescore_task(path: Path, cfg: DictConfig, ssim_range: SsimDataRange) ->
 
 @dataclass(frozen=True)
 class ValidationCache:
-    """The single job-local, validation-only, full-width cache all arms read."""
+    """The single job-local, full-width cache of one split.
+
+    The validation rescore builds it for validation only. The same container
+    holds a test cache when ``build_validation_cache`` is called with
+    ``splits=("test",)``.
+    """
 
     root: Path
     provenance: dict[str, object]
@@ -419,14 +429,32 @@ class ValidationCache:
         return _json_digest(self.provenance)
 
 
-def build_validation_cache(cfg: DictConfig, cache_root: Path) -> ValidationCache:
-    """Read the validation split once and write the full-schema-width cache."""
+_SHARED_CACHE_SPLITS: tuple[tuple[str, ...], ...] = (RESCORE_SPLITS, ("test",))
+
+
+def build_validation_cache(
+    cfg: DictConfig,
+    cache_root: Path,
+    *,
+    splits: tuple[str, ...] = RESCORE_SPLITS,
+) -> ValidationCache:
+    """Read one split once and write the full-schema-width cache.
+
+    The default ``splits`` is the validation rescore (``("validation",)``).
+    The one-time test opening passes ``("test",)``. Any other combination,
+    including train, is refused. ``run_rescore`` calls this with the default.
+    """
+    if splits not in _SHARED_CACHE_SPLITS:
+        raise ValueError(
+            f"shared cache splits must be one of {_SHARED_CACHE_SPLITS}, got {splits!r}"
+        )
+    split = splits[0]
     width = feature_schema(FEATURE_SCHEMA_VERSION_V6).n_channels
     dm = build_real_datamodule(
         cfg,
         cache_root=None,
         cache_max_bytes=0,
-        splits=RESCORE_SPLITS,
+        splits=splits,
         mode="stream",
         shuffle_train=False,
         n_active_channels=width,
@@ -435,11 +463,19 @@ def build_validation_cache(cfg: DictConfig, cache_root: Path) -> ValidationCache
         allow_job_local_fallback=False,
     )
     dm.setup()
-    provenance = dm.build_validation_only_cache(cache_root, max_bytes=int(cfg.data.cache_max_bytes))
+    if splits == RESCORE_SPLITS:
+        provenance = dm.build_validation_only_cache(
+            cache_root, max_bytes=int(cfg.data.cache_max_bytes)
+        )
+    else:
+        provenance = dm.build_one_split_cache(
+            cache_root, max_bytes=int(cfg.data.cache_max_bytes), split=split
+        )
     scope = dm.stats()
     per_split = scope["patches_per_split"]
-    if not isinstance(per_split, dict) or set(per_split) != {RESCORE_SPLIT}:
-        raise RuntimeError(f"validation cache read unexpected splits: {per_split!r}")
+    kind = "validation cache" if split == RESCORE_SPLIT else f"{split} cache"
+    if not isinstance(per_split, dict) or set(per_split) != {split}:
+        raise RuntimeError(f"{kind} read unexpected splits: {per_split!r}")
     cache = PatchCache(cache_root, provenance)
     for file in cache_root.iterdir():
         if file.is_file():
@@ -478,8 +514,14 @@ def score_validation(
     aggregation: AggregationMethod,
     ssim_range: SsimDataRange,
     device: torch.device,
+    split: str = RESCORE_SPLIT,
 ) -> tuple[list[dict[str, object]], float]:
-    """Score every validation batch; return per-patch rows and the unclamped MAE recheck."""
+    """Score every batch of ``split``; return per-patch rows and the unclamped MAE.
+
+    The default split is validation: the rescore and the best-score identity
+    recheck. The one-time test opening passes ``split="test"``. Clamping and
+    aggregation are the shared evaluation path (``score_batch_patches``).
+    """
     recheck = MaskedMAE()
     rows: list[dict[str, object]] = []
     with torch.inference_mode():
@@ -510,11 +552,11 @@ def score_validation(
                 data_range_k=ssim_range.data_range_k,
             )
             for row in batch_rows:
-                if row["split"] != RESCORE_SPLIT:
+                if row["split"] != split:
                     raise RuntimeError(f"row {row['patch_id']} has split {row['split']!r}")
             rows.extend(batch_rows)
     if not rows:
-        raise RuntimeError("validation scoring produced no rows")
+        raise RuntimeError(f"{split} scoring produced no rows")
     return rows, float(recheck.compute())
 
 
@@ -527,6 +569,21 @@ def upload_create_only(local: Path, uri: str) -> dict[str, object]:
         raise ValueError(f"{uri} is outside the rescore prefix {RESCORE_PREFIX}/")
     storage.create_only_upload(local, uri)
     return {"uri": uri, "sha256": _sha256_file(local), "bytes": local.stat().st_size}
+
+
+def assert_recomputed_best_score(run_label: str, recomputed: float, best_score: float) -> None:
+    """Fail unless the recomputed unclamped validation MAE matches the stored best score.
+
+    The stored ``best_model_score`` is the training-time validation MAE. The
+    comparison is an identity check of the checkpoint, not a test metric. The
+    tolerance is the one the training lifecycle uses (``1e-3`` relative).
+    """
+    tolerance = _SELECTION_TOLERANCE * max(1.0, abs(best_score))
+    if abs(recomputed - best_score) > tolerance:
+        raise RuntimeError(
+            f"{run_label}: recomputed validation MAE {recomputed:.6f} != stored "
+            f"best_model_score {best_score:.6f} (tolerance {tolerance:.6f})"
+        )
 
 
 def _check_run_args(source_sha: str, image_digest: str, manifest_uri: str) -> None:
@@ -607,12 +664,7 @@ def run_rescore(
         finally:
             dest.unlink(missing_ok=True)
         best_score = float(selection["best_model_score"])  # type: ignore[arg-type]
-        tolerance = _SELECTION_TOLERANCE * max(1.0, abs(best_score))
-        if abs(recomputed - best_score) > tolerance:
-            raise RuntimeError(
-                f"{run.run_label}: recomputed validation MAE {recomputed:.6f} != stored "
-                f"best_model_score {best_score:.6f} (tolerance {tolerance:.6f})"
-            )
+        assert_recomputed_best_score(run.run_label, recomputed, best_score)
         if len(rows) != len(cache.patch_ids):
             raise RuntimeError(
                 f"{run.run_label}: scored {len(rows)} patches, cache holds {len(cache.patch_ids)}"

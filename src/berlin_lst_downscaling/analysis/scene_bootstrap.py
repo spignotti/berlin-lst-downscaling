@@ -16,7 +16,9 @@ reports that appendix comparison. The per-patch-range columns are ignored.
 the overpass (platform, path, date) as resampling unit, as a sensitivity next to the frozen
 rule; it is off by default and then changes nothing. Only NumPy and PyArrow are used (the
 sensitivity also loads ``analysis.spatial_error``, hence pandas, when asked for); nothing
-here evaluates a model or reads data products.
+here evaluates a model or reads data products. The accepted splits are validation
+and test. Any other split is refused before the paths are opened, and a footer
+or a row that names a different split from the one requested is refused.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ import pyarrow.parquet as pq
 
 SCHEMA_VERSION = 2
 FOOTER_KEY = b"patch_export"
+ACCEPTED_SPLITS: frozenset[str] = frozenset({"validation", "test"})
 # modeling.metrics.EVAL_PREDICTION_CLAMP_K, kept literal so this module needs no modeling
 # import. Older exports (schema_version 1) were scored without it and are refused.
 PREDICTION_CLAMP_K: tuple[float, float] = (150.0, 400.0)
@@ -317,10 +320,15 @@ def _normalized_schema(*, with_l250: bool = False) -> pa.Schema:
 
 
 def load_patch_exports(paths: Sequence[Path], *, split: str) -> pa.Table:
-    """Load explicit per-patch export files for the validation split, validating each."""
-    if split != "validation":
+    """Load explicit per-patch export files for ``split``, validating each.
+
+    ``split`` is ``validation`` or ``test``. Any other value is refused before
+    the paths are touched. A file whose footer or rows name a different split
+    is refused.
+    """
+    if split not in ACCEPTED_SPLITS:
         raise SceneBootstrapError(
-            f"split {split!r} rejected: the analyzer is validation-only (test split is frozen)"
+            f"split {split!r} rejected: the analyzer accepts only 'validation' or 'test'"
         )
     if not paths:
         raise SceneBootstrapError("no patch export files given")
@@ -502,9 +510,9 @@ def _arm_runs(table: pa.Table, name: str) -> list[_Run]:
         raise SceneBootstrapError(
             f"{name}: expected exactly one split, got {sorted(splits, key=str)}"
         )
-    if splits != {"validation"}:
+    if splits not in ({"validation"}, {"test"}):
         raise SceneBootstrapError(
-            f"{name}: only the validation split is accepted, got {sorted(splits, key=str)}"
+            f"{name}: only the validation or test split is accepted, got {sorted(splits, key=str)}"
         )
     arm = next(iter(arms))
     seed_set = set(c["seed"])

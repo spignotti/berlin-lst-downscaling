@@ -842,6 +842,58 @@ class RealPatchDataModule(LightningDataModule):
         PatchCache(cache_root, provenance)
         return provenance
 
+    def build_one_split_cache(
+        self, cache_root: Path, *, max_bytes: int, split: str
+    ) -> dict[str, object]:
+        """Write a one-split, full-schema-width job-local cache; return its provenance.
+
+        The module must be set up with ``splits == (split,)`` and identity channel
+        indices over the whole source stack. ``split`` is ``validation`` or
+        ``test``; train is refused. The validation rescore keeps
+        ``build_validation_only_cache`` (that method still never caches the test
+        split). The one-time v6 test opening is the caller for ``split="test"``.
+        This is not the prebuilt cache and nothing is uploaded.
+        """
+        if split not in ("validation", "test"):
+            raise RuntimeError(f"one-split cache only admits 'validation' or 'test', got {split!r}")
+        if self.reader is None or not self._setup_done:
+            raise RuntimeError("setup() must run before build_one_split_cache()")
+        if self.holdout_anchors is not None:
+            raise RuntimeError("one-split cache is not defined for the spatial holdout")
+        if self.splits != (split,):
+            raise RuntimeError(f"one-split cache requires splits ({split!r},), got {self.splits!r}")
+        if self.cache_root is not None:
+            raise RuntimeError("one-split cache requires a module set up without a cache")
+        source_width = len(self.reader.scaler.channel_order)
+        if self.channel_indices != tuple(range(source_width)):
+            raise RuntimeError(
+                "one-split cache requires identity channel indices over the "
+                f"{source_width}-channel source stack, got {self.channel_indices!r}"
+            )
+        refs = self._admitted.get(split, [])
+        if not refs:
+            raise RuntimeError(f"cannot build an empty {split} cache")
+        bad = sorted({ref.split for ref in refs if ref.split != split})
+        if bad:
+            raise RuntimeError(f"one-split cache refuses refs from {bad}")
+        if cache_root.exists():
+            raise RuntimeError(f"one-split cache root {cache_root} already exists")
+        provenance, source_channels = self._cache_provenance(refs)
+        self.cache_max_bytes = max_bytes
+        with timed_phase(
+            "cache_build",
+            logger=logger,
+            cache_build_workers=self.cache_build_workers,
+            patch_count=len(refs),
+            cache_reused=False,
+        ):
+            started = time.perf_counter()
+            self._write_cache(cache_root, self.reader, refs, source_channels, provenance)
+            self.cache_build_seconds = time.perf_counter() - started
+        self.patch_cache_source = "job_local"
+        PatchCache(cache_root, provenance)
+        return provenance
+
     def _materialize_prebuilt(self) -> None:
         """Fetch the versioned prebuilt cache and install it as the split datasets."""
         if self.cache_root is None or self.reader is None or self.prebuilt_uri_root is None:
