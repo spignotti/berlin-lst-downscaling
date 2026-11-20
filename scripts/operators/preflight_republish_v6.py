@@ -596,10 +596,16 @@ def _failures_for(step: str, cfg) -> list[str]:
             need(uri, label)
         for uri, label in v6_vintage_product_uris():
             need(uri, label)
-        inference_manifest = f"{INFERENCE_2026_MANIFEST_ROOT}/manifest.parquet"
-        if exists(inference_manifest):
+        # A published bundle is reused by a resumed chain (the launcher then
+        # skips selection); it must be complete. A partial bundle fails.
+        bundle = [
+            f"{INFERENCE_2026_MANIFEST_ROOT}/{name}"
+            for name in ("manifest.parquet", "pairings.parquet", "manifest_report.json")
+        ]
+        present = [uri for uri in bundle if exists(uri)]
+        if present and len(present) != len(bundle):
             failures.append(
-                f"inference 2026 bundle already published ({inference_manifest}) — "
+                f"inference 2026 bundle is partial ({INFERENCE_2026_MANIFEST_ROOT}) — "
                 "delete a partial prefix by hand; the launcher never auto-deletes"
             )
     else:

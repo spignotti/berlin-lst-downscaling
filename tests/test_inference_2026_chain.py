@@ -369,12 +369,17 @@ def test_preflight_inference_2026_needs_published_inputs_only(monkeypatch) -> No
     published.add(_MANIFEST_URI)
     monkeypatch.setattr(io, "exists", lambda uri: str(uri) in published)
     refused = preflight._failures_for("inference_2026", None)
-    assert any("already published" in finding for finding in refused)
+    assert any("partial" in finding for finding in refused)
+
+    root = _MANIFEST_URI.rsplit("/", 1)[0]
+    complete = published | {f"{root}/pairings.parquet", f"{root}/manifest_report.json"}
+    monkeypatch.setattr(io, "exists", lambda uri: str(uri) in complete)
+    assert preflight._failures_for("inference_2026", None) == []
 
     monkeypatch.setattr(io, "exists", lambda uri: False)
     missing = preflight._failures_for("inference_2026", None)
     assert any("missing upstream" in finding for finding in missing)
-    assert not any("already published" in finding for finding in missing)
+    assert not any("partial" in finding for finding in missing)
 
 
 def test_preflight_inference_2026_refuses_features_v6_and_wrong_config() -> None:
