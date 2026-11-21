@@ -19,7 +19,8 @@ Usage
         --step features_v6 --config-dir configs/features --config-name v6
 
 Steps: selection_v4, ard_v10, static_sources_v6, static_derived_v6,
-lod_vintages_v6, dynamic_v6, features_v6, training_v3, patch_index_v3, eda_v3.
+lod_vintages_v6, dynamic_v6, features_v6, training_v3, patch_index_v3, eda_v3,
+inference_2026.
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ _REPO = Path(__file__).resolve().parents[2]
 from berlin_lst_downscaling.data.ard.publish_guard import (  # noqa: E402
     EDA_V3_ROOT,
     FEATURES_V6_ROOT,
+    INFERENCE_2026_ARD_ROOT,
+    INFERENCE_2026_DYNAMIC_ROOT,
+    INFERENCE_2026_FEATURES_ROOT,
+    INFERENCE_2026_MANIFEST_ROOT,
     MANIFESTS_V4_ROOT,
     PATCH_INDEX_V3_ROOT,
     SENTINEL2_V10_ROOT,
@@ -110,6 +115,7 @@ STEPS = (
     "training_v3",
     "patch_index_v3",
     "eda_v3",
+    "inference_2026",
 )
 
 
@@ -215,6 +221,159 @@ def _load_config(config_dir: str, config_name: str):
     with suppress(Exception):
         OmegaConf.resolve(cfg)
     return cfg
+
+
+def _compose_named(config_dir: str, config_name: str):
+    """Hydra-compose one config. The result outlives the Hydra context."""
+    from hydra import compose, initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+
+    GlobalHydra.instance().clear()
+    config_path = str((_REPO / config_dir).resolve())
+    with initialize_config_dir(config_dir=config_path, version_base=None):
+        composed = compose(config_name=config_name)
+        resolved = OmegaConf.to_container(composed, resolve=True)
+    return OmegaConf.create(resolved)
+
+
+def _inference_2026_configs() -> dict:
+    """Compose the five inference-2026 configs. Hydra, not the shallow merge."""
+    return {
+        "selection": _compose_named("configs/selection", "inference_2026_v4"),
+        "s2": _compose_named("configs/ard", "sentinel2_mosaic_v10_inference_2026"),
+        "landsat": _compose_named("configs/ard", "landsat_v10_inference_2026"),
+        "dynamic": _compose_named("configs/dynamic", "v6_inference_2026"),
+        "features": _compose_named("configs/features", "v6_inference_2026"),
+    }
+
+
+def _check_inference_2026_configs(configs: dict) -> list[str]:
+    """Fail-closed contract checks for the composed inference-2026 configs."""
+    from berlin_lst_downscaling.data.ard.publish_guard import (
+        FrozenPrefixError,
+        assert_feature_output_root,
+    )
+
+    failures: list[str] = []
+    selection = configs["selection"]
+    s2 = configs["s2"]
+    landsat = configs["landsat"]
+    dynamic = configs["dynamic"]
+    features = configs["features"]
+    manifest_root = INFERENCE_2026_MANIFEST_ROOT
+    manifest_uri = f"{manifest_root}/manifest.parquet"
+
+    def want_root(value: object, expected: str, label: str) -> None:
+        if str(value or "").rstrip("/") != expected:
+            failures.append(f"{label} is {value!r}, expected {expected!r}")
+
+    def want_manifest(value: object, label: str) -> None:
+        got = str(value or "").rstrip("/")
+        if got != manifest_uri:
+            failures.append(f"{label} manifest_uri is {got!r}, expected {manifest_uri!r}")
+
+    years = [int(year) for year in list(selection.get("years") or [])]
+    if years != [2026]:
+        failures.append(f"selection years is {years!r}, expected [2026]")
+    months = [int(month) for month in list(selection.get("months") or [])]
+    if months != [5, 6, 7, 8, 9]:
+        failures.append(f"selection months is {months!r}, expected [5, 6, 7, 8, 9]")
+    cutoff = str(selection.get("cutoff_utc") or "")
+    if cutoff != "2026-09-30T23:59:59Z":
+        failures.append(f"selection cutoff_utc is {cutoff!r}, expected 2026-09-30T23:59:59Z")
+    overlap = selection.get("landsat", {}).get("anchor", {}).get("min_aoi_overlap_frac")
+    if overlap is None or abs(float(overlap) - 0.05) > 1e-12:
+        failures.append(f"selection min_aoi_overlap_frac is {overlap!r}, expected 0.05")
+    mosaic_on = selection.get("sentinel2", {}).get("mosaic", {}).get("enabled")
+    if mosaic_on is not True:
+        failures.append("selection sentinel2.mosaic.enabled must be true")
+    want_root(selection.get("output_root"), manifest_root, "selection output_root")
+    checkpoint = str(selection.get("checkpoint_dir") or "").rstrip("/")
+    if checkpoint != f"{manifest_root}/checkpoints":
+        failures.append(f"selection checkpoint_dir is {checkpoint!r}")
+
+    if list(s2.get("sources") or []) != ["sentinel-2-l2a"]:
+        failures.append(f"s2 sources is {list(s2.get('sources') or [])!r}")
+    s2_schema = s2.get("sentinel2", {}).get("schema_version")
+    if int(s2_schema or -1) != 10:
+        failures.append(f"s2 schema_version is {s2_schema!r}, expected 10")
+    if s2.get("sentinel2", {}).get("mosaic", {}).get("enabled") is not True:
+        failures.append("s2 mosaic.enabled must be true")
+    want_root(s2.get("output_root"), INFERENCE_2026_ARD_ROOT, "s2 output_root")
+    want_manifest(s2.get("manifest_uri"), "s2")
+
+    landsat_sources = list(landsat.get("sources") or [])
+    if landsat_sources != ["landsat-c2-l2"]:
+        failures.append(f"landsat sources is {landsat_sources!r}, expected ['landsat-c2-l2']")
+    want_root(landsat.get("output_root"), INFERENCE_2026_ARD_ROOT, "landsat output_root")
+    want_manifest(landsat.get("manifest_uri"), "landsat")
+
+    dynamic_years = [int(year) for year in list(dynamic.get("years") or [])]
+    if dynamic_years != [2026]:
+        failures.append(f"dynamic years is {dynamic_years!r}, expected [2026]")
+    if str(dynamic.get("dataset_role") or "") != "inference":
+        failures.append(f"dynamic dataset_role is {dynamic.get('dataset_role')!r}")
+    if dynamic.get("expected_scene_count") is not None:
+        failures.append("dynamic expected_scene_count must be null")
+    if str(dynamic.get("era5_channel_set") or "") != "v6":
+        failures.append(f"dynamic era5_channel_set is {dynamic.get('era5_channel_set')!r}")
+    if str(dynamic.get("era5_representation") or "") != "scene_value":
+        failures.append(f"dynamic era5_representation is {dynamic.get('era5_representation')!r}")
+    want_root(dynamic.get("output_root"), INFERENCE_2026_DYNAMIC_ROOT, "dynamic output_root")
+    want_root(dynamic.get("source_root"), STATIC_SOURCES_V6, "dynamic source_root")
+    want_root(dynamic.get("derived_root"), STATIC_DERIVED_V6, "dynamic derived_root")
+    want_manifest(dynamic.get("manifest_uri"), "dynamic")
+    if str(dynamic.get("geometry_mapping_uri") or "").rstrip("/") != GEOMETRY_MAPPING:
+        failures.append("dynamic geometry_mapping_uri is not the published v1 mapping")
+
+    if features.get("include_inference_scenes") is not True:
+        failures.append("features include_inference_scenes must be true")
+    schema_version = int(features.get("feature_schema_version") or -1)
+    if schema_version != 5:
+        failures.append(f"features schema is {schema_version!r}, expected 5")
+    if features.get("expected_scene_count") is not None:
+        failures.append("features expected_scene_count must be null")
+    if str(features.get("era5_representation") or "") != "scene_value":
+        failures.append(f"features era5_representation is {features.get('era5_representation')!r}")
+    want_root(features.get("output_root"), INFERENCE_2026_FEATURES_ROOT, "features output_root")
+    want_root(features.get("ard_root"), INFERENCE_2026_ARD_ROOT, "features ard_root")
+    want_root(features.get("dynamic_root"), INFERENCE_2026_DYNAMIC_ROOT, "features dynamic_root")
+    want_root(
+        features.get("static_sources_root"), STATIC_SOURCES_V6, "features static_sources_root"
+    )
+    want_root(
+        features.get("static_derived_root"), STATIC_DERIVED_V6, "features static_derived_root"
+    )
+    want_manifest(features.get("manifest_uri"), "features")
+    if str(features.get("geometry_mapping_uri") or "").rstrip("/") != GEOMETRY_MAPPING:
+        failures.append("features geometry_mapping_uri is not the published v1 mapping")
+    try:
+        assert_feature_output_root(
+            str(features.get("output_root") or ""),
+            schema_version=schema_version,
+            include_inference_scenes=True,
+        )
+    except FrozenPrefixError as exc:
+        failures.append(f"publish_guard: {exc}")
+    if str(features.get("output_root") or "").rstrip("/") == FEATURES_V6:
+        failures.append("inference features must not write features/v6")
+
+    watched = (
+        selection.get("output_root"),
+        s2.get("manifest_uri"),
+        s2.get("output_root"),
+        landsat.get("manifest_uri"),
+        landsat.get("output_root"),
+        dynamic.get("manifest_uri"),
+        dynamic.get("output_root"),
+        features.get("manifest_uri"),
+        features.get("ard_root"),
+        features.get("dynamic_root"),
+        features.get("output_root"),
+    )
+    if any(MANIFESTS_V4_ROOT in str(value or "") for value in watched):
+        failures.append("an inference config points at the published v4 bundle")
+    return failures
 
 
 def _failures_for(step: str, cfg) -> list[str]:
@@ -415,6 +574,40 @@ def _failures_for(step: str, cfg) -> list[str]:
         need(MANIFEST_V4_URI, "v4 manifest.parquet")
         need(patch_index_parquet_uri(PATCH_INDEX_V3), "patch-index v3 patch_index.parquet")
         need(patch_index_completion_uri(PATCH_INDEX_V3), "patch-index v3 complete.json")
+    elif step == "inference_2026":
+        # Compose with Hydra. The shallow _load_config merge does not follow
+        # defaults, and this step must see the inherited contract keys.
+        try:
+            inference_configs = _inference_2026_configs()
+        except Exception as exc:
+            failures.append(f"cannot compose inference 2026 configs: {exc}")
+        else:
+            failures.extend(_check_inference_2026_configs(inference_configs))
+        # Published inputs only. The new manifest, ARD ledger, and dynamic
+        # ledger do not exist yet: this preflight runs before the chain.
+        need(f"{STATIC_SOURCES_V6}/ledger.parquet", "static-sources v6 ledger")
+        need(
+            f"{STATIC_DERIVED_V6}/_state/static/derived/ledger.parquet",
+            "static-derived v6 ledger",
+        )
+        need(GEOMETRY_MAPPING, "geometry mapping")
+        need(f"{ARD_V10_ROOT}/ledger.parquet", "ARD v10 ledger (inference seed source)")
+        for uri, label in v6_vintage_horizon_uris():
+            need(uri, label)
+        for uri, label in v6_vintage_product_uris():
+            need(uri, label)
+        # A published bundle is reused by a resumed chain (the launcher then
+        # skips selection); it must be complete. A partial bundle fails.
+        bundle = [
+            f"{INFERENCE_2026_MANIFEST_ROOT}/{name}"
+            for name in ("manifest.parquet", "pairings.parquet", "manifest_report.json")
+        ]
+        present = [uri for uri in bundle if exists(uri)]
+        if present and len(present) != len(bundle):
+            failures.append(
+                f"inference 2026 bundle is partial ({INFERENCE_2026_MANIFEST_ROOT}) — "
+                "delete a partial prefix by hand; the launcher never auto-deletes"
+            )
     else:
         failures.append(f"unknown step: {step}")
     return failures
@@ -426,6 +619,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-dir", required=True)
     parser.add_argument("--config-name", required=True)
     args = parser.parse_args(argv)
+
+    if args.step == "inference_2026" and (
+        args.config_dir,
+        args.config_name,
+    ) != ("configs/features", "v6_inference_2026"):
+        print(
+            "preflight inference_2026 FAILED: "
+            "expected configs/features/v6_inference_2026, "
+            f"got {args.config_dir}/{args.config_name}"
+        )
+        return 1
 
     cfg = _load_config(args.config_dir, args.config_name)
     failures = _failures_for(args.step, cfg)

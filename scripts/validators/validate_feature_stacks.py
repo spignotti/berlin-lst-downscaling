@@ -306,8 +306,15 @@ def main() -> int:
         default=None,
         metavar="MANIFEST_PARQUET",
         help="Derive the expected ledger count from a selection manifest "
-        "bundle (assessable 2017-2025 anchors); mutually exclusive with "
+        "bundle (assessable 2017-2025 anchors, or years after 2025 when "
+        "--include-inference-scenes is set); mutually exclusive with "
         "--expected-scenes",
+    )
+    parser.add_argument(
+        "--include-inference-scenes",
+        action="store_true",
+        help="Count anchors after 2025 instead of the 2017-2025 training "
+        "window. Off by default. Requires --expected-scenes-from-manifest.",
     )
     parser.add_argument(
         "--ard-ledger",
@@ -324,6 +331,8 @@ def main() -> int:
         parser.error("--expected-scenes and --expected-scenes-from-manifest are exclusive")
     if args.ard_ledger is not None and args.expected_scenes_from_manifest is None:
         parser.error("--ard-ledger requires --expected-scenes-from-manifest")
+    if args.include_inference_scenes and args.expected_scenes_from_manifest is None:
+        parser.error("--include-inference-scenes requires --expected-scenes-from-manifest")
     if args.expected_scenes_from_manifest is not None:
         from berlin_lst_downscaling.data.selection.bundle_counts import (
             expected_counts_for_bundle,
@@ -332,7 +341,9 @@ def main() -> int:
 
         if args.ard_ledger is not None:
             expected, _, exclusions = expected_features_count_for_bundle(
-                args.expected_scenes_from_manifest, args.ard_ledger
+                args.expected_scenes_from_manifest,
+                args.ard_ledger,
+                include_inference_scenes=args.include_inference_scenes,
             )
             print(f"  Expected scenes from manifest bundle minus S2 gate exclusions: {expected}")
             for row in exclusions:
@@ -342,7 +353,10 @@ def main() -> int:
                 )
             args.expected_scenes = expected
         else:
-            assessable, _ = expected_counts_for_bundle(args.expected_scenes_from_manifest)
+            assessable, _ = expected_counts_for_bundle(
+                args.expected_scenes_from_manifest,
+                include_inference_scenes=args.include_inference_scenes,
+            )
             print(f"  Expected scenes from manifest bundle: {assessable}")
             args.expected_scenes = assessable
 

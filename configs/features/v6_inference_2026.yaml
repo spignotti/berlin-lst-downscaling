@@ -1,0 +1,31 @@
+# @package _global_
+# Feature stacks for the 2026 inference scenes. Same schema-5 roster as
+# configs/features/v6.yaml (canopy cover, ERA5 scene_value, no second S2
+# offset) on the published v6 static roots. New manifest, ARD, dynamic,
+# and output prefixes. include_inference_scenes admits year >= 2026 and
+# dynamic role=inference. The isolated runner merges this file over
+# configs/features/_base.yaml and does not follow Hydra defaults, so every
+# key that differs from _base is set here.
+#
+# publish_guard refuses features/v6 while include_inference_scenes is true.
+defaults:
+  - _base
+  - _self_
+
+feature_schema_version: 5
+canopy_cover_threshold_m: 2.5
+era5_representation: scene_value
+include_inference_scenes: true
+# The inference bundle is the universe. Null skips the pipeline count gate.
+expected_scene_count: null
+
+manifest_uri: "gs://berlin-lst-training-data/manifests/v4-inference/2026-cutoff-20260930T235959Z/manifest.parquet"
+ard_root: "gs://berlin-lst-training-data/ard/inference/2026-s2-mosaic-v10"
+static_sources_root: "gs://berlin-lst-training-data/static/sources/lod2-area-exact-v2"
+static_derived_root: "gs://berlin-lst-training-data/static/derived/lod2-area-exact-v2"
+dynamic_root: "gs://berlin-lst-training-data/dynamic/inference/2026-v6"
+geometry_mapping_uri: "gs://berlin-lst-training-data/static/geometry_vintages/v1/geometry_mapping.json"
+aoi_mask_uri: "data/boundaries/aoi_10m.tif"
+output_root: "gs://berlin-lst-training-data/features/v6-inference-2026"
+scene_ids: []
+bbox: null

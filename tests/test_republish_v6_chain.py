@@ -1437,7 +1437,7 @@ def test_validators_derive_counts_without_hard_coding(monkeypatch) -> None:
 
     seen: list[str] = []
 
-    def fake_derive(uri: str):
+    def fake_derive(uri: str, **_kwargs: object):
         seen.append(uri)
         raise DerivationUsed(uri)
 
@@ -1517,7 +1517,7 @@ def test_dynamic_validator_uses_assessable_anchor_count(monkeypatch) -> None:
 
     import berlin_lst_downscaling.data.selection.bundle_counts as counts_module
 
-    monkeypatch.setattr(counts_module, "expected_counts_for_bundle", lambda uri: (7, 11))
+    monkeypatch.setattr(counts_module, "expected_counts_for_bundle", lambda uri, **_kw: (7, 11))
     path = _REPO / "scripts/validators/validate_dynamic.py"
     spec = importlib.util.spec_from_file_location("validate_dynamic", path)
     assert spec is not None and spec.loader is not None

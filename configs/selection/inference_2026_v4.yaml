@@ -1,0 +1,23 @@
+# @package _global_
+# Warm-season 2026 inference selection. Same rules as full_2017_2026_v4
+# (months 5-9, S2 partner rule, AOI-overlap gate 0.05, mosaic membership).
+# Only the year list and the cutoff change. Writes a new prefix; the
+# published manifests/v4 bundle is not touched.
+defaults:
+  - full_2017_2026_v4
+  - _self_
+
+years: [2026]
+months: [5, 6, 7, 8, 9]
+cutoff_utc: "2026-09-30T23:59:59Z"
+
+landsat:
+  anchor:
+    min_aoi_overlap_frac: 0.05
+
+sentinel2:
+  mosaic:
+    enabled: true
+
+output_root: "gs://berlin-lst-training-data/manifests/v4-inference/2026-cutoff-20260930T235959Z"
+checkpoint_dir: "${output_root}/checkpoints"
