@@ -431,7 +431,8 @@ def test_ard_launcher_chains_inference_2026_without_the_training_manifest() -> N
     ]
     positions = [remote.index(step) for step in steps]
     assert positions == sorted(positions)
-    assert remote.count(" && ") == 4
+    assert remote.count(" && ") == 6
+    assert "for attempt in 1 2 3 4 5; do" in remote
     assert text.index("validate_ard.py") < text.index("validate_dynamic.py")
     assert text.index("validate_dynamic.py") < text.index("validate_feature_stacks.py")
     assert text.index("validate_feature_stacks.py") < text.index("vm_stop")
