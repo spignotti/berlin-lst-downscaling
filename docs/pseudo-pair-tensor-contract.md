@@ -165,13 +165,20 @@ frozen feature channels.
   it is the code default of `run_berlin_inference.py`, so the product
   call names the regime explicitly.
 - Implementation: `modeling/inference.py` (`build_prior_10m`,
-  `predict_scene`, `run_scene`) and `modeling/mosaic.py`. Tiles are
-  160x160 10 m pixels with stride 80; origins are multiples of 10 px
-  (the 100 m lattice). Each output pixel comes from the tile whose
-  central stride square contains it, with the earlier tile kept where
-  centres overlap, and the scene's outer margin taken from the nearest
-  tile. A NaN prior inside a tile is a finite placeholder on the forward
-  pass and is masked out of the product.
+  `predict_scene`, `run_scene`) and `modeling/mosaic.py`. The product
+  tiles the scene with non-overlapping 160x160 10 m tiles whose origins
+  are multiples of 160 px from the canonical grid origin, which is the
+  patch-index lattice (`--stride-px 160`, default). Each tile is then
+  exactly a training/evaluation patch window, so the full-scene path
+  reproduces the stored per-patch scores (validation-2024 scene
+  LC09_L2SP_193023_20240629: 228 patches, pooled 100 m MAE 0.4518 K in
+  both). Overlapping tiles with a centre crop (`--stride-px 80`) were
+  worse at 100 m on the same scene (0.672 against 0.551 K over all valid
+  cells) because the model's output depends on its position in the
+  window. Tile edges remain visible: the step across a tile edge is
+  about 0.3 K against about 0.11 K across other 100 m cell edges. A NaN
+  prior inside a tile is a finite placeholder on the forward pass and is
+  masked out of the product.
 
 Training and the product therefore use the same prior resolution (1000 m);
 the `native100` option would not. The 28-channel V3 order itself is

@@ -169,6 +169,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cpu")
     parser.add_argument("--out", required=True)
     parser.add_argument("--mosaic", action="store_true")
+    parser.add_argument("--tile-px", type=int, default=160)
+    parser.add_argument(
+        "--stride-px",
+        type=int,
+        default=160,
+        help="160 (product): tiles on the patch lattice; 80: overlapping, centre crop",
+    )
     parser.add_argument(
         "--mask-native-invalid",
         action="store_true",
@@ -242,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
                 device=device,
                 batch_size=int(cfg.data.batch_size),
                 mask_native_invalid=args.mask_native_invalid,
+                tile_px=args.tile_px,
+                stride_px=args.stride_px,
             )
             tif_path, _json_path = scene_product_paths(args.out, scene_id)
             written.append(tif_path)
