@@ -148,22 +148,33 @@ frozen feature channels.
   10 m grid. Each 10 m pixel takes the value of its containing 1000 m
   block. Both the model and the naive baseline use this regime, so their
   scores are directly comparable.
-- **Inference:** native 100 m LST is block-expanded to the 10 m grid. Each
-  10 m pixel takes the value of its containing 100 m cell. The
-  implementation is `modeling/inference.py` (`build_prior_10m`,
+- **Inference (Berlin product):** the product uses the training regime.
+  The prior is the 1000 m global-lattice block mean of native-valid 100 m
+  Landsat cells, block-expanded to 10 m (`--prior-mode block1000`), and
+  the output is masked to 10 m pixels whose 100 m Landsat cell is
+  native-valid (`--mask-native-invalid`) and where `feature_valid == 1`.
+  Reason, from an excerpt on a validation-2024 scene: with a
+  native 100 m prior the frozen model keeps the 100 m blocks (step at
+  cell edges about 9x the step inside a cell) and adds no 10 m structure,
+  while the training regime yields continuous 10 m structure and is the
+  regime the test-2025 numbers describe. The 10 m result is not
+  validated; agreement is checked at 100 m (10 m output averaged 10x10
+  against the observed 100 m cell).
+- **Option `native100`:** native 100 m LST block-expanded to the 10 m
+  grid, each 10 m pixel taking its 100 m cell value. Kept as an option;
+  it is the code default of `run_berlin_inference.py`, so the product
+  call names the regime explicitly.
+- Implementation: `modeling/inference.py` (`build_prior_10m`,
   `predict_scene`, `run_scene`) and `modeling/mosaic.py`. Tiles are
-  160×160 10 m pixels with stride 80; origins are multiples of 10 px
+  160x160 10 m pixels with stride 80; origins are multiples of 10 px
   (the 100 m lattice). Each output pixel comes from the tile whose
   central stride square contains it, with the earlier tile kept where
   centres overlap, and the scene's outer margin taken from the nearest
-  tile. A pixel is written only where `feature_valid == 1` and the prior
-  is finite; elsewhere the output is NaN. A NaN prior inside a tile is a
-  finite placeholder on the forward pass and is masked out of the
-  product. `native100` (this regime) is the default. `block1000` is the
-  training regime and is selected explicitly.
+  tile. A NaN prior inside a tile is a finite placeholder on the forward
+  pass and is masked out of the product.
 
-Training and inference therefore use priors at different effective
-resolutions (1000 m and 100 m). The 28-channel V3 order itself is
+Training and the product therefore use the same prior resolution (1000 m);
+the `native100` option would not. The 28-channel V3 order itself is
 unchanged; adding a channel to the published stack would be a breaking
 schema change. `lst_prior` enters the model as an additional single-band
 input channel at the model boundary.
