@@ -211,6 +211,21 @@ class ScalerSpec:
         return bands
 
 
+def scale_and_fill_features(scaler: ScalerSpec, bands: np.ndarray) -> tuple[np.ndarray, int]:
+    """Apply the train-only scaler and zero-fill non-finite pixels.
+
+    The scaler leaves non-finite pixels non-finite. Those pixels are then set
+    to ``0``, the neutral scaled value the model sees. This is the boundary
+    rule of :meth:`RealPatchReader._read_features`.
+    """
+    scaler.apply(bands)
+    invalid = ~np.isfinite(bands)
+    filled = int(invalid.sum())
+    if filled:
+        bands[invalid] = 0.0
+    return bands, filled
+
+
 def assert_scaler_spec_matches(
     scaler: ScalerSpec,
     *,
@@ -570,6 +585,67 @@ def load_landsat_uris(ard_root: str, scene_ids: set[str]) -> dict[str, tuple[str
 # ── per-scene prior ───────────────────────────────────────────────────
 
 
+def native_landsat_valid(st: np.ndarray, flag: np.ndarray) -> np.ndarray:
+    """Native-valid Landsat cells: finite, flag ``0``, and LST inside ``LST_RANGE_K``.
+
+    The same expression as ``training_eligible@100m`` target validity. Invalid
+    cells are never counted as zero.
+    """
+    if st.shape != flag.shape:
+        raise ValueError(f"Landsat LST shape {st.shape} != flag shape {flag.shape}")
+    return np.isfinite(st) & (flag == 0) & (st >= LST_RANGE_K[0]) & (st <= LST_RANGE_K[1])
+
+
+def global_block_means(
+    st: np.ndarray,
+    valid: np.ndarray,
+    *,
+    col0: int,
+    row0: int,
+    method: str = AGGREGATION_ARITHMETIC,
+) -> tuple[np.ndarray, int, int]:
+    """Return ``(block_means, block_row0, block_col0)`` on the global 1000 m lattice.
+
+    ``col0`` and ``row0`` are the global canonical 100 m indices of ``st[0, 0]``.
+    A block with no native-valid cell is NaN. This is the array stored on
+    :attr:`ScenePrior.block_means`.
+    """
+    resolved = validate_aggregation_method(method)
+    if st.shape != valid.shape:
+        raise ValueError(f"LST shape {st.shape} != validity shape {valid.shape}")
+    height, width = st.shape
+    if height == 0 or width == 0:
+        raise ValueError("Landsat scene is empty")
+    global_rows = np.arange(height, dtype=np.int64)[:, None] + int(row0)
+    global_cols = np.arange(width, dtype=np.int64)[None, :] + int(col0)
+    brow = global_rows // PRIOR_BLOCK_CELLS
+    bcol = global_cols // PRIOR_BLOCK_CELLS
+    block_row0 = int(brow.min())
+    block_col0 = int(bcol.min())
+    ri = (brow - block_row0).astype(np.int64)
+    ci = (bcol - block_col0).astype(np.int64)
+    nbr = int(ri.max()) + 1
+    nbc = int(ci.max()) + 1
+
+    flat = (ri * nbc + ci).ravel()
+    sel = valid.ravel()
+    counts = np.bincount(flat[sel], minlength=nbr * nbc)
+    temps = st.ravel()[sel].astype(np.float64)
+    sums = np.bincount(flat[sel], weights=temps, minlength=nbr * nbc)
+    sums_t4 = (
+        np.bincount(flat[sel], weights=np.power(temps, 4), minlength=nbr * nbc)
+        if resolved != AGGREGATION_ARITHMETIC
+        else None
+    )
+    block_means = pool_block_means_from_accumulators(
+        sums.reshape(nbr, nbc),
+        sums_t4.reshape(nbr, nbc) if sums_t4 is not None else None,
+        counts.reshape(nbr, nbc),
+        method=resolved,
+    )
+    return block_means, block_row0, block_col0
+
+
 @dataclass(frozen=True)
 class ScenePrior:
     """A scene's 1000 m native-valid mean LST grid on global block indices."""
@@ -655,34 +731,9 @@ def _build_scene_prior(
         flag = fsrc.read(1)
 
     # native-valid = the same expression as training_eligible@100m target validity.
-    valid = np.isfinite(st) & (flag == 0) & (st >= LST_RANGE_K[0]) & (st <= LST_RANGE_K[1])
-
-    global_rows = np.arange(height, dtype=np.int64)[:, None] + row0
-    global_cols = np.arange(width, dtype=np.int64)[None, :] + col0
-    brow = global_rows // PRIOR_BLOCK_CELLS
-    bcol = global_cols // PRIOR_BLOCK_CELLS
-    block_row0 = int(brow.min())
-    block_col0 = int(bcol.min())
-    ri = (brow - block_row0).astype(np.int64)
-    ci = (bcol - block_col0).astype(np.int64)
-    nbr = int(ri.max()) + 1
-    nbc = int(ci.max()) + 1
-
-    flat = (ri * nbc + ci).ravel()
-    sel = valid.ravel()
-    counts = np.bincount(flat[sel], minlength=nbr * nbc)
-    temps = st.ravel()[sel].astype(np.float64)
-    sums = np.bincount(flat[sel], weights=temps, minlength=nbr * nbc)
-    sums_t4 = (
-        np.bincount(flat[sel], weights=np.power(temps, 4), minlength=nbr * nbc)
-        if method != AGGREGATION_ARITHMETIC
-        else None
-    )
-    block_means = pool_block_means_from_accumulators(
-        sums.reshape(nbr, nbc),
-        sums_t4.reshape(nbr, nbc) if sums_t4 is not None else None,
-        counts.reshape(nbr, nbc),
-        method=method,
+    valid = native_landsat_valid(st, flag)
+    block_means, block_row0, block_col0 = global_block_means(
+        st, valid, col0=col0, row0=row0, method=method
     )
 
     return ScenePrior(
@@ -955,12 +1006,7 @@ class RealPatchReader:
         return scaler_moments(self._read_feature_window(ref), eligible, self.scaler)
 
     def _read_features(self, ref: PatchRef) -> tuple[np.ndarray, int]:
-        bands = self._read_feature_window(ref)
-        self.scaler.apply(bands)
-        filled = int((~np.isfinite(bands)).sum())
-        if filled:
-            bands[~np.isfinite(bands)] = 0.0
-        return bands, filled
+        return scale_and_fill_features(self.scaler, self._read_feature_window(ref))
 
     def _read_feature_window(self, ref: PatchRef) -> np.ndarray:
         """Read the unscaled ``(n_channels, 160, 160)`` float32 feature window."""
@@ -1095,12 +1141,15 @@ __all__ = [
     "assert_scaler_matches_config",
     "assert_scaler_spec_matches",
     "collate_real_batch",
+    "global_block_means",
     "load_landsat_uris",
     "load_patch_refs",
     "load_scaler",
     "merge_scaler_moments",
+    "native_landsat_valid",
     "patch_index_fingerprints",
     "prior_model_channel",
+    "scale_and_fill_features",
     "scaler_from_moments",
     "scaler_moments",
 ]
