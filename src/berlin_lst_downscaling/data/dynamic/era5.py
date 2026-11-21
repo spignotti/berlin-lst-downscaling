@@ -599,6 +599,13 @@ def _derive_native_fields(
     time_vals = ds[time_dim].values
     diffs = np.abs(time_vals - acq_np)
     nearest_idx = int(diffs.argmin())
+    if time_vals[nearest_idx] != acq_np:
+        # A cache that ends (or has a gap) before the scene must not silently
+        # supply another hour's weather: fail closed.
+        raise ValueError(
+            f"ERA5 has no timestep at the acquisition hour {acq_np}; "
+            f"nearest available is {time_vals[nearest_idx]}"
+        )
 
     t2m_2d = ds["t2m"].isel({time_dim: nearest_idx}).values.astype(np.float32)
     d2m_2d = ds["d2m"].isel({time_dim: nearest_idx}).values.astype(np.float32)
