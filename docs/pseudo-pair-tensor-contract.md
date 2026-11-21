@@ -149,7 +149,18 @@ frozen feature channels.
   block. Both the model and the naive baseline use this regime, so their
   scores are directly comparable.
 - **Inference:** native 100 m LST is block-expanded to the 10 m grid. Each
-  10 m pixel takes the value of its containing 100 m cell.
+  10 m pixel takes the value of its containing 100 m cell. The
+  implementation is `modeling/inference.py` (`build_prior_10m`,
+  `predict_scene`, `run_scene`) and `modeling/mosaic.py`. Tiles are
+  160×160 10 m pixels with stride 80; origins are multiples of 10 px
+  (the 100 m lattice). Each output pixel comes from the tile whose
+  central stride square contains it, with the earlier tile kept where
+  centres overlap, and the scene's outer margin taken from the nearest
+  tile. A pixel is written only where `feature_valid == 1` and the prior
+  is finite; elsewhere the output is NaN. A NaN prior inside a tile is a
+  finite placeholder on the forward pass and is masked out of the
+  product. `native100` (this regime) is the default. `block1000` is the
+  training regime and is selected explicitly.
 
 Training and inference therefore use priors at different effective
 resolutions (1000 m and 100 m). The 28-channel V3 order itself is
