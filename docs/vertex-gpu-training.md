@@ -350,7 +350,7 @@ uv run --group operators python scripts/operators/launch_vertex_modeling.py \
 Issue #58 and issue #63. Same protocol, timeout, and cost ceilings as
 `--mode full`, with Hydra profiles `stage2_locked` … `stage5_locked`,
 `isolate_shadows_locked`, and `isolate_era5_locked` under the residual lock
-(`docs/ablation-stage-configs.md`). Evidence reuses the `full` profile
+(`66ff28f:docs/ablation-stage-configs.md`). Evidence reuses the `full` profile
 (checkpoint + one-shot test). Rebuild the image from a commit that includes
 those configs; do not retune between runs. Stage 5 must use an image that
 contains the pad-free SSIM loss.
@@ -799,7 +799,7 @@ requests. The reader does no reprojection. It checks alignment and reads
 windows. DataLoader workers (`data.num_workers`) cannot speed this up, because
 the cache is built in the main process before any loader exists.
 
-Historical evidence (`docs/patch-read-timing.md`, issue #35) used older data
+Historical evidence (`66ff28f:docs/patch-read-timing.md`, issue #35) used older data
 and hardware. There, feature reads made up about 88% of the read pass, and the
 duplicate target/mask opens made up about 10% of admission plus read. These
 numbers show where the time goes. They are not a breakdown of the Vertex job

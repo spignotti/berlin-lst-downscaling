@@ -1,4 +1,4 @@
-# Thesis figure style. Palette follows docs/thesis/06-ausarbeitung-design.md.
+# Thesis figure style. Palette roles as in berlin_lst_downscaling/figures/style.py.
 # Colours are written without a leading "#" because "#" starts a comment in
 # matplotlib style files (matplotlib accepts bare 6-digit hex here).
 #   ink 14181F, muted 5B6370, accent 3358D4, accent dark 273EA5, border DFE3E8

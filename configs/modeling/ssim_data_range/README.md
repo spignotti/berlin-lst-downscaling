@@ -23,5 +23,5 @@ version (currently `v1.yaml`, `L = 30.622 K`).
 
 The fixed-L SSIM (`ssim_100m`) is the main metric. Every report also carries
 `ssim_100m_L250` (L = 250 K), the appendix comparison value to stages 1-4, and the diagnostic
-`ssim_100m_Lpatch` (per-patch target range). See
-[`docs/thesis/03-methodik/evaluation-unsicherheit.md`](../../../docs/thesis/03-methodik/evaluation-unsicherheit.md).
+`ssim_100m_Lpatch` (per-patch target range). The derivation of the fixed range is in
+[`docs/stage5-loss-audit.md`](../../../docs/stage5-loss-audit.md).

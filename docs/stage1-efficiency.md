@@ -296,7 +296,7 @@ naive cap and reload checks. Their mean absolute residual corrections were
 ### Full-run planning estimate
 
 The baseline index has `10,018` patches: `6,873` train, `1,342` validation, and
-`1,803` test (`docs/baseline-full-results.md:12–13, 32–34`). Full Stage-1
+`1,803` test (`66ff28f:docs/baseline-full-results.md:12–13, 32–34`). Full Stage-1
 therefore requests `8,215` train/validation patches. Scaling the 192-patch,
 six-epoch learning guard to 20 epochs and that requested universe gives a factor
 of about `142.6`. At this scale, a linear cache-size estimate is about `9 GiB`;

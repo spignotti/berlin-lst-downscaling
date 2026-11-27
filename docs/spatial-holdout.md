@@ -458,7 +458,7 @@ Per-arm time bound: the written record has no measured v6 wall time for an arm
 other than L4 (matrix) and L1 and L4 (stage 1). The channel counts run from 10
 (L1) to 22 (L4, L5); L5 changes the loss only. For orientation, the v1 ladder on
 the same job profile took 2 h 54 min at Stage 4 and 2 h 59 min at Stage 5
-(`docs/ablation-full-results.md`, thermal-aware loss added): about 3 % more, which
+(`66ff28f:docs/ablation-full-results.md`, thermal-aware loss added): about 3 % more, which
 would put L5 near 2.4 to 2.5 h. That is not a measurement of v6 L5. The 3 h
 bound leaves 0.63 h over L4. Four concurrent jobs read the patch rasters from
 the same bucket during data preparation; no measurement exists for that. Both

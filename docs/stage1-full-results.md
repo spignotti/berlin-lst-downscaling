@@ -30,7 +30,7 @@ operational retunes; none is changed here.
   10x10 pooling, and cell-weighted MAE as the naive anchor. A model arm is
   comparable only when its recorded admitted **and** skipped patch IDs equal the
   baseline universe per split, not merely the counts
-  (`docs/baseline-full-results.md`, "Comparison universe").
+  (`66ff28f:docs/baseline-full-results.md`, "Comparison universe").
 
 ## 2. Pre-registered decision table
 

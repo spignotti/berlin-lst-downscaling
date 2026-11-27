@@ -1,60 +1,54 @@
 # Documentation map
 
-Thesis reasoning, method justification, and scientific interpretation live in
-`thesis/`. This repository owns normative technical contracts, source, configs,
-validators, operating instructions, and immutable evidence records. W&B owns
-live run metrics; GCS holds released datasets, provenance, and checkpoints.
+This folder holds technical documentation only: contracts, operating guides,
+evaluation design, and the machine-readable evidence that validators and tests
+read. Thesis notes, result summaries and interpretation are kept outside this
+repository; removed history and thesis material stays in the git history
+(last at commit `66ff28f`). W&B owns live run metrics; GCS holds released
+datasets, provenance, and checkpoints.
 
-## Current contracts and guides
+## Contracts
 
 - `data-sources-and-contracts.md` — sources, canonical grid, manifest and
-  product contracts. The published features/v5 roster is the 28-channel
-  table in that document. features/v6 is `features-v6.md`.
-- `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer. Not a
-  V3 feature channel. Proposal B is the decided evaluation grouping
-  (2026-10-16).
-- `spatial-error-analysis.md` — exploratory validation error analysis by
-  scene, Stadtstruktur group and in space; inputs, commands, limits.
-- `eda-v1.md` — descriptive tables for the published training release.
-  No figures. Proposal B is the stratification.
-- `ecostress-feasibility.md` — read-only ECOSTRESS C2 collocation inventory
-  against the published Landsat anchors (issue #71).
+  product contracts.
+- `features-v6.md` — features/v6 channel roster and contract.
 - `pseudo-pair-tensor-contract.md` — normative pseudo-pair and tensor
-  contract for real-data training (WB3), implemented by `modeling/`.
+  contract for training, implemented by `modeling/`.
+
+## Running the pipeline
+
+- `republish-v6.md` — the v6 republish chain step by step (selection v4 to
+  patch index v3 and EDA v3).
+- `vm-operations.md` — VM lifecycle, accounts and secrets, launcher logs.
 - `vertex-gpu-training.md` — Vertex AI GPU launch recipe.
-- `ablation-stage-configs.md` — frozen comparison configs for the ablation
-  stages and isolation runs.
-- `ablation-v6-configs.md` — v6 ablation arms, run matrix, and launcher modes.
-- `spatial-holdout.md` — spatial holdout add-on test for all nine matrix arms:
-  block assignment, training option, batch launcher, evaluation, limits.
-- `stage5-loss-audit.md` — audit of the Stage-5 thermal-aware loss (term
-  scales, SSIM support, fp32 numerics) before the v6 L5 arm, and the fixed
-  train-split SSIM data range (derivation command, parameters).
+- `ablation-v6-configs.md` — v6 ablation arms, run matrix, launcher modes.
 
-## Frozen evidence
+## Evaluation design
 
-Do not rewrite these records. Later runs are recorded separately.
+- `spatial-holdout.md` — spatial holdout and 5-fold spatial cross-validation:
+  block assignment, training option, launcher, evaluation, limits.
+- `spatial-error-analysis.md` — exploratory validation error analysis by
+  scene, Stadtstruktur group and in space.
+- `stadtstruktur.md` — Umweltatlas 06.07 / 06.08 evaluation layer; Proposal B
+  is the evaluation grouping. Not a feature channel.
+- `tessera-arm.md` — TESSERA embedding arm.
+- `stage5-loss-audit.md` — thermal-aware loss audit and the fixed train-split
+  SSIM data range (derivation command, parameters).
 
-- `baseline-full-results.md` — same-universe naive baseline and validation.
-- `stage1-full-results.md` — Stage-1 full temporal GO screen, cohort,
-  one-shot test, and checkpoint verification (issue #53).
-- `stage1-efficiency.md` — closed efficiency gate and frozen cheap runtime.
-- `stage1-probe-results.md` — historical absolute-head NO-GO context.
-- `stage1-debug-results.md` — diagnostic observations and residual-recovery GO.
-- `patch-read-timing.md` — bounded I/O measurement and no-change decision.
-- `gcs-inventory-and-transfer.md` — completed 2026-09-25 bucket cutover.
-- `ablation-full-results.md` — Tag-11 ladder and isolation runs (issues #58
-  and #63).
-- `random-forest-baseline.md` and `random-forest-full-results.md` — CPU
-  random-forest comparison method, validation, and results (issue #59).
-- `results/` — machine-readable experiment evidence.
+## Data layout
 
-## Archived handoffs
+- `gcs-inventory-and-transfer.md` — bucket identity and prefix inventory, with the
+  record of the completed 2026-09-25 bucket cutover.
+- `s2-mosaic-membership.md` — Sentinel-2 mosaic membership rules.
 
-Historical context, not operational guidance. Paths inside these files may
-predate the 2026-09-25 bucket cutover.
+## Pre-registered criteria read by code
 
-- `archive/phase-1-delivery.md` — preprocessing handoff.
-- `archive/phase-2-preparation.md` — WB2 handoff.
-- `archive/stage1-training-readiness.md` — cancelled verification gate; the
-  frozen runtime reference lives in `stage1-efficiency.md`.
+The Stage-1 validators, guards and locked configs cite these documents.
+
+- `stage1-full-results.md`, `stage1-debug-results.md`, `stage1-efficiency.md`,
+  `archive/stage1-training-readiness.md`.
+
+## Evidence
+
+- `results/` — machine-readable experiment evidence. Do not rewrite these
+  records; validators and tests read some of them.

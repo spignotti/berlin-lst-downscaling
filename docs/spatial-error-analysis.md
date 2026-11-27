@@ -2,7 +2,7 @@
 
 Exploratory description of where the validation errors of a set of runs sit:
 by scene, by Stadtstruktur group, and in space. It is not one of the
-pre-declared comparison families of the matrix (`docs/thesis/03-methodik/evaluation-unsicherheit.md`),
+pre-declared comparison families of the matrix (thesis method notes, removed from this repo; `66ff28f:docs/thesis/03-methodik/evaluation-unsicherheit.md`),
 its intervals are unadjusted, and it derives no verdict about a model.
 
 Scope: validation split only. The loaders refuse any other split, the cell

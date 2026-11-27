@@ -1,9 +1,8 @@
 """Shared style, palette and export helper for the thesis figures.
 
 Figure scripts call :func:`use_thesis_style` once, draw with the palette
-constants, and write the result with :func:`save_figure`. Colour roles follow
-``docs/thesis/06-ausarbeitung-design.md``: green, orange and red carry
-semantic meaning only.
+constants, and write the result with :func:`save_figure`. Green, orange and
+red carry semantic meaning only.
 """
 
 from __future__ import annotations

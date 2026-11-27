@@ -87,7 +87,7 @@ Readout:
   case, 1−SSIM is 0.010 at data range 250 K (`c2 = 56.25`), 0.145 at 40 K
   (`c2 = 1.44`), and 0.437 at 10 K (`c2 = 0.09`).
 - **No logged values are available as an in-repo check.**
-  `docs/ablation-full-results.md` holds only the v1 Stage-5 MAE (validation
+  `66ff28f:docs/ablation-full-results.md` holds only the v1 Stage-5 MAE (validation
   0.4762 K vs Stage 4 0.4996 K, single seed, different image). The
   `train|validation/thermal_*_weighted` values exist only in W&B and are not
   reproduced in the repository. The single-seed v1 gain therefore cannot be
@@ -109,7 +109,7 @@ What is correct (`metrics.py:273-320`):
   L1 + 0.1·grad (`metrics.py:171-176`,
   `test_thermal_objective_without_supported_window_is_l1_plus_gradient`). The
   mean is window-weighted across the batch, not patch-weighted, which matches
-  the "support-weighted" wording in `docs/ablation-stage-configs.md`.
+  the "support-weighted" wording in `66ff28f:docs/ablation-stage-configs.md`.
 - Clamping: the training loss clamps the prediction to [150, 400] K
   (`metrics.py:166`). The validation diagnostic `validation/ssim_100m` does
   not clamp (`real_task.py:800-805`). The target is always clamped. This

@@ -13,7 +13,7 @@ pipeline stage must respect.
 | ECOSTRESS L2T LSTE v002 (NASA CMR) | `data/acquisition/ecostress.py` | 70 m | validation (`role=validation`) |
 
 ECOSTRESS stays outside the V3 feature stack. The 2026-10-14 metadata
-inventory (`docs/ecostress-feasibility.md`) found a small set of daytime
+inventory (`66ff28f:docs/ecostress-feasibility.md`) found a small set of daytime
 tile overlaps with the published anchors. It did not read ECOSTRESS QC, and
 the six-id allowlist in `configs/selection/_base.yaml` is not a measured
 collocation. `±2 hours` in that config is unused by selection.
@@ -687,7 +687,7 @@ asserts byte-identical Parquet and QA artifacts, and runs the validator.
 
 ## Training-data EDA (evaluation/eda/v2)
 
-`docs/eda-v1.md` is the descriptive pass over this release. It reads
+`66ff28f:docs/eda-v1.md` is the descriptive pass over this release. It reads
 `training/v2`, Feature Release v5, the v3 anchor dates, patch index v2,
 and `evaluation/stadtstruktur/v1`. It writes tables only, under
 `evaluation/eda/v2`. Proposal B is the stratification and is not refit.

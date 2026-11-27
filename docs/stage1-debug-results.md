@@ -3,7 +3,7 @@
 Issue #47 recovery loop. The bounded Stage-1 probe (#45) was a **NO-GO** for the
 full temporal run: six epochs ended at 294.84 K validation MAE against 1.5261 K
 for the same-cohort naive prior-expand baseline (≈193× worse), barely moving off
-its initialization (`docs/stage1-probe-results.md`). This document records (1)
+its initialization (`66ff28f:docs/stage1-probe-results.md`). This document records (1)
 the static and measured root-cause diagnosis, and (2) the **pre-registration** of
 the recovery trial and its go/no-go screen, written before the first fit.
 

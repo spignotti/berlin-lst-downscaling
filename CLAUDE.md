@@ -1,6 +1,6 @@
 # berlin-lst-downscaling
 
-Cloud-native LST downscaling for Berlin (public thesis code). Landsat and Sentinel-2 come from Microsoft Planetary Computer STAC; ECOSTRESS comes from NASA CMR via earthaccess. Products live in GCS. Thesis working material is in `docs/thesis/`; the thesis text itself lives in `~/code/masterarbeit-text`.
+Cloud-native LST downscaling for Berlin (public thesis code). Landsat and Sentinel-2 come from Microsoft Planetary Computer STAC; ECOSTRESS comes from NASA CMR via earthaccess. Products live in GCS. `docs/` holds only technical docs; thesis notes, results summary and text live in the private workspace `~/code/masterarbeit-text`, result files in `~/vertex-runs`.
 
 This file does not limit what an owner-started task may do.
 

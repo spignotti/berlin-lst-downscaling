@@ -62,12 +62,8 @@ reader, mask, and metric. The real path admits each selected patch once, then
 reads the split either eagerly (bounded smokes) or lazily through loader
 workers (`data.mode=stream`, the `real_full` default), so a full split is
 never held in memory. The scaffolding gates below prove the lifecycle and the
-released-source wiring. Completed since then: the Stage-1 full temporal run
-(validation 0.50285 K, one-shot 2025 test 0.53257 K), the Tag-11 ablation
-ladder (Stages 2–5) with two single-family isolation runs, and the validated
-four-stage random-forest baseline (Stage-4 test 1.18341 K vs naive 1.39523 K).
-Scientific interpretation lives in `docs/thesis/`; machine-readable evidence and
-frozen result notes stay in this repository (see Documentation).
+released-source wiring. Technical documentation is listed under Documentation; thesis notes and
+result summaries are kept outside this repository.
 
 ## Setup
 
@@ -137,18 +133,16 @@ see `docs/vm-operations.md`.
 
 ## Documentation
 
-Scientific reasoning and interpretation live in `docs/thesis/`; this repository keeps
-normative technical contracts, operating guides, and frozen evidence
-(see `docs/README.md` for the map).
+`docs/` holds technical documentation only; `docs/README.md` is the map.
 
-- Current contracts and guides: `docs/data-sources-and-contracts.md`,
-  `docs/pseudo-pair-tensor-contract.md`, `docs/vertex-gpu-training.md`,
-  `docs/ablation-stage-configs.md`.
-- Frozen evidence: `docs/baseline-full-results.md`, `docs/stage1-full-results.md`,
-  `docs/stage1-efficiency.md`, `docs/stage1-probe-results.md`,
-  `docs/stage1-debug-results.md`, `docs/patch-read-timing.md`,
-  `docs/gcs-inventory-and-transfer.md`, `docs/ablation-full-results.md`,
-  `docs/random-forest-baseline.md`, `docs/random-forest-full-results.md`.
-- Archived handoffs: `docs/archive/phase-1-delivery.md`,
-  `docs/archive/phase-2-preparation.md`,
-  `docs/archive/stage1-training-readiness.md` (cancelled verification gate).
+- Contracts: `docs/data-sources-and-contracts.md`, `docs/features-v6.md`,
+  `docs/pseudo-pair-tensor-contract.md`.
+- Running the pipeline: `docs/republish-v6.md`, `docs/vm-operations.md`,
+  `docs/vertex-gpu-training.md`, `docs/ablation-v6-configs.md`.
+- Evaluation design: `docs/spatial-holdout.md`, `docs/spatial-error-analysis.md`,
+  `docs/stadtstruktur.md`, `docs/tessera-arm.md`, `docs/stage5-loss-audit.md`.
+- Data layout: `docs/gcs-inventory-and-transfer.md`, `docs/s2-mosaic-membership.md`.
+- Pre-registered criteria read by the Stage-1 validators and guards:
+  `docs/stage1-full-results.md`, `docs/stage1-debug-results.md`,
+  `docs/stage1-efficiency.md`, `docs/archive/stage1-training-readiness.md`.
+- Machine-readable evidence: `docs/results/`.
